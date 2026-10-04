@@ -54,26 +54,13 @@ Machinery is supported only when it traces to a current product root and a real 
 
 Give one durable concept one canonical owner and name. Preserve different complete names for genuinely different product roles, including source and target, affected and replacement, supplied and resolved, observed and locked, current and historical, or input and accepted output. When an independently required wire, storage, presentation, or compatibility shape uses another spelling, keep one named exhaustive conversion at that boundary rather than spreading the duplicate vocabulary through the domain.
 
-A semantic maintenance-cost pass inspects these exact candidate categories:
+Trace a candidate to its supported root, actual producer and consumer, retained data or protocol responsibility, accepted authority, and cheapest falsifying observation. Keep relational roles and nominal identities distinct when their consumers need them. Remove repeated enforcement only when an earlier owner guarantees the same fact; checks combining independent sources or current state have a separate responsibility. Slop Cleanup's [semantic audit](skills/slop-cleanup/references/semantic-audit.md) owns the applied cleanup inventory and dispositions.
 
-- synonymous representations of one fact, including copied settings, test inventories, and route or classification decisions;
-- colliding complete names for different facts;
-- relational roles detached from the relationship that gives them meaning;
-- missing or misused nominal identifiers;
-- repeated enforcement of one invariant;
-- Cartesian growth from independent discriminators and optional payloads;
-- compatibility without retained data or an independently changing consumer; and
-- performance, security, concurrency, or deployment machinery without an observed supported-path consequence or accepted obligation.
+Tests may consume canonical settings as inputs while deriving expected effects independently. Construct threshold cases from the selected setting and calculate the outcome from the supported contract; do not call the implementation under test to manufacture its expectation. Independently owned scientific, spending, external, historical and deliberate fixture contracts retain their authority. Equal values are leads, not proof of shared meaning.
 
-For each candidate, record the exact selector, supported root, production producer and consumer, persisted-data or protocol responsibility, accepted authority, and cheapest falsifying observation. Give it one terminal disposition: `supported-root`, `boundary`, `retained-exception`, `removal`, or `consolidation`. Apply removals and consolidations recursively through production, tests, documentation, packaging, dependencies, and tooling.
+For change amplification, trace one supported value from entry to effect and simulate one sibling or setting change. Record discover-and-edit sites, repeated decisions and independently required conversions separately from imports and source size. Remove a repeat only when one owner already carries its meaning. The cheapest falsifier is a concrete consumer or boundary that still needs the distinction; stop when another fold would erase it or add more conversion machinery than it removes.
 
-For a settings candidate, distinguish a copied implementation value from independently owned scientific criteria, spending obligations, external contracts, historical compatibility, and deliberate fixture inputs. Construct threshold cases from the canonical setting and calculate expected effects independently; do not call the implementation under test to manufacture its expectation. Trace assertions, constructor inputs, version and cardinality checks, complete inventories, and derived totals, including equivalent expressions and quantities embedded in prose. Equal values are only leads.
-
-For change amplification, trace one supported value from entry to effect and simulate one sibling or setting change. Record the places a developer must discover and edit, the repeated decisions, and independently required conversions separately from imports and source size. Remove a repeat only when one owner already carries its meaning; stop when another fold would erase a product distinction or cost more conversion machinery than it removes. The cheapest falsifier is a concrete route, consumer, or boundary that still needs the proposed owner.
-
-A retained exception must name its present reason and a falsifiable reopening condition. Valid reasons are an independently required boundary translation, supported retained data, an independently changing external consumer or protocol, or an accepted product or assurance obligation with a current consequence. Historical intent, possible future use, mechanical analyzer limits, and test-only reachability are not retained-exception reasons.
-
-When evidence cannot settle a consequential product distinction, keep the candidate unresolved and stop terminal acceptance for that audit. Do not turn uncertainty into a retention claim. Finish only after a fresh inventory over the same declared roots produces no new in-scope selectors and every recorded selector has a supported disposition.
+A retained exception names its present responsibility and falsifiable reopening condition. An independently required translation, supported retained data, independently changing external consumer or protocol, or accepted product or assurance obligation with a current consequence can justify it. Historical intent, possible future use, analyzer limits and test-only reachability cannot. Keep consequential unresolved decisions open; finish an audit only after its fresh declared-root inventory has no new in-scope selectors and every candidate has a supported disposition.
 
 ### Make architectural limitations explicit
 

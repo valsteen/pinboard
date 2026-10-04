@@ -46,28 +46,11 @@ Use runtime observations and real stores when they cheaply distinguish a require
 
 ## Audit semantic maintenance cost
 
-After establishing production truth, inspect the exact semantic candidate categories owned by the supported-reality and canonical-naming method in `DESIGN_PRINCIPLES.md` when that authority exists:
+When auditing semantic ownership, copied settings or evidence, or unexplained change amplification, read [references/semantic-audit.md](references/semantic-audit.md). It owns candidate categories, dispositions, canonical inputs versus independent expectations, the representative evidence trace, sibling-change simulation and semantic stopping conditions. Use it in the production-root inventory for a broad cleanup; a known local deletion needs only its relevant residue checks.
 
-- synonymous representations of one fact, including copied settings, test inventories, and route or classification decisions;
-- colliding complete names for different facts;
-- detached relational roles;
-- missing or misused nominal identifiers;
-- repeated invariant enforcement;
-- Cartesian variant growth;
-- unsupported compatibility; and
-- speculative performance, security, concurrency, or deployment obligations.
+Apply the target project's current design authority when one exists. The reference remains self-contained when it does not; Slop Cleanup requires neither a project design guide nor Pinboard.
 
-For every candidate selector, trace the supported root, production producer and consumer, retained data or external protocol, accepted authority, and cheapest falsifying observation. A mechanical match generates a candidate only. Shared words, equal atom sets, low reference counts, repeated syntax, line totals, compatibility labels, and obligation keywords never establish a defect by themselves.
-
-Use one terminal disposition per selector: `supported-root`, `boundary`, `retained-exception`, `removal`, or `consolidation`. A retained exception must name its exact current reason and reopening condition. The supported reasons are an independently required boundary translation, supported retained data, an independently changing external consumer or protocol, or an accepted product or assurance obligation with a current consequence.
-
-Audit settings through their assertion and fixture consumers, including constructor inputs, complete inventories, exact versions and cardinalities, derived totals, equivalent expressions, and quantities in text. Consume the canonical setting and compute expected behavior independently. Preserve separately owned scientific, spending, external, historical, and fixture contracts with their reason; equality alone does not prove coupling. Use the existing optional inventory's settings candidates as leads and complete the unsupported dataflow by tracing the actual consumers.
-
-For amplification, follow one supported route to its effect and simulate one sibling or setting change. Count discover-and-edit sites, repeated decisions, and required boundary conversions separately from imports and source size. Test the proposed consolidation with the cheapest counterexample: a real consumer whose responsibility differs. Remove copied decisions recursively, then stop when the remaining owners distinguish real product facts or another fold would add more conversion machinery than it removes.
-
-Keep relational role names distinct when the relationship distinguishes them. Keep nominal identifiers when identity travels independently across a boundary. Consolidate same-meaning representations at one canonical owner, with one explicit exhaustive conversion for each independently required external or persisted shape. Remove repeated validation only when the earlier owner already guarantees the same fact; retain checks that combine independent sources or current external state.
-
-If evidence cannot settle a consequential retention or naming decision, record the exact unresolved selector and block terminal acceptance. Continue independent evidence-backed cleanup, but do not count an unresolved selector as a retained exception or fixed point.
+Mechanical matches are leads. Settle each candidate through its real producer, consumer, retained responsibility and accepted authority. Keep consequential unresolved decisions visible rather than treating them as retained exceptions or a fixed point.
 
 ## Keep the inventory bounded and resumable
 
@@ -148,37 +131,9 @@ Treat CI as executable product support. Every job, matrix entry, service, secret
 
 ## Collapse the structure left behind
 
-After deletion changes the graph, search for structures that used to distinguish alternatives but no longer do:
+After removal changes the graph, inspect the surviving alternatives, wrappers, boundary representations, parameters and thematic ownership. When those structures need consolidation, read [references/structural-consolidation.md](references/structural-consolidation.md) for the complete residue inventory and repeatable folding procedure.
 
-- one-member label vocabularies or variants without an external serialized contract;
-- base classes or protocols with one implementation and no substitution role;
-- pass-through wrappers, single-use indirections, one-attribute accessors, and no-op conversions;
-- parallel tuples, dictionaries, projections, or field-by-field comparisons that reproduce an existing canonical typed value without owning a distinct external representation;
-- hand-written primitive validators or mapping walkers where one declarative boundary record can own conversion, constraints, unknown-field rejection, and error paths;
-- downstream validation that repeats a field-local or same-record invariant already guaranteed by the deserialization model; keep a later check only when it combines independent sources or current external state, and challenge direct construction or internal-DTO use of boundary records that bypasses the decode contract;
-- tests that repeat one fact at every layer without proving distinct wiring, representation, effects, failure handling, concurrency, or compatibility; keep the cheapest owning proof and rely on existing coverage for unchanged behavior instead of compensating for deleted code with test copies;
-- identical aliases, redundant alternative sets, and a discriminator that duplicates the variant hierarchy;
-- conditions whose alternatives now do the same thing, impossible branches, and commands that can only reject;
-- fields copied through layers without a current producer and consumer;
-- parameters that appear used only through discard assignments such as `_ = value`, warning suppressions, or comments defending their presence; trace callers to remove orphaned transport and resource sampling, while retaining signatures required by verified interfaces;
-- empty or tiny files, modules, and test groups that no longer own a coherent concept.
-
-Regroup by current concepts. Separate declarations from logic when each side has a meaningful thematic role; merge them when separation would create ceremonial files. Make test organization mirror the surviving production concepts whenever practical. Test helpers belong in tests, not in production APIs created solely for fixtures.
-
-Run an archaeology pass over names, comments, error codes, schema labels, help text, examples, documentation, and tests. Remove wording that describes a predecessor, migration phase, plural capability that is now singular, or behavior the code can no longer perform. Collapse documentation around the surviving concepts, remove pages, sections, examples, diagrams, badges, and setup instructions whose feature or workflow was removed, and keep parallel documents consistent rather than leaving one stale version behind. Every advertised feature must trace to a supported entry point or explicitly labeled current limitation; do not turn deleted or never-shipped implementation into present-tense documentation or an invented roadmap. Remove stale lint, warning, ignore, and coverage suppressions with the ecosystem’s unused-suppression check when available.
-
-For structural boilerplate, use one repeatable pass:
-
-1. List collections traversed by neighboring projections. Group each collection once by the consumer key when repeated scans reconstruct the same relationship; keep the grouping local and explicit.
-2. List records whose optional fields serve different operations. Replace them with the smallest flat variants that make supported combinations concrete, then require producers to construct and consumers to handle those variants exhaustively.
-3. List mapping-shaped external values decoded field by field. Replace primitive accessor and validator families with one strict declarative record conversion when the format is structural; retain explicit code for custom grammars, relational state, and semantic policy.
-4. For each duplicated closed classification, list every encoding and choose one owner nearest the behavior. Keep a label-only vocabulary when alternatives have the same data and meaning, use data-bearing variants when alternatives require different data, and leave context-dependent legality in the decision that owns the surrounding state.
-5. Compare every branch that handles closed alternatives. Combine alternatives when their conditions, bound values, effects, and result are equivalent; remove a named alternative when a general branch already owns the same outcome. Preserve the alternatives themselves when another consumer, protocol, retry policy, or lifecycle decision distinguishes them.
-6. Preserve an independently owned external or persisted shape with one explicit exhaustive boundary conversion. Trace same-shaped values through every call and adapter, folding layers that add no validation, policy, protocol, or independently reused operation.
-7. Compare actual decision points and developer navigation before and after. Report justified exhaustive sites, explicit boundary conversion, edit sites for one representative sibling, dependency volume, and source-size change separately so a smaller file or dependency list cannot stand in for a simpler decision model.
-8. Re-run these inventories after each fold. Stop only when a fresh pass finds no repeated traversal, nullable multi-operation record, hand-decoded structural mapping, orphaned same-shaped call trail, or equivalent alternative-handling branch in the accepted scope.
-
-Stop collapsing when the remaining alternatives are a legitimate vocabulary, the distinction has an independent consumer, or the boundary conversion would cost more decision structure than the invalid combinations it prevents.
+Regroup around current concepts, remove archaeological names and explanations, and rerun affected inventories after each fold. Preserve distinctions with independent consumers and required external or persisted shapes. Stop when another fold would erase a product distinction or add more conversion machinery than it removes.
 
 ## Handle persisted-state removal as a bridge burn
 

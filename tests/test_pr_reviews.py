@@ -20,7 +20,42 @@ from tests.support import SQLITE_NOW, JsonObject, NoReadyCandidateReviews, compl
 
 
 class HumanOwnedPrReviewTest(unittest.TestCase):
-    def test_human_can_close_without_a_completed_round(self) -> None:
+    def test_close_rejects_equal_actual_heads_unpaired_rounds_and_unowned_findings(self) -> None:
+        close: JsonObject = {
+            "schema": "pinboard-pr-review-close/v1",
+            "item_id": "work-c",
+            "final_round_history_id": None,
+            "last_reviewed_head": None,
+            "newer_observed_head": None,
+            "newer_observation_source": None,
+            "final_dispositions": [],
+            "human_direction": "Stop now.",
+            "human_task_id": "human",
+            "outcome": "stopped",
+        }
+        invalid: tuple[JsonObject, ...] = (
+            {"final_round_history_id": 1},
+            {"last_reviewed_head": "a" * 40},
+            {"newer_observed_head": "a" * 40},
+            {"newer_observation_source": "harness fetch"},
+            {
+                "final_round_history_id": 1,
+                "last_reviewed_head": "a" * 40,
+                "newer_observed_head": "a" * 40,
+                "newer_observation_source": "harness fetch",
+            },
+            {"final_dispositions": [{"finding_id": "unowned", "disposition": "resolved", "evidence": "done"}]},
+        )
+        for fields in invalid:
+            with self.subTest(fields=fields), self.assertRaises(msgspec.ValidationError):
+                msgspec.convert(close | fields, type=pr_reviews.ReviewClose, strict=True)
+
+    def test_human_can_close_before_or_after_head_observation_without_a_round(self) -> None:
+        for observed_head in (False, True):
+            with self.subTest(observed_head=observed_head):
+                self._assert_human_close_without_a_round(observed_head)
+
+    def _assert_human_close_without_a_round(self, observed_head: bool) -> None:
         project = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as temporary:
             work_root = Path(temporary) / ".pinboard"
@@ -67,13 +102,16 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
                 7,
             )
             self.assertIn("close", started.available_actions)
-            head = "a" * 40
-            observed = act(
-                "observe",
-                "observation",
-                pr_reviews.HeadObservation("pinboard-pr-head-observation/v1", str(item_id), head, "harness fetch"),
-                started.subject_revision,
-            )
+            head = "a" * 40 if observed_head else None
+            revision = started.subject_revision
+            if head is not None:
+                observed = act(
+                    "observe",
+                    "observation",
+                    pr_reviews.HeadObservation("pinboard-pr-head-observation/v1", str(item_id), head, "harness fetch"),
+                    revision,
+                )
+                revision = observed.subject_revision
             closed = act(
                 "close",
                 "close",
@@ -83,13 +121,13 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
                     None,
                     None,
                     head,
-                    "harness fetch",
+                    "harness fetch" if head is not None else None,
                     (),
                     "Stop before a PR round is completed.",
                     "human",
                     "stopped",
                 ),
-                observed.subject_revision,
+                revision,
             )
             self.assertEqual((), closed.rounds)
             self.assertEqual("no-pr-round-completed", closed.round_status)

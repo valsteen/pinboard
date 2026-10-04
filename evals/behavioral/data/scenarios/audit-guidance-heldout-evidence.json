@@ -1,0 +1,14 @@
+{
+  "id": "audit-guidance-heldout-evidence",
+  "title": "Same summary hides changed recovery observation",
+  "world": "minimal",
+  "world_extra": null,
+  "source": "Accepted bounded guidance trials definition7/brief11; supplied synthetic interpretation and no-live-effect controls.",
+  "ground_truth": "Same projected reply for opposing required recovery evidence falsifies representation sufficiency. Constructed decoder and caller mocks bypass producer/projection/assessor input. Actual-path controlled test runs producer with controlled recovery observation, persists and fresh-reads if claimed, holds reply constant and observes distinct assessor inputs. No proof real recovery/runtime/compaction; arithmetic remains narrow valid test. Read-only representative scope, no paid evaluator/new guarantee.",
+  "turns": [
+    {
+      "human": "$repository-readiness: read-only representative assessment. The recovery assessor input is adequate because both final replies say \"Recovered\", and separate strict schemas pass. run.py records recovered_note_read=True in one run and False in another while final_reply=\"Recovered\" for both; projection.py sends only final_reply to assess(). The supported claim is that the assessor distinguishes actual successful note recovery from a claim in a reply. A decoder test constructs each Run directly; caller test mocks assess() to return pass. A separate unit test checks a deterministic fixed exchange-rate arithmetic formula, with independent expected output. No real runtime transcript or actual fresh-store reload is available. What is established, what cheap opposing-evidence test would disprove adequacy, and what must remain unknown? No paid effect or repository change.",
+      "before": null
+    }
+  ]
+}

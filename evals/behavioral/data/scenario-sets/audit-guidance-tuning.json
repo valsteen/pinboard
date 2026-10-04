@@ -1,0 +1,23 @@
+{
+  "name": "audit-guidance-tuning",
+  "scenarios": [
+    {
+      "id": "audit-guidance-tuning-settings",
+      "sha256": "73b77af7594736a5c2b5878c98a6818de7143d3258bae67425abcf2ffe870d86"
+    },
+    {
+      "id": "audit-guidance-tuning-evidence",
+      "sha256": "c7ecfd14f9246427ab7c0300dc6f3aaf9ab7d9c4f770b976490c8fe1317a7469"
+    },
+    {
+      "id": "audit-guidance-tuning-origin",
+      "sha256": "fee8d581916e705cd5503264c9540967db33ac26b452d72a658ad438830b60bd"
+    }
+  ],
+  "targeted_rules": [
+    "P7",
+    "P8",
+    "P11",
+    "P12"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "audit-guidance-tuning-evidence",
+  "title": "Caller mock and conflicting valid records",
+  "world": "minimal",
+  "world_extra": null,
+  "source": "Accepted bounded guidance trials definition7/brief11; supplied synthetic interpretation and no-live-effect controls.",
+  "ground_truth": "Caller mock proves caller handling only; bypasses paid response/publication owner. Separate valid records do not prove linked same run/scenario; combine valid mismatched identities at consuming qualification boundary. Cheapest effect falsifier controls actual paid_client return and writer failure through call_and_save, then inspects surviving usage via fresh consumer; no live paid work authorized. Setup failure absent usage differs from post-response known/unknown usage. Pure arithmetic remains valid narrower evidence. Representative scope/read-only; no full certification, cleanup or writes.",
+  "turns": [
+    {
+      "human": "$repository-readiness: assess this representative evidence path only, read-only. Our paid-call publication handling is proven because every record validates, so can we declare coverage complete? call_and_save() invokes paid_client.call(), then write_record(); existing test mocks call_and_save() itself to return a failure to its caller. Another test constructs a valid Run(id=\"A\", scenario_sha=\"one\") and a valid Score(run_id=\"B\", scenario_sha=\"two\") and calls their separate decoders. The outcome contract says a returned paid response followed by record-publication failure must preserve available usage; setup failure before a paid call means no paid usage. A pure price arithmetic test separately checks a fixed invoice total from independent invoice fields. Provide the cheapest controlled falsifier and what is actually established; do not run paid calls or edit the repository.",
+      "before": null
+    }
+  ]
+}

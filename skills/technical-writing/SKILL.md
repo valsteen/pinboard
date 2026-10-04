@@ -33,7 +33,7 @@ Keep these states distinct whenever they matter:
 
 Preserve exact identifiers, formulas, conditions, exceptions, ownership boundaries, dependencies, estimates, and evidence limits. Do not invent provenance or upgrade confidence to make the prose conclude neatly.
 
-Keep supplied terminology and framing unless the user requests broader synthesis or verification. When provenance changes interpretation, retain the supplied source name and its canonical title, author, and link where available.
+Keep supplied terminology and framing unless the user requests broader synthesis or verification. When provenance changes interpretation, retain the supplied source name and its canonical title, author, and link where available. In reader-facing explanations, name the concrete technology, interface, product, or activity that makes the claim understandable. Translate internal process labels into their action or consequence without replacing useful technical context with a vague umbrella term.
 
 Keep estimates with their assumptions. Do not invent timelines, effort, or implementation difficulty.
 
@@ -69,11 +69,11 @@ Ask only when truthful completion is impossible without a material decision. Oth
 
 Prefer structural decomposition over syntactic compression. State the claim, relationship, recommendation, or decision first. Put the inventory that supports or qualifies it in following prose, bullets, a table, another section, an appendix, or nowhere when it does not help this reader.
 
-Give each sentence one main job and each paragraph one idea. Use connected prose for relationships and reasoning. Use bullets for meaningful inventories, numbered lists for real sequences, and tables for comparisons or mappings. Do not turn every paragraph into a list or hide paragraphs inside table cells.
+Give each sentence one main job and each paragraph one idea. Use connected prose for relationships and reasoning. Use bullets for meaningful inventories, numbered lists for real sequences, and tables for comparisons or mappings. Do not turn every paragraph into a list or hide paragraphs inside table cells. In a comparison, name the quantities, baseline, direction, and whose advantage the result represents. Explain a derived value through a concrete example and its practical consequence before relying on a formula or standalone ratio.
 
-Reveal decisive risks, tradeoffs, and caveats early enough to shape the reader's interpretation. Do not tease the important limitation. Use only as much background as the argument needs, and connect current state to the proposed answer.
+Reveal decisive risks, tradeoffs, and caveats early enough to shape the reader's interpretation. Do not tease the important limitation. Lead with what the evidence establishes, then bound that finding where the qualification changes its meaning. Give a useful proxy or qualitative assessment its supported role and precision; distinguish it from direct measurement, an unanswered question, and a downstream outcome outside the comparison. Keep assumptions beside the estimates they govern without repeating the same caveat at every mention. Use only as much background as the argument needs, and connect current state to the proposed answer.
 
-Make sections usable when scanned out of order. Give a section enough local context to orient the reader, but trust facts and terms established earlier. Prefer a short reminder or reference over rebuilding the whole argument.
+Make sections usable when scanned out of order. Use ordinary, factual headings that describe what the reader will find. Give the opening enough local context to explain why this material belongs even if the reader skips the heading, but trust facts and terms established earlier. Prefer a short reminder or reference over rebuilding the whole argument. In accounts of an experience, preserve the people, sequence, and concrete misunderstanding before drawing a lesson so the author can recognize what happened.
 
 When one argument becomes too large, divide it into smaller reviewable questions. Let uneven evidence remain uneven; do not manufacture symmetric sections or polished taxonomies.
 
@@ -90,17 +90,18 @@ Look especially for:
 - paragraphs trying to be locally exhaustive;
 - detail pulled into the current section only because it appeared during drafting;
 - repeated summaries and excessive signposting;
-- generic abstractions hiding the concrete decision;
+- generic abstractions hiding the concrete decision, activity, or responsible actor;
+- adjectives implying importance, maturity, or confidence that the evidence has not earned;
 - unresolved questions laundered into conclusions;
 - invented categories, false precision, and decorative contrast;
 - qualifications accumulated until the main point disappears;
-- mechanical cadence, clipped command sequences, or forced symmetry;
+- mechanical cadence, clipped command sequences, or forced symmetry: vary sentence and paragraph length with the material, and avoid giving every anecdote the same observation-to-moral pattern;
 - edits that lost technical meaning or evidence status.
 
-Rewrite passages that fail this pass. Formatting alone is not a correction.
+Read consequential passages aloud with their surrounding sentences. Keep enough connective prose to follow the reasoning while letting the important observation stand out through order, space, or restrained emphasis. Each sentence should offer a useful consequence, development, example, question, or orientation; remove connective padding that carries none of these. Preserve factual precision rather than inventing suspense or turning every sentence into a punchy assertion. Rewrite passages that fail this pass. Formatting alone is not a correction.
 
 ## Deliver the author's document
 
-Write for the document's actual audience in the author's voice. Keep drafting commentary, tool access, uploaded-file mechanics, AI involvement, and the editorial checklist out of the finished artifact unless the document explicitly calls for that history.
+Write for the document's actual audience in the author's voice. Name the responsible person, agent, system, or source when a collective pronoun would blur who decided or acted. Use first person when it suits the document and leaves attribution clear. Keep drafting commentary, tool access, uploaded-file mechanics, AI involvement, and the editorial checklist out of the finished artifact unless the document explicitly calls for that history.
 
 For short work messages, apply the same judgment without importing document-scale structure. When real use exposes a failure, prefer a narrow correction tied to that observation over a broad hypothetical rule.

@@ -11,14 +11,18 @@ from collections.abc import Callable, Coroutine, Mapping
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
+from typing import Any  # noqa: TID251 - raw SDK metadata and malformed presentation fixtures
 from unittest.mock import patch
 
 import anyio
 import msgspec
+from mcp import Client
 from mcp.client.session import ClientSession, IncomingMessage
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 from mcp.shared.message import SessionMessage
 from mcp_types import CallToolResult, TextContent, Tool
@@ -336,6 +340,145 @@ class BoundedExecutorTest(unittest.TestCase):
 
 
 class McpTransportTest(unittest.TestCase):
+    def test_native_json_presentation_preserves_schema_results_and_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+            capture = mcp_execution.SemanticCapture(Path(directory))
+            server = mcp_server.create_server(
+                executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256), capture
+            )
+
+            async def compare() -> None:
+                inputs = [
+                    {"operation": "full", "project_root": "/project", "work_root": "/work"},
+                    {"operation": "invalid", "project_root": "/project", "work_root": "/work"},
+                ]
+                async with Client(server) as client:
+                    tools = await client.list_tools()
+                    after = [await client.call_tool(mcp_server.BRIEF_CONTRACT_TOOL, {"request": x}) for x in inputs]
+                    server.middleware.clear()
+                    before = [await client.call_tool(mcp_server.BRIEF_CONTRACT_TOOL, {"request": x}) for x in inputs]
+                    self.assertEqual(tools, await client.list_tools())
+                for original, compact in zip(before, after, strict=True):
+                    self.assertIsInstance(compact.content[0], TextContent)
+                    self.assertIsInstance(original.content[0], TextContent)
+                    assert isinstance(compact.content[0], TextContent)
+                    assert isinstance(original.content[0], TextContent)
+                    self.assertEqual(msgspec.json.encode(compact.structured_content).decode(), compact.content[0].text)
+                    self.assertLess(len(compact.content[0].text), len(original.content[0].text))
+                    a = original.model_dump(mode="json", by_alias=True)
+                    b = compact.model_dump(mode="json", by_alias=True)
+                    a.pop("content")
+                    b.pop("content")
+                    self.assertEqual(a, b)
+                    captures = [msgspec.json.decode(p.read_bytes()) for p in Path(directory).glob("*.json")]
+                    matching = [c for c in captures if c["result"]["value"] == compact.structured_content]
+                    self.assertEqual(2, len(matching))
+                    self.assertTrue(all(c["transport_bytes"] == "unavailable" for c in matching))
+                self.assertEqual(4, len(list(Path(directory).glob("*.json"))))
+
+            try:
+                _run_async(compare())
+            finally:
+                executor.shutdown()
+
+    def test_json_presentation_preserves_raw_metadata_and_ineligible_results(self) -> None:
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        server = mcp_server.create_server(
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+        )
+        value: dict[str, Any] = {"nested": {"unicode": "音", "values": [False, 0, True, 1, None]}}
+        block: dict[str, Any] = {
+            "type": "text",
+            "text": '{ "nested": { "values": [false, 0, true, 1, null], "unicode": "音" } }',
+            "annotations": {"audience": ["user"], "priority": 0.5},
+            "_meta": {"marker": "block"},
+            "additive": [1],
+        }
+        eligible: dict[str, Any] = {
+            "content": [block],
+            "structuredContent": value,
+            "isError": False,
+            "resultType": "complete",
+            "_meta": {"marker": "envelope"},
+            "additive": {"preserved": True},
+        }
+        raw_results: list[HandlerResult] = []
+        presented = eligible
+
+        @server.tool(structured_output=False)
+        def presentation_fixture() -> dict[str, contracts.JsonValue]:
+            return {"fixture": True}
+
+        async def inject(ctx: ServerRequestContext[Any, Any], call_next: CallNext) -> HandlerResult:
+            result = await call_next(ctx)
+            return presented if ctx.method == "tools/call" else result
+
+        async def observe(ctx: ServerRequestContext[Any, Any], call_next: CallNext) -> HandlerResult:
+            result = await call_next(ctx)
+            if ctx.method == "tools/call":
+                raw_results.append(result)
+            return result
+
+        server.middleware.insert(0, observe)
+        server.middleware.append(inject)
+
+        async def check() -> None:
+            nonlocal presented
+            async with Client(server) as client:
+                result = await client.call_tool("presentation_fixture", {})
+                self.assertEqual(value, result.structured_content)
+            expected = eligible | {"content": [block | {"text": msgspec.json.encode(value).decode()}]}
+            self.assertEqual(expected, raw_results[0])
+            self.assertEqual(block["text"], eligible["content"][0]["text"])
+            assert isinstance(raw_results[0], dict)
+            self.assertIs(value, raw_results[0]["structuredContent"])
+            contexts: list[ServerRequestContext[Any, Any]] = []
+
+            async def remember(ctx: ServerRequestContext[Any, Any], call_next: CallNext) -> HandlerResult:
+                contexts.append(ctx)
+                return await call_next(ctx)
+
+            server.middleware.insert(0, remember)
+            async with Client(server) as client:
+                await client.call_tool("presentation_fixture", {})
+            ctx = next(c for c in contexts if c.method == "tools/call")
+            cases: list[HandlerResult] = [
+                eligible | {"content": [block | {"text": "plain prose"}]},
+                eligible | {"content": [block | {"text": '{"nested": false}'}]},
+                eligible | {"content": [block | {"text": '{"nested": 0}'}], "structuredContent": {"nested": False}},
+                eligible | {"content": [block | {"text": '{"nested": 1}'}], "structuredContent": {"nested": True}},
+                eligible | {"structuredContent": None},
+                {"content": [block], "resultType": "complete"},
+                eligible | {"content": [block, block]},
+                eligible | {"content": [{"type": "image", "data": "", "mimeType": "image/png"}]},
+                eligible | {"content": []},
+                TextContent(type="text", text="standalone"),
+                None,
+            ]
+
+            async def unchanged(original: HandlerResult, _ctx: ServerRequestContext[Any, Any]) -> HandlerResult:
+                return original
+
+            for original in cases:
+                with self.subTest(original=original):
+                    self.assertIs(original, await mcp_server._compact_json_text(ctx, partial(unchanged, original)))
+                    if isinstance(original, dict):
+                        presented = original
+                        async with Client(server) as client:
+                            await client.call_tool("presentation_fixture", {})
+                        self.assertIs(original, raw_results[-1])
+
+            async def non_tool(_ctx: ServerRequestContext[Any, Any]) -> HandlerResult:
+                return eligible
+
+            self.assertIs(eligible, await mcp_server._compact_json_text(replace(ctx, method="tools/list"), non_tool))
+
+        try:
+            _run_async(check())
+        finally:
+            executor.shutdown()
+
     def test_order_and_parallel_ingress_reject_before_resources(self) -> None:
         roots: dict[str, contracts.JsonValue] = {"project_root": "/project", "work_root": "/work"}
         order: dict[str, contracts.JsonValue] = {

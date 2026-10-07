@@ -2,7 +2,7 @@
 
 import hashlib
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import PurePosixPath
 from typing import Final, Protocol
 
@@ -142,42 +142,50 @@ def _compose_segment(
     )
 
 
-def _split_source_into_segments(
+def _append_source_segments(
     request: BriefSourceRequest,
     selected: SelectedBriefSource,
     max_batch_bytes: int,
+    batches: list[BriefSourceBatch],
+    current_batch: list[tuple[BriefSourceSegment, bytes]],
 ) -> BriefSourceResult[tuple[BriefSourceSegment, ...]]:
-    if not selected.lines:
-        empty = _compose_segment(request, 0, ())
-        size = _presented_size(0, ((empty, b""),))
-        if size > max_batch_bytes:
-            return BriefSourceFailure(
-                BriefSourceErrorCode.LINE_TOO_LARGE,
-                f"Empty selection '{request.authority_id}' requires {size} presented bytes; limit is "
-                f"{max_batch_bytes}. Use a shorter selector or raise the limit (maximum {MAX_PRESENTED_BATCH_BYTES}).",
-            )
-        return (empty,)
+    """Build source segments in their actual batches; mutate only these local accumulators."""
     segments: list[BriefSourceSegment] = []
     current_segment_lines: list[BriefSourceLine] = []
+    line_groups: Iterable[tuple[BriefSourceLine, ...]] = (
+        ((line,) for line in selected.lines) if selected.lines else ((),)
+    )
     # ponytail: Reprice each bounded segment; use incremental escaping counts if very long line sets become slow.
-    for line in selected.lines:
-        candidate = _compose_segment(request, len(segments), (*current_segment_lines, line))
-        content = b"".join(member.content for member in (*current_segment_lines, line))
-        if current_segment_lines and _presented_size(0, ((candidate, content),)) > max_batch_bytes:
-            segments.append(_compose_segment(request, len(segments), tuple(current_segment_lines)))
-            current_segment_lines = []
-            candidate = _compose_segment(request, len(segments), (line,))
-            content = line.content
-        size = _presented_size(0, ((candidate, content),))
-        if size > max_batch_bytes:
-            return BriefSourceFailure(
-                BriefSourceErrorCode.LINE_TOO_LARGE,
-                f"Line {line.number} selected by '{request.authority_id}' requires {size} presented bytes; "
-                f"limit is {max_batch_bytes}. Split this line or raise the limit (maximum {MAX_PRESENTED_BATCH_BYTES}).",
-            )
-        current_segment_lines.append(line)
-    if current_segment_lines:
-        segments.append(_compose_segment(request, len(segments), tuple(current_segment_lines)))
+    for new_lines in line_groups:
+        candidate_lines = (*current_segment_lines, *new_lines)
+        candidate = _compose_segment(request, len(segments), candidate_lines)
+        content = b"".join(line.content for line in candidate_lines)
+        if _presented_size(len(batches), (*current_batch, (candidate, content))) > max_batch_bytes:
+            if current_segment_lines:
+                segment = _compose_segment(request, len(segments), tuple(current_segment_lines))
+                segments.append(segment)
+                current_batch.append((segment, b"".join(line.content for line in current_segment_lines)))
+                current_segment_lines = []
+            if current_batch:
+                batches.append(_compose_batch(len(batches), tuple(segment for segment, _ in current_batch)))
+                current_batch.clear()
+            candidate = _compose_segment(request, len(segments), new_lines)
+            content = b"".join(line.content for line in new_lines)
+            size = _presented_size(len(batches), ((candidate, content),))
+            if size > max_batch_bytes:
+                selection = (
+                    f"Line {new_lines[0].number} selected by '{request.authority_id}'"
+                    if new_lines
+                    else f"Empty selection '{request.authority_id}'"
+                )
+                return BriefSourceFailure(
+                    BriefSourceErrorCode.LINE_TOO_LARGE,
+                    f"{selection} requires {size} presented bytes; limit is {max_batch_bytes}. "
+                    f"Use a shorter selector, split this line or raise the limit (maximum {MAX_PRESENTED_BATCH_BYTES}).",
+                )
+        current_segment_lines.extend(new_lines)
+    segments.append(candidate)
+    current_batch.append((candidate, content))
     return tuple(segments)
 
 
@@ -241,29 +249,6 @@ def _compose_batch(index: int, segments: tuple[BriefSourceSegment, ...]) -> Brie
     )
 
 
-def _group_segments_into_batches(
-    segments: tuple[tuple[BriefSourceSegment, bytes], ...], max_batch_bytes: int
-) -> BriefSourceResult[tuple[BriefSourceBatch, ...]]:
-    batches: list[BriefSourceBatch] = []
-    current: list[tuple[BriefSourceSegment, bytes]] = []
-    for segment in segments:
-        if current and _presented_size(len(batches), (*current, segment)) > max_batch_bytes:
-            batches.append(_compose_batch(len(batches), tuple(item for item, _ in current)))
-            current = []
-        size = _presented_size(len(batches), (*current, segment))
-        if size > max_batch_bytes:
-            return BriefSourceFailure(
-                BriefSourceErrorCode.LINE_TOO_LARGE,
-                f"Segment {segment[0].index} selected by '{segment[0].authority_id}' requires {size} presented "
-                f"bytes; limit is {max_batch_bytes}. Split its longest line or raise the limit "
-                f"(maximum {MAX_PRESENTED_BATCH_BYTES}).",
-            )
-        current.append(segment)
-    if current:
-        batches.append(_compose_batch(len(batches), tuple(item for item, _ in current)))
-    return tuple(batches)
-
-
 def plan_brief_sources(
     select_source: BriefSourceSelector,
     manifest: BriefSourceManifest,
@@ -272,7 +257,8 @@ def plan_brief_sources(
     max_batch_bytes = min(max_batch_bytes, MAX_PRESENTED_BATCH_BYTES)
     selected_ranges: list[tuple[str, PurePosixPath, int, int]] = []
     planned_sources: list[PlannedBriefSource] = []
-    all_segments: list[tuple[BriefSourceSegment, bytes]] = []
+    batches: list[BriefSourceBatch] = []
+    current_batch: list[tuple[BriefSourceSegment, bytes]] = []
     for request in manifest.sources:
         selected = select_source(authority_selector(request.selector), True)
         if isinstance(selected, BriefSourceFailure):
@@ -282,18 +268,9 @@ def plan_brief_sources(
         selected_ranges.append(
             (request.authority_id, selected.selector.relative_path, selected.start_line, selected.end_line)
         )
-        segments = _split_source_into_segments(request, selected, max_batch_bytes)
+        segments = _append_source_segments(request, selected, max_batch_bytes, batches, current_batch)
         if isinstance(segments, BriefSourceFailure):
             return segments
-        all_segments.extend(
-            (
-                segment,
-                b"".join(
-                    line.content for line in selected.lines if segment.start_line <= line.number <= segment.end_line
-                ),
-            )
-            for segment in segments
-        )
         planned_sources.append(
             PlannedBriefSource(
                 request.authority_id,
@@ -308,15 +285,14 @@ def plan_brief_sources(
             )
         )
     canonical_manifest = msgspec.json.encode(manifest, order="sorted")
-    batches = _group_segments_into_batches(tuple(all_segments), max_batch_bytes)
-    if isinstance(batches, BriefSourceFailure):
-        return batches
+    if current_batch:
+        batches.append(_compose_batch(len(batches), tuple(segment for segment, _ in current_batch)))
     return BriefSourcePlan(
         "pinboard-brief-source-plan/v1",
         hashlib.sha256(canonical_manifest).hexdigest(),
         max_batch_bytes,
         tuple(planned_sources),
-        batches,
+        tuple(batches),
     )
 
 

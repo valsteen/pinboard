@@ -182,9 +182,6 @@ class PrReviewRejected(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     changed_surfaces: tuple[()]
 
 
-PR_REVIEW_RESULT_TYPES = (PrReviewSuccess, PrReviewRejected)
-
-
 class _FixedStateChangedResult:
     @property
     def state_changed(self) -> bool:
@@ -1884,6 +1881,7 @@ class ExecutorBusyResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
     mismatches: Empty
 
 
+PR_REVIEW_RESULT_TYPES = (PrReviewSuccess, PrReviewRejected, ExecutorBusyResult)
 CORRECTION_CONTEXT_RESULT_TYPES = (CorrectionContextReady, CorrectionContextRejected, ExecutorBusyResult)
 
 

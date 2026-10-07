@@ -7,8 +7,11 @@ import sys
 from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
+from typing import Any  # noqa: TID251 - SDK middleware exposes raw protocol mappings
 
 import anyio
+import msgspec
+from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
@@ -70,6 +73,28 @@ READ_ONLY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
 )
 
 
+async def _compact_json_text(ctx: ServerRequestContext[Any, Any], call_next: CallNext) -> HandlerResult:
+    """Compact only an equivalent JSON companion, retaining the SDK's raw metadata."""
+    result = await call_next(ctx)
+    if ctx.method != "tools/call" or not isinstance(result, dict):
+        return result
+    structured = result.get("structuredContent")
+    content = result.get("content")
+    if not isinstance(structured, dict) or not isinstance(content, list) or len(content) != 1:
+        return result
+    block: Any = content[0]
+    if not isinstance(block, dict) or block.get("type") != "text" or not isinstance(block.get("text"), str):
+        return result
+    try:
+        decoded = msgspec.json.decode(block["text"])
+    except msgspec.DecodeError:
+        return result
+    # Canonical JSON comparison preserves boolean/number types, unlike Python equality.
+    if msgspec.json.encode(decoded, order="sorted") != msgspec.json.encode(structured, order="sorted"):
+        return result
+    return result | {"content": [block | {"text": msgspec.json.encode(structured).decode()}]}
+
+
 def create_server(  # noqa: C901 - explicit installed SDK tool registration
     executor: execution.BoundedExecutor,
     diagnostics: execution.Diagnostics,
@@ -79,6 +104,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         "pinboard",
         version=__version__,
         log_level="ERROR",
+        middleware=[_compact_json_text],
         instructions=(
             "Pinboard coordinates local repository work: intake, canonical briefs, status, legal actions, "
             "own leases, dispatch, independent review and recovery.\n\n"

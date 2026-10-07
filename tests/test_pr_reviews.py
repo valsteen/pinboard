@@ -1,11 +1,16 @@
 """One supported human-owned PR review through the native boundary and fresh SQLite readers."""
 
+import asyncio
+import io
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import msgspec
+from mcp import Client
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
@@ -13,13 +18,96 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import pr_reviews, queries, query_models
 from pinboard.domain.identifiers import WorkItemId
-from pinboard.mcp import contracts
+from pinboard.mcp import common, contracts, execution, pr_review_operations, server
 from tests.decision_support import BOARD
 from tests.native_support import call_native_tool
 from tests.support import SQLITE_NOW, JsonObject, NoReadyCandidateReviews, complete_sqlite_state, initialize_store
 
 
 class HumanOwnedPrReviewTest(unittest.TestCase):
+    def test_advertised_client_accepts_busy_and_preflight_without_pr_review_effects(self) -> None:
+        for occupied in (True, False):
+            with self.subTest(occupied=occupied):
+                self._assert_advertised_shared_failure(occupied)
+
+    def _assert_advertised_shared_failure(self, occupied: bool) -> None:
+        project = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            work_root = Path(temporary).resolve() / ".pinboard"
+            roots = resolve_durable_roots(project, work_root)
+            initialize_database(roots, SQLITE_NOW)
+            store = SQLiteWorkStore(roots.database_path)
+            initialize_store(store, complete_sqlite_state())
+            before = store.validated_snapshot()
+            settings = work_root / "contributor-traces.config"
+            settings.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\nmode = invalid\n')
+            executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+            release = threading.Event()
+            transport = server.create_server(
+                executor,
+                execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
+                execution.AutomaticCapture(common.select_capture_item),
+            )
+
+            def hold(_token: execution.CancellationToken) -> None:
+                if not release.wait(10):
+                    raise AssertionError("Occupied executor was not released.")
+
+            async def call() -> JsonObject:
+                async with Client(transport) as client:
+                    result = await client.call_tool(
+                        "pinboard_pr_review",
+                        {
+                            "request": {
+                                "project_root": str(project),
+                                "work_root": str(work_root),
+                                "item_id": "work-c",
+                                "operation": "status",
+                            }
+                        },
+                    )
+                    self.assertFalse(result.is_error)
+                    assert isinstance(result.structured_content, dict)
+                    return result.structured_content
+
+            try:
+                if occupied:
+                    executor.submit(hold)
+                with patch.object(pr_review_operations, "execute", side_effect=AssertionError("PR callback ran")):
+                    response = asyncio.run(call())
+            finally:
+                release.set()
+                executor.shutdown()
+            self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+            self.assertEqual(False, response["state_changed"])
+            self.assertEqual("unchanged", response["effect"])
+            self.assertEqual([], response["changed_surfaces"])
+            self.assertEqual(
+                '[pinboard "unsafe_persist_exact_pinboard_traces"]\nmode = invalid\n', settings.read_text()
+            )
+            self.assertFalse((work_root / "invocation-traces").exists())
+            if occupied:
+                self.assertEqual("EXECUTOR_BUSY", response["code"])
+                self.assertEqual("busy", response["status"])
+                self.assertEqual("retry-same-input", response["retry"])
+                self.assertEqual([], response["observed"])
+                self.assertEqual([], response["mismatches"])
+            else:
+                self.assertEqual("TRACE_PREFLIGHT_FAILED", response["code"])
+                self.assertEqual("rejected", response["status"])
+                self.assertEqual("correct-input", response["retry"])
+                self.assertEqual(str(settings), response["resource"])
+                self.assertEqual(f"Correct {settings} and retry.", response["repair"])
+                self.assertEqual(False, response["target_ran"])
+                for field in (
+                    "settings_parent_creation",
+                    "settings_file_creation",
+                    "settings_mode_write",
+                    "trace_directory_creation",
+                    "capture_probe_effect",
+                ):
+                    self.assertEqual("none", response[field])
+
     def test_close_rejects_equal_actual_heads_unpaired_rounds_and_unowned_findings(self) -> None:
         close: JsonObject = {
             "schema": "pinboard-pr-review-close/v1",

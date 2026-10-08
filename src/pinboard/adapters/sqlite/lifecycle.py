@@ -339,13 +339,11 @@ def read_integration_item(
     if item_row is None:
         return None
     item = decode_row(item_row, _IntegrationItemRow)
-    has_definition = (
-        connection.execute(
-            "SELECT 1 FROM work_item_definition_revisions WHERE item_id = ? LIMIT 1",
-            (item_id,),
-        ).fetchone()
-        is not None
-    )
+    definition_row = connection.execute(
+        "SELECT 1 FROM work_item_definition_revisions WHERE item_id = ? LIMIT 1",
+        (item_id,),
+    ).fetchone()
+    has_definition: bool = definition_row is not None
     attempt_row = connection.execute(
         """
         SELECT attempt_id, state, candidate_revision

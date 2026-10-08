@@ -242,9 +242,31 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.ItemStatusEnvelope, strict=True).request
-        durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    try:
+        durable = common._resolve_durable(request.project_root, request.work_root)
+    except (ValueError, OSError) as error:
+        return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    except RootError as error:
+        if not isinstance(request, contracts.ItemStatusIntegrationRequest):
+            raise
+        return _integration_rejection(
+            error.code.value,
+            str(error),
+            FailureDetails(
+                observed=(
+                    FailureFact("project_root", request.project_root),
+                    FailureFact("target", request.target),
+                ),
+                mismatches=(FailureMismatch("git", "project root inside a Git checkout", str(error)),),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+            "Run the integration check from a checkout of the repository that holds the work root.",
+        )
     token.checkpoint()
     store = common.compose_store(durable)
     match request:

@@ -380,3 +380,58 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         fixture = self.checkpoint_fixture()
         invalid = self.integration(fixture, "bad\x00name")
         self.assertEqual("ITEM_STATUS_INVALID", invalid["code"], invalid)
+
+    def test_candidate_continued_after_review_is_not_a_source(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.transition(
+            fixture,
+            "accept-review-and-continue:work-a-1",
+            {"candidate": fixture.candidate_revision, "evidence": "Accepted; continue the attempt."},
+        )
+        unavailable = self.integration(fixture, "main")
+        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", unavailable["code"], unavailable)
+        self.assertIn("state 'active'", str(unavailable["message"]))
+
+    def test_ready_item_without_an_attempt_names_its_state(self) -> None:
+        fixture = self.checkpoint_fixture()
+        unavailable = self.integration(fixture, "main", item_id="work-c")
+        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", unavailable["code"], unavailable)
+        self.assertIn("state 'ready'", str(unavailable["message"]))
+        self.assertIn("no current attempt", str(unavailable["message"]))
+
+    def test_project_root_outside_a_git_checkout_is_a_typed_rejection(self) -> None:
+        fixture = self.checkpoint_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            outside = call_advertised_tool(
+                mcp_server.ITEM_STATUS_TOOL,
+                {
+                    "request": {
+                        "project_root": directory,
+                        "work_root": str(fixture.work),
+                        "operation": "integration",
+                        "item_id": "work-a",
+                        "target": "main",
+                    }
+                },
+            )
+        self.assertEqual("PROJECT_GIT_ROOT_UNAVAILABLE", outside["code"], outside)
+        self.assertEqual("correct-input", outside["retry"])
+
+    def test_candidate_integrated_reconciliation_runs_no_target_comparison(self) -> None:
+        fixture = self.checkpoint_fixture()
+        reconciliation: JsonObject = {
+            "target_revision": fixture.brief.base_revision,
+            "relation": "candidate-integrated",
+            "phase": "cleanup",
+            "effects": [
+                {"effect": "source-checkout", "status": "not-required"},
+                {"effect": "shared-work-root", "status": "not-required"},
+                {"effect": "git-metadata", "status": "not-required"},
+            ],
+        }
+        with patch("pinboard.adapters.files.root.observe_target_content", side_effect=AssertionError("git read")):
+            inspected = call_advertised_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                {**self.roots(fixture), "attempt_id": "work-a-1", "reconciliation": reconciliation},
+            )
+        self.assertNotIn("error", inspected, inspected)

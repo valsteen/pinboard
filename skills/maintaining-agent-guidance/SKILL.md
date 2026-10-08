@@ -21,7 +21,7 @@ Stop there. Do not reopen the full ownership question merely because durable gui
 
 When asked to onboard a project, evaluate its guidance, or recommend improvements, inspect the current authorities and real project evidence before proposing a baseline. Unless the user asks for edits, remain read-only.
 
-For a Codex project using Pinboard, recommend a thin route in its nearest `AGENTS.md`: passive answer, explanation, review assessment, and diagnosis requests remain inspection-only; an explicit human-owned PR review request may record review evidence through its separate route without authorizing implementation edits; after a human implementation change request, announce a Pinboard-item or direct implementation route before the first implementation repository write. Add or reconcile that route only when guidance edits are authorized. The main Pinboard skill owns the requested Codex setup step; this optional assessment does not install guidance by itself.
+For a project using Pinboard, follow the main skill's [private adoption rule](../pinboard/SKILL.md#route-common-requests). Loaded skills own that workflow; its adoption needs no committed project route. Assess genuine project-specific guidance and explicit contributor-documentation requests on their own evidence and authority. This optional assessment does not initialize Pinboard or install guidance by itself.
 
 Look for the smallest evidence-supported set of guidance:
 

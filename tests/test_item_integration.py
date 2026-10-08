@@ -12,14 +12,12 @@ from unittest.mock import patch
 import msgspec
 from msgspec.structs import replace as replace_struct
 
-from pinboard.adapters import candidate_evidence
 from pinboard.adapters.files import contributor_traces
 from pinboard.adapters.files.artifacts import read_reference
-from pinboard.adapters.files.errors import ArtifactError
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.application import candidate_snapshots, query_models
-from pinboard.domain.identifiers import AttemptId, WorkItemId
+from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import execution, tool_names
 from pinboard.mcp import server as mcp_server
@@ -821,7 +819,7 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.assertEqual(candidate, self.source(unchanged)["candidate_revision"])
         self.assertEqual(base, self.source(unchanged)["compared_from_revision"])
 
-    def test_unreadable_snapshot_file_propagates_instead_of_reading_as_damaged_evidence(self) -> None:
+    def test_unreadable_snapshot_file_is_invalid_evidence_with_no_retry(self) -> None:
         fixture = self.checkpoint_fixture()
         reference = next(
             value
@@ -831,8 +829,15 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         path = fixture.work / reference.selector
         path.chmod(0)
         self.addCleanup(path.chmod, 0o600)
-        facts = fixture.store.read_integration_item(WorkItemId("work-a"))
-        assert facts is not None
-        with self.assertRaises(ArtifactError) as raised:
-            candidate_evidence.read_integration_candidate(fixture.work, fixture.store, facts)
-        self.assertIsInstance(raised.exception.__cause__, OSError)
+        invalid = self.integration(fixture, "main")
+        self.assertEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", invalid["code"], invalid)
+        self.assertEqual("do-not-retry", invalid["retry"])
+        self.assertEqual(reference.key, self.observed_fields(invalid)["accepted_reference"], invalid)
+
+    def test_checkpoint_package_without_a_snapshot_reference_is_an_unavailable_source(self) -> None:
+        fixture = self.accepted_package_fixture(local=True, candidate_form="current-head")
+        self.retain_v2_checkpoint(fixture)
+        unavailable = self.integration(fixture, "main")
+        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", unavailable["code"], unavailable)
+        self.assertIn("no candidate snapshot reference", str(unavailable["message"]))
+        self.assertEqual("correct-input", unavailable["retry"])

@@ -192,19 +192,30 @@ def restore_candidate(
 
 
 @dataclass(frozen=True, slots=True)
-class IntegrationFailure:
-    """A typed unchanged integration rejection; the MCP boundary renders it with its next step."""
-
-    code: str
-    message: str
-    details: FailureDetails
-    recovery: str
-
-
-@dataclass(frozen=True, slots=True)
 class IntegrationCandidate:
     source: query_models.IntegrationSource
     diff: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateUnavailable:
+    """The item has no reviewed candidate whose accepted snapshot bytes the integration check can compare."""
+
+    item_id: WorkItemId
+    item_state: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateEvidenceInvalid:
+    """An accepted reference failed verification; the composition reports it without repairing it."""
+
+    attempt_id: AttemptId
+    reference_key: str
+    reason: str
+
+
+type IntegrationCandidateRejection = CandidateUnavailable | CandidateEvidenceInvalid
 
 
 def _compared_from(snapshot: candidate_snapshots.CandidateSnapshot) -> str:
@@ -221,48 +232,6 @@ def _compared_from(snapshot: candidate_snapshots.CandidateSnapshot) -> str:
             assert_never(unreachable)
 
 
-def _unreadable(error: ArtifactError) -> bool:
-    """A file that cannot be read is not a verification verdict; the artifact adapter keeps its OSError cause."""
-
-    return isinstance(error.__cause__, OSError)
-
-
-def _unavailable(item_id: WorkItemId, state: str, reason: str) -> IntegrationFailure:
-    return IntegrationFailure(
-        "INTEGRATION_CANDIDATE_UNAVAILABLE",
-        f"Item '{item_id}' in state '{state}' has no reviewed candidate with accepted snapshot bytes: {reason}.",
-        FailureDetails(
-            observed=(
-                FailureFact("item_id", str(item_id)),
-                FailureFact("item_state", state),
-                FailureFact("reason", reason),
-            ),
-            mismatches=(),
-            retry=RetryDisposition.CORRECT_INPUT,
-            effect=EffectDisposition.UNCHANGED,
-            changed_surfaces=(),
-            alternatives=(),
-        ),
-        "Read this item with pinboard_item_status operation item; no integration check applies until a reviewed candidate exists.",
-    )
-
-
-def _invalid(attempt_id: AttemptId, reference_key: str, reason: str) -> IntegrationFailure:
-    return IntegrationFailure(
-        "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",
-        f"Candidate evidence for attempt '{attempt_id}' failed verification: {reason}",
-        FailureDetails(
-            observed=(FailureFact("attempt_id", str(attempt_id)), FailureFact("accepted_reference", reference_key)),
-            mismatches=(FailureMismatch("candidate evidence", "verified accepted snapshot", reason),),
-            retry=RetryDisposition.DO_NOT_RETRY,
-            effect=EffectDisposition.UNCHANGED,
-            changed_surfaces=(),
-            alternatives=(),
-        ),
-        "Diagnose the named accepted reference with pinboard validate; this call does not repair it.",
-    )
-
-
 def _read_attempt_snapshot(
     work_root: Path,
     store: ports.WorkStore,
@@ -270,23 +239,18 @@ def _read_attempt_snapshot(
     state: str,
     attempt_id: AttemptId,
     kind: Literal["protected-review", "completion"],
-) -> IntegrationCandidate | IntegrationFailure:
+) -> IntegrationCandidate | IntegrationCandidateRejection:
     context = store.read_candidate_snapshot_context(attempt_id)
     if context is None:
-        return _unavailable(item_id, state, "the attempt retains no accepted snapshot for its candidate")
+        return CandidateUnavailable(item_id, state, "the attempt retains no accepted snapshot for its candidate")
     reference_key = context.reference.key
     try:
         encoded = read_reference(work_root, context.reference)
         evidence = candidate_snapshots.verify_candidate_snapshot_context(context, None, encoded)
-    except ArtifactError as error:
-        if _unreadable(error):
-            raise
-        return _invalid(attempt_id, reference_key, str(error))
-    except ValueError as error:
-        return _invalid(attempt_id, reference_key, str(error))
+    except (ArtifactError, ValueError) as error:
+        return CandidateEvidenceInvalid(attempt_id, reference_key, str(error))
     snapshot = evidence.snapshot
-    source = _attempt_source(kind, snapshot)
-    return IntegrationCandidate(source, snapshot.diff)
+    return IntegrationCandidate(_attempt_source(kind, snapshot), snapshot.diff)
 
 
 def _attempt_source(
@@ -309,23 +273,19 @@ def _read_package_snapshot(
     item_id: WorkItemId,
     attempt_id: AttemptId,
     package: work_brief_models.CheckpointReviewPackageV3,
-) -> candidate_snapshots.CandidateSnapshot | IntegrationFailure:
+) -> candidate_snapshots.CandidateSnapshot | IntegrationCandidateRejection:
     """Read the accepted candidate snapshot that a checkpoint package names and verify its binding."""
 
     identity = package.candidate_snapshot
+    reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, identity.key, identity.revision)
+    if reference is None or reference.content_sha256 != identity.content_sha256:
+        return CandidateEvidenceInvalid(attempt_id, identity.key, "the checkpoint snapshot reference is not accepted")
     try:
-        reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, identity.key, identity.revision)
-        if reference is None or reference.content_sha256 != identity.content_sha256:
-            return _invalid(attempt_id, identity.key, "the checkpoint snapshot reference is not accepted")
         snapshot = candidate_snapshots.decode_candidate_snapshot(read_reference(work_root, reference))
-    except ArtifactError as error:
-        if _unreadable(error):
-            raise
-        return _invalid(attempt_id, identity.key, str(error))
-    except ValueError as error:
-        return _invalid(attempt_id, identity.key, str(error))
+    except (ArtifactError, ValueError) as error:
+        return CandidateEvidenceInvalid(attempt_id, identity.key, str(error))
     if snapshot.candidate != package.candidate or snapshot.attempt_id != attempt_id or snapshot.item_id != item_id:
-        return _invalid(attempt_id, identity.key, "the checkpoint snapshot does not match its package")
+        return CandidateEvidenceInvalid(attempt_id, identity.key, "the checkpoint snapshot does not match its package")
     return snapshot
 
 
@@ -335,31 +295,33 @@ def _read_checkpoint_snapshot(
     item_id: WorkItemId,
     state: str,
     attempt_id: AttemptId,
-) -> IntegrationCandidate | IntegrationFailure | query_models.DamagedTransitionReceipt:
+) -> IntegrationCandidate | IntegrationCandidateRejection | query_models.DamagedTransitionReceipt:
     acceptance = store.read_latest_checkpoint_acceptance(attempt_id)
     if isinstance(acceptance, query_models.DamagedTransitionReceipt):
         return acceptance
     if acceptance is None:
-        return _unavailable(
+        return CandidateUnavailable(
             item_id,
             state,
             "the current attempt has no protected candidate and no checkpoint acceptance, or was closed directly",
         )
     if acceptance.package_reference is None:
-        return _unavailable(item_id, state, "the accepted checkpoint package has no candidate snapshot reference")
+        return CandidateUnavailable(
+            item_id, state, "the accepted checkpoint package has no candidate snapshot reference"
+        )
     package_key = acceptance.package_reference.key
     try:
         package = work_briefs.decode_checkpoint_review_package(read_reference(work_root, acceptance.package_reference))
     except ArtifactError as error:
-        if _unreadable(error):
-            raise
-        return _invalid(attempt_id, package_key, str(error))
+        return CandidateEvidenceInvalid(attempt_id, package_key, str(error))
     if isinstance(package, work_brief_models.WorkBriefFailure):
-        return _invalid(attempt_id, package_key, package.message)
+        return CandidateEvidenceInvalid(attempt_id, package_key, package.message)
     if not isinstance(package, work_brief_models.CheckpointReviewPackageV3):
-        return _unavailable(item_id, state, "the accepted checkpoint package has no candidate snapshot reference")
+        return CandidateUnavailable(
+            item_id, state, "the accepted checkpoint package has no candidate snapshot reference"
+        )
     snapshot = _read_package_snapshot(work_root, store, item_id, attempt_id, package)
-    if isinstance(snapshot, IntegrationFailure):
+    if isinstance(snapshot, CandidateEvidenceInvalid | CandidateUnavailable):
         return snapshot
     source = query_models.AcceptedCheckpointSource(
         attempt_id, snapshot.candidate, _compared_from(snapshot), acceptance.checkpoint_id
@@ -371,7 +333,7 @@ def read_integration_candidate(
     work_root: Path,
     store: ports.WorkStore,
     facts: query_models.IntegrationItemFacts,
-) -> IntegrationCandidate | IntegrationFailure | query_models.DamagedTransitionReceipt:
+) -> IntegrationCandidate | IntegrationCandidateRejection | query_models.DamagedTransitionReceipt:
     """Select the item's reviewed candidate and return its verified recorded diff with its source."""
 
     item_id = facts.work_item_id
@@ -385,7 +347,7 @@ def read_integration_candidate(
         case query_models.CompletionSelection(attempt_id=attempt_id):
             return _read_attempt_snapshot(work_root, store, item_id, state, attempt_id, "completion")
         case query_models.IntegrationCandidateUnavailable(reason=reason):
-            return _unavailable(item_id, state, reason)
+            return CandidateUnavailable(item_id, state, reason)
         case _ as unreachable:
             assert_never(unreachable)
 

@@ -154,6 +154,48 @@ def _integration_rejection(
     )
 
 
+def _candidate_unavailable_rejection(unavailable: candidate_evidence.CandidateUnavailable) -> execution.OperationResult:
+    return _integration_rejection(
+        "INTEGRATION_CANDIDATE_UNAVAILABLE",
+        f"Item '{unavailable.item_id}' in state '{unavailable.item_state}' has no reviewed candidate with accepted "
+        f"snapshot bytes: {unavailable.reason}.",
+        FailureDetails(
+            observed=(
+                FailureFact("item_id", str(unavailable.item_id)),
+                FailureFact("item_state", unavailable.item_state),
+                FailureFact("reason", unavailable.reason),
+            ),
+            mismatches=(),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+        "Read this item with pinboard_item_status operation item; no integration check applies until a reviewed candidate exists.",
+    )
+
+
+def _candidate_evidence_invalid_rejection(
+    invalid: candidate_evidence.CandidateEvidenceInvalid,
+) -> execution.OperationResult:
+    return _integration_rejection(
+        "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",
+        f"Candidate evidence for attempt '{invalid.attempt_id}' failed verification: {invalid.reason}",
+        FailureDetails(
+            observed=(
+                FailureFact("attempt_id", str(invalid.attempt_id)),
+                FailureFact("accepted_reference", invalid.reference_key),
+            ),
+            mismatches=(FailureMismatch("candidate evidence", "verified accepted snapshot", invalid.reason),),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+        "Diagnose the named accepted reference with pinboard validate; this call does not repair it.",
+    )
+
+
 def _integration_presence(
     observed: TargetContentPresent | TargetContentNotPresent | TargetContentUnchanged,
 ) -> query_models.IntegrationPresence:
@@ -183,9 +225,10 @@ def _read_item_integration(
     selection = candidate_evidence.read_integration_candidate(durable.work_root, store, facts)
     if isinstance(selection, query_models.DamagedTransitionReceipt):
         return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", selection)
-    if isinstance(selection, candidate_evidence.IntegrationFailure):
-        return _integration_rejection(selection.code, selection.message, selection.details, selection.recovery)
-    token.checkpoint()
+    if isinstance(selection, candidate_evidence.CandidateUnavailable):
+        return _candidate_unavailable_rejection(selection)
+    if isinstance(selection, candidate_evidence.CandidateEvidenceInvalid):
+        return _candidate_evidence_invalid_rejection(selection)
     try:
         source_checkout = resolve_source_checkout_root(Path(request.project_root))
         observed = candidate_evidence.observe_integration_target(source_checkout, request.target, selection)

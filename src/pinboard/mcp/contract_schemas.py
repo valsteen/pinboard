@@ -76,9 +76,9 @@ from pinboard.mcp.contracts import (
     DispatchRejected,
     ExecutorBusyResult,
     IntegrationCandidateEvidenceInvalid,
-    IntegrationCandidateUnavailable,
+    IntegrationCandidateUnavailableResult,
     IntegrationGitFailed,
-    IntegrationTargetUnresolved,
+    IntegrationTargetUnresolvedResult,
     ItemDefinitionRejected,
     ItemStatusInconsistent,
     ItemStatusInvalid,
@@ -890,9 +890,9 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     elif schema == "pinboard-item-integration/v1" and tool_name == "pinboard_item_status":
         msgspec.convert(content, type=query_models.ItemIntegration, strict=True)
     elif tool_name == "pinboard_item_status" and code == "INTEGRATION_TARGET_UNRESOLVED":
-        msgspec.convert(content, type=IntegrationTargetUnresolved, strict=True)
+        msgspec.convert(content, type=IntegrationTargetUnresolvedResult, strict=True)
     elif tool_name == "pinboard_item_status" and code == "INTEGRATION_CANDIDATE_UNAVAILABLE":
-        msgspec.convert(content, type=IntegrationCandidateUnavailable, strict=True)
+        msgspec.convert(content, type=IntegrationCandidateUnavailableResult, strict=True)
     elif tool_name == "pinboard_item_status" and code == "INTEGRATION_CANDIDATE_EVIDENCE_INVALID":
         msgspec.convert(content, type=IntegrationCandidateEvidenceInvalid, strict=True)
     elif tool_name == "pinboard_item_status" and code in {

@@ -244,7 +244,7 @@ class ItemStatusBranchRequest(
 
 
 type IntegrationTarget = Annotated[
-    str, msgspec.Meta(min_length=1, pattern=r"\A[^\-\r\n\u2028\u2029][^\r\n\u2028\u2029]*\z")
+    str, msgspec.Meta(min_length=1, pattern=r"\A[^\-\r\n\u2028\u2029\x00][^\r\n\u2028\u2029\x00]*\z")
 ]
 
 
@@ -1118,7 +1118,7 @@ class ItemStatusReceiptDamaged(DamagedReceiptResult, frozen=True):
     schema: Literal["pinboard-mcp-item-status-result/v3"]
 
 
-class IntegrationTargetUnresolved(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class IntegrationTargetUnresolvedResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-item-status-result/v3"]
     status: Literal["rejected"]
     code: Literal["INTEGRATION_TARGET_UNRESOLVED"]
@@ -1132,7 +1132,7 @@ class IntegrationTargetUnresolved(_UnchangedResult, msgspec.Struct, frozen=True,
     recovery: NonEmptyText
 
 
-class IntegrationCandidateUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class IntegrationCandidateUnavailableResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-item-status-result/v3"]
     status: Literal["rejected"]
     code: Literal["INTEGRATION_CANDIDATE_UNAVAILABLE"]
@@ -2988,8 +2988,8 @@ ITEM_STATUS_RESULT_TYPES = (
     ItemStatusInconsistent,
     BranchOwnerNotFound,
     ItemStatusReceiptDamaged,
-    IntegrationTargetUnresolved,
-    IntegrationCandidateUnavailable,
+    IntegrationTargetUnresolvedResult,
+    IntegrationCandidateUnavailableResult,
     IntegrationCandidateEvidenceInvalid,
     IntegrationGitFailed,
     ExecutorBusyResult,

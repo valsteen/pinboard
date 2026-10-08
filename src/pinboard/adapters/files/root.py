@@ -421,7 +421,7 @@ def observe_target_presence(cwd: Path, target: str, diff: bytes) -> TargetPresen
             repository.stderr.strip() or f"Cannot read the Git repository at '{cwd}'.",
         )
     # Any failure to name a commit, including a reflog selector beyond its log, leaves the target unresolved.
-    resolved = _git_read(cwd, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{target}^{{commit}}")
+    resolved = _git_read(cwd, "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}")
     if resolved.returncode != 0:
         return UnresolvedTargetObservation(target)
     revision = resolved.stdout.strip()

@@ -18,6 +18,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters import candidate_evidence
+from pinboard.adapters.files.errors import RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
@@ -27,7 +28,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     STATUS_ITEM_SQL,
 )
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import candidate_snapshots, queries, query_models
+from pinboard.application import candidate_snapshots, queries, query_models, stored_state
 from pinboard.application.ports import GeneratedViewReader
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.identifiers import AttemptId, HistoryId, WorkItemId
@@ -952,6 +953,40 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.rebind(accepted, accepted.brief.branch, 2)
         self.assertEqual(("accepted-checkpoint", checkpoint), checkpoint_source())
 
+    def test_a_failed_git_read_is_a_typed_unchanged_rejection(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework the candidate.")
+        self.submit_candidate(fixture, "reviewed")
+        failure = RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "fatal: simulated read failure")
+        with patch("pinboard.adapters.files.root.observe_target_presence", side_effect=failure):
+            rejected = self.integration_leaf(fixture, "codex/work-a")
+        self.assertEqual(
+            ("PROJECT_GIT_CHECKOUT_UNAVAILABLE", "correct-input", "unchanged"),
+            (rejected["code"], rejected["retry"], rejected["effect"]),
+            rejected,
+        )
+        observed = {
+            str(self.json_object(value)["field"]): self.json_object(value)["value"]
+            for value in self.json_array(rejected["observed"])
+        }
+        self.assertEqual({"project_root": str(fixture.project), "target": "codex/work-a"}, observed)
+        self.assertIn("Correct the Git checkout", str(rejected["recovery"]))
+
+    def test_a_nul_byte_in_the_target_is_rejected_at_the_boundary(self) -> None:
+        fixture = self.checkpoint_fixture()
+        rejected = call_native_tool(
+            mcp_server.ITEM_STATUS_TOOL,
+            {
+                "request": {
+                    **self.roots(fixture),
+                    "operation": "integration",
+                    "item_id": "work-a",
+                    "target": "main\u0000x",
+                }
+            },
+        )
+        self.assertEqual(("ITEM_STATUS_INVALID", "unchanged"), (rejected["code"], rejected["effect"]), rejected)
+
     def test_a_reflog_selector_beyond_its_log_is_an_unresolved_target(self) -> None:
         fixture = self.checkpoint_fixture()
         unresolved = self.integration_leaf(fixture, "HEAD@{99999}")
@@ -1008,7 +1043,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                 "WHERE subject_id = 'work-a-1' AND outcome_schema = 'checkpoint-acceptance/v2' "
                 "ORDER BY history_id DESC LIMIT 1"
             )
-            for key in ("work-b-kept-unrelated-candidate", "work-b-kept-unrelated-review-package"):
+            for key in ("work-b-kept-unrelated-candidate", f"work-b-kept-{checkpoint}-review-package"):
                 connection.execute(
                     "INSERT INTO artifact_refs (artifact_key, artifact_revision, kind, relative_path, content_sha256, "
                     "size_bytes, accepted_revision, created_at) VALUES (?, 1, 'evidence', ?, ?, 0, 0, "
@@ -1028,11 +1063,13 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
 
         def only_checkpoint_key(
             store: SQLiteWorkStore, kind: work_models.ArtifactKind, key: str, revision: int
-        ) -> object:
+        ) -> stored_state.ArtifactReference | None:
             self.assertEqual(f"work-a-1-{checkpoint}-candidate", key)
             return real_reference(store, kind, key, revision)
 
-        def only_target_attempt(store: SQLiteWorkStore, attempt_id: AttemptId) -> object:
+        def only_target_attempt(
+            store: SQLiteWorkStore, attempt_id: AttemptId
+        ) -> query_models.CandidateSnapshotContextFacts | None:
             self.assertEqual("work-a-1", str(attempt_id))
             return real_snapshot(store, attempt_id)
 

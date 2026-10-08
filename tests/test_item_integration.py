@@ -875,3 +875,34 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.assertEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", invalid["code"], invalid)
         self.assertEqual("do-not-retry", invalid["retry"])
         self.assertIn("not accepted", str(invalid["message"]))
+
+    def test_pre_snapshot_review_candidate_is_an_unavailable_source(self) -> None:
+        """A retained legacy submission has no snapshot artifact, so the reviewed candidate is unavailable."""
+
+        fixture = self.checkpoint_fixture()
+        connection = sqlite3.connect(fixture.work / "state.sqlite3")
+        try:
+            connection.execute(
+                """
+                UPDATE transition_history SET input_schema = 'decision/v1', input_json = '{}'
+                WHERE action_kind = 'submit-review' AND subject_id = 'work-a-1'
+                """
+            )
+            connection.execute(
+                """
+                UPDATE attempts SET subject_revision = (
+                    SELECT project_revision FROM transition_history
+                    WHERE action_kind = 'submit-review' AND subject_id = 'work-a-1'
+                ) WHERE attempt_id = 'work-a-1'
+                """
+            )
+            connection.execute(
+                "UPDATE artifact_refs SET artifact_key = artifact_key || '-retained' WHERE artifact_key LIKE '%-candidate-snapshot-%'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        unavailable = self.integration(fixture, "main")
+        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", unavailable["code"], unavailable)
+        self.assertIn("pre-snapshot", str(unavailable["message"]))
+        self.assertEqual("correct-input", unavailable["retry"])

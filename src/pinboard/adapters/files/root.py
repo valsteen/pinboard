@@ -128,18 +128,14 @@ def classify_checkout(cwd: Path) -> work_models.CheckoutSelection:
     )
 
 
-def _git_result(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+def _git_text(cwd: Path, *arguments: str) -> str:
+    result = subprocess.run(
         ["git", *arguments],
         cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
     )
-
-
-def _git_text(cwd: Path, *arguments: str) -> str:
-    result = _git_result(cwd, *arguments)
     value = result.stdout.strip()
     if result.returncode != 0 or not value:
         raise RootError(
@@ -421,10 +417,10 @@ def observe_target_content(cwd: Path, target: str, diff: bytes) -> TargetContent
     the user's whitespace and split-index configuration.
     """
 
-    resolved = _git_result(cwd, "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}")
-    if resolved.returncode != 0 or not resolved.stdout.strip():
+    try:
+        revision = _git_text(cwd, "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}")
+    except RootError:
         return TargetUnresolved(target)
-    revision = resolved.stdout.strip()
     if not diff:
         return TargetContentUnchanged(revision)
     with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:

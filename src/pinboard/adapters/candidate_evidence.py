@@ -222,12 +222,16 @@ def _compared_from(snapshot: candidate_snapshots.CandidateSnapshot) -> str:
             assert_never(unreachable)
 
 
-def _unavailable(item_id: WorkItemId, reason: str) -> IntegrationFailure:
+def _unavailable(item_id: WorkItemId, state: str, reason: str) -> IntegrationFailure:
     return IntegrationFailure(
         "INTEGRATION_CANDIDATE_UNAVAILABLE",
-        f"Item '{item_id}' has no reviewed candidate with accepted snapshot bytes: {reason}.",
+        f"Item '{item_id}' in state '{state}' has no reviewed candidate with accepted snapshot bytes: {reason}.",
         FailureDetails(
-            observed=(FailureFact("item_id", str(item_id)), FailureFact("reason", reason)),
+            observed=(
+                FailureFact("item_id", str(item_id)),
+                FailureFact("item_state", state),
+                FailureFact("reason", reason),
+            ),
             mismatches=(),
             retry=RetryDisposition.CORRECT_INPUT,
             effect=EffectDisposition.UNCHANGED,
@@ -258,15 +262,18 @@ def _read_attempt_snapshot(
     work_root: Path,
     store: ports.WorkStore,
     item_id: WorkItemId,
+    state: str,
     attempt_id: AttemptId,
     kind: Literal["protected-review", "completion"],
 ) -> IntegrationCandidate | IntegrationFailure:
     try:
         context = store.read_candidate_snapshot_context(attempt_id)
     except WorkStoreError as error:
+        if error.retryable:
+            raise
         return _invalid(attempt_id, "candidate snapshot", str(error))
     if context is None:
-        return _unavailable(item_id, "the attempt retains no accepted snapshot for its candidate")
+        return _unavailable(item_id, state, "the attempt retains no accepted snapshot for its candidate")
     reference_key = context.reference.key
     try:
         encoded = read_reference(work_root, context.reference)
@@ -282,7 +289,7 @@ def _attempt_source(
     kind: Literal["protected-review", "completion"],
     snapshot: candidate_snapshots.CandidateSnapshot,
 ) -> query_models.IntegrationSource:
-    attempt_id = str(snapshot.attempt_id)
+    attempt_id = snapshot.attempt_id
     match kind:
         case "protected-review":
             return query_models.ProtectedReviewSource(attempt_id, snapshot.candidate, _compared_from(snapshot))
@@ -292,23 +299,53 @@ def _attempt_source(
             assert_never(unreachable)
 
 
+def _read_package_snapshot(
+    work_root: Path,
+    store: ports.WorkStore,
+    item_id: WorkItemId,
+    attempt_id: AttemptId,
+    package: work_brief_models.CheckpointReviewPackageV3,
+) -> candidate_snapshots.CandidateSnapshot | IntegrationFailure:
+    """Read the accepted candidate snapshot that a checkpoint package names and verify its binding."""
+
+    identity = package.candidate_snapshot
+    try:
+        reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, identity.key, identity.revision)
+        if reference is None or reference.content_sha256 != identity.content_sha256:
+            return _invalid(attempt_id, identity.key, "the checkpoint snapshot reference is not accepted")
+        snapshot = candidate_snapshots.decode_candidate_snapshot(read_reference(work_root, reference))
+    except (ArtifactError, ValueError) as error:
+        return _invalid(attempt_id, identity.key, str(error))
+    except WorkStoreError as error:
+        if error.retryable:
+            raise
+        return _invalid(attempt_id, identity.key, str(error))
+    if snapshot.candidate != package.candidate or snapshot.attempt_id != attempt_id or snapshot.item_id != item_id:
+        return _invalid(attempt_id, identity.key, "the checkpoint snapshot does not match its package")
+    return snapshot
+
+
 def _read_checkpoint_snapshot(
     work_root: Path,
     store: ports.WorkStore,
     item_id: WorkItemId,
+    state: str,
     attempt_id: AttemptId,
 ) -> IntegrationCandidate | IntegrationFailure:
     try:
         acceptance = store.read_latest_checkpoint_acceptance(attempt_id)
     except WorkStoreError as error:
+        if error.retryable:
+            raise
         return _invalid(attempt_id, "checkpoint acceptance", str(error))
     if acceptance is None:
         return _unavailable(
             item_id,
+            state,
             "the current attempt has no protected candidate and no checkpoint acceptance, or was closed directly",
         )
     if acceptance.package_reference is None:
-        return _unavailable(item_id, "the accepted checkpoint package has no candidate snapshot reference")
+        return _unavailable(item_id, state, "the accepted checkpoint package has no candidate snapshot reference")
     package_key = acceptance.package_reference.key
     try:
         package = work_briefs.decode_checkpoint_review_package(read_reference(work_root, acceptance.package_reference))
@@ -317,23 +354,12 @@ def _read_checkpoint_snapshot(
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return _invalid(attempt_id, package_key, package.message)
     if not isinstance(package, work_brief_models.CheckpointReviewPackageV3):
-        return _unavailable(item_id, "the accepted checkpoint package has no candidate snapshot reference")
-    identity = package.candidate_snapshot
-    try:
-        reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, identity.key, identity.revision)
-        if reference is None or reference.content_sha256 != identity.content_sha256:
-            return _invalid(attempt_id, identity.key, "the checkpoint snapshot reference is not accepted")
-        snapshot = candidate_snapshots.decode_candidate_snapshot(read_reference(work_root, reference))
-    except (ArtifactError, ValueError, WorkStoreError) as error:
-        return _invalid(attempt_id, identity.key, str(error))
-    if (
-        snapshot.candidate != package.candidate
-        or snapshot.attempt_id != str(attempt_id)
-        or snapshot.item_id != str(item_id)
-    ):
-        return _invalid(attempt_id, identity.key, "the checkpoint snapshot does not match its package")
+        return _unavailable(item_id, state, "the accepted checkpoint package has no candidate snapshot reference")
+    snapshot = _read_package_snapshot(work_root, store, item_id, attempt_id, package)
+    if isinstance(snapshot, IntegrationFailure):
+        return snapshot
     source = query_models.AcceptedCheckpointSource(
-        str(attempt_id), snapshot.candidate, _compared_from(snapshot), acceptance.checkpoint_id
+        attempt_id, snapshot.candidate, _compared_from(snapshot), acceptance.checkpoint_id
     )
     return IntegrationCandidate(source, snapshot.diff)
 
@@ -346,16 +372,17 @@ def read_integration_candidate(
     """Select the item's reviewed candidate and return its verified recorded diff with its source."""
 
     item_id = facts.work_item.work_item_id
+    state = facts.work_item.state.value
     selection = queries.select_integration_source(facts)
     match selection:
         case query_models.ProtectedReviewSelection(attempt_id=attempt_id):
-            return _read_attempt_snapshot(work_root, store, item_id, attempt_id, "protected-review")
+            return _read_attempt_snapshot(work_root, store, item_id, state, attempt_id, "protected-review")
         case query_models.AcceptedCheckpointSelection(attempt_id=attempt_id):
-            return _read_checkpoint_snapshot(work_root, store, item_id, attempt_id)
+            return _read_checkpoint_snapshot(work_root, store, item_id, state, attempt_id)
         case query_models.CompletionSelection(attempt_id=attempt_id):
-            return _read_attempt_snapshot(work_root, store, item_id, attempt_id, "completion")
+            return _read_attempt_snapshot(work_root, store, item_id, state, attempt_id, "completion")
         case query_models.IntegrationCandidateUnavailable(reason=reason):
-            return _unavailable(item_id, reason)
+            return _unavailable(item_id, state, reason)
         case _ as unreachable:
             assert_never(unreachable)
 

@@ -104,6 +104,17 @@ class TargetContentReadTest(unittest.TestCase):
             root.TargetContentPresent(self.changed), root.observe_target_content(self.project, "main", self.diff)
         )
 
+    def test_trailing_whitespace_with_error_configuration_still_reports_present(self) -> None:
+        self.git("config", "apply.whitespace", "error")
+        (self.project / "reviewed.txt").write_text("alpha\ngamma \n")
+        self.git("add", "reviewed.txt")
+        spaced = self.commit("Add trailing whitespace")
+        diff = subprocess.run(
+            ["git", "diff", "--binary", self.base, spaced], cwd=self.project, check=True, capture_output=True
+        ).stdout
+        self.assertIn(b"+gamma \n", diff)
+        self.assertEqual(root.TargetContentPresent(spaced), root.observe_target_content(self.project, "main", diff))
+
     def test_read_only_git_directory_is_left_unchanged_and_leaves_no_temporary_index(self) -> None:
         def snapshot() -> str:
             digest = hashlib.sha256()

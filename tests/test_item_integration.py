@@ -1,9 +1,12 @@
 """The item-status integration leaf reports whether a reviewed candidate's recorded change is in a named target."""
 
+import hashlib
 import os
 import subprocess
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.application import candidate_snapshots
@@ -13,6 +16,7 @@ from tests.native_support import call_advertised_tool
 from tests.support import JsonObject
 
 COMMIT_DATE = "2030-01-02T03:04:05Z"
+COMMIT_DATETIME = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 
 class ItemIntegrationTest(CheckpointPackageSupport):
@@ -162,3 +166,132 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         )
         self.assertEqual("ITEM_NOT_FOUND", missing["code"], missing)
         self.assertEqual("pinboard-mcp-item-status-result/v3", missing["schema"])
+
+    def commit_tree(self, project: Path, tree: str, parents: tuple[str, ...], message: str) -> str:
+        arguments = ["commit-tree", tree]
+        for parent in parents:
+            arguments.extend(["-p", parent])
+        return self.git(
+            project,
+            "-c",
+            "user.name=Pinboard Tests",
+            "-c",
+            "user.email=pinboard@example.invalid",
+            *arguments,
+            "-m",
+            message,
+            environment={"GIT_AUTHOR_DATE": COMMIT_DATE, "GIT_COMMITTER_DATE": COMMIT_DATE},
+        )
+
+    def commit_with_file(self, project: Path, parent: str, path: str, content: bytes) -> str:
+        """Commit one path onto parent in a private index, leaving the checkout untouched."""
+
+        blob = (
+            subprocess.run(
+                ["git", "hash-object", "-w", "--stdin"], cwd=project, input=content, check=True, capture_output=True
+            )
+            .stdout.decode()
+            .strip()
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {"GIT_INDEX_FILE": str(Path(directory) / "index")}
+            self.git(project, "read-tree", parent, environment=environment)
+            self.git(project, "update-index", "--add", "--cacheinfo", f"100644,{blob},{path}", environment=environment)
+            tree = self.git(project, "write-tree", environment=environment)
+        return self.commit_tree(project, tree, (parent,), f"Set {path}")
+
+    def changed_path(self, fixture: CheckpointFixture) -> str:
+        for line in self.snapshot_diff(fixture).decode(errors="replace").splitlines():
+            if line.startswith("diff --git a/"):
+                return line.split(" b/", 1)[1]
+        raise AssertionError("The recorded diff names no path.")
+
+    def transition(self, fixture: CheckpointFixture, action_id: str, payload: JsonObject) -> JsonObject:
+        result = self.transition_result(fixture, self.project_action(fixture, action_id), payload)
+        self.assertIn(result["status"], ("committed", "committed-with-warning"), result)
+        return result
+
+    def complete(self, fixture: CheckpointFixture, evidence: str) -> None:
+        fixture = self.terminalize_brief(fixture)
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        with patch("pinboard.mcp.mutation_operations.datetime") as clock:
+            clock.now.return_value = COMMIT_DATETIME
+            self.transition(
+                fixture,
+                "complete:work-a-1",
+                {
+                    "schema": "pinboard-reviewed-completion/v2",
+                    "candidate": fixture.candidate_revision,
+                    "evidence": evidence,
+                    "reviewer_task_id": "independent-reviewer",
+                    "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
+                    "review_sha256": hashlib.sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+                    "packages": [],
+                },
+            )
+
+    def test_merge_commit_containing_the_change_is_present(self) -> None:
+        fixture = self.checkpoint_fixture()
+        base = fixture.brief.base_revision
+        landed = self.land(fixture.project, "landed", base, self.snapshot_diff(fixture))
+        unrelated = self.commit_with_file(fixture.project, base, "unrelated.txt", b"other\n")
+        tree = self.git(fixture.project, "rev-parse", f"{landed}^{{tree}}")
+        merged = self.commit_tree(fixture.project, tree, (unrelated, landed), "Merge the change")
+        self.git(fixture.project, "update-ref", "refs/heads/merged", merged)
+        present = self.integration(fixture, "merged")
+        self.assertEqual("content-present", present["presence"], present)
+        self.assertEqual(merged, present["resolved_revision"])
+
+    def test_rebased_change_on_a_newer_base_is_present(self) -> None:
+        fixture = self.checkpoint_fixture()
+        base = fixture.brief.base_revision
+        newer = self.commit_with_file(fixture.project, base, "unrelated.txt", b"other\n")
+        self.land(fixture.project, "rebased", newer, self.snapshot_diff(fixture))
+        present = self.integration(fixture, "rebased")
+        self.assertEqual("content-present", present["presence"], present)
+
+    def test_later_non_overlapping_edit_keeps_the_change_present(self) -> None:
+        fixture = self.checkpoint_fixture()
+        landed = self.land(fixture.project, "landed-edit", fixture.brief.base_revision, self.snapshot_diff(fixture))
+        later = self.commit_with_file(fixture.project, landed, "unrelated.txt", b"other\n")
+        self.git(fixture.project, "update-ref", "refs/heads/later-edit", later)
+        self.assertEqual("content-present", self.integration(fixture, "later-edit")["presence"])
+
+    def test_later_overlapping_edit_reports_content_not_present(self) -> None:
+        fixture = self.checkpoint_fixture()
+        landed = self.land(fixture.project, "landed-overlap", fixture.brief.base_revision, self.snapshot_diff(fixture))
+        overwritten = self.commit_with_file(fixture.project, landed, self.changed_path(fixture), b"overwritten\n")
+        self.git(fixture.project, "update-ref", "refs/heads/overlapping", overwritten)
+        absent = self.integration(fixture, "overlapping")
+        self.assertEqual("content-not-present", absent["presence"], absent)
+        self.assertEqual(overwritten, absent["resolved_revision"])
+
+    def test_completed_item_checks_its_closing_candidate(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.complete(fixture, "Accepted and integrated by the maintainer.")
+        self.land(fixture.project, "completed", fixture.brief.base_revision, self.snapshot_diff(fixture))
+        present = self.integration(fixture, "completed")
+        self.assertEqual("content-present", present["presence"], present)
+        self.assertEqual("completion", self.source(present)["kind"])
+        self.assertEqual("work-a-1", self.source(present)["attempt_id"])
+
+    def test_returned_attempt_without_checkpoint_acceptance_names_its_state(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.transition(fixture, "return-for-correction:work-a-1", {"reason": "Revise the candidate."})
+        unavailable = self.integration(fixture, "main")
+        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", unavailable["code"], unavailable)
+        self.assertEqual("correct-input", unavailable["retry"])
+        self.assertIn("state 'active'", str(unavailable["message"]))
+
+    def test_altered_snapshot_bytes_are_invalid_evidence_not_a_generic_error(self) -> None:
+        fixture = self.checkpoint_fixture()
+        reference = next(
+            value
+            for value in fixture.store.validated_snapshot().artifact_references
+            if "-candidate-snapshot-" in value.key
+        )
+        (fixture.work / reference.selector).write_bytes(b"altered\n")
+        invalid = self.integration(fixture, "main")
+        self.assertEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", invalid["code"], invalid)
+        self.assertEqual("do-not-retry", invalid["retry"])
+        self.assertIn("pinboard validate", str(invalid["recovery"]))

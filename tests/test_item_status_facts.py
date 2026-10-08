@@ -3,9 +3,12 @@
 import contextlib
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
+import tempfile
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import assert_never
 from unittest.mock import patch
 
@@ -159,7 +162,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.assertEqual("recorded", recorded["status"], recorded)
         return recorded
 
-    def complete(self, fixture: CheckpointFixture, evidence: str) -> None:
+    def complete(self, fixture: CheckpointFixture, evidence: str, candidate: str | None = None) -> None:
         fixture = self.terminalize_brief(fixture)
         attempt_root = fixture.work / "attempts" / "work-a-1"
         with patch("pinboard.mcp.mutation_operations.datetime") as clock:
@@ -169,7 +172,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                 "complete:work-a-1",
                 {
                     "schema": "pinboard-reviewed-completion/v2",
-                    "candidate": fixture.candidate_revision,
+                    "candidate": fixture.candidate_revision if candidate is None else candidate,
                     "evidence": evidence,
                     "reviewer_task_id": "independent-reviewer",
                     "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
@@ -418,7 +421,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                     self.update_receipt(fixture, damaged_history, **columns)
 
                     status = self.item_leaf(fixture)
-                    self.assertEqual("pinboard-mcp-item-status-result/v2", status["schema"])
+                    self.assertEqual("pinboard-mcp-item-status-result/v3", status["schema"])
                     named = self.named_receipt(status, receipt)
                     self.assertEqual((AttemptId("work-a-1"), damaged_history), (named.attempt_id, named.history_id))
                     self.assertEqual(diagnosis, queries.damaged_receipt_diagnosis(receipt))
@@ -615,3 +618,320 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         fixture = self.checkpoint_fixture()
         with self.assertRaises(ToolError):
             call_native_tool(mcp_server.ITEM_STATUS_TOOL, {**self.roots(fixture), "item_id": "work-a"})
+
+    def integration_leaf(self, fixture: CheckpointFixture, target: str, item_id: str = "work-a") -> JsonObject:
+        return call_advertised_tool(
+            mcp_server.ITEM_STATUS_TOOL,
+            {"request": {**self.roots(fixture), "operation": "integration", "item_id": item_id, "target": target}},
+        )
+
+    def head(self, project: Path, revision: str = "HEAD") -> str:
+        return subprocess.run(
+            ["git", "rev-parse", revision], cwd=project, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    def commit_tracked_file(self, project: Path, parent: str, content: str, message: str) -> str:
+        """Commit one tracked-file content over a parent with fixed dates, leaving the checkout untouched."""
+
+        dates = {
+            "GIT_AUTHOR_NAME": "Pinboard Tests",
+            "GIT_AUTHOR_EMAIL": "pinboard@example.invalid",
+            "GIT_COMMITTER_NAME": "Pinboard Tests",
+            "GIT_COMMITTER_EMAIL": "pinboard@example.invalid",
+            "GIT_AUTHOR_DATE": "2030-01-05T00:00:00Z",
+            "GIT_COMMITTER_DATE": "2030-01-05T00:00:00Z",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {**os.environ, **dates, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+            subprocess.run(["git", "read-tree", parent], cwd=project, env=environment, check=True, capture_output=True)
+            blob = subprocess.run(
+                ["git", "hash-object", "-w", "--stdin"],
+                cwd=project,
+                input=content.encode(),
+                check=True,
+                capture_output=True,
+            ).stdout.decode()
+            subprocess.run(
+                ["git", "update-index", "--add", "--cacheinfo", f"100644,{blob.strip()},tracked.txt"],
+                cwd=project,
+                env=environment,
+                check=True,
+                capture_output=True,
+            )
+            tree = subprocess.run(
+                ["git", "write-tree"], cwd=project, env=environment, check=True, capture_output=True, text=True
+            ).stdout.strip()
+        return subprocess.run(
+            ["git", "commit-tree", tree, "-p", parent, "-m", message],
+            cwd=project,
+            env={**os.environ, **dates},
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def point(self, project: Path, ref: str, revision: str) -> None:
+        subprocess.run(["git", "update-ref", ref, revision], cwd=project, check=True, capture_output=True)
+
+    def test_integration_leaf_compares_a_protected_working_tree_candidate_by_content(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework the candidate.")
+        candidate = self.submit_candidate(fixture, "reviewed")
+        base = self.head(fixture.project)
+        source = {
+            "kind": "protected-review",
+            "attempt_id": "work-a-1",
+            "candidate_revision": candidate,
+            "compared_from_revision": base,
+        }
+        unchanged = self.integration_leaf(fixture, "codex/work-a")
+        self.assertEqual("pinboard-item-integration/v1", unchanged["schema"], unchanged)
+        self.assertEqual(
+            ("codex/work-a", base, "content-not-present", source),
+            (unchanged["target"], unchanged["resolved_revision"], unchanged["presence"], unchanged["source"]),
+        )
+
+        squashed = self.commit_tracked_file(fixture.project, base, "reviewed\n", "Squash the reviewed change.")
+        self.point(fixture.project, "refs/heads/release", squashed)
+        present = self.integration_leaf(fixture, "release")
+        self.assertEqual(
+            ("release", squashed, "content-present"),
+            (present["target"], present["resolved_revision"], present["presence"]),
+        )
+        self.assertEqual(source, present["source"])
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", squashed, "codex/work-a"], cwd=fixture.project, check=False
+        )
+        self.assertEqual(1, ancestry.returncode, "The squash commit must not be an ancestor of the target.")
+
+        self.point(fixture.project, "refs/remotes/origin/release", squashed)
+        remote = self.integration_leaf(fixture, "origin/release")
+        self.assertEqual(("origin/release", "content-present"), (remote["target"], remote["presence"]))
+
+        overlapping = self.commit_tracked_file(
+            fixture.project, squashed, "someone else\n", "Overwrite the reviewed line."
+        )
+        self.point(fixture.project, "refs/heads/drifted", overlapping)
+        drifted = self.integration_leaf(fixture, "drifted")
+        self.assertEqual("content-not-present", drifted["presence"])
+
+    def test_integration_leaf_names_each_rejection_with_its_facts_and_next_step(self) -> None:
+        fixture = self.checkpoint_fixture()
+        unresolved = self.integration_leaf(fixture, "no-such-ref")
+        self.assertEqual(
+            ("INTEGRATION_TARGET_UNRESOLVED", "correct-input", "unchanged", "pinboard-mcp-item-status-result/v3"),
+            (unresolved["code"], unresolved["retry"], unresolved["effect"], unresolved["schema"]),
+            unresolved,
+        )
+        self.assertEqual(
+            {"target": "no-such-ref", "project_root": str(fixture.project)},
+            {
+                str(self.json_object(value)["field"]): self.json_object(value)["value"]
+                for value in self.json_array(unresolved["observed"])
+            },
+        )
+        self.assertIn("fetch", str(unresolved["recovery"]))
+
+        unavailable = self.integration_leaf(fixture, "codex/work-a", item_id="work-c")
+        self.assertEqual(
+            ("INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input", "unchanged"),
+            (unavailable["code"], unavailable["retry"], unavailable["effect"]),
+            unavailable,
+        )
+        self.assertEqual("work-c", self.json_object(self.json_array(unavailable["observed"])[0])["value"])
+
+        missing = self.integration_leaf(fixture, "codex/work-a", item_id="never-created")
+        self.assertEqual("ITEM_NOT_FOUND", missing["code"], missing)
+        self.assertEqual(("unchanged", "correct-input"), (missing["effect"], missing["retry"]))
+
+        flag_like = call_native_tool(
+            mcp_server.ITEM_STATUS_TOOL,
+            {
+                "request": {
+                    **self.roots(fixture),
+                    "operation": "integration",
+                    "item_id": "work-a",
+                    "target": "--output=x",
+                }
+            },
+        )
+        self.assertEqual("ITEM_STATUS_INVALID", flag_like["code"], flag_like)
+
+    def test_integration_leaf_reports_altered_snapshot_bytes_as_invalid_evidence(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework the candidate.")
+        self.submit_candidate(fixture, "reviewed")
+        snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert snapshot is not None
+        path = fixture.work / snapshot.reference.selector
+        original = path.read_bytes()
+        path.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+        invalid = self.integration_leaf(fixture, "codex/work-a")
+        self.assertEqual(
+            ("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", "do-not-retry"), (invalid["code"], invalid["retry"])
+        )
+        self.assertEqual(
+            "work-a-1",
+            self.json_object(self.json_array(invalid["observed"])[0])["value"],
+        )
+
+    def test_integration_leaf_compares_an_accepted_checkpoint_candidate(self) -> None:
+        fixture = self.accepted_package_fixture()
+        base = self.head(fixture.project)
+        checkpoint = fixture.brief.checkpoint.checkpoint_id
+        status = self.integration_leaf(fixture, "codex/work-a")
+        self.assertEqual(
+            ("accepted-checkpoint", checkpoint, base),
+            (
+                self.json_object(status["source"])["kind"],
+                self.json_object(status["source"])["checkpoint_id"],
+                self.json_object(status["source"])["compared_from_revision"],
+            ),
+            status,
+        )
+        self.assertEqual("content-not-present", status["presence"])
+        accepted = self.commit_tracked_file(fixture.project, base, "candidate\n", "Integrate the accepted checkpoint.")
+        self.point(fixture.project, "refs/heads/integrated", accepted)
+        self.assertEqual("content-present", self.integration_leaf(fixture, "integrated")["presence"])
+
+    def test_integration_leaf_compares_a_protected_commit_candidate_through_each_integration_shape(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework the candidate.")
+        base = self.head(fixture.project)
+        (fixture.project / "tracked.txt").write_text("reviewed\n", encoding="utf-8")
+        candidate = self.commit_all(fixture.project, "Reviewed commit.")
+        lease = self.native_attempt_acquire(fixture, "worker-commit")
+        submission = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+        self.assertEqual("committed", self.transition_result(fixture, submission, {"candidate": candidate})["status"])
+        source = self.json_object(self.integration_leaf(fixture, "codex/work-a")["source"])
+        self.assertEqual(
+            ("protected-review", candidate, base),
+            (source["kind"], source["candidate_revision"], source["compared_from_revision"]),
+        )
+
+        self.assertEqual("content-present", self.integration_leaf(fixture, candidate)["presence"])
+        merged = self.commit_tracked_file(fixture.project, base, "reviewed\n", "Unrelated merge subject.")
+        merge = subprocess.run(
+            [
+                "git",
+                "commit-tree",
+                self.head(fixture.project, f"{merged}^{{tree}}"),
+                "-p",
+                candidate,
+                "-p",
+                merged,
+                "-m",
+                "Merge the review.",
+            ],
+            cwd=fixture.project,
+            env={**os.environ, "GIT_AUTHOR_DATE": "2030-01-06T00:00:00Z", "GIT_COMMITTER_DATE": "2030-01-06T00:00:00Z"},
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.point(fixture.project, "refs/heads/merged", merge)
+        self.assertEqual("content-present", self.integration_leaf(fixture, "merged")["presence"])
+        rebased = self.commit_tracked_file(fixture.project, base, "reviewed\n", "Rebase the reviewed change.")
+        self.point(fixture.project, "refs/heads/rebased", rebased)
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", candidate, "rebased"], cwd=fixture.project, check=False
+        )
+        self.assertEqual(1, ancestry.returncode, "A rebase merge must not contain the candidate as an ancestor.")
+        self.assertEqual("content-present", self.integration_leaf(fixture, "rebased")["presence"])
+
+    def test_integration_leaf_compares_a_completed_items_closing_candidate(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework the candidate.")
+        base = self.head(fixture.project)
+        (fixture.project / "tracked.txt").write_text("reviewed\n", encoding="utf-8")
+        candidate = self.commit_all(fixture.project, "Reviewed commit.")
+        lease = self.native_attempt_acquire(fixture, "worker-complete")
+        submission = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+        self.assertEqual("committed", self.transition_result(fixture, submission, {"candidate": candidate})["status"])
+        self.complete(fixture, "Accepted and integrated by the maintainer.", candidate=candidate)
+        status = self.item_leaf(fixture)
+        self.assertEqual("complete", self.json_object(status["closure"])["action"])
+        completed = self.integration_leaf(fixture, base)
+        self.assertEqual(
+            {
+                "kind": "completion",
+                "attempt_id": "work-a-1",
+                "candidate_revision": candidate,
+                "compared_from_revision": base,
+            },
+            completed["source"],
+        )
+        self.assertEqual("content-not-present", completed["presence"])
+        self.point(
+            fixture.project,
+            "refs/heads/released",
+            self.commit_tracked_file(fixture.project, base, "reviewed\n", "Release."),
+        )
+        self.assertEqual("content-present", self.integration_leaf(fixture, "released")["presence"])
+
+    def test_directly_closed_item_has_no_reviewed_candidate_to_integrate(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.close_prerequisite(fixture)
+        closed = self.integration_leaf(fixture, "codex/work-a", item_id="work-c")
+        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", closed["code"], closed)
+        self.assertIn("'close'", str(closed["message"]))
+
+    def test_integration_names_a_damaged_checkpoint_receipt(self) -> None:
+        fixture = self.accepted_package_fixture()
+        self.update_receipt(fixture, self.latest_history_id(fixture), outcome_json="not json")
+        damaged = self.integration_leaf(fixture, "codex/work-a")
+        self.assertEqual(
+            ("TRANSITION_RECEIPT_DAMAGED", "do-not-retry", "unchanged", "pinboard-mcp-item-status-result/v3"),
+            (damaged["code"], damaged["retry"], damaged["effect"], damaged["schema"]),
+            damaged,
+        )
+
+    def test_integration_rejects_a_project_root_outside_any_git_checkout(self) -> None:
+        fixture = self.checkpoint_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            outside = call_advertised_tool(
+                mcp_server.ITEM_STATUS_TOOL,
+                {
+                    "request": {
+                        "project_root": directory,
+                        "work_root": str(fixture.work),
+                        "operation": "integration",
+                        "item_id": "work-a",
+                        "target": "codex/work-a",
+                    }
+                },
+            )
+        self.assertEqual(
+            ("PROJECT_GIT_ROOT_UNAVAILABLE", "correct-input", "unchanged"),
+            (outside["code"], outside["retry"], outside["effect"]),
+            outside,
+        )
+        self.assertEqual(directory, self.json_object(self.json_array(outside["observed"])[0])["value"])
+
+    def test_integration_reads_the_checkpoint_index_for_the_latest_acceptance(self) -> None:
+        fixture = self.accepted_package_fixture()
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+            plan = connection.execute(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT history_id FROM transition_history
+                WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+                ORDER BY history_id DESC LIMIT 1
+                """,
+                ("work-a-1",),
+            ).fetchall()
+        self.assertIn("checkpoint_history_by_subject", " ".join(str(row[-1]) for row in plan), plan)
+
+    def test_integration_leaf_names_its_item_for_the_trace_override(self) -> None:
+        selected = mcp_common.select_capture_item(
+            Path("/unused"),
+            None,
+            {"request": {"operation": "integration", "item_id": "work-a", "target": "codex/work-a"}},
+        )
+        self.assertEqual("work-a", selected)
+
+    def test_attempt_inspection_runs_no_git_read_for_relations(self) -> None:
+        fixture = self.checkpoint_fixture()
+        with patch("pinboard.adapters.files.root.observe_target_presence", side_effect=AssertionError("no Git read")):
+            inspected = self.inspection(fixture)
+        self.assertEqual("ok", inspected["status"], inspected)

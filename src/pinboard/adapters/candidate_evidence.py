@@ -7,10 +7,13 @@ Post-mutation verification failures retain that actual effect and forbid replay.
 from pathlib import Path
 from typing import assert_never
 
+import msgspec
+
 from pinboard.adapters.files import candidate_compatibility, root
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, RootError
 from pinboard.application import candidate_snapshot_compatibility_models, candidate_snapshots, ports, query_models
+from pinboard.domain import work_models
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -97,6 +100,122 @@ def observe_candidate_lineage(
             f"Cannot reobserve the protected candidate checkout: {error}",
             None,
         )
+
+
+def _attempt_snapshot(
+    work_root: Path,
+    store: ports.WorkStore,
+    item: query_models.ItemStatusItemFacts,
+    attempt_id: AttemptId,
+    candidate_revision: str,
+) -> (
+    candidate_snapshots.CandidateSnapshot
+    | query_models.IntegrationCandidateUnavailable
+    | query_models.IntegrationEvidenceInvalid
+):
+    """Verify the snapshot retained for an attempt's protected or closing candidate."""
+
+    try:
+        context = store.read_candidate_snapshot_context(attempt_id)
+    except ports.WorkStoreError as error:
+        return query_models.IntegrationEvidenceInvalid(
+            attempt_id, f"candidate snapshot for {candidate_revision}", str(error)
+        )
+    if context is None:
+        return query_models.IntegrationCandidateUnavailable(
+            item.work_item_id,
+            item.state,
+            "The reviewed candidate predates accepted snapshot evidence, so its content cannot be compared.",
+        )
+    evidence = read_candidate_evidence_from_context(work_root, context, candidate_revision)
+    if isinstance(evidence, DecisionFailure):
+        return query_models.IntegrationEvidenceInvalid(
+            attempt_id, f"candidate snapshot for {candidate_revision}", evidence.message
+        )
+    return evidence.snapshot
+
+
+def _checkpoint_snapshot(
+    work_root: Path,
+    store: ports.WorkStore,
+    item: query_models.ItemStatusItemFacts,
+    selection: query_models.AcceptedCheckpointSource,
+) -> (
+    candidate_snapshots.CandidateSnapshot
+    | query_models.IntegrationCandidateUnavailable
+    | query_models.IntegrationEvidenceInvalid
+):
+    """Verify the accepted candidate snapshot that a checkpoint package names by its canonical key."""
+
+    key = f"{selection.attempt_id}-{selection.checkpoint_id}-candidate"
+    reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, key, 1)
+    if reference is None:
+        return query_models.IntegrationCandidateUnavailable(
+            item.work_item_id,
+            item.state,
+            f"Checkpoint '{selection.checkpoint_id}' has no accepted candidate snapshot reference.",
+        )
+    try:
+        encoded = read_reference(work_root, reference)
+        snapshot = candidate_snapshots.decode_candidate_snapshot(encoded)
+    except (ArtifactError, msgspec.DecodeError, ValueError) as error:
+        return query_models.IntegrationEvidenceInvalid(selection.attempt_id, key, str(error))
+    if snapshot.attempt_id != str(selection.attempt_id):
+        return query_models.IntegrationEvidenceInvalid(
+            selection.attempt_id, key, "The checkpoint candidate snapshot names another attempt."
+        )
+    return snapshot
+
+
+def observe_integration_target(
+    work_root: Path,
+    store: ports.WorkStore,
+    source_checkout: Path,
+    item: query_models.ItemStatusItemFacts,
+    selection: query_models.IntegrationSourceSelection,
+    target: str,
+) -> query_models.IntegrationOutcome:
+    """Compare one selected candidate's verified snapshot diff with a named target's current commit."""
+
+    match selection:
+        case query_models.ProtectedReviewSource() | query_models.CompletionSource():
+            snapshot = _attempt_snapshot(work_root, store, item, selection.attempt_id, selection.candidate_revision)
+        case query_models.AcceptedCheckpointSource():
+            snapshot = _checkpoint_snapshot(work_root, store, item, selection)
+        case _ as unreachable:
+            assert_never(unreachable)
+    if isinstance(snapshot, query_models.IntegrationCandidateUnavailable | query_models.IntegrationEvidenceInvalid):
+        return snapshot
+    try:
+        observed = root.observe_target_presence(source_checkout, target, snapshot.diff)
+    except RootError as error:
+        return query_models.IntegrationGitFailure(error.code.value, str(error))
+    presence: query_models.IntegrationPresence
+    match observed:
+        case root.UnresolvedTargetObservation():
+            return query_models.IntegrationTargetUnresolved(target)
+        case root.ResolvedTargetWithoutChange(revision=revision):
+            presence = query_models.IntegrationPresence.NO_CHANGE
+        case root.ResolvedTargetPresence(revision=revision, present=present):
+            presence = (
+                query_models.IntegrationPresence.CONTENT_PRESENT
+                if present
+                else query_models.IntegrationPresence.CONTENT_NOT_PRESENT
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    match snapshot:
+        case candidate_snapshots.CommitCandidateSnapshot() | candidate_snapshots.DeclaredCommitCandidateSnapshot():
+            compared_from = snapshot.accepted_base_revision
+        case (
+            candidate_snapshots.WorkingTreeCandidateSnapshot()
+            | candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot()
+            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
+        ):
+            compared_from = snapshot.preimage_revision
+        case _ as unreachable:
+            assert_never(unreachable)
+    return query_models.IntegrationObservation(selection, snapshot.candidate, compared_from, revision, presence)
 
 
 def restore_candidate(

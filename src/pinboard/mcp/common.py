@@ -45,7 +45,7 @@ def _item_status_failure(
     rendered = _details_json(details)
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v2",
+            "schema": "pinboard-mcp-item-status-result/v3",
             "status": "rejected",
             "code": code,
             "message": message,

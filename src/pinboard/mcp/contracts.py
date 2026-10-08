@@ -243,8 +243,22 @@ class ItemStatusBranchRequest(
     branch: action_models.NonEmptyLine
 
 
+type IntegrationTarget = Annotated[
+    str, msgspec.Meta(min_length=1, pattern=r"\A[^\-\r\n\u2028\u2029][^\r\n\u2028\u2029]*\z")
+]
+
+
+class ItemStatusIntegrationRequest(
+    msgspec.Struct, tag="integration", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+    target: IntegrationTarget
+
+
 class ItemStatusEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    request: ItemStatusItemRequest | ItemStatusBranchRequest
+    request: ItemStatusItemRequest | ItemStatusBranchRequest | ItemStatusIntegrationRequest
 
 
 class ProposalCreateRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1035,7 +1049,7 @@ class FailureMismatch(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class ItemStatusInvalid(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-item-status-result/v2"]
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
     status: Literal["rejected"]
     code: Literal["ITEM_STATUS_INVALID"]
     message: NonEmptyText
@@ -1048,7 +1062,7 @@ class ItemStatusInvalid(_UnchangedResult, msgspec.Struct, frozen=True, forbid_un
 
 
 class ItemStatusUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-item-status-result/v2"]
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
     status: Literal["rejected"]
     code: Literal["ITEM_NOT_FOUND", "ITEM_DEFINITION_INVALID"]
     message: NonEmptyText
@@ -1061,7 +1075,7 @@ class ItemStatusUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbi
 
 
 class ItemStatusInconsistent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-item-status-result/v2"]
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
     status: Literal["rejected"]
     code: Literal["ITEM_STATUS_INCONSISTENT"]
     message: NonEmptyText
@@ -1074,7 +1088,7 @@ class ItemStatusInconsistent(_UnchangedResult, msgspec.Struct, frozen=True, forb
 
 
 class BranchOwnerNotFound(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-item-status-result/v2"]
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
     status: Literal["rejected"]
     code: Literal["BRANCH_OWNER_NOT_FOUND"]
     message: NonEmptyText
@@ -1101,7 +1115,68 @@ class DamagedReceiptResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid
 
 
 class ItemStatusReceiptDamaged(DamagedReceiptResult, frozen=True):
-    schema: Literal["pinboard-mcp-item-status-result/v2"]
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
+
+
+class IntegrationTargetUnresolved(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
+    status: Literal["rejected"]
+    code: Literal["INTEGRATION_TARGET_UNRESOLVED"]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input"]
+    changed_surfaces: Empty
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=2)]
+    mismatches: Empty
+    recovery: NonEmptyText
+
+
+class IntegrationCandidateUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
+    status: Literal["rejected"]
+    code: Literal["INTEGRATION_CANDIDATE_UNAVAILABLE"]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input"]
+    changed_surfaces: Empty
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=3)]
+    mismatches: Empty
+    recovery: NonEmptyText
+
+
+class IntegrationCandidateEvidenceInvalid(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
+    status: Literal["rejected"]
+    code: Literal["INTEGRATION_CANDIDATE_EVIDENCE_INVALID"]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: Empty
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=2)]
+    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
+    recovery: NonEmptyText
+
+
+class IntegrationGitFailed(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
+    status: Literal["rejected"]
+    code: Literal[
+        "PROJECT_GIT_CHECKOUT_UNAVAILABLE",
+        "PROJECT_GIT_EXCLUDE_UNAVAILABLE",
+        "PROJECT_GIT_LAYOUT_UNSUPPORTED",
+        "PROJECT_GIT_ROOT_UNAVAILABLE",
+    ]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input"]
+    changed_surfaces: Empty
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=2)]
+    mismatches: Empty
+    recovery: NonEmptyText
 
 
 class OverviewRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2907,11 +2982,16 @@ BRIEF_REVIEW_RESULT_TYPES = (
 ITEM_STATUS_RESULT_TYPES = (
     query_models.ItemStatus,
     query_models.BranchOwners,
+    query_models.ItemIntegration,
     ItemStatusInvalid,
     ItemStatusUnavailable,
     ItemStatusInconsistent,
     BranchOwnerNotFound,
     ItemStatusReceiptDamaged,
+    IntegrationTargetUnresolved,
+    IntegrationCandidateUnavailable,
+    IntegrationCandidateEvidenceInvalid,
+    IntegrationGitFailed,
     ExecutorBusyResult,
 )
 OVERVIEW_RESULT_TYPES = (query_models.WorkOverview, OverviewRejected, ExecutorBusyResult)

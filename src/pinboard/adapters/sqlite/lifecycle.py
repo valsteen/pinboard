@@ -14,6 +14,7 @@ from typing import NoReturn, assert_never
 
 import msgspec
 
+from pinboard.adapters.sqlite.artifacts import read_artifact_reference_by_id
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import queries, query_models, released_v6_compatibility, stored_state
@@ -573,13 +574,14 @@ def read_item_definition(connection: sqlite3.Connection, item_id: WorkItemId) ->
     )
 
 
-def read_item_status(
-    connection: sqlite3.Connection, item_id: WorkItemId
-) -> query_models.ItemStatusLifecycleFacts | None:
+def _read_project_revision(connection: sqlite3.Connection) -> int:
     project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
     if project_revision_row is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
-    project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
+    return decode_row(project_revision_row, _ProjectRevisionRow).revision
+
+
+def _read_status_item(connection: sqlite3.Connection, item_id: WorkItemId) -> query_models.ItemStatusItemFacts | None:
     item_row = connection.execute(
         """
         SELECT item_id AS work_item_id, state, timing, outcome_evidence, next_action, source, notes, queue_position,
@@ -589,9 +591,16 @@ def read_item_status(
         """,
         (item_id,),
     ).fetchone()
-    if item_row is None:
+    return None if item_row is None else decode_row(item_row, query_models.ItemStatusItemFacts)
+
+
+def read_item_status(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> query_models.ItemStatusLifecycleFacts | None:
+    project_revision = _read_project_revision(connection)
+    item = _read_status_item(connection, item_id)
+    if item is None:
         return None
-    item = decode_row(item_row, query_models.ItemStatusItemFacts)
     definition_row = connection.execute(
         """
         SELECT item_id, definition_revision AS revision, definition_digest AS digest,
@@ -643,6 +652,75 @@ def read_item_status(
         None if definition is None else definition.definition.title,
         attempts,
         closure,
+    )
+
+
+class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    branch: str
+    candidate_revision: str | None
+
+
+def read_integration_source(
+    connection: sqlite3.Connection,
+    item_id: WorkItemId,
+) -> query_models.IntegrationSourceFacts | None:
+    """Read the named item, its current attempt, its closure, and its latest checkpoint acceptance only.
+
+    The review-verdict walk, pause reasons, and retained attempts are not read here.
+    The checkpoint lookup uses the partial index over checkpoint-acceptance receipts.
+    """
+
+    project_revision = _read_project_revision(connection)
+    item = _read_status_item(connection, item_id)
+    if item is None:
+        return None
+    if stored_state.live_work_state(item.state) is None:
+        return query_models.IntegrationSourceFacts(
+            project_revision,
+            item,
+            None,
+            _read_item_closure(connection, item.work_item_id, item.subject_revision),
+            None,
+            None,
+        )
+    attempt_row = connection.execute(
+        """
+        SELECT attempt_id, state, branch, candidate_revision
+        FROM attempts INDEXED BY one_live_attempt_per_item
+        WHERE item_id = ? AND state != 'done'
+        """,
+        (item_id,),
+    ).fetchone()
+    if attempt_row is None:
+        return query_models.IntegrationSourceFacts(project_revision, item, None, None, None, None)
+    selected = decode_row(attempt_row, _IntegrationAttemptRow)
+    receipt_row = connection.execute(
+        f"""
+        SELECT {_CONSUMED_RECEIPT_COLUMNS}
+        FROM transition_history
+        WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+        ORDER BY history_id DESC
+        LIMIT 1
+        """,
+        (selected.attempt_id,),
+    ).fetchone()
+    checkpoint_receipt = None if receipt_row is None else _consumed_receipt(receipt_row)
+    package_reference = (
+        None
+        if checkpoint_receipt is None or checkpoint_receipt.artifact_ref_id is None
+        else read_artifact_reference_by_id(connection, checkpoint_receipt.artifact_ref_id)
+    )
+    return query_models.IntegrationSourceFacts(
+        project_revision,
+        item,
+        query_models.IntegrationAttemptFacts(
+            selected.attempt_id, selected.state, selected.branch, selected.candidate_revision
+        ),
+        None,
+        checkpoint_receipt,
+        package_reference,
     )
 
 

@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -377,6 +379,101 @@ def restore_commit_candidate(
             "Candidate restoration changed the checkout but did not produce the exact clean commit.",
         )
     return CandidateRestoreSuccess(True, candidate)
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedTargetObservation:
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedTargetWithoutChange:
+    revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedTargetPresence:
+    revision: str
+    present: bool
+
+
+type TargetPresenceObservation = UnresolvedTargetObservation | ResolvedTargetWithoutChange | ResolvedTargetPresence
+
+
+def observe_target_presence(cwd: Path, target: str, diff: bytes) -> TargetPresenceObservation:
+    """Reverse-check one reviewed diff against a named local target's committed tree without writing Git state.
+
+    The target is resolved only from the local repository. The diff is applied to a
+    temporary index that holds the target tree, so the real index, refs, objects, and
+    working tree stay untouched. An empty diff needs no index and reports no change.
+    """
+
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if resolved.returncode == 1:
+        return UnresolvedTargetObservation(target)
+    if resolved.returncode != 0:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            resolved.stderr.strip() or f"Cannot resolve integration target '{target}' at '{cwd}'.",
+        )
+    revision = resolved.stdout.strip()
+    if not diff:
+        return ResolvedTargetWithoutChange(revision)
+    try:
+        directory = tempfile.TemporaryDirectory(prefix="pinboard-integration-")
+    except OSError as error:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            f"Cannot create a temporary index directory for integration observation: {error}",
+        ) from error
+    with directory:
+        environment = {**os.environ, "GIT_INDEX_FILE": str(Path(directory.name) / "index")}
+        loaded = subprocess.run(
+            ["git", "read-tree", revision],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+        if loaded.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                loaded.stderr.decode(errors="replace").strip() or f"Cannot read the tree of '{revision}'.",
+            )
+        applied = subprocess.run(
+            [
+                "git",
+                "-c",
+                "apply.whitespace=nowarn",
+                "-c",
+                "core.splitIndex=false",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "--whitespace=nowarn",
+                "-",
+            ],
+            cwd=cwd,
+            env=environment,
+            input=diff,
+            capture_output=True,
+            check=False,
+        )
+    if applied.returncode == 1:
+        return ResolvedTargetPresence(revision, present=False)
+    if applied.returncode != 0:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            applied.stderr.decode(errors="replace").strip() or f"Cannot check the candidate against '{revision}'.",
+        )
+    return ResolvedTargetPresence(revision, present=True)
 
 
 def resolve_shared_repository_root(cwd: Path) -> Path:

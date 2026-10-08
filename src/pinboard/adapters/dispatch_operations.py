@@ -635,35 +635,54 @@ def _validate_correction_history(
 ) -> DispatchFailure | None:
     facts = store.read_review_job_context(attempt_id, None, correction_history_id, None, None)
     receipt = None if facts is None else facts.correction_receipt
-    if receipt is None:
+    if receipt is None or facts is None or not isinstance(facts.attempt, query_models.NonterminalAttemptContextFacts):
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
             "Selected correction history does not match this attempt's review return.",
             None,
         )
     if str(receipt.project_revision) != subject_revision:
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
-            "Selected correction history is not the attempt's current correction round.",
-            FailureDetails(
-                observed=(
-                    FailureFact("selected_correction_history_id", correction_history_id),
-                    FailureFact("selected_correction_project_revision", receipt.project_revision),
-                    FailureFact("current_attempt_subject_revision", subject_revision),
-                ),
-                mismatches=(
-                    FailureMismatch(
-                        "correction_project_revision",
-                        subject_revision,
-                        receipt.project_revision,
-                    ),
-                ),
-                retry=RetryDisposition.CORRECT_INPUT,
-                effect=EffectDisposition.UNCHANGED,
-                changed_surfaces=(),
-                alternatives=(),
-            ),
+        status = store.read_item_status(facts.attempt.work_item_id)
+        current_event = (
+            None
+            if status is None
+            else next((value.review_event for value in status.attempts if value.attempt_id == attempt_id), None)
         )
+        if (
+            current_event is None
+            or current_event.action_kind != decision_models.ActionKind.RETURN_FOR_CORRECTION
+            or current_event.receipt.history_id != correction_history_id
+            or current_event.rebound_since
+        ):
+            return DispatchFailure(
+                DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
+                "Selected correction history is not the attempt's current correction round.",
+                FailureDetails(
+                    observed=(
+                        FailureFact("selected_correction_history_id", correction_history_id),
+                        FailureFact("selected_correction_project_revision", receipt.project_revision),
+                        FailureFact("current_attempt_subject_revision", subject_revision),
+                        FailureFact(
+                            "current_review_history_id",
+                            None if current_event is None else current_event.receipt.history_id,
+                        ),
+                        FailureFact(
+                            "rebound_since_return", None if current_event is None else current_event.rebound_since
+                        ),
+                    ),
+                    mismatches=(
+                        FailureMismatch(
+                            "correction_project_revision",
+                            subject_revision,
+                            receipt.project_revision,
+                        ),
+                    ),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
     outcome = checkpoint_packages.decode_correction_outcome(receipt, attempt_id)
     if isinstance(outcome, DecisionFailure):
         return DispatchFailure(

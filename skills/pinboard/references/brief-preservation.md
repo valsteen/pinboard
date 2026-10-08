@@ -129,6 +129,8 @@ Canonical encoding uses the application JSON codec with sorted object keys. The 
 
 For initial dispatch, prepare strict `pinboard-work-brief-review/v3` JSON with `attempt_id`, stable `checkpoint_id`, `accepted_brief_sha256`, `checkpoint_sha256`, `reviewed_authority_set_sha256`, independent `reviewer_task_id`, `status: complete`, `verdict: ready`, and one coverage result per brief coverage record. `accepted_brief_sha256` is SHA-256 of the complete canonical accepted brief bytes, so checkout selection and obligation correspondence are part of the reviewed identity. Each result repeats the exact `authority_id`, `family`, and tagged owner, records `verdict: covered`, and states the concrete `counterexample_result`. Ready-review v2 is retained only for exact historical brief v2 evidence and cannot authorize a current brief.
 
+For all three correction review forms below, `assessment` is a nonempty JSON string containing the independent reviewer's prose assessment of the complete accepted starting candidate and proposed correction.
+
 For a returned candidate, read `pinboard_correction_context` before implementation changes the checkout. Its `reuse_eligible` and `reuse_blockers` report whether the accepted brief, every reviewed source, and the exact accepted ready review still support coverage reuse. The read is advisory; dispatch checks those facts again. When reuse is eligible, prepare strict `pinboard-correction-source-review/v2` JSON with the exact `accepted_brief_sha256`, an independent `reviewer_task_id`, the accepted `starting_candidate`, the canonical `correction_input`, and a fresh `assessment` of that candidate and reason. The v2 record reuses only unchanged ready coverage, never the earlier candidate assessment.
 
 When reuse is blocked, prepare strict `pinboard-correction-source-review/v1` JSON with a complete new contract review. Its required fields are:
@@ -137,6 +139,8 @@ When reuse is blocked, prepare strict `pinboard-correction-source-review/v1` JSO
 - `starting_candidate`: the caller-selected accepted portable candidate snapshot identity, with `role: candidate`, `kind: evidence`, `key`, `revision`, `selector`, `content_sha256`, and `size_bytes`;
 - `correction_input`: the exact canonical `return-for-correction/v1` reason input;
 - `assessment`: the independent reviewer's concrete assessment of that complete starting candidate and proposed correction.
+
+The local counterpart, `pinboard-local-correction-source-review/v1`, uses the same fields as the v2 correction review above, bound to the exact accepted local brief and an independent reviewer.
 
 When replacement of the accepted brief supersedes an outstanding correction, first follow the coordination skill's [replacement-brief review recovery](review-and-disposition.md#coordinate-review-responsibility-and-checkout-use). Historical return selection for review is not current correction-dispatch authority.
 

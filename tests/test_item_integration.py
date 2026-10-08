@@ -737,15 +737,15 @@ class ItemIntegrationTest(CheckpointPackageSupport):
                 FROM transition_history WHERE outcome_schema = 'checkpoint-acceptance/v2' LIMIT 1
                 """
             )
-            connection.execute(
-                """
-                INSERT INTO artifact_refs (artifact_key, artifact_revision, kind, relative_path, content_sha256,
-                    size_bytes, accepted_revision, created_at)
-                VALUES ('work-b-1-unrelated-evidence', 1, 'evidence', 'artifacts/evidence/work-b-1-unrelated/1.txt',
-                    ?, 1, 1, '2030-01-02T03:04:05+00:00')
-                """,
-                (hashlib.sha256(b"x").hexdigest(),),
-            )
+            for key in ("work-b-1-unrelated-evidence", "work-b-1-other-checkpoint-review-package"):
+                connection.execute(
+                    """
+                    INSERT INTO artifact_refs (artifact_key, artifact_revision, kind, relative_path, content_sha256,
+                        size_bytes, accepted_revision, created_at)
+                    VALUES (?, 1, 'evidence', ?, ?, 1, 1, '2030-01-02T03:04:05+00:00')
+                    """,
+                    (key, f"artifacts/evidence/{key}/1.txt", hashlib.sha256(b"x").hexdigest()),
+                )
             connection.commit()
         finally:
             connection.close()
@@ -756,6 +756,7 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         for sql in selects:
             self.assertNotIn("work-b", sql)
             self.assertNotIn("unrelated-evidence", sql)
+            self.assertNotIn("other-checkpoint-review-package", sql)
         self.assertFalse([detail for detail in plans if detail.startswith("SCAN")], plans)
 
     def test_overview_item_leaf_and_actions_issue_no_integration_reads(self) -> None:

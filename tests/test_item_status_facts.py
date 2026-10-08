@@ -17,6 +17,7 @@ import msgspec
 from mcp.server.mcpserver.exceptions import ToolError
 from msgspec.structs import replace as replace_struct
 
+from pinboard.adapters import candidate_evidence
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
@@ -951,6 +952,34 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.rebind(accepted, accepted.brief.branch, 2)
         self.assertEqual(("accepted-checkpoint", checkpoint), checkpoint_source())
 
+    def test_a_reflog_selector_beyond_its_log_is_an_unresolved_target(self) -> None:
+        fixture = self.checkpoint_fixture()
+        unresolved = self.integration_leaf(fixture, "HEAD@{99999}")
+        self.assertEqual(
+            ("INTEGRATION_TARGET_UNRESOLVED", "correct-input", "unchanged"),
+            (unresolved["code"], unresolved["retry"], unresolved["effect"]),
+            unresolved,
+        )
+
+    def test_storage_busy_propagates_from_the_composition_as_a_retryable_error(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework the candidate.")
+        self.submit_candidate(fixture, "reviewed")
+        store = SQLiteWorkStore(fixture.work / "state.sqlite3")
+        facts = store.read_integration_source(WorkItemId("work-a"))
+        assert facts is not None
+        selection = queries.select_integration_source(facts)
+        assert isinstance(selection, query_models.ProtectedReviewSource)
+        busy = StorageError(StorageErrorCode.BUSY, "The ledger is busy.", retryable=True)
+        with (
+            patch.object(SQLiteWorkStore, "read_candidate_snapshot_context", side_effect=busy),
+            self.assertRaises(StorageError) as raised,
+        ):
+            candidate_evidence.observe_integration_target(
+                fixture.work, store, fixture.project, facts.work_item, selection, "codex/work-a"
+            )
+        self.assertEqual((StorageErrorCode.BUSY, True), (raised.exception.code, raised.exception.retryable))
+
     def test_integration_neither_runs_the_verdict_walk_nor_reads_unrelated_attempts(self) -> None:
         fixture = self.accepted_package_fixture()
         checkpoint = fixture.brief.checkpoint.checkpoint_id
@@ -979,11 +1008,21 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                 "WHERE subject_id = 'work-a-1' AND outcome_schema = 'checkpoint-acceptance/v2' "
                 "ORDER BY history_id DESC LIMIT 1"
             )
+            for key in ("work-b-kept-unrelated-candidate", "work-b-kept-unrelated-review-package"):
+                connection.execute(
+                    "INSERT INTO artifact_refs (artifact_key, artifact_revision, kind, relative_path, content_sha256, "
+                    "size_bytes, accepted_revision, created_at) VALUES (?, 1, 'evidence', ?, ?, 0, 0, "
+                    "'2030-01-05T00:00:00+00:00')",
+                    (key, f"artifacts/evidence/{key}/1.json", "0" * 64),
+                )
             unrelated = connection.execute(
                 "SELECT COUNT(*) FROM transition_history WHERE subject_id = 'work-b-kept' "
                 "AND outcome_schema = 'checkpoint-acceptance/v2'"
             ).fetchone()[0]
-        self.assertEqual(1, unrelated)
+            unrelated_artifacts = connection.execute(
+                "SELECT COUNT(*) FROM artifact_refs WHERE artifact_key LIKE 'work-b-kept-%'"
+            ).fetchone()[0]
+        self.assertEqual((1, 2), (unrelated, unrelated_artifacts))
         real_reference = SQLiteWorkStore.read_artifact_reference
         real_snapshot = SQLiteWorkStore.read_candidate_snapshot_context
 

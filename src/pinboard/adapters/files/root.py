@@ -414,15 +414,16 @@ def observe_target_presence(cwd: Path, target: str, diff: bytes) -> TargetPresen
     working tree stay untouched. An empty diff needs no index and reports no change.
     """
 
-    # Exit status 1 names an unknown revision; every other failure is a Git read failure.
-    resolved = _git_read(cwd, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{target}^{{commit}}")
-    if resolved.returncode == 1:
-        return UnresolvedTargetObservation(target)
-    if resolved.returncode != 0:
+    repository = _git_read(cwd, "rev-parse", "--git-dir")
+    if repository.returncode != 0:
         raise RootError(
             RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
-            resolved.stderr.strip() or f"Cannot resolve integration target '{target}' at '{cwd}'.",
+            repository.stderr.strip() or f"Cannot read the Git repository at '{cwd}'.",
         )
+    # Any failure to name a commit, including a reflog selector beyond its log, leaves the target unresolved.
+    resolved = _git_read(cwd, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{target}^{{commit}}")
+    if resolved.returncode != 0:
+        return UnresolvedTargetObservation(target)
     revision = resolved.stdout.strip()
     if not diff:
         return ResolvedTargetWithoutChange(revision)

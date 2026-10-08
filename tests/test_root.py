@@ -355,6 +355,12 @@ class TargetPresenceTest(unittest.TestCase):
             observe_target_presence(self.repository, trailing, trailing_diff),
         )
 
+    def test_reflog_selector_beyond_its_log_is_an_unresolved_target(self) -> None:
+        self.assertEqual(
+            UnresolvedTargetObservation("HEAD@{99999}"),
+            observe_target_presence(self.repository, "HEAD@{99999}", self.diff),
+        )
+
     def test_repository_ignore_whitespace_configuration_does_not_change_the_verdict(self) -> None:
         self.git("config", "apply.ignoreWhitespace", "change")
         indented = self.commit(

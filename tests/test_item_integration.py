@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.application import candidate_snapshots
+from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_advertised_tool
@@ -295,3 +296,42 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.assertEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", invalid["code"], invalid)
         self.assertEqual("do-not-retry", invalid["retry"])
         self.assertIn("pinboard validate", str(invalid["recovery"]))
+
+    def test_directly_closed_item_names_the_missing_closing_candidate(self) -> None:
+        fixture = self.checkpoint_fixture()
+        closed, stdout, stderr = self.run_cli(
+            *fixture.common,
+            "close",
+            "work-c",
+            "--outcome",
+            "done",
+            "--reason",
+            "The prerequisite is satisfied.",
+            "--task-id",
+            "review-owner",
+            "--host-id",
+            "local",
+        )
+        self.assertEqual(0, closed, f"{stdout}\n{stderr}")
+        unavailable = self.integration(fixture, "main", item_id="work-c")
+        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", unavailable["code"], unavailable)
+        self.assertIn("state 'done'", str(unavailable["message"]))
+        self.assertIn("closed without a completion", str(unavailable["message"]))
+
+    def test_integration_envelope_selects_its_item_for_trace_capture(self) -> None:
+        """Automatic trace capture applies the named item's override, as it does for the item leaf."""
+
+        selected = mcp_common.select_capture_item(
+            Path(),
+            None,
+            {
+                "request": {
+                    "project_root": "/project",
+                    "work_root": "/project/.pinboard",
+                    "operation": "integration",
+                    "item_id": "work-a",
+                    "target": "main",
+                }
+            },
+        )
+        self.assertEqual("work-a", selected)

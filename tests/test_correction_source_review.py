@@ -158,6 +158,119 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         }
         return selected
 
+    def fixed_native_time(self) -> None:
+        for module in (
+            "pinboard.mcp.mutation_operations",
+            "pinboard.mcp.read_operations",
+            "pinboard.mcp.job_operations",
+            "tests.checkpoint_support",
+        ):
+            clock = self.enterContext(patch(f"{module}.datetime", wraps=datetime))
+            clock.now.return_value = SQLITE_NOW
+
+    def pause_and_resume(self, fixture: CheckpointFixture, rounds: int) -> CheckpointFixture:
+        action = self.project_action(fixture, "close:work-c")
+        closed = call_native_tool(
+            server.CLOSE_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "receipt": {"action_id": action["action_id"], "subject_revision": action["subject_revision"]},
+                "payload": {
+                    "outcome": "done",
+                    "reason": "The prerequisite is satisfied.",
+                    "human_decision": "Close the satisfied prerequisite.",
+                },
+                "actor_task_id": "review-owner",
+                "actor_host_id": "local",
+            },
+        )
+        self.assertEqual("committed", closed["status"], closed)
+        for _ in range(rounds):
+            paused = self.transition_result(
+                fixture, self.project_action(fixture, "pause:work-a-1"), {"reason": "Wait for the maintainer."}
+            )
+            self.assertEqual("committed", paused["status"], paused)
+            resumed = self.transition_result(fixture, self.project_action(fixture, "resume:work-a"), {})
+            self.assertEqual("committed", resumed["status"], resumed)
+        return dataclasses.replace(fixture, store=SQLiteWorkStore(fixture.work / "state.sqlite3"))
+
+    def test_native_correction_survives_same_brief_pause_resume_with_fresh_dispatch_receipt(self) -> None:
+        self.fixed_native_time()
+        for rounds, reuse in ((1, False), (3, False), (1, True), (3, True)):
+            with self.subTest(rounds=rounds, reuse=reuse):
+                fixture = self.correction_fixture()
+                history_id, choice = self.submit_and_return(fixture, "paused-test", committed=True)
+                if reuse:
+                    choice = self.reuse_choice(fixture, choice)
+                fixture = self.pause_and_resume(fixture, rounds)
+                before = fixture.store.validated_snapshot()
+                context = call_native_tool(
+                    server.CORRECTION_CONTEXT_TOOL,
+                    {
+                        "project_root": str(fixture.project),
+                        "work_root": str(fixture.work),
+                        "attempt_id": "work-a-1",
+                        "correction_history_id": history_id,
+                    },
+                )
+                self.assertEqual("ready", context["status"], context)
+                self.assertEqual(history_id, context["correction_history_id"])
+                self.assertEqual("Repair the test-only candidate.", context["correction_reason"])
+                self.assertEqual(before, fixture.store.validated_snapshot())
+                stale = self.dispatch_native(fixture, choice)
+                self.assertEqual("STALE_ACTION", stale["code"], stale)
+                self.assertEqual(before, fixture.store.validated_snapshot())
+                action = self.project_action(fixture, "dispatch:work-a-1")
+                choice["receipt"] = {
+                    "action_id": action["action_id"],
+                    "subject_revision": action["subject_revision"],
+                }
+                dispatched = call_native_tool(
+                    server.DISPATCH_TOOL,
+                    {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
+                )
+                self.assertEqual("ready", dispatched["status"], dispatched)
+
+    def test_accepted_continuation_supersedes_paused_correction_return(self) -> None:
+        self.fixed_native_time()
+        fixture = self.correction_fixture()
+        history_id, choice = self.submit_and_return(fixture, "returned-test", committed=True)
+        fixture = self.pause_and_resume(fixture, 1)
+        (fixture.project / "tests" / "test_only.py").write_text("assert 'corrected'\n", encoding="utf-8")
+        candidate = self.commit_all(fixture.project, "corrected candidate")
+        lease = self.native_attempt_acquire(fixture, "correction-worker")
+        submitted = self.transition_result(
+            fixture,
+            self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease),
+            {"candidate": candidate},
+        )
+        self.assertEqual("committed", submitted["status"], submitted)
+        self.record_commissioned_review(fixture, candidate, "independent-reviewer")
+        continued = self.transition_result(
+            fixture,
+            self.project_action(fixture, "accept-review-and-continue:work-a-1"),
+            {"candidate": candidate, "evidence": "Accepted; continue the attempt."},
+        )
+        self.assertEqual("committed", continued["status"], continued)
+        fixture = dataclasses.replace(fixture, store=SQLiteWorkStore(fixture.work / "state.sqlite3"))
+        before = fixture.store.validated_snapshot()
+        context = call_native_tool(
+            server.CORRECTION_CONTEXT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "correction_history_id": history_id,
+            },
+        )
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", context["code"], context)
+        action = self.project_action(fixture, "dispatch:work-a-1")
+        choice["receipt"] = {"action_id": action["action_id"], "subject_revision": action["subject_revision"]}
+        dispatched = self.dispatch_native(fixture, choice)
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", dispatched["code"], dispatched)
+        self.assertEqual(before, fixture.store.validated_snapshot())
+
     def test_reuse_correction_requires_fresh_independent_candidate_assessment(self) -> None:
         fixture = self.correction_fixture()
         history_id, full = self.submit_and_return(fixture, "reuse-review", committed=True)
@@ -276,6 +389,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         assert context is not None
         reason = "Submit a clean commit for repository disposition."
         history_id = self.return_for_correction(fixture, reason, "local")
+        fixture = self.pause_and_resume(fixture, 2)
         reference = context.reference
         review = work_brief_models.LocalCorrectionSourceReview(
             "pinboard-local-correction-source-review/v1",
@@ -758,6 +872,9 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         fixture = self.correction_fixture()
         first_history, first = self.submit_and_return(fixture, "first-test", committed=False)
         _, choice = self.submit_and_return(fixture, "second-test", committed=False)
+        fixture = self.pause_and_resume(fixture, 1)
+        action = self.project_action(fixture, "dispatch:work-a-1")
+        choice["receipt"] = {"action_id": action["action_id"], "subject_revision": action["subject_revision"]}
         changed_reason = deepcopy(choice)
         self.json_object(self.json_object(changed_reason["brief_review"])["correction_input"])["reason"] = "Wrong fix."
         changed_identity = deepcopy(choice)

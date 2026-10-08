@@ -252,7 +252,7 @@ class ItemStatusIntegrationRequest(
     target: str
 
     def __post_init__(self) -> None:
-        if not self.target or self.target.startswith("-") or "\n" in self.target or "\r" in self.target:
+        if not self.target or self.target.startswith("-") or any(character in self.target for character in "\r\n\x00"):
             raise ValueError("Integration target must be a nonempty single-line revision name not beginning with '-'.")
 
 

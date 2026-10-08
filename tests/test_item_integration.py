@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import sqlite3
 import subprocess
 import tempfile
 from datetime import UTC, datetime
@@ -335,3 +336,47 @@ class ItemIntegrationTest(CheckpointPackageSupport):
             },
         )
         self.assertEqual("work-a", selected)
+
+    def test_integration_leaf_reads_no_review_walk_or_pause_projection(self) -> None:
+        fixture = self.checkpoint_fixture()
+        landed = self.land(fixture.project, "focused", fixture.brief.base_revision, self.snapshot_diff(fixture))
+        self.assertEqual(landed, self.integration(fixture, "focused")["resolved_revision"])
+        with (
+            patch("pinboard.adapters.sqlite.lifecycle._read_review_event", side_effect=AssertionError("review walk")),
+            patch(
+                "pinboard.adapters.sqlite.lifecycle.read_recorded_pause_reasons",
+                side_effect=AssertionError("pause projection"),
+            ),
+        ):
+            present = self.integration(fixture, "focused")
+        self.assertEqual("content-present", present["presence"], present)
+
+    def test_attempt_inspection_runs_no_target_comparison(self) -> None:
+        fixture = self.checkpoint_fixture()
+        with patch("pinboard.adapters.files.root.observe_target_content", side_effect=AssertionError("git read")):
+            inspected = call_advertised_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                {**self.roots(fixture), "attempt_id": "work-a-1", "reconciliation": None},
+            )
+        self.assertEqual("ok", inspected["status"], inspected)
+
+    def test_damaged_checkpoint_outcome_is_named_as_a_damaged_receipt(self) -> None:
+        fixture = self.accepted_package_fixture()
+        connection = sqlite3.connect(fixture.work / "state.sqlite3")
+        try:
+            connection.execute(
+                "UPDATE transition_history SET outcome_json = ? WHERE outcome_schema = 'checkpoint-acceptance/v2'",
+                ('{"unexpected":true}',),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        damaged = self.integration(fixture, "main")
+        self.assertEqual("TRANSITION_RECEIPT_DAMAGED", damaged["code"], damaged)
+        self.assertEqual("pinboard-mcp-item-status-result/v3", damaged["schema"])
+        self.assertEqual("do-not-retry", damaged["retry"])
+
+    def test_nul_byte_in_target_is_an_invalid_request(self) -> None:
+        fixture = self.checkpoint_fixture()
+        invalid = self.integration(fixture, "bad\x00name")
+        self.assertEqual("ITEM_STATUS_INVALID", invalid["code"], invalid)

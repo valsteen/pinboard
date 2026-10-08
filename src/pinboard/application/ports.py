@@ -91,7 +91,9 @@ class WorkStore(Protocol):
 
     def read_latest_checkpoint_acceptance(
         self, attempt_id: AttemptId
-    ) -> query_models.CheckpointAcceptanceFacts | None: ...
+    ) -> query_models.CheckpointAcceptanceFacts | query_models.DamagedTransitionReceipt | None: ...
+
+    def read_integration_item(self, work_item_id: WorkItemId) -> query_models.IntegrationItemFacts | None: ...
 
     def read_review_job_context(
         self,

@@ -20,7 +20,6 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
-from pinboard.application.ports import WorkStoreError
 from pinboard.domain import work_models
 from pinboard.domain.errors import (
     ChangedSurface,
@@ -266,12 +265,7 @@ def _read_attempt_snapshot(
     attempt_id: AttemptId,
     kind: Literal["protected-review", "completion"],
 ) -> IntegrationCandidate | IntegrationFailure:
-    try:
-        context = store.read_candidate_snapshot_context(attempt_id)
-    except WorkStoreError as error:
-        if error.retryable:
-            raise
-        return _invalid(attempt_id, "candidate snapshot", str(error))
+    context = store.read_candidate_snapshot_context(attempt_id)
     if context is None:
         return _unavailable(item_id, state, "the attempt retains no accepted snapshot for its candidate")
     reference_key = context.reference.key
@@ -316,10 +310,6 @@ def _read_package_snapshot(
         snapshot = candidate_snapshots.decode_candidate_snapshot(read_reference(work_root, reference))
     except (ArtifactError, ValueError) as error:
         return _invalid(attempt_id, identity.key, str(error))
-    except WorkStoreError as error:
-        if error.retryable:
-            raise
-        return _invalid(attempt_id, identity.key, str(error))
     if snapshot.candidate != package.candidate or snapshot.attempt_id != attempt_id or snapshot.item_id != item_id:
         return _invalid(attempt_id, identity.key, "the checkpoint snapshot does not match its package")
     return snapshot
@@ -331,13 +321,10 @@ def _read_checkpoint_snapshot(
     item_id: WorkItemId,
     state: str,
     attempt_id: AttemptId,
-) -> IntegrationCandidate | IntegrationFailure:
-    try:
-        acceptance = store.read_latest_checkpoint_acceptance(attempt_id)
-    except WorkStoreError as error:
-        if error.retryable:
-            raise
-        return _invalid(attempt_id, "checkpoint acceptance", str(error))
+) -> IntegrationCandidate | IntegrationFailure | query_models.DamagedTransitionReceipt:
+    acceptance = store.read_latest_checkpoint_acceptance(attempt_id)
+    if isinstance(acceptance, query_models.DamagedTransitionReceipt):
+        return acceptance
     if acceptance is None:
         return _unavailable(
             item_id,
@@ -367,12 +354,12 @@ def _read_checkpoint_snapshot(
 def read_integration_candidate(
     work_root: Path,
     store: ports.WorkStore,
-    facts: query_models.ItemStatusFacts,
-) -> IntegrationCandidate | IntegrationFailure:
+    facts: query_models.IntegrationItemFacts,
+) -> IntegrationCandidate | IntegrationFailure | query_models.DamagedTransitionReceipt:
     """Select the item's reviewed candidate and return its verified recorded diff with its source."""
 
-    item_id = facts.work_item.work_item_id
-    state = facts.work_item.state.value
+    item_id = facts.work_item_id
+    state = facts.state.value
     selection = queries.select_integration_source(facts)
     match selection:
         case query_models.ProtectedReviewSelection(attempt_id=attempt_id):

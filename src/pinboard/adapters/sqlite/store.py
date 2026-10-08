@@ -47,6 +47,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
+    read_integration_item,
     read_item_status,
     read_parallel_preview_lifecycle,
     read_recorded_pause_reasons,
@@ -436,8 +437,12 @@ def _read_candidate_snapshot_context_facts(
 def _read_latest_checkpoint_acceptance(
     connection: sqlite3.Connection,
     attempt_id: AttemptId,
-) -> query_models.CheckpointAcceptanceFacts | None:
-    """Read the attempt's newest checkpoint acceptance through the subject-ordered partial index."""
+) -> query_models.CheckpointAcceptanceFacts | query_models.DamagedTransitionReceipt | None:
+    """Read the attempt's newest checkpoint acceptance through the subject-ordered partial index.
+
+    A consumed receipt whose current-format outcome does not decode is returned as a damaged receipt, so the
+    integration leaf names it instead of treating it as candidate evidence.
+    """
 
     row = connection.execute(
         """
@@ -459,9 +464,13 @@ def _read_latest_checkpoint_acceptance(
             bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True
         )
     except msgspec.DecodeError as error:
-        raise StorageError(
-            StorageErrorCode.INVALID_STATE, f"Checkpoint acceptance outcome is invalid: {error}"
-        ) from error
+        return query_models.DamagedTransitionReceipt(
+            attempt_id,
+            history_id,
+            receipt.committed_at,
+            decision_models.ActionKind.ACCEPT_CHECKPOINT,
+            f"The outcome does not decode as checkpoint-acceptance/v2: {error}",
+        )
     package_reference = (
         None if receipt.artifact_ref_id is None else read_artifact_reference_by_id(connection, receipt.artifact_ref_id)
     )
@@ -791,11 +800,21 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
-    def read_latest_checkpoint_acceptance(self, attempt_id: AttemptId) -> query_models.CheckpointAcceptanceFacts | None:
+    def read_latest_checkpoint_acceptance(
+        self, attempt_id: AttemptId
+    ) -> query_models.CheckpointAcceptanceFacts | query_models.DamagedTransitionReceipt | None:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
                 return _read_latest_checkpoint_acceptance(connection, attempt_id)
+        finally:
+            connection.close()
+
+    def read_integration_item(self, work_item_id: WorkItemId) -> query_models.IntegrationItemFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_integration_item(connection, work_item_id)
         finally:
             connection.close()
 

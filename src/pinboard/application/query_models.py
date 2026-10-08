@@ -950,6 +950,25 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 @dataclass(frozen=True, slots=True)
+class IntegrationAttemptFacts:
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationItemFacts:
+    """Focused item facts for integration selection: no review walk, pause projection, or preparation status."""
+
+    project_revision: int
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    has_definition: bool
+    attempt: IntegrationAttemptFacts | None
+    closure: ItemClosureFacts | None
+
+
+@dataclass(frozen=True, slots=True)
 class CheckpointAcceptanceFacts:
     """The latest checkpoint acceptance of one attempt and its linked checkpoint package reference."""
 

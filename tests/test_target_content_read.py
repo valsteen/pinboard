@@ -143,6 +143,31 @@ class TargetContentReadTest(unittest.TestCase):
         leftovers_after = {entry.name for entry in temporary.glob("pinboard-integration-*")}
         self.assertLessEqual(leftovers_after, leftovers_before)
 
+    def test_rename_and_binary_candidates_are_compared_by_content(self) -> None:
+        self.git("mv", "reviewed.txt", "renamed.txt")
+        renamed = self.commit("Rename the reviewed file")
+        renaming = subprocess.run(
+            ["git", "diff", "--binary", self.changed, renamed], cwd=self.project, check=True, capture_output=True
+        ).stdout
+        self.assertIn(b"rename from reviewed.txt", renaming)
+        self.assertEqual(
+            root.TargetContentPresent(renamed), root.observe_target_content(self.project, "main", renaming)
+        )
+        self.assertEqual(
+            root.TargetContentNotPresent(self.changed),
+            root.observe_target_content(self.project, self.changed, renaming),
+        )
+        (self.project / "blob.bin").write_bytes(b"\x00\x01binary\x02")
+        self.git("add", "blob.bin")
+        binary = self.commit("Add a binary file")
+        binary_diff = subprocess.run(
+            ["git", "diff", "--binary", renamed, binary], cwd=self.project, check=True, capture_output=True
+        ).stdout
+        self.assertIn(b"GIT binary patch", binary_diff)
+        self.assertEqual(
+            root.TargetContentPresent(binary), root.observe_target_content(self.project, "main", binary_diff)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

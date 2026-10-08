@@ -174,6 +174,12 @@ class _ItemStatusAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     subject_revision: int
 
 
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
 class _ClosureReceiptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_kind: str
     subject_id: HistorySubjectId
@@ -314,6 +320,49 @@ def _read_item_closure(
         ).fetchone()
         closing_attempt = None if attempt_row is None else decode_row(attempt_row, query_models.ClosingAttemptFacts)
     return query_models.ItemClosureFacts(action_kind, receipt.committed_at, closing_attempt)
+
+
+def read_integration_item(
+    connection: sqlite3.Connection,
+    item_id: WorkItemId,
+) -> query_models.IntegrationItemFacts | None:
+    """Read the item row, its live attempt by the live-attempt index, and a terminal closure receipt only."""
+
+    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_revision_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
+    item_row = connection.execute(
+        "SELECT item_id AS work_item_id, state, subject_revision FROM work_items WHERE item_id = ?",
+        (item_id,),
+    ).fetchone()
+    if item_row is None:
+        return None
+    item = decode_row(item_row, _IntegrationItemRow)
+    has_definition = (
+        connection.execute(
+            "SELECT 1 FROM work_item_definition_revisions WHERE item_id = ? LIMIT 1",
+            (item_id,),
+        ).fetchone()
+        is not None
+    )
+    attempt_row = connection.execute(
+        """
+        SELECT attempt_id, state, candidate_revision
+        FROM attempts INDEXED BY one_live_attempt_per_item
+        WHERE item_id = ? AND state != 'done'
+        """,
+        (item_id,),
+    ).fetchone()
+    attempt = None if attempt_row is None else decode_row(attempt_row, query_models.IntegrationAttemptFacts)
+    closure = (
+        _read_item_closure(connection, item.work_item_id, item.subject_revision)
+        if stored_state.live_work_state(item.state) is None
+        else None
+    )
+    return query_models.IntegrationItemFacts(
+        project_revision, item.work_item_id, item.state, has_definition, attempt, closure
+    )
 
 
 def read_branch_owners(connection: sqlite3.Connection, branch: str) -> query_models.BranchOwnersFacts:

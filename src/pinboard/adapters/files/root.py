@@ -128,14 +128,18 @@ def classify_checkout(cwd: Path) -> work_models.CheckoutSelection:
     )
 
 
-def _git_text(cwd: Path, *arguments: str) -> str:
-    result = subprocess.run(
+def _git_result(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["git", *arguments],
         cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
     )
+
+
+def _git_text(cwd: Path, *arguments: str) -> str:
+    result = _git_result(cwd, *arguments)
     value = result.stdout.strip()
     if result.returncode != 0 or not value:
         raise RootError(
@@ -411,24 +415,15 @@ type TargetContentObservation = (
 def observe_target_content(cwd: Path, target: str, diff: bytes) -> TargetContentObservation:
     """Reverse-apply a recorded diff to a target commit's tree in a private index.
 
-    The read fetches nothing and writes only a temporary index outside the repository, so it works with a
-    read-only .git. Its verdict is independent of the user's whitespace and split-index configuration.
+    The caller resolves the source checkout first, so a target that the validated checkout cannot resolve to
+    a commit is an unresolved target, whatever Git's exit status. The read fetches nothing and writes only a
+    temporary index outside the repository, so it works with a read-only .git. Its verdict is independent of
+    the user's whitespace and split-index configuration.
     """
 
-    resolved = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if resolved.returncode == 1:
+    resolved = _git_result(cwd, "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}")
+    if resolved.returncode != 0 or not resolved.stdout.strip():
         return TargetUnresolved(target)
-    if resolved.returncode != 0:
-        raise RootError(
-            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
-            resolved.stderr.strip() or f"Cannot resolve integration target '{target}' at '{cwd}'.",
-        )
     revision = resolved.stdout.strip()
     if not diff:
         return TargetContentUnchanged(revision)

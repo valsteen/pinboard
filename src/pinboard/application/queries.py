@@ -1166,6 +1166,10 @@ def select_integration_source(facts: query_models.IntegrationItemFacts) -> query
     """Choose which reviewed candidate an integration check compares, from focused item facts alone."""
 
     closure = facts.closure
+    if facts.state != stored_state.StoredWorkItemState.DONE and stored_state.live_work_state(facts.state) is None:
+        return query_models.IntegrationCandidateUnavailable(
+            f"the item is {facts.state.value}, and only a completed item names a closing candidate"
+        )
     if facts.state == stored_state.StoredWorkItemState.DONE:
         if (
             closure is not None

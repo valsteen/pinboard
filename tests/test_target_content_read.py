@@ -91,11 +91,11 @@ class TargetContentReadTest(unittest.TestCase):
             root.observe_target_content(self.project, "no-such-target", self.diff),
         )
 
-    def test_non_git_directory_is_a_root_error(self) -> None:
+    def test_non_git_directory_is_a_root_error_before_any_target_comparison(self) -> None:
         outside = Path(self._directory.name) / "outside"
         outside.mkdir()
         with self.assertRaises(RootError):
-            root.observe_target_content(outside, "main", self.diff)
+            root.resolve_source_checkout_root(outside)
 
     def test_whitespace_configuration_does_not_change_the_verdict(self) -> None:
         self.git("config", "apply.whitespace", "error")

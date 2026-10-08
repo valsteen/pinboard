@@ -436,3 +436,15 @@ class ItemIntegrationTest(CheckpointPackageSupport):
             )
         self.assertEqual("ATTEMPT_INSPECT_INVALID", inspected["code"], inspected)
         self.assertEqual([], inspected["changed_surfaces"])
+
+    def test_superseded_item_names_its_terminal_state(self) -> None:
+        fixture = self.checkpoint_fixture()
+        unavailable = self.integration(fixture, "main", item_id="work-b")
+        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", unavailable["code"], unavailable)
+        self.assertIn("state 'superseded'", str(unavailable["message"]))
+
+    def test_reflog_spelling_past_its_entries_is_an_unresolved_target(self) -> None:
+        fixture = self.checkpoint_fixture()
+        unresolved = self.integration(fixture, "HEAD@{99999}")
+        self.assertEqual("INTEGRATION_TARGET_UNRESOLVED", unresolved["code"], unresolved)
+        self.assertEqual("correct-input", unresolved["retry"])

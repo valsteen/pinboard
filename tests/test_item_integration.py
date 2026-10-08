@@ -16,7 +16,8 @@ from pinboard.adapters.files import contributor_traces
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.models import OpenMode
-from pinboard.application import candidate_snapshots, query_models
+from pinboard.application import candidate_snapshots, query_models, work_brief_models, work_briefs
+from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import execution, tool_names
@@ -841,3 +842,35 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", unavailable["code"], unavailable)
         self.assertIn("no candidate snapshot reference", str(unavailable["message"]))
         self.assertEqual("correct-input", unavailable["retry"])
+
+    def test_unreadable_checkpoint_package_is_invalid_evidence(self) -> None:
+        fixture = self.accepted_package_fixture()
+        path = fixture.work / fixture.package_reference.selector
+        path.chmod(0)
+        self.addCleanup(path.chmod, 0o600)
+        invalid = self.integration(fixture, "main")
+        self.assertEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", invalid["code"], invalid)
+        self.assertEqual("do-not-retry", invalid["retry"])
+        self.assertIn("pinboard validate", str(invalid["recovery"]))
+
+    def test_checkpoint_package_that_does_not_decode_is_invalid_evidence(self) -> None:
+        fixture = self.accepted_package_fixture()
+        self.replace_artifact_bytes(fixture, fixture.package_reference, b'{"not":"a package"}')
+        invalid = self.integration(fixture, "main")
+        self.assertEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", invalid["code"], invalid)
+        self.assertEqual(fixture.package_reference.key, self.observed_fields(invalid)["accepted_reference"], invalid)
+
+    def test_checkpoint_snapshot_that_no_longer_matches_its_package_is_invalid_evidence(self) -> None:
+        fixture = self.accepted_package_fixture()
+        package = work_briefs.decode_checkpoint_review_package(read_reference(fixture.work, fixture.package_reference))
+        assert isinstance(package, work_brief_models.CheckpointReviewPackageV3)
+        identity = package.candidate_snapshot
+        snapshot = fixture.store.read_artifact_reference(
+            work_models.ArtifactKind.EVIDENCE, identity.key, identity.revision
+        )
+        assert snapshot is not None
+        self.replace_artifact_bytes(fixture, snapshot, b"replaced snapshot\n")
+        invalid = self.integration(fixture, "main")
+        self.assertEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", invalid["code"], invalid)
+        self.assertEqual("do-not-retry", invalid["retry"])
+        self.assertIn("not accepted", str(invalid["message"]))

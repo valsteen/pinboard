@@ -175,6 +175,10 @@ class TargetContentReadTest(unittest.TestCase):
             root.TargetContentPresent(binary), root.observe_target_content(self.project, "main", binary_diff)
         )
 
+    def test_patch_that_git_cannot_parse_is_a_root_error_not_a_verdict(self) -> None:
+        with self.assertRaises(RootError):
+            root.observe_target_content(self.project, "main", b"not a patch at all\n")
+
 
 if __name__ == "__main__":
     unittest.main()

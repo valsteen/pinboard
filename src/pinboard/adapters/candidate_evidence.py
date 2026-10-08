@@ -242,7 +242,9 @@ def _read_attempt_snapshot(
 ) -> IntegrationCandidate | IntegrationCandidateRejection:
     context = store.read_candidate_snapshot_context(attempt_id)
     if context is None:
-        return CandidateUnavailable(item_id, state, "the attempt retains no accepted snapshot for its candidate")
+        return CandidateUnavailable(
+            item_id, state, "the reviewed candidate is pre-snapshot: the attempt retains no accepted snapshot for it"
+        )
     reference_key = context.reference.key
     try:
         encoded = read_reference(work_root, context.reference)

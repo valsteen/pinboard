@@ -222,6 +222,7 @@ def _read_item_integration(
     facts = store.read_integration_item(WorkItemId(request.item_id))
     if facts is None:
         return common._item_status_failure("ITEM_NOT_FOUND", f"Item '{request.item_id}' was not found.", None)
+    token.checkpoint()
     selection = candidate_evidence.read_integration_candidate(durable.work_root, store, facts)
     if isinstance(selection, query_models.DamagedTransitionReceipt):
         return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", selection)

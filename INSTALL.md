@@ -38,16 +38,25 @@ On the first connection for an unprepared installed version, when uv is availabl
 
 Closing a saved item runs through `pinboard_close`, which requires your close decision in your own words; an agent without them should ask you instead of closing. Codex ignores the Claude Code metadata that makes Claude Code v2.1.199 or later confirm each close, so Codex adds no extra close prompt: your Codex approval settings decide whether that call runs without asking.
 
-### Pre-approve Pinboard tools with approval policy never
+### Optionally pre-approve Pinboard tools
 
-If you run Codex with `approval_policy = "never"`, pre-approve only the installed Pinboard server's tools in your Codex configuration:
+To avoid repeated Pinboard MCP tool prompts, you can pre-approve the installed server in your Codex configuration. This is independent of `approval_policy`: it also works with interactive policies such as `"on-request"`. With `"never"`, calls that require approval need pre-approval because Codex cannot ask:
 
 ```toml
 [plugins."pinboard@pinboard".mcp_servers.pinboard]
 default_tools_approval_mode = "approve"
 ```
 
-`pinboard@pinboard` is the plugin identity installed by the marketplace commands above. Use the actual installed marketplace identity if yours differs. This setting approves that plugin's Pinboard MCP tools; filesystem permissions remain governed by the profile below.
+`pinboard@pinboard` is the plugin identity installed by the marketplace commands above. Use the actual installed marketplace identity if yours differs. The server default covers its tools unless an explicit per-tool `approval_mode` overrides it. To keep a close confirmation under an interactive approval policy, for example:
+
+```toml
+[plugins."pinboard@pinboard".mcp_servers.pinboard.tools.pinboard_close]
+approval_mode = "prompt"
+```
+
+Approving a selected list of tools covers only those names; another or newly added tool still follows the server default. Review existing per-tool settings when prompts continue. See [Codex plugin MCP policy](https://developers.openai.com/plugins/build/plugins#bundled-mcp-servers-and-lifecycle-hooks).
+
+MCP approval controls whether Codex may call the tool. It does not grant filesystem or network access, approve setup commands or Git actions, or authorize an effect you have not requested. Keep the narrow profile below; use the separate [Git approval](#git-actions-you-request) and [setup recovery](#setup-commands-ask-for-cache-or-network-access) when those boundaries need approval.
 
 ### Allow routine project-data writes
 
@@ -175,7 +184,11 @@ Direct launcher commands, which agents rarely need, run through Claude's Bash to
 }
 ```
 
-For an autonomous repository-writing run, also use Claude's normal edit-accepting mode. A linked worktree under `.claude/worktrees/` inside the session's launch directory needed no extra directory grant in an observed auto-mode worker run in this repository; treat that as an observation rather than a guarantee. A selected linked worktree or work root outside the launch directory must be in the session's allowed directories. Pinboard records the intended access but cannot grant it; `dontAsk` may deny an uncovered write instead of asking.
+For an autonomous repository-writing run, use Claude's `acceptEdits` mode to accept ordinary file edits in its working directories. The MCP hook and the Bash allow rule above do not select an edit mode or approve arbitrary Bash commands. `dontAsk` may deny an uncovered write instead of asking. See [Claude permission modes and rules](https://code.claude.com/docs/en/permissions).
+
+A linked worktree under `.claude/worktrees/` inside the session's launch directory needed no extra directory grant in an observed auto-mode worker run in this repository; treat that as an observation rather than a guarantee. A selected linked worktree or work root outside the launch directory must be in the session's allowed directories before the run. Add only those selected locations with `/add-dir` or `--add-dir`; their editing permissions still follow the current mode. Pinboard records the intended access but cannot grant it.
+
+Claude's [Bash sandbox](https://code.claude.com/docs/en/sandboxing) separately limits filesystem and network access for shell commands and their child processes. File tools, MCP servers and hooks run outside that sandbox; the Pinboard hook approves only its own MCP calls. If a setup command is sandboxed, its cache writes and downloads may still need specific path or host access even when Pinboard MCP tools are approved.
 
 This route uses Claude Code's marketplace mechanism with this repository as the marketplace. Pinboard is not published in or installed from Anthropic's official marketplace, and it does not claim live sharing between Codex and Claude Code.
 
@@ -227,6 +240,18 @@ Pinboard may also recommend the `model_auto_compact_token_limit_scope` setting f
 
 ## Troubleshooting
 
+### Codex still asks before a Pinboard tool
+
+Check the installed plugin/server identity and its effective `default_tools_approval_mode`, then any explicit per-tool `approval_mode`. A list of pre-approved tools may omit the requested name. Use [server-wide approval](#optionally-pre-approve-pinboard-tools) only if you want all that server's tools approved, or approve the specific tool. A prompt naming a shell command, Git action or denied filesystem location belongs to the separate controls below; changing MCP approval does not resolve it.
+
+### Setup commands ask for cache or network access
+
+Source development runs `scripts/prepare-worktree`, which installs locked dependencies and may access uv/npm caches and download packages. Installed plugins instead prepare each version lazily through the launcher's reported `--prepare-runtime` action. Once that installed runtime is ready, ordinary Pinboard MCP calls do not use uv or its cache. A new installed version has its own preparation; it does not require broader routine MCP permissions.
+
+Inspect the failed command and exact path or host before approving access. For a diagnosed Codex sandbox restriction during authorized source setup, request one exact-command retry of `scripts/prepare-worktree` in the same checkout; [contributor setup](CONTRIBUTING.md#prepare-the-pinboard-source-development-environment) explains the boundary. Installed-runtime recovery uses the exact launcher action and version-local runtime path [below](#the-launcher-says-runtime-preparation-is-required). In Claude, distinguish Bash approval from a sandbox path or network denial and grant only the needed access under [its sandbox controls](https://code.claude.com/docs/en/sandboxing). Keep failed setup diagnostics; do not relocate caches, disable the sandbox or repeat denied requests to get past them.
+
+A Git prompt has a different owner: follow [Git actions you request](#git-actions-you-request), even after setup and MCP tools are approved. Optional Auto-review can assess eligible escalation requests; it can also deny them and does not expand the default access boundary.
+
 ### Pinboard cannot write its project data
 
 For retained CLI mutations, a denied SQLite write reports `SQLITE_READONLY`, the affected location and operation, whether anything changed, and narrow permission recovery. Native tools report their own correlated failure, retry, and changed-surface facts rather than CLI-specific diagnostic prose. A native brief acceptance failure after immutable publication reports `ARTIFACT_ACCEPTANCE_FAILED` and its exact published selector; it does not claim the underlying failure is necessarily a permission error.
@@ -236,6 +261,10 @@ For a normal primary checkout, grant only relative `.pinboard`. For a linked wor
 ### Claude Code reports the pinboard MCP server as failed
 
 `Connection closed` reports a failed connection; it does not establish why startup failed. MCP startup and the SessionStart hook can prepare an unprepared version automatically. Ask Claude Code why Pinboard is unavailable and inspect the launcher diagnostics. When hook preparation fails, its context names the observed cause (uv missing, a held preparation lock, or failed preparation) and the exact manual command from the [Claude Code](#claude-code) section. Run that command against the exact `installPath` from `claude plugin list --json` if preparation is required. After preparation, check tool availability; use `/mcp` to reconnect or restart Claude Code if the connection remains unavailable.
+
+### Claude Code asks for Bash or file access
+
+Identify the requested tool first. The Pinboard MCP hook does not approve Bash or file-tool calls. Use [Permissions](#permissions) to check `acceptEdits`, the exact checkout/work-root directories and any explicit ask or deny rule; `/permissions` shows the active rules. For a shell sandbox denial, inspect the specific path or host using `/sandbox` and its diagnostics. Approve only the access needed for the requested work. Keep intentional ask/deny rules and the close confirmation; an MCP allow rule is not a remedy for a Bash or file-access prompt.
 
 ### Claude Code still asks before each Pinboard tool
 

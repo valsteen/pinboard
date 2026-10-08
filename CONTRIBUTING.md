@@ -14,6 +14,10 @@ scripts/prepare-worktree
 
 The command runs `uv sync --locked` and `npm ci --prefer-offline --no-audit --no-fund` from the selected `<pinboard-source>` checkout. Each checkout keeps its own ignored `.venv/` and `node_modules/` directories while uv and npm may reuse their package caches. The checked-in locks make setup repeatable. jscpd 5.1.2 is the sole non-Python development dependency; it requires Node.js 18 or newer and npm, but no global installation.
 
+This setup is a shell command, so Pinboard MCP pre-approval does not cover it. Cache access or dependency downloads can need filesystem or network approval beyond the selected checkout. Inspect the exact diagnostic first: a missing prerequisite or locked-install failure needs a different remedy from a sandbox denial.
+
+For a diagnosed Codex sandbox restriction during already-authorized setup, request one runtime approval for the exact `scripts/prepare-worktree` command in the same checkout. If approval is denied or unavailable, the retry fails, or the cause needs investigation, stop setup and return the diagnostic for a human decision. Do not relocate caches, change global settings, weaken locked installation or keep retrying. Claude's Bash permissions and sandbox controls are separate too; [installation troubleshooting](INSTALL.md#setup-commands-ask-for-cache-or-network-access) explains the scoped remedies and the distinction from installed-runtime preparation.
+
 ## Run the checks
 
 Use the Pinboard package installed in `<pinboard-source>/.venv` for every Python check:

@@ -417,7 +417,7 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.assertEqual("PROJECT_GIT_ROOT_UNAVAILABLE", outside["code"], outside)
         self.assertEqual("correct-input", outside["retry"])
 
-    def test_candidate_integrated_reconciliation_runs_no_target_comparison(self) -> None:
+    def test_candidate_integrated_reconciliation_is_rejected_before_any_target_comparison(self) -> None:
         fixture = self.checkpoint_fixture()
         reconciliation: JsonObject = {
             "target_revision": fixture.brief.base_revision,
@@ -434,4 +434,5 @@ class ItemIntegrationTest(CheckpointPackageSupport):
                 mcp_server.ATTEMPT_INSPECT_TOOL,
                 {**self.roots(fixture), "attempt_id": "work-a-1", "reconciliation": reconciliation},
             )
-        self.assertNotIn("error", inspected, inspected)
+        self.assertEqual("ATTEMPT_INSPECT_INVALID", inspected["code"], inspected)
+        self.assertEqual([], inspected["changed_surfaces"])

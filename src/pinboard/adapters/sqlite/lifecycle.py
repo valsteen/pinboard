@@ -339,11 +339,6 @@ def read_integration_item(
     if item_row is None:
         return None
     item = decode_row(item_row, _IntegrationItemRow)
-    definition_row = connection.execute(
-        "SELECT 1 FROM work_item_definition_revisions WHERE item_id = ? LIMIT 1",
-        (item_id,),
-    ).fetchone()
-    has_definition: bool = definition_row is not None
     attempt_row = connection.execute(
         """
         SELECT attempt_id, state, candidate_revision
@@ -358,9 +353,7 @@ def read_integration_item(
         if stored_state.live_work_state(item.state) is None
         else None
     )
-    return query_models.IntegrationItemFacts(
-        project_revision, item.work_item_id, item.state, has_definition, attempt, closure
-    )
+    return query_models.IntegrationItemFacts(project_revision, item.work_item_id, item.state, attempt, closure)
 
 
 def read_branch_owners(connection: sqlite3.Connection, branch: str) -> query_models.BranchOwnersFacts:

@@ -963,7 +963,6 @@ class IntegrationItemFacts:
     project_revision: int
     work_item_id: WorkItemId
     state: stored_state.StoredWorkItemState
-    has_definition: bool
     attempt: IntegrationAttemptFacts | None
     closure: ItemClosureFacts | None
 

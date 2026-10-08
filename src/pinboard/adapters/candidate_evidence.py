@@ -221,6 +221,12 @@ def _compared_from(snapshot: candidate_snapshots.CandidateSnapshot) -> str:
             assert_never(unreachable)
 
 
+def _unreadable(error: ArtifactError) -> bool:
+    """A file that cannot be read is not a verification verdict; the artifact adapter keeps its OSError cause."""
+
+    return isinstance(error.__cause__, OSError)
+
+
 def _unavailable(item_id: WorkItemId, state: str, reason: str) -> IntegrationFailure:
     return IntegrationFailure(
         "INTEGRATION_CANDIDATE_UNAVAILABLE",
@@ -272,7 +278,11 @@ def _read_attempt_snapshot(
     try:
         encoded = read_reference(work_root, context.reference)
         evidence = candidate_snapshots.verify_candidate_snapshot_context(context, None, encoded)
-    except (ArtifactError, ValueError) as error:
+    except ArtifactError as error:
+        if _unreadable(error):
+            raise
+        return _invalid(attempt_id, reference_key, str(error))
+    except ValueError as error:
         return _invalid(attempt_id, reference_key, str(error))
     snapshot = evidence.snapshot
     source = _attempt_source(kind, snapshot)
@@ -308,7 +318,11 @@ def _read_package_snapshot(
         if reference is None or reference.content_sha256 != identity.content_sha256:
             return _invalid(attempt_id, identity.key, "the checkpoint snapshot reference is not accepted")
         snapshot = candidate_snapshots.decode_candidate_snapshot(read_reference(work_root, reference))
-    except (ArtifactError, ValueError) as error:
+    except ArtifactError as error:
+        if _unreadable(error):
+            raise
+        return _invalid(attempt_id, identity.key, str(error))
+    except ValueError as error:
         return _invalid(attempt_id, identity.key, str(error))
     if snapshot.candidate != package.candidate or snapshot.attempt_id != attempt_id or snapshot.item_id != item_id:
         return _invalid(attempt_id, identity.key, "the checkpoint snapshot does not match its package")
@@ -337,6 +351,8 @@ def _read_checkpoint_snapshot(
     try:
         package = work_briefs.decode_checkpoint_review_package(read_reference(work_root, acceptance.package_reference))
     except ArtifactError as error:
+        if _unreadable(error):
+            raise
         return _invalid(attempt_id, package_key, str(error))
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return _invalid(attempt_id, package_key, package.message)

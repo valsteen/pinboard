@@ -122,6 +122,13 @@ class TargetContentReadTest(unittest.TestCase):
                 if path.is_file():
                     digest.update(str(path.relative_to(self.project)).encode())
                     digest.update(path.read_bytes())
+            for observation in (
+                ("rev-parse", "HEAD"),
+                ("for-each-ref",),
+                ("count-objects", "-v"),
+                ("--no-optional-locks", "status", "--porcelain"),
+            ):
+                digest.update(self.git(*observation).encode())
             return digest.hexdigest()
 
         before = snapshot()

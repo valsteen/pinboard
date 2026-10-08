@@ -408,6 +408,7 @@ def observe_target_presence(cwd: Path, target: str, diff: bytes) -> TargetPresen
     working tree stay untouched. An empty diff needs no index and reports no change.
     """
 
+    # Exit status 1 names an unknown revision; `_git_text` cannot distinguish it from other Git failures.
     resolved = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{target}^{{commit}}"],
         cwd=cwd,

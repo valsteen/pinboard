@@ -14,7 +14,6 @@ from typing import NoReturn, assert_never
 
 import msgspec
 
-from pinboard.adapters.sqlite.artifacts import read_artifact_reference_by_id
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import queries, query_models, released_v6_compatibility, stored_state
@@ -683,7 +682,6 @@ def read_integration_source(
             None,
             _read_item_closure(connection, item.work_item_id, item.subject_revision),
             None,
-            None,
         )
     attempt_row = connection.execute(
         """
@@ -694,7 +692,7 @@ def read_integration_source(
         (item_id,),
     ).fetchone()
     if attempt_row is None:
-        return query_models.IntegrationSourceFacts(project_revision, item, None, None, None, None)
+        return query_models.IntegrationSourceFacts(project_revision, item, None, None, None)
     selected = decode_row(attempt_row, _IntegrationAttemptRow)
     receipt_row = connection.execute(
         f"""
@@ -707,11 +705,6 @@ def read_integration_source(
         (selected.attempt_id,),
     ).fetchone()
     checkpoint_receipt = None if receipt_row is None else _consumed_receipt(receipt_row)
-    package_reference = (
-        None
-        if checkpoint_receipt is None or checkpoint_receipt.artifact_ref_id is None
-        else read_artifact_reference_by_id(connection, checkpoint_receipt.artifact_ref_id)
-    )
     return query_models.IntegrationSourceFacts(
         project_revision,
         item,
@@ -720,7 +713,6 @@ def read_integration_source(
         ),
         None,
         checkpoint_receipt,
-        package_reference,
     )
 
 

@@ -1233,11 +1233,7 @@ def select_integration_source(
             decision_models.ActionKind.ACCEPT_CHECKPOINT,
             f"The outcome does not decode as checkpoint-acceptance/v2: {error}",
         )
-    if facts.checkpoint_package_reference is None:
-        return _unavailable_integration(item, "The latest checkpoint acceptance names no checkpoint package.")
-    return query_models.AcceptedCheckpointSource(
-        attempt.attempt_id, outcome.checkpoint, facts.checkpoint_package_reference
-    )
+    return query_models.AcceptedCheckpointSource(attempt.attempt_id, outcome.checkpoint)
 
 
 def project_item_integration(

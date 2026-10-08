@@ -970,14 +970,13 @@ class IntegrationAttemptFacts:
 
 @dataclass(frozen=True, slots=True)
 class IntegrationSourceFacts:
-    """Focused facts for one integration read: the item row, its current attempt, its closure, and its latest checkpoint acceptance."""
+    """Focused facts for one integration read: the item row, its current attempt, its closure, and its latest checkpoint acceptance receipt."""
 
     project_revision: int
     work_item: ItemStatusItemFacts
     attempt: IntegrationAttemptFacts | None
     closure: ItemClosureFacts | None
     checkpoint_receipt: ConsumedTransitionReceipt | None
-    checkpoint_package_reference: stored_state.ArtifactReference | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -990,11 +989,10 @@ class ProtectedReviewSource:
 
 @dataclass(frozen=True, slots=True)
 class AcceptedCheckpointSource:
-    """The current attempt's latest checkpoint acceptance, whose package names the accepted candidate snapshot."""
+    """The current attempt's latest checkpoint acceptance; its accepted snapshot is read by the canonical checkpoint key."""
 
     attempt_id: AttemptId
     checkpoint_id: str
-    package_reference: stored_state.ArtifactReference
 
 
 @dataclass(frozen=True, slots=True)

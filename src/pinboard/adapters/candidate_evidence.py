@@ -127,6 +127,12 @@ def _attempt_snapshot(
             item.state,
             "The reviewed candidate predates accepted snapshot evidence, so its content cannot be compared.",
         )
+    if context.candidate_revision != candidate_revision:
+        return query_models.IntegrationCandidateUnavailable(
+            item.work_item_id,
+            item.state,
+            "The reviewed candidate changed while it was being read; read the item and retry.",
+        )
     evidence = read_candidate_evidence_from_context(work_root, context, candidate_revision)
     if isinstance(evidence, DecisionFailure):
         return query_models.IntegrationEvidenceInvalid(

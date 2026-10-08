@@ -28,7 +28,7 @@ from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_advertised_tool, call_native_tool
-from tests.support import JsonObject, NoReadyCandidateReviews
+from tests.support import JsonObject, JsonValue, NoReadyCandidateReviews
 
 CLOSED_AT = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
 COMPLETED_AT = datetime(2030, 1, 3, 4, 5, 6, tzinfo=UTC)
@@ -122,8 +122,8 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
             },
         )
 
-    def submit_candidate(self, fixture: CheckpointFixture, label: str) -> str:
-        (fixture.project / "tracked.txt").write_text(f"{label}\n", encoding="utf-8")
+    def submit_candidate(self, fixture: CheckpointFixture, label: str, content: str | None = None) -> str:
+        (fixture.project / "tracked.txt").write_text(f"{label}\n" if content is None else content, encoding="utf-8")
         observed = call_native_tool(
             mcp_server.CANDIDATE_OBSERVE_TOOL, {**self.roots(fixture), "attempt_id": "work-a-1"}
         )
@@ -673,6 +673,28 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
     def point(self, project: Path, ref: str, revision: str) -> None:
         subprocess.run(["git", "update-ref", ref, revision], cwd=project, check=True, capture_output=True)
 
+    def commit_all_fixed(self, project: Path, message: str) -> str:
+        """Commit every working-tree change with fixed dates, so the candidate does not depend on the wall clock."""
+
+        subprocess.run(["git", "add", "--all"], cwd=project, check=True, capture_output=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Pinboard Tests",
+                "-c",
+                "user.email=pinboard@example.invalid",
+                "commit",
+                "-m",
+                message,
+            ],
+            cwd=project,
+            check=True,
+            capture_output=True,
+            env={**os.environ, "GIT_AUTHOR_DATE": "2030-01-05T00:00:00Z", "GIT_COMMITTER_DATE": "2030-01-05T00:00:00Z"},
+        )
+        return self.head(project)
+
     def test_integration_leaf_compares_a_protected_working_tree_candidate_by_content(self) -> None:
         fixture = self.checkpoint_fixture()
         self.return_for_review(fixture, "Rework the candidate.")
@@ -799,7 +821,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.return_for_review(fixture, "Rework the candidate.")
         base = self.head(fixture.project)
         (fixture.project / "tracked.txt").write_text("reviewed\n", encoding="utf-8")
-        candidate = self.commit_all(fixture.project, "Reviewed commit.")
+        candidate = self.commit_all_fixed(fixture.project, "Reviewed commit.")
         lease = self.native_attempt_acquire(fixture, "worker-commit")
         submission = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
         self.assertEqual("committed", self.transition_result(fixture, submission, {"candidate": candidate})["status"])
@@ -844,7 +866,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.return_for_review(fixture, "Rework the candidate.")
         base = self.head(fixture.project)
         (fixture.project / "tracked.txt").write_text("reviewed\n", encoding="utf-8")
-        candidate = self.commit_all(fixture.project, "Reviewed commit.")
+        candidate = self.commit_all_fixed(fixture.project, "Reviewed commit.")
         lease = self.native_attempt_acquire(fixture, "worker-complete")
         submission = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
         self.assertEqual("committed", self.transition_result(fixture, submission, {"candidate": candidate})["status"])
@@ -868,6 +890,83 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
             self.commit_tracked_file(fixture.project, base, "reviewed\n", "Release."),
         )
         self.assertEqual("content-present", self.integration_leaf(fixture, "released")["presence"])
+
+    def test_integration_compares_a_non_overlapping_later_edit_through_mcp(self) -> None:
+        fixture = self.checkpoint_fixture()
+        lines = [f"line {number}\n" for number in range(1, 11)]
+        (fixture.project / "tracked.txt").write_text("".join(lines), encoding="utf-8")
+        base = self.commit_all_fixed(fixture.project, "Multi-line base.")
+        self.return_for_review(fixture, "Rework the candidate.")
+        self.submit_candidate(fixture, "edited", content="".join(["changed\n", *lines[1:]]))
+        distant = self.commit_tracked_file(
+            fixture.project,
+            base,
+            "".join(["changed\n", *lines[1:-1], "line ten, edited later\n"]),
+            "Edit a distant line.",
+        )
+        self.point(fixture.project, "refs/heads/distant", distant)
+        self.assertEqual("content-present", self.integration_leaf(fixture, "distant")["presence"])
+
+    def test_an_unchanged_candidate_reports_no_change(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework the candidate.")
+        self.submit_candidate(fixture, "unchanged", content="base\n")
+        unchanged = self.integration_leaf(fixture, "codex/work-a")
+        self.assertEqual(
+            ("protected-review", "no-change"),
+            (self.json_object(unchanged["source"])["kind"], unchanged["presence"]),
+            unchanged,
+        )
+
+    def test_integration_follows_return_continue_resume_and_rebind(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework the candidate.")
+        self.submit_candidate(fixture, "reviewed")
+        self.return_for_review(fixture, "Rework again.")
+        returned = self.integration_leaf(fixture, "codex/work-a")
+        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", returned["code"], returned)
+        continued_candidate = self.submit_candidate(fixture, "continued")
+        self.transition(
+            fixture,
+            "accept-review-and-continue:work-a-1",
+            {"candidate": continued_candidate, "evidence": "Accepted; continue the attempt."},
+        )
+        continued = self.integration_leaf(fixture, "codex/work-a")
+        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", continued["code"], continued)
+
+        accepted = self.accepted_package_fixture()
+        checkpoint = accepted.brief.checkpoint.checkpoint_id
+
+        def checkpoint_source() -> tuple[JsonValue, JsonValue]:
+            source = self.json_object(self.integration_leaf(accepted, "codex/work-a")["source"])
+            return source["kind"], source["checkpoint_id"]
+
+        self.assertEqual(("accepted-checkpoint", checkpoint), checkpoint_source())
+        self.rebind(accepted, accepted.brief.branch, 2)
+        self.assertEqual(("accepted-checkpoint", checkpoint), checkpoint_source())
+
+    def test_integration_neither_runs_the_verdict_walk_nor_reads_unrelated_attempts(self) -> None:
+        fixture = self.accepted_package_fixture()
+        before = self.integration_leaf(fixture, "codex/work-a")
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            columns = [row[1] for row in connection.execute("PRAGMA table_info(attempts)")]
+            copied = ", ".join(
+                {"attempt_id": "'work-b-kept'", "item_id": "'work-b'", "state": "'done'"}.get(column, column)
+                for column in columns
+            )
+            connection.execute(
+                f"INSERT INTO attempts ({', '.join(columns)}) "
+                f"SELECT {copied} FROM attempts WHERE attempt_id = 'work-a-1'"
+            )
+        with (
+            patch("pinboard.adapters.sqlite.lifecycle._read_review_event", side_effect=AssertionError("review walk")),
+            patch(
+                "pinboard.adapters.sqlite.lifecycle.read_recorded_pause_reasons",
+                side_effect=AssertionError("pause reasons"),
+            ),
+        ):
+            after = self.integration_leaf(fixture, "codex/work-a")
+        self.assertEqual(before, after)
 
     def test_directly_closed_item_has_no_reviewed_candidate_to_integrate(self) -> None:
         fixture = self.checkpoint_fixture()

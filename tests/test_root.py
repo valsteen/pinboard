@@ -368,6 +368,26 @@ class TargetPresenceTest(unittest.TestCase):
         self.assertEqual(before, self.git_state(git_directory))
         self.assertEqual(temporary_before, set(Path(tempfile.gettempdir()).glob("pinboard-integration-*")))
 
+    def test_renamed_file_and_added_binary_are_checked_by_content(self) -> None:
+        self.git("mv", "tracked.txt", "renamed.txt")
+        (self.repository / "blob.bin").write_bytes(b"\x00\x01binary\x02")
+        self.git("add", "--all")
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "Rename the reviewed file and add a binary."],
+            cwd=self.repository,
+            check=True,
+            capture_output=True,
+            env={**os.environ, **self.DATES},
+        )
+        renamed = self.git("rev-parse", "HEAD")
+        diff = self.git_bytes("diff", "--binary", self.base, renamed, "--")
+        self.assertEqual(
+            ResolvedTargetPresence(renamed, present=True), observe_target_presence(self.repository, renamed, diff)
+        )
+        self.assertEqual(
+            ResolvedTargetPresence(self.base, present=False), observe_target_presence(self.repository, self.base, diff)
+        )
+
     def git_state(self, git_directory: Path) -> tuple[tuple[str, int, bytes], ...]:
         entries = [
             (str(path.relative_to(git_directory)), path.stat().st_size, path.read_bytes())

@@ -31,6 +31,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     candidate_snapshot_compatibility_models,
     candidate_snapshots,
+    dispatch_models,
     stored_state,
     work_brief_models,
     work_briefs,
@@ -218,6 +219,15 @@ class McpJobsTest(CheckpointPackageSupport):
             dispatch = tools["pinboard_dispatch"]
             self.assertIn("ReuseCorrectionDispatchChoice", dispatch.input_schema["$defs"])
             self.assertIn("CorrectionDispatchChoice", dispatch.input_schema["$defs"])
+            for review_type in (
+                "CorrectionSourceReview",
+                "ReusedCoverageCorrectionReview",
+                "LocalCorrectionSourceReview",
+            ):
+                with self.subTest(review_type=review_type):
+                    assessment = dispatch.input_schema["$defs"][review_type]["properties"]["assessment"]
+                    self.assertEqual("string", assessment["type"])
+                    self.assertEqual(1, assessment["minLength"])
             assert dispatch.description is not None
             self.assertIn("reuse-correction", dispatch.description)
             self.assertIn("pinboard-correction-source-review/v1", dispatch.description)
@@ -865,6 +875,50 @@ class McpJobsTest(CheckpointPackageSupport):
                 "assessment": "The exact accepted candidate has been independently assessed.",
             },
         }
+        reused_shape = test_correction_source_review.CorrectionSourceReviewTest().reuse_choice(fixture, choice)
+        invalid_assessments: tuple[contracts.JsonValue, ...] = (
+            "",
+            None,
+            42,
+            False,
+            [],
+            {"text": "An object is not prose."},
+        )
+        for selected in (choice, reused_shape, local_shape):
+            with self.subTest(kind=selected["kind"]):
+                decoded = msgspec.convert(
+                    {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": selected},
+                    type=contracts.DispatchRequest,
+                    strict=True,
+                    dec_hook=dispatch_models.dispatch_environment_dec_hook,
+                )
+                assert isinstance(
+                    decoded.dispatch,
+                    (
+                        contracts.CorrectionDispatchChoice,
+                        contracts.ReuseCorrectionDispatchChoice,
+                        contracts.LocalCorrectionDispatchChoice,
+                    ),
+                )
+                self.assertEqual(
+                    self.json_object(selected["brief_review"])["assessment"], decoded.dispatch.brief_review.assessment
+                )
+            for invalid_assessment in invalid_assessments:
+                invalid = deepcopy(selected)
+                self.json_object(invalid["brief_review"])["assessment"] = invalid_assessment
+                with (
+                    self.subTest(kind=selected["kind"], assessment=invalid_assessment),
+                    patch.object(
+                        mcp_jobs,
+                        "resolve_source_checkout_root",
+                        side_effect=AssertionError("Must reject before effects"),
+                    ),
+                ):
+                    rejected = mcp_jobs._dispatch_job(
+                        str(fixture.project), str(fixture.work), invalid, mcp_execution.CancellationToken()
+                    )
+                    self.assertEqual("DISPATCH_INVALID", rejected.content["code"])
+                    self.assertIn("$.dispatch.brief_review.assessment", str(rejected.content["message"]))
         wrong_family = mcp_jobs._dispatch_job(
             str(fixture.project), str(fixture.work), local_shape, mcp_execution.CancellationToken()
         )

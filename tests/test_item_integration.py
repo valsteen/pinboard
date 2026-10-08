@@ -673,11 +673,9 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         present = self.integration(fixture, "binary-target")
         self.assertEqual("content-present", present["presence"], present)
 
-    def test_integration_leaf_reads_only_its_named_item_through_keyed_indexes(self) -> None:
-        fixture = self.accepted_package_fixture()
-        self.close_prerequisite(fixture)
-        self.transition(fixture, "resume:work-a", {})
-        landed = self.land(fixture.project, "scoped", fixture.brief.base_revision, self.snapshot_diff(fixture))
+    def recorded_integration(self, fixture: CheckpointFixture, target: str) -> tuple[JsonObject, list[str], list[str]]:
+        """Run the leaf while recording every statement SQLite executes for its store reads."""
+
         real_open = sqlite_store.open_database
         recorded: list[str] = []
 
@@ -687,22 +685,79 @@ class ItemIntegrationTest(CheckpointPackageSupport):
             return connection
 
         with patch.object(sqlite_store, "open_database", side_effect=recording_open):
-            present = self.integration(fixture, "scoped")
-        self.assertEqual(landed, present["resolved_revision"])
+            result = self.integration(fixture, target)
         selects = [sql for sql in recorded if sql.lstrip().upper().startswith("SELECT")]
+        connection = sqlite3.connect(f"file:{fixture.work / 'state.sqlite3'}?mode=ro", uri=True)
+        try:
+            plans = [str(row[3]) for sql in selects for row in connection.execute(f"EXPLAIN QUERY PLAN {sql}")]
+        finally:
+            connection.close()
+        return result, selects, plans
+
+    def test_integration_leaf_reads_only_its_named_item_through_keyed_indexes(self) -> None:
+        fixture = self.accepted_package_fixture()
+        self.close_prerequisite(fixture)
+        self.transition(fixture, "resume:work-a", {})
+        landed = self.land(fixture.project, "scoped", fixture.brief.base_revision, self.snapshot_diff(fixture))
+        present, selects, plans = self.recorded_integration(fixture, "scoped")
+        self.assertEqual(landed, present["resolved_revision"])
         self.assertTrue(selects, "The integration read must run store statements.")
         for sql in selects:
             self.assertNotIn("work-b", sql)
             self.assertNotIn("work-c", sql)
-        connection = sqlite3.connect(f"file:{fixture.work / 'state.sqlite3'}?mode=ro", uri=True)
-        try:
-            plans: list[str] = []
-            for sql in selects:
-                plans.extend(str(row[3]) for row in connection.execute(f"EXPLAIN QUERY PLAN {sql}"))
-        finally:
-            connection.close()
         self.assertFalse([detail for detail in plans if detail.startswith("SCAN")], plans)
         self.assertTrue(any("checkpoint_history_by_subject" in detail for detail in plans), plans)
+
+    def test_unrelated_attempts_receipts_and_artifacts_are_neither_read_nor_returned(self) -> None:
+        fixture = self.accepted_package_fixture()
+        self.close_prerequisite(fixture)
+        self.transition(fixture, "resume:work-a", {})
+        landed = self.land(fixture.project, "unrelated-scope", fixture.brief.base_revision, self.snapshot_diff(fixture))
+        connection = sqlite3.connect(fixture.work / "state.sqlite3")
+        try:
+            connection.execute(
+                """
+                INSERT INTO attempts (attempt_id, item_id, state, branch, base_revision, provenance,
+                    brief_artifact_ref_id, brief_artifact_kind, result_artifact_ref_id, result_artifact_kind,
+                    candidate_revision, candidate_recorded_at, accepted_scope_revision, accepted_scope_digest,
+                    subject_revision, recorded_at, updated_at)
+                SELECT 'work-b-1', 'work-b', 'done', branch, base_revision, provenance,
+                    brief_artifact_ref_id, brief_artifact_kind, NULL, NULL, NULL, NULL,
+                    accepted_scope_revision, accepted_scope_digest, subject_revision, recorded_at, updated_at
+                FROM attempts WHERE attempt_id = 'work-a-1'
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO transition_history (project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+                    artifact_kind, authorization_kind, actor_task_id, actor_host_id, input_schema, input_json,
+                    outcome_schema, outcome_json, committed_at)
+                SELECT (SELECT MAX(project_revision) + 1 FROM transition_history), 'accept-checkpoint:work-b-1',
+                    action_kind, 'work-b-1', NULL, NULL, authorization_kind, actor_task_id, actor_host_id,
+                    input_schema, input_json, outcome_schema, outcome_json, committed_at
+                FROM transition_history WHERE outcome_schema = 'checkpoint-acceptance/v2' LIMIT 1
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO artifact_refs (artifact_key, artifact_revision, kind, relative_path, content_sha256,
+                    size_bytes, accepted_revision, created_at)
+                VALUES ('work-b-1-unrelated-evidence', 1, 'evidence', 'artifacts/evidence/work-b-1-unrelated/1.txt',
+                    ?, 1, 1, '2030-01-02T03:04:05+00:00')
+                """,
+                (hashlib.sha256(b"x").hexdigest(),),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        present, selects, plans = self.recorded_integration(fixture, "unrelated-scope")
+        self.assertEqual("content-present", present["presence"], present)
+        self.assertEqual(landed, present["resolved_revision"])
+        self.assertEqual("work-a-1", self.source(present)["attempt_id"])
+        for sql in selects:
+            self.assertNotIn("work-b", sql)
+            self.assertNotIn("unrelated-evidence", sql)
+        self.assertFalse([detail for detail in plans if detail.startswith("SCAN")], plans)
 
     def test_overview_item_leaf_and_actions_issue_no_integration_reads(self) -> None:
         fixture = self.checkpoint_fixture()

@@ -355,6 +355,16 @@ class TargetPresenceTest(unittest.TestCase):
             observe_target_presence(self.repository, trailing, trailing_diff),
         )
 
+    def test_repository_ignore_whitespace_configuration_does_not_change_the_verdict(self) -> None:
+        self.git("config", "apply.ignoreWhitespace", "change")
+        indented = self.commit(
+            "".join(("  changed\n", *self.BASE_LINES[1:])), "Indent the reviewed line.", self.candidate
+        )
+        self.assertEqual(
+            ResolvedTargetPresence(indented, present=False),
+            observe_target_presence(self.repository, indented, self.diff),
+        )
+
     def test_read_only_git_directory_is_not_written_and_leaves_no_temporary_directory(self) -> None:
         git_directory = self.repository / ".git"
         before = self.git_state(git_directory)

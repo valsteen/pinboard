@@ -453,6 +453,8 @@ def observe_target_presence(cwd: Path, target: str, diff: bytes) -> TargetPresen
                 "-c",
                 "apply.whitespace=nowarn",
                 "-c",
+                "apply.ignoreWhitespace=no",
+                "-c",
                 "core.splitIndex=false",
                 "apply",
                 "--cached",

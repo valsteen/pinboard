@@ -28,7 +28,7 @@ from pinboard.adapters.sqlite.lifecycle import (
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import candidate_snapshots, queries, query_models
 from pinboard.application.ports import GeneratedViewReader
-from pinboard.domain import decision_models
+from pinboard.domain import decision_models, work_models
 from pinboard.domain.identifiers import AttemptId, HistoryId, WorkItemId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server as mcp_server
@@ -953,6 +953,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
 
     def test_integration_neither_runs_the_verdict_walk_nor_reads_unrelated_attempts(self) -> None:
         fixture = self.accepted_package_fixture()
+        checkpoint = fixture.brief.checkpoint.checkpoint_id
         before = self.integration_leaf(fixture, "codex/work-a")
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             columns = [row[1] for row in connection.execute("PRAGMA table_info(attempts)")]
@@ -964,12 +965,46 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                 f"INSERT INTO attempts ({', '.join(columns)}) "
                 f"SELECT {copied} FROM attempts WHERE attempt_id = 'work-a-1'"
             )
+            history_columns = [row[1] for row in connection.execute("PRAGMA table_info(transition_history)")]
+            history_columns = [column for column in history_columns if column != "history_id"]
+            replaced = {
+                "subject_id": "'work-b-kept'",
+                "project_revision": "9001",
+                "action_id": "'unrelated-checkpoint-action'",
+            }
+            copied_history = ", ".join(replaced.get(column, column) for column in history_columns)
+            connection.execute(
+                f"INSERT INTO transition_history ({', '.join(history_columns)}) "
+                f"SELECT {copied_history} FROM transition_history "
+                "WHERE subject_id = 'work-a-1' AND outcome_schema = 'checkpoint-acceptance/v2' "
+                "ORDER BY history_id DESC LIMIT 1"
+            )
+            unrelated = connection.execute(
+                "SELECT COUNT(*) FROM transition_history WHERE subject_id = 'work-b-kept' "
+                "AND outcome_schema = 'checkpoint-acceptance/v2'"
+            ).fetchone()[0]
+        self.assertEqual(1, unrelated)
+        real_reference = SQLiteWorkStore.read_artifact_reference
+        real_snapshot = SQLiteWorkStore.read_candidate_snapshot_context
+
+        def only_checkpoint_key(
+            store: SQLiteWorkStore, kind: work_models.ArtifactKind, key: str, revision: int
+        ) -> object:
+            self.assertEqual(f"work-a-1-{checkpoint}-candidate", key)
+            return real_reference(store, kind, key, revision)
+
+        def only_target_attempt(store: SQLiteWorkStore, attempt_id: AttemptId) -> object:
+            self.assertEqual("work-a-1", str(attempt_id))
+            return real_snapshot(store, attempt_id)
+
         with (
             patch("pinboard.adapters.sqlite.lifecycle._read_review_event", side_effect=AssertionError("review walk")),
             patch(
                 "pinboard.adapters.sqlite.lifecycle.read_recorded_pause_reasons",
                 side_effect=AssertionError("pause reasons"),
             ),
+            patch.object(SQLiteWorkStore, "read_artifact_reference", only_checkpoint_key),
+            patch.object(SQLiteWorkStore, "read_candidate_snapshot_context", only_target_attempt),
         ):
             after = self.integration_leaf(fixture, "codex/work-a")
         self.assertEqual(before, after)
@@ -1054,12 +1089,12 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.return_for_review(fixture, "Rework the candidate.")
         self.submit_candidate(fixture, "reviewed")
         busy = StorageError(StorageErrorCode.BUSY, "The ledger is busy.", retryable=True)
-        with patch.object(SQLiteWorkStore, "read_candidate_snapshot_context", side_effect=busy):
-            try:
-                result: JsonObject = self.integration_leaf(fixture, "codex/work-a")
-            except Exception as error:
-                result = {"raised": type(error).__name__}
-        self.assertNotEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", result.get("code"), result)
+        with (
+            patch.object(SQLiteWorkStore, "read_candidate_snapshot_context", side_effect=busy),
+            self.assertRaises(Exception) as raised,
+        ):
+            self.integration_leaf(fixture, "codex/work-a")
+        self.assertNotIn("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", str(raised.exception))
 
     def test_item_leaf_and_overview_run_no_integration_read(self) -> None:
         fixture = self.accepted_package_fixture()

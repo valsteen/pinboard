@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import subprocess
 import tempfile
@@ -106,6 +107,7 @@ class CheckpointPackageSupport(unittest.TestCase):
             cwd=project,
             check=True,
             capture_output=True,
+            env={**os.environ, "GIT_AUTHOR_DATE": "2030-01-05T00:00:00Z", "GIT_COMMITTER_DATE": "2030-01-05T00:00:00Z"},
         )
         return subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True, text=True

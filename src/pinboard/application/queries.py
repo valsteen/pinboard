@@ -1233,7 +1233,7 @@ def select_integration_source(
             decision_models.ActionKind.ACCEPT_CHECKPOINT,
             f"The outcome does not decode as checkpoint-acceptance/v2: {error}",
         )
-    return query_models.AcceptedCheckpointSource(attempt.attempt_id, outcome.checkpoint)
+    return query_models.AcceptedCheckpointSource(attempt.attempt_id, outcome.checkpoint, outcome.candidate)
 
 
 def project_item_integration(

@@ -993,6 +993,7 @@ class AcceptedCheckpointSource:
 
     attempt_id: AttemptId
     checkpoint_id: str
+    candidate_revision: str
 
 
 @dataclass(frozen=True, slots=True)

@@ -170,6 +170,10 @@ def _checkpoint_snapshot(
         return query_models.IntegrationEvidenceInvalid(
             selection.attempt_id, key, "The checkpoint candidate snapshot names another attempt."
         )
+    if snapshot.candidate != selection.candidate_revision:
+        return query_models.IntegrationEvidenceInvalid(
+            selection.attempt_id, key, "The checkpoint candidate snapshot names another candidate."
+        )
     return snapshot
 
 

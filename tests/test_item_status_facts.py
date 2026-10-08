@@ -7,10 +7,11 @@ import os
 import sqlite3
 import subprocess
 import tempfile
+from dataclasses import replace as replace_record
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import assert_never
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import msgspec
 from mcp.server.mcpserver.exceptions import ToolError
@@ -20,7 +21,7 @@ from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import queries, query_models
+from pinboard.application import candidate_snapshots, queries, query_models
 from pinboard.application.ports import GeneratedViewReader
 from pinboard.domain import decision_models
 from pinboard.domain.identifiers import AttemptId, HistoryId, WorkItemId
@@ -967,6 +968,125 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         ):
             after = self.integration_leaf(fixture, "codex/work-a")
         self.assertEqual(before, after)
+
+    def test_integration_names_each_unavailable_and_invalid_snapshot_path(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework the candidate.")
+        self.submit_candidate(fixture, "reviewed")
+        real_context = SQLiteWorkStore.read_candidate_snapshot_context
+
+        def changed_context(
+            store: SQLiteWorkStore, attempt_id: AttemptId
+        ) -> query_models.CandidateSnapshotContextFacts | None:
+            context = real_context(store, attempt_id)
+            return None if context is None else replace_record(context, candidate_revision="another-candidate")
+
+        with patch.object(SQLiteWorkStore, "read_candidate_snapshot_context", return_value=None):
+            predates = self.integration_leaf(fixture, "codex/work-a")
+        self.assertEqual(
+            ("INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input", "unchanged"),
+            (predates["code"], predates["retry"], predates["effect"]),
+            predates,
+        )
+        self.assertIn("predates", str(predates["message"]))
+
+        with patch.object(SQLiteWorkStore, "read_candidate_snapshot_context", changed_context):
+            changed = self.integration_leaf(fixture, "codex/work-a")
+        self.assertEqual(
+            ("INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input"), (changed["code"], changed["retry"]), changed
+        )
+        self.assertIn("changed while", str(changed["message"]))
+
+        accepted = self.accepted_package_fixture()
+        with patch.object(SQLiteWorkStore, "read_artifact_reference", return_value=None):
+            missing = self.integration_leaf(accepted, "codex/work-a")
+        self.assertEqual(
+            ("INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input"), (missing["code"], missing["retry"]), missing
+        )
+        self.assertIn("no accepted candidate snapshot reference", str(missing["message"]))
+
+        foreign = candidate_snapshots.CommitCandidateSnapshot(
+            "pinboard-candidate-snapshot/v1",
+            "work-a-1",
+            "work-a",
+            "f" * 40,
+            "codex/work-a",
+            "a" * 40,
+            "a" * 40,
+            "2030-01-05T00:00:00+00:00",
+            b"",
+        )
+        with (
+            patch.object(SQLiteWorkStore, "read_artifact_reference", return_value=MagicMock()),
+            patch("pinboard.adapters.candidate_evidence.read_reference", return_value=b"{}"),
+            patch("pinboard.application.candidate_snapshots.decode_candidate_snapshot", return_value=foreign),
+        ):
+            mismatched = self.integration_leaf(accepted, "codex/work-a")
+        self.assertEqual(
+            ("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", "do-not-retry"),
+            (mismatched["code"], mismatched["retry"]),
+            mismatched,
+        )
+        self.assertIn("another candidate", str(mismatched["message"]))
+
+    def test_integration_lookups_use_keyed_or_indexed_access(self) -> None:
+        fixture = self.accepted_package_fixture()
+        statements = {
+            "item": ("SELECT item_id, state FROM work_items WHERE item_id = ?", ("work-a",)),
+            "attempt": (
+                "SELECT attempt_id, state FROM attempts INDEXED BY one_live_attempt_per_item "
+                "WHERE item_id = ? AND state != 'done'",
+                ("work-a",),
+            ),
+        }
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+            for name, (statement, parameters) in statements.items():
+                with self.subTest(lookup=name):
+                    plan = connection.execute(f"EXPLAIN QUERY PLAN {statement}", parameters).fetchall()
+                    self.assertTrue(all("USING" in str(row[-1]) for row in plan), plan)
+
+    def test_integration_keeps_the_checkpoint_source_after_resume(self) -> None:
+        accepted = self.accepted_package_fixture()
+        checkpoint = accepted.brief.checkpoint.checkpoint_id
+        self.close_prerequisite(accepted)
+        self.transition(accepted, "resume:work-a", {})
+        source = self.json_object(self.integration_leaf(accepted, "codex/work-a")["source"])
+        self.assertEqual(("accepted-checkpoint", checkpoint), (source["kind"], source["checkpoint_id"]))
+
+    def test_integration_keeps_the_checkpoint_source_after_rebind(self) -> None:
+        accepted = self.accepted_package_fixture()
+        checkpoint = accepted.brief.checkpoint.checkpoint_id
+        self.rebind(accepted, accepted.brief.branch, 2)
+        source = self.json_object(self.integration_leaf(accepted, "codex/work-a")["source"])
+        self.assertEqual(("accepted-checkpoint", checkpoint), (source["kind"], source["checkpoint_id"]))
+
+    def test_integration_compares_a_renamed_file_through_mcp(self) -> None:
+        fixture = self.checkpoint_fixture()
+        base = self.head(fixture.project)
+        branch = fixture.brief.branch
+        subprocess.run(
+            ["git", "switch", "-q", "-c", "released", base], cwd=fixture.project, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "mv", "tracked.txt", "renamed.txt"], cwd=fixture.project, check=True, capture_output=True
+        )
+        (fixture.project / "renamed.txt").write_text("reviewed\n", encoding="utf-8")
+        self.commit_all_fixed(fixture.project, "Rename the reviewed file.")
+        subprocess.run(["git", "switch", "-q", branch], cwd=fixture.project, check=True, capture_output=True)
+        self.return_for_review(fixture, "Rework the candidate.")
+        subprocess.run(
+            ["git", "mv", "tracked.txt", "renamed.txt"], cwd=fixture.project, check=True, capture_output=True
+        )
+        (fixture.project / "renamed.txt").write_text("reviewed\n", encoding="utf-8")
+        observed = call_native_tool(
+            mcp_server.CANDIDATE_OBSERVE_TOOL, {**self.roots(fixture), "attempt_id": "work-a-1"}
+        )
+        candidate = str(observed["candidate"])
+        lease = self.native_attempt_acquire(fixture, "worker-rename")
+        submission = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+        self.assertEqual("committed", self.transition_result(fixture, submission, {"candidate": candidate})["status"])
+        self.assertEqual("content-present", self.integration_leaf(fixture, "released")["presence"])
+        self.assertEqual("content-not-present", self.integration_leaf(fixture, base)["presence"])
 
     def test_directly_closed_item_has_no_reviewed_candidate_to_integrate(self) -> None:
         fixture = self.checkpoint_fixture()

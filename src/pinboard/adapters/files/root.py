@@ -128,14 +128,20 @@ def classify_checkout(cwd: Path) -> work_models.CheckoutSelection:
     )
 
 
-def _git_text(cwd: Path, *arguments: str) -> str:
-    result = subprocess.run(
+def _git_read(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run one text Git read and return its exit status without interpreting it."""
+
+    return subprocess.run(
         ["git", *arguments],
         cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
     )
+
+
+def _git_text(cwd: Path, *arguments: str) -> str:
+    result = _git_read(cwd, *arguments)
     value = result.stdout.strip()
     if result.returncode != 0 or not value:
         raise RootError(
@@ -408,14 +414,8 @@ def observe_target_presence(cwd: Path, target: str, diff: bytes) -> TargetPresen
     working tree stay untouched. An empty diff needs no index and reports no change.
     """
 
-    # Exit status 1 names an unknown revision; `_git_text` cannot distinguish it from other Git failures.
-    resolved = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{target}^{{commit}}"],
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    # Exit status 1 names an unknown revision; every other failure is a Git read failure.
+    resolved = _git_read(cwd, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{target}^{{commit}}")
     if resolved.returncode == 1:
         return UnresolvedTargetObservation(target)
     if resolved.returncode != 0:

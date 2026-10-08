@@ -964,7 +964,6 @@ class IntegrationPresence(Enum):
 class IntegrationAttemptFacts:
     attempt_id: AttemptId
     state: work_models.AttemptState
-    branch: str
     candidate_revision: str | None
 
 

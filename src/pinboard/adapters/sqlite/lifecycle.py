@@ -580,16 +580,28 @@ def _read_project_revision(connection: sqlite3.Connection) -> int:
     return decode_row(project_revision_row, _ProjectRevisionRow).revision
 
 
-def _read_status_item(connection: sqlite3.Connection, item_id: WorkItemId) -> query_models.ItemStatusItemFacts | None:
-    item_row = connection.execute(
-        """
+STATUS_ITEM_SQL = """
         SELECT item_id AS work_item_id, state, timing, outcome_evidence, next_action, source, notes, queue_position,
                subject_revision
         FROM work_items
         WHERE item_id = ?
-        """,
-        (item_id,),
-    ).fetchone()
+        """
+INTEGRATION_ATTEMPT_SQL = """
+        SELECT attempt_id, state, candidate_revision
+        FROM attempts INDEXED BY one_live_attempt_per_item
+        WHERE item_id = ? AND state != 'done'
+        """
+INTEGRATION_CHECKPOINT_RECEIPT_SQL = f"""
+        SELECT {_CONSUMED_RECEIPT_COLUMNS}
+        FROM transition_history
+        WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+        ORDER BY history_id DESC
+        LIMIT 1
+        """
+
+
+def _read_status_item(connection: sqlite3.Connection, item_id: WorkItemId) -> query_models.ItemStatusItemFacts | None:
+    item_row = connection.execute(STATUS_ITEM_SQL, (item_id,)).fetchone()
     return None if item_row is None else decode_row(item_row, query_models.ItemStatusItemFacts)
 
 
@@ -657,7 +669,6 @@ def read_item_status(
 class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
     state: work_models.AttemptState
-    branch: str
     candidate_revision: str | None
 
 
@@ -683,34 +694,16 @@ def read_integration_source(
             _read_item_closure(connection, item.work_item_id, item.subject_revision),
             None,
         )
-    attempt_row = connection.execute(
-        """
-        SELECT attempt_id, state, branch, candidate_revision
-        FROM attempts INDEXED BY one_live_attempt_per_item
-        WHERE item_id = ? AND state != 'done'
-        """,
-        (item_id,),
-    ).fetchone()
+    attempt_row = connection.execute(INTEGRATION_ATTEMPT_SQL, (item_id,)).fetchone()
     if attempt_row is None:
         return query_models.IntegrationSourceFacts(project_revision, item, None, None, None)
     selected = decode_row(attempt_row, _IntegrationAttemptRow)
-    receipt_row = connection.execute(
-        f"""
-        SELECT {_CONSUMED_RECEIPT_COLUMNS}
-        FROM transition_history
-        WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
-        ORDER BY history_id DESC
-        LIMIT 1
-        """,
-        (selected.attempt_id,),
-    ).fetchone()
+    receipt_row = connection.execute(INTEGRATION_CHECKPOINT_RECEIPT_SQL, (selected.attempt_id,)).fetchone()
     checkpoint_receipt = None if receipt_row is None else _consumed_receipt(receipt_row)
     return query_models.IntegrationSourceFacts(
         project_revision,
         item,
-        query_models.IntegrationAttemptFacts(
-            selected.attempt_id, selected.state, selected.branch, selected.candidate_revision
-        ),
+        query_models.IntegrationAttemptFacts(selected.attempt_id, selected.state, selected.candidate_revision),
         None,
         checkpoint_receipt,
     )

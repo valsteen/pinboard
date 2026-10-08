@@ -12,6 +12,7 @@ import msgspec
 from pinboard.adapters.files import candidate_compatibility, root
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, RootError
+from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.application import candidate_snapshot_compatibility_models, candidate_snapshots, ports, query_models
 from pinboard.domain import work_models
 from pinboard.domain.errors import (
@@ -117,7 +118,9 @@ def _attempt_snapshot(
 
     try:
         context = store.read_candidate_snapshot_context(attempt_id)
-    except ports.WorkStoreError as error:
+    except StorageError as error:
+        if not error.invariant_violation:
+            raise
         return query_models.IntegrationEvidenceInvalid(
             attempt_id, f"candidate snapshot for {candidate_revision}", str(error)
         )
@@ -154,7 +157,12 @@ def _checkpoint_snapshot(
     """Verify the accepted candidate snapshot that a checkpoint package names by its canonical key."""
 
     key = f"{selection.attempt_id}-{selection.checkpoint_id}-candidate"
-    reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, key, 1)
+    try:
+        reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, key, 1)
+    except StorageError as error:
+        if not error.invariant_violation:
+            raise
+        return query_models.IntegrationEvidenceInvalid(selection.attempt_id, key, str(error))
     if reference is None:
         return query_models.IntegrationCandidateUnavailable(
             item.work_item_id,

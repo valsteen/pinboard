@@ -20,6 +20,11 @@ from msgspec.structs import replace as replace_struct
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.lifecycle import (
+    INTEGRATION_ATTEMPT_SQL,
+    INTEGRATION_CHECKPOINT_RECEIPT_SQL,
+    STATUS_ITEM_SQL,
+)
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import candidate_snapshots, queries, query_models
 from pinboard.application.ports import GeneratedViewReader
@@ -1031,19 +1036,41 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
 
     def test_integration_lookups_use_keyed_or_indexed_access(self) -> None:
         fixture = self.accepted_package_fixture()
-        statements = {
-            "item": ("SELECT item_id, state FROM work_items WHERE item_id = ?", ("work-a",)),
-            "attempt": (
-                "SELECT attempt_id, state FROM attempts INDEXED BY one_live_attempt_per_item "
-                "WHERE item_id = ? AND state != 'done'",
-                ("work-a",),
-            ),
+        lookups = {
+            "item": (STATUS_ITEM_SQL, ("work-a",)),
+            "attempt": (INTEGRATION_ATTEMPT_SQL, ("work-a",)),
+            "checkpoint receipt": (INTEGRATION_CHECKPOINT_RECEIPT_SQL, ("work-a-1",)),
         }
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
-            for name, (statement, parameters) in statements.items():
+            for name, (statement, parameters) in lookups.items():
                 with self.subTest(lookup=name):
                     plan = connection.execute(f"EXPLAIN QUERY PLAN {statement}", parameters).fetchall()
                     self.assertTrue(all("USING" in str(row[-1]) for row in plan), plan)
+                    if name == "checkpoint receipt":
+                        self.assertIn("checkpoint_history_by_subject", " ".join(str(row[-1]) for row in plan), plan)
+
+    def test_retryable_storage_failures_are_not_reported_as_invalid_evidence(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework the candidate.")
+        self.submit_candidate(fixture, "reviewed")
+        busy = StorageError(StorageErrorCode.BUSY, "The ledger is busy.", retryable=True)
+        with patch.object(SQLiteWorkStore, "read_candidate_snapshot_context", side_effect=busy):
+            try:
+                result: JsonObject = self.integration_leaf(fixture, "codex/work-a")
+            except Exception as error:
+                result = {"raised": type(error).__name__}
+        self.assertNotEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", result.get("code"), result)
+
+    def test_item_leaf_and_overview_run_no_integration_read(self) -> None:
+        fixture = self.accepted_package_fixture()
+        with (
+            patch("pinboard.adapters.files.root.observe_target_presence", side_effect=AssertionError("Git read")),
+            patch.object(SQLiteWorkStore, "read_integration_source", side_effect=AssertionError("integration read")),
+        ):
+            item = self.item_leaf(fixture)
+            overview = call_advertised_tool(mcp_server.OVERVIEW_TOOL, self.roots(fixture))
+        self.assertEqual("pinboard-item-status/v2", item["schema"], item)
+        self.assertEqual("pinboard-overview/v6", overview["schema"], overview)
 
     def test_integration_keeps_the_checkpoint_source_after_resume(self) -> None:
         accepted = self.accepted_package_fixture()
@@ -1131,13 +1158,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         fixture = self.accepted_package_fixture()
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
             plan = connection.execute(
-                """
-                EXPLAIN QUERY PLAN
-                SELECT history_id FROM transition_history
-                WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
-                ORDER BY history_id DESC LIMIT 1
-                """,
-                ("work-a-1",),
+                f"EXPLAIN QUERY PLAN {INTEGRATION_CHECKPOINT_RECEIPT_SQL}", ("work-a-1",)
             ).fetchall()
         self.assertIn("checkpoint_history_by_subject", " ".join(str(row[-1]) for row in plan), plan)
 

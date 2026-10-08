@@ -134,7 +134,7 @@ def _integration_failure(
     *,
     retry: str,
     recovery: str,
-    mismatches: tuple[tuple[str, JsonValue, JsonValue], ...] = (),
+    mismatches: tuple[tuple[str, JsonValue, JsonValue], ...],
 ) -> execution.OperationResult:
     """Render one unchanged integration rejection with its named facts, retry disposition, and next step."""
 
@@ -168,6 +168,7 @@ def _integration_git_failure(
         code,
         diagnostic,
         (("project_root", request.project_root), ("target", request.target)),
+        mismatches=(),
         retry="correct-input",
         recovery="Correct the Git checkout at the project root so Git can read its repository and the target, then retry this read.",
     )
@@ -188,6 +189,7 @@ def _integration_outcome(
                 "INTEGRATION_CANDIDATE_UNAVAILABLE",
                 f"Item '{item_id}' has no reviewed candidate that can be compared with '{request.target}': {reason}",
                 (("item_id", str(item_id)), ("item_state", state.value), ("reason", reason)),
+                mismatches=(),
                 retry="correct-input",
                 recovery=(
                     "Read the item with pinboard_item_status operation item. Integration compares a protected review "
@@ -212,6 +214,7 @@ def _integration_outcome(
                 "INTEGRATION_TARGET_UNRESOLVED",
                 f"Integration target '{target}' does not name a commit in the local repository at '{request.project_root}'.",
                 (("target", target), ("project_root", request.project_root)),
+                mismatches=(),
                 retry="correct-input",
                 recovery=(
                     "Name an existing local branch, remote-tracking ref, tag, or full commit id. When remote freshness "

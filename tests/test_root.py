@@ -343,16 +343,17 @@ class TargetPresenceTest(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory, self.assertRaises(RootError) as raised:
             observe_target_presence(Path(directory), "HEAD", self.diff)
-        self.assertEqual(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, raised.exception.code)
+        self.assertEqual(RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE, raised.exception.code)
 
     def test_repository_whitespace_and_split_index_configuration_do_not_change_the_verdict(self) -> None:
         self.git("config", "apply.whitespace", "error")
         self.git("config", "core.splitIndex", "true")
-        trailing = self.commit("trailing \n", "Add trailing whitespace.", self.base)
-        trailing_diff = self.git_bytes("diff", "--binary", self.base, trailing, "--")
+        with_trailing = self.commit("trailing \n", "Add a line with trailing whitespace.", self.base)
+        removed = self.commit("", "Remove the trailing-whitespace line.", with_trailing)
+        removal_diff = self.git_bytes("diff", "--binary", with_trailing, removed, "--")
         self.assertEqual(
-            ResolvedTargetPresence(trailing, present=True),
-            observe_target_presence(self.repository, trailing, trailing_diff),
+            ResolvedTargetPresence(removed, present=True),
+            observe_target_presence(self.repository, removed, removal_diff),
         )
 
     def test_reflog_selector_beyond_its_log_is_an_unresolved_target(self) -> None:
@@ -374,6 +375,7 @@ class TargetPresenceTest(unittest.TestCase):
     def test_read_only_git_directory_is_not_written_and_leaves_no_temporary_directory(self) -> None:
         git_directory = self.repository / ".git"
         before = self.git_state(git_directory)
+        status_before = self.git_bytes("status", "--porcelain", "--untracked-files=all")
         temporary_before = set(Path(tempfile.gettempdir()).glob("pinboard-integration-*"))
         for path in (git_directory, *git_directory.rglob("*")):
             if path.is_dir():
@@ -382,6 +384,7 @@ class TargetPresenceTest(unittest.TestCase):
         result = observe_target_presence(self.repository, self.candidate, self.diff)
         self.assertEqual(ResolvedTargetPresence(self.candidate, present=True), result)
         self.assertEqual(before, self.git_state(git_directory))
+        self.assertEqual(status_before, self.git_bytes("status", "--porcelain", "--untracked-files=all"))
         self.assertEqual(temporary_before, set(Path(tempfile.gettempdir()).glob("pinboard-integration-*")))
 
     def test_renamed_file_and_added_binary_are_checked_by_content(self) -> None:

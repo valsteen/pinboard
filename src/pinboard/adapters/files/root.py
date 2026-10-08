@@ -414,12 +414,8 @@ def observe_target_presence(cwd: Path, target: str, diff: bytes) -> TargetPresen
     working tree stay untouched. An empty diff needs no index and reports no change.
     """
 
-    repository = _git_read(cwd, "rev-parse", "--git-dir")
-    if repository.returncode != 0:
-        raise RootError(
-            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
-            repository.stderr.strip() or f"Cannot read the Git repository at '{cwd}'.",
-        )
+    # The existing checkout discovery read rejects a non-Git directory before the target is considered.
+    resolve_source_checkout_root(cwd)
     # Any failure to name a commit, including a reflog selector beyond its log, leaves the target unresolved.
     resolved = _git_read(cwd, "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}")
     if resolved.returncode != 0:

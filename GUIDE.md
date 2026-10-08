@@ -74,7 +74,7 @@ That request authorizes the displayed safe batch. The agent checks it again befo
 
 > I think this change was merged. Can you check whether anything is left to do?
 
-The agent compares the repository result with the goal you agreed on, the saved change, and its review. It checks whether review, your repository decision, or cleanup is still missing and continues the same work where possible. A merge or closed pull request alone does not prove the work is complete. If work was saved but never started, you can instead decide to close it as completed or dropped; the agent records that choice without inventing an implementation review.
+The agent compares the repository result with the goal you agreed on, the saved change, and its review. When it needs to know whether the change itself reached a branch, it compares the reviewed change's content with that branch, so a rebase or squash merge counts even though the commit is not an ancestor. It checks whether review, your repository decision, or cleanup is still missing and continues the same work where possible. A merge or closed pull request alone does not prove the work is complete. If work was saved but never started, you can instead decide to close it as completed or dropped; the agent records that choice without inventing an implementation review.
 
 An honest reply might be: “The change is in `main`, but no review covered it. I'd have a separate reviewer check the commit as it landed before the work is closed.” If the work was never started, your decision to mark it completed or dropped takes the shorter close route.
 

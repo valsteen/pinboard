@@ -1162,6 +1162,28 @@ def project_item_status(
     )
 
 
+def select_integration_source(facts: query_models.ItemStatusFacts) -> query_models.IntegrationSourceSelection:
+    """Choose which reviewed candidate an integration check compares, from focused item facts alone."""
+
+    closure = facts.closure
+    if facts.work_item.state == stored_state.StoredWorkItemState.DONE:
+        if (
+            closure is not None
+            and closure.action_kind == decision_models.ActionKind.COMPLETE
+            and closure.closing_attempt is not None
+        ):
+            return query_models.CompletionSelection(closure.closing_attempt.attempt_id)
+        return query_models.IntegrationCandidateUnavailable(
+            "the item closed without a completion, so no closing candidate was reviewed"
+        )
+    if not facts.attempts:
+        return query_models.IntegrationCandidateUnavailable("the item has no current attempt")
+    attempt = facts.attempts[0]
+    if attempt.state == work_models.AttemptState.REVIEW and attempt.candidate_revision is not None:
+        return query_models.ProtectedReviewSelection(attempt.attempt_id)
+    return query_models.AcceptedCheckpointSelection(attempt.attempt_id)
+
+
 def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query_models.BranchOwners | None:
     """Return every retained item and attempt that recorded this exact branch, or None when none did."""
 

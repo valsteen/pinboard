@@ -433,6 +433,41 @@ def _read_candidate_snapshot_context_facts(
     )
 
 
+def _read_latest_checkpoint_acceptance(
+    connection: sqlite3.Connection,
+    attempt_id: AttemptId,
+) -> query_models.CheckpointAcceptanceFacts | None:
+    """Read the attempt's newest checkpoint acceptance through the subject-ordered partial index."""
+
+    row = connection.execute(
+        """
+        SELECT history_id FROM transition_history
+        WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+        ORDER BY history_id DESC
+        LIMIT 1
+        """,
+        (str(attempt_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    history_id = decode_row(row, HistoryIdRow).history_id
+    receipt = sqlite_state.read_history_receipt(connection, history_id)
+    if receipt is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Checkpoint acceptance receipt is missing.")
+    try:
+        outcome = msgspec.json.decode(
+            bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True
+        )
+    except msgspec.DecodeError as error:
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE, f"Checkpoint acceptance outcome is invalid: {error}"
+        ) from error
+    package_reference = (
+        None if receipt.artifact_ref_id is None else read_artifact_reference_by_id(connection, receipt.artifact_ref_id)
+    )
+    return query_models.CheckpointAcceptanceFacts(history_id, outcome.checkpoint, package_reference)
+
+
 class SQLiteWorkStore:
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -753,6 +788,14 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return _read_candidate_snapshot_context_facts(connection, attempt_id)
+        finally:
+            connection.close()
+
+    def read_latest_checkpoint_acceptance(self, attempt_id: AttemptId) -> query_models.CheckpointAcceptanceFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return _read_latest_checkpoint_acceptance(connection, attempt_id)
         finally:
             connection.close()
 

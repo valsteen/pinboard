@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -377,6 +379,100 @@ def restore_commit_candidate(
             "Candidate restoration changed the checkout but did not produce the exact clean commit.",
         )
     return CandidateRestoreSuccess(True, candidate)
+
+
+@dataclass(frozen=True, slots=True)
+class TargetContentPresent:
+    revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class TargetContentNotPresent:
+    revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class TargetContentUnchanged:
+    """The recorded diff is empty, so there is no reviewed content to compare."""
+
+    revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class TargetUnresolved:
+    target: str
+
+
+type TargetContentObservation = (
+    TargetContentPresent | TargetContentNotPresent | TargetContentUnchanged | TargetUnresolved
+)
+
+
+def observe_target_content(cwd: Path, target: str, diff: bytes) -> TargetContentObservation:
+    """Reverse-apply a recorded diff to a target commit's tree in a private index.
+
+    The read fetches nothing and writes only a temporary index outside the repository, so it works with a
+    read-only .git. Its verdict is independent of the user's whitespace and split-index configuration.
+    """
+
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if resolved.returncode == 1:
+        return TargetUnresolved(target)
+    if resolved.returncode != 0:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            resolved.stderr.strip() or f"Cannot resolve integration target '{target}' at '{cwd}'.",
+        )
+    revision = resolved.stdout.strip()
+    if not diff:
+        return TargetContentUnchanged(revision)
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
+        environment = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+        loaded = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", revision],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+        if loaded.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                loaded.stderr.decode(errors="replace").strip() or f"Cannot read the tree of '{revision}'.",
+            )
+        applied = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "apply.whitespace=nowarn",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "-",
+            ],
+            cwd=cwd,
+            env=environment,
+            input=diff,
+            capture_output=True,
+            check=False,
+        )
+    if applied.returncode == 0:
+        return TargetContentPresent(revision)
+    if applied.returncode == 1:
+        return TargetContentNotPresent(revision)
+    raise RootError(
+        RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+        applied.stderr.decode(errors="replace").strip() or f"Cannot compare the candidate with '{revision}'.",
+    )
 
 
 def resolve_shared_repository_root(cwd: Path) -> Path:

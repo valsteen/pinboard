@@ -949,6 +949,86 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
 
 
+@dataclass(frozen=True, slots=True)
+class CheckpointAcceptanceFacts:
+    """The latest checkpoint acceptance of one attempt and its linked checkpoint package reference."""
+
+    history_id: HistoryId
+    checkpoint_id: str
+    package_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewSelection:
+    attempt_id: AttemptId
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointSelection:
+    attempt_id: AttemptId
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionSelection:
+    attempt_id: AttemptId
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateUnavailable:
+    reason: str
+
+
+type IntegrationSourceSelection = (
+    ProtectedReviewSelection | AcceptedCheckpointSelection | CompletionSelection | IntegrationCandidateUnavailable
+)
+
+
+class IntegrationPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+class ProtectedReviewSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+    """The accepted base of a commit candidate, or the actual preimage of a working-tree candidate."""
+
+
+class AcceptedCheckpointSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+    checkpoint_id: str
+
+
+class CompletionSource(msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type IntegrationSource = ProtectedReviewSource | AcceptedCheckpointSource | CompletionSource
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Whether one reviewed candidate's recorded change is present in a caller-named local target commit."""
+
+    schema: Literal["pinboard-item-integration/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    resolved_revision: str
+    source: IntegrationSource
+    presence: IntegrationPresence
+
+
 class ParallelSelection(Enum):
     ALL_SAFE = "all-safe"
     SELECTED = "selected"

@@ -194,7 +194,6 @@ def ready_review(
 ) -> bytes:
     checkpoint = value.checkpoint
     assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
-    coverage = checkpoint.coverage[0]
     review = work_brief_models.WorkBriefReview(
         "pinboard-work-brief-review/v3",
         value.attempt_id,
@@ -205,10 +204,11 @@ def ready_review(
         reviewer,
         "complete",
         "ready",
-        (
+        tuple(
             work_brief_models.ReviewCoverageResult(
                 coverage.authority_id, coverage.family, coverage.owner, "covered", result
-            ),
+            )
+            for coverage in checkpoint.coverage
         ),
     )
     return canonical_work_brief_review_bytes(review)

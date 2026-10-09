@@ -23,6 +23,7 @@ from pinboard.application import (
     checkpoint_packages,
     queries,
     query_models,
+    stored_state,
     work_brief_models,
 )
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
@@ -213,6 +214,13 @@ class CorrectionContext:
     correction_history_id: HistoryId
     reuse_eligible: bool
     reuse_blockers: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReplacementReadiness:
+    proof: stored_state.ArtifactReference
+    ready_review: stored_state.ArtifactReference
+    changed_surfaces: tuple[ChangedSurface, ...]
 
 
 type DispatchPreparationChoice = OrdinaryDispatch | ReviewedDispatch | CorrectionDispatch
@@ -627,6 +635,172 @@ def _read_dispatch_brief(
     return brief
 
 
+def _replacement_readiness_context(
+    store: WorkStore,
+    artifacts: DispatchArtifactPort,
+    source_checkout_root: Path,
+    action: decision_models.DispatchAction,
+    checkpoint_id: str,
+    review: work_brief_models.CorrectionSourceReview,
+    history_id: HistoryId,
+) -> DispatchResult[tuple[work_brief_models.WorkBrief, candidate_snapshots.CandidateSnapshot]]:
+    selected = select_dispatch(store, action, datetime.now(UTC))
+    if isinstance(selected, ApplicationDispatchFailure):
+        return _dispatch_failure(selected)
+    attempt = selected.attempt
+    status = store.read_item_status(attempt.work_item_id)
+    event = (
+        None
+        if status is None
+        else next((value.review_event for value in status.attempts if value.attempt_id == attempt.attempt_id), None)
+    )
+    if (
+        event is None
+        or event.action_kind != decision_models.ActionKind.RETURN_FOR_CORRECTION
+        or event.receipt.history_id != history_id
+        or not event.rebound_since
+    ):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
+            "Replacement readiness requires the latest returned round made historical by replacement/rebind. "
+            "Inspect the current attempt and select its replacement recovery; ordinary correction needs a current return.",
+            _fresh_review_details((FailureFact("selected_return_history_id", history_id),), ()),
+        )
+    brief = decode_canonical_work_brief(artifacts.read(selected.brief_reference))
+    if not isinstance(brief, work_brief_models.WorkBrief):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_INVALID, "Current canonical brief is unavailable.", None
+        )
+    if (failure := queries.validate_attempt_brief_identity(attempt, brief)) is not None:
+        return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, failure.details)
+    if brief.checkpoint.checkpoint_id != checkpoint_id or not isinstance(
+        brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint
+    ):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
+            "Replacement readiness requires the exact current cross-boundary checkpoint.",
+            None,
+        )
+    if (
+        failure := validate_executable_work_brief(store, brief, root.classify_checkout(source_checkout_root))
+    ) is not None:
+        return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, None)
+    current_sources = _effective_correction_brief(source_checkout_root, brief)
+    if isinstance(current_sources, DispatchFailure):
+        return current_sources
+    if canonical_work_brief_bytes(current_sources) != canonical_work_brief_bytes(brief):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+            "Current sources differ from the canonical replacement brief. Review and bind the exact current authorities.",
+            _fresh_review_details((), ()),
+        )
+    if (failure := validate_work_brief_review(review.contract_review, brief)) is not None:
+        return review_failure(failure)
+    facts = store.read_review_job_context(attempt.attempt_id, None, history_id, None, None)
+    reference = None if facts is None else facts.returned_candidate_reference
+    identity = review.starting_candidate
+    if reference is None or (
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+    ) != (identity.key, identity.revision, identity.selector, identity.content_sha256, identity.size_bytes):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+            "Replacement readiness must name the selected return's exact accepted snapshot.",
+            _fresh_review_details((), ()),
+        )
+    snapshot = _read_correction_snapshot(
+        store,
+        artifacts,
+        source_checkout_root,
+        brief,
+        history_id,
+        review.starting_candidate,
+        review.correction_input.reason,
+    )
+    if isinstance(snapshot, DispatchFailure):
+        return snapshot
+    return brief, snapshot
+
+
+def prepare_replacement_readiness(
+    store: WorkStore,
+    artifacts: DispatchArtifactPort,
+    source_checkout_root: Path,
+    action: decision_models.DispatchAction,
+    checkpoint_id: str,
+    review: work_brief_models.CorrectionSourceReview,
+    review_id: ReviewId,
+    history_id: HistoryId,
+) -> DispatchResult[ReplacementReadiness] | ArtifactAcceptanceFailure | ArtifactWriteFailure:
+    """Publish candidate proof then plain readiness; never publish a prompt or change lifecycle/authority."""
+    context = _replacement_readiness_context(
+        store, artifacts, source_checkout_root, action, checkpoint_id, review, history_id
+    )
+    if isinstance(context, DispatchFailure):
+        return context
+    brief, snapshot = context
+    proof_key = "replacement-readiness-" + _correction_review_subject(review, snapshot)
+    surfaces: tuple[ChangedSurface, ...] = ()
+    selectors: tuple[FailureFact, ...] = ()
+    publications: list[stored_state.ArtifactReference] = []
+    try:
+        for key, content in (
+            (proof_key, canonical_correction_source_review_bytes(review)),
+            (ready_review_key_sha256(brief), canonical_work_brief_review_bytes(review.contract_review)),
+        ):
+            publication = publish_dispatch_review(
+                store, artifacts, AttemptId(brief.attempt_id), key, content, review_id, datetime.now(UTC)
+            )
+            if isinstance(publication, ApplicationDispatchFailure):
+                failure = _dispatch_failure(publication)
+                return _after_publication_failure(
+                    failure.code,
+                    failure.message,
+                    _merge_changed_surfaces(
+                        surfaces, () if failure.details is None else failure.details.changed_surfaces
+                    ),
+                    failure.details,
+                    selectors,
+                )
+            if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+                if not surfaces:
+                    return publication
+                return dataclass_replace(
+                    publication,
+                    details=dataclass_replace(
+                        publication.details,
+                        observed=(*selectors, *publication.details.observed),
+                        retry=RetryDisposition.DO_NOT_RETRY,
+                        effect=EffectDisposition.COMMITTED,
+                        changed_surfaces=_merge_changed_surfaces(surfaces, publication.details.changed_surfaces),
+                    ),
+                )
+            surfaces = _merge_changed_surfaces(surfaces, publication.changed_surfaces)
+            selectors = (*selectors, FailureFact("published_readiness_selector", publication.reference.selector))
+            publications.append(publication.reference)
+            if artifacts.read(publication.reference) != content:
+                raise AssertionError("Accepted readiness bytes differ from their immutable publication.")
+            rechecked = _replacement_readiness_context(
+                store, artifacts, source_checkout_root, action, checkpoint_id, review, history_id
+            )
+            if isinstance(rechecked, DispatchFailure):
+                return _after_publication_failure(
+                    rechecked.code, rechecked.message, surfaces, rechecked.details, selectors
+                )
+    except (ArtifactError, WorkStoreError) as error:
+        if (
+            not surfaces
+            or (isinstance(error, ArtifactError) and error.code == ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION)
+            or (isinstance(error, WorkStoreError) and error.invariant_violation)
+        ):
+            raise
+        return _after_infrastructure_failure(DispatchErrorCode.DISPATCH_REVIEW_READ_FAILED, error, surfaces, selectors)
+    return ReplacementReadiness(publications[0], publications[1], surfaces)
+
+
 def _validate_correction_history(
     store: WorkStore,
     attempt_id: AttemptId,
@@ -725,7 +899,7 @@ def _read_correction_snapshot(
         )
     facts = store.read_review_job_context(AttemptId(brief.attempt_id), None, correction_history_id, None, None)
     receipt = None if facts is None else facts.correction_receipt
-    assert receipt is not None  # selected current canonical return was checked before this operation
+    assert receipt is not None  # the caller checked the selected canonical return before this operation
     if isinstance(snapshot, candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot):
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,

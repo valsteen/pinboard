@@ -1,0 +1,18 @@
+{
+  "id": "s19-assigned-tool-maintainer",
+  "title": "Dependency ownership becomes the explicit development assignment",
+  "world": "minimal",
+  "world_extra": null,
+  "source": "Synthetic held-out case registered for replacement readiness and repair/defect decision guidance, 2026-10-08.",
+  "ground_truth": "Diagnosis only. The human explicitly assigns Pinboard development for the identified replacement-readiness defect, so its implementation is within the proposed repair scope. No actual implementation, intake, Git publication or paid evaluation is requested yet. Existing current-return protections must remain.",
+  "turns": [
+    {
+      "human": "Use Pinboard to diagnose this maintainer issue. In this chat Pinboard development itself is explicitly assigned, rather than being an external dependency of a tally task. Ordinary readiness looks for reviewed source bytes at the accepted base; a returned candidate legitimately moved that source, and a replacement brief names its current location. The old return is historical after rebind. Explain a bounded fix and its verification, without editing or saving yet.",
+      "before": null
+    },
+    {
+      "human": "I accept that narrow repair direction for later, but have not asked you to save or begin it. Tell me the disposition and the next decision.",
+      "before": null
+    }
+  ]
+}

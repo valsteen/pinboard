@@ -612,12 +612,23 @@ class LocalCorrectionDispatchChoice(DispatchChoiceBase, tag="local-correction", 
     correction_history_id: PositiveInt
 
 
+class ReplacementReadinessChoice(
+    msgspec.Struct, tag="replacement-readiness", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    receipt: DispatchReceipt
+    checkpoint_id: PathComponent
+    brief_review: work_brief_models.CorrectionSourceReview
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
 type DispatchChoice = (
     OrdinaryDispatchChoice
     | ReviewedDispatchChoice
     | CorrectionDispatchChoice
     | ReuseCorrectionDispatchChoice
     | LocalCorrectionDispatchChoice
+    | ReplacementReadinessChoice
 )
 
 
@@ -2572,6 +2583,27 @@ class BriefReviewInfrastructureUnchangedFailure(PublicationInfrastructureUnchang
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
 
 
+def _require_job_publication(
+    surfaces: tuple[JobPublicationSurface, ...],
+    state_changed: bool,
+    effect: Literal["unchanged", "committed"],
+    retry: Literal["safe-to-repeat", "do-not-retry"],
+) -> None:
+    if surfaces not in (
+        (),
+        ("immutable-artifact",),
+        ("accepted-artifact-reference", "ledger"),
+        ("immutable-artifact", "accepted-artifact-reference", "ledger"),
+    ):
+        raise ValueError("Job publication must expose an exact immutable/reference/ledger surface set.")
+    changed = bool(surfaces)
+    _require_state_changed(state_changed, changed)
+    if effect != ("committed" if changed else "unchanged") or retry != (
+        "do-not-retry" if changed else "safe-to-repeat"
+    ):
+        raise ValueError("Job publication effect and retry must match its terminal surfaces.")
+
+
 class PublishedJobReady(_VariableStateChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     status: Literal["ready"]
     prompt_reference: dispatch_models.PromptReferenceView
@@ -2583,19 +2615,7 @@ class PublishedJobReady(_VariableStateChangedResult, msgspec.Struct, frozen=True
 
     def __post_init__(self) -> None:
         surfaces = self.changed_surfaces
-        if surfaces not in (
-            (),
-            ("immutable-artifact",),
-            ("accepted-artifact-reference", "ledger"),
-            ("immutable-artifact", "accepted-artifact-reference", "ledger"),
-        ):
-            raise ValueError("Job publication must expose an exact immutable/reference/ledger surface set.")
-        changed = bool(surfaces)
-        _require_state_changed(self.state_changed, changed)
-        if self.effect != ("committed" if changed else "unchanged") or self.retry != (
-            "do-not-retry" if changed else "safe-to-repeat"
-        ):
-            raise ValueError("Job publication effect and retry must match its terminal surfaces.")
+        _require_job_publication(surfaces, self.state_changed, self.effect, self.retry)
         reference = self.prompt_reference
         if reference.artifact_created and "immutable-artifact" not in surfaces:
             raise ValueError("A newly created prompt must expose its immutable artifact effect.")
@@ -2607,6 +2627,23 @@ class DispatchReady(PublishedJobReady, frozen=True):
     schema: Literal["pinboard-mcp-dispatch-result/v1"]
     attempt_id: PathComponent
     checkpoint_id: PathComponent
+
+
+class ReplacementReadinessReady(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-dispatch-result/v1"]
+    status: Literal["replacement-ready"]
+    attempt_id: PathComponent
+    checkpoint_id: PathComponent
+    proof_reference: ReviewEvidenceReference
+    ready_review_reference: ReviewEvidenceReference
+    next_step: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged", "committed"]
+    retry: Literal["safe-to-repeat", "do-not-retry"]
+    changed_surfaces: tuple[JobPublicationSurface, ...]
+
+    def __post_init__(self) -> None:
+        _require_job_publication(self.changed_surfaces, self.state_changed, self.effect, self.retry)
 
 
 class ReviewJobReady(PublishedJobReady, frozen=True):
@@ -2812,6 +2849,7 @@ class ReviewJobFailedAfterPublication(JobFailedAfterPublication, frozen=True):
 
 DISPATCH_RESULT_TYPES = (
     DispatchReady,
+    ReplacementReadinessReady,
     DispatchInvalid,
     DispatchRejected,
     DispatchInfrastructureFailure,
@@ -3124,6 +3162,7 @@ type ResultBoundary = (
     | type[TransitionRejected]
     | type[TransitionFailedAfterPublication]
     | type[DispatchReady]
+    | type[ReplacementReadinessReady]
     | type[DispatchInvalid]
     | type[DispatchRejected]
     | type[DispatchInfrastructureFailure]

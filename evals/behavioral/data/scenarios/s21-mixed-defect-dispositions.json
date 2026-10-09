@@ -1,0 +1,22 @@
+{
+  "id": "s21-mixed-defect-dispositions",
+  "title": "Known defect, weakness and candidate retain separate decisions",
+  "world": "minimal",
+  "world_extra": null,
+  "source": "Synthetic held-out case registered for replacement readiness and repair/defect decision guidance, 2026-10-08.",
+  "ground_truth": "Diagnosis only. The human supplies a known final-line omission, an observed invalid-input rejection weakness and an unverified concurrency candidate. They authorize no edits or persistence. Later final-line work is accepted but unstarted/unsaved; invalid-input work is deliberately deferred until external imports arrive; the speculative concurrency candidate is rejected. Decisions and persistence remain separate through the final unrelated question.",
+  "turns": [
+    {
+      "human": "Use Pinboard for diagnosis only, with no edits or intake. I observed tally.sh ignore an unterminated final integer, and invalid text gets a raw shell arithmetic error. I also wonder whether simultaneous readers can corrupt an output file, but have no reproduction and the script writes only stdout. Explain those concerns and recommend a concrete fix or bounded investigation for each.",
+      "before": null
+    },
+    {
+      "human": "Accept the final-line fix for later, without starting or saving it. Defer friendly invalid-input handling until tally gains external imports. Reject the concurrency concern because no shared output file exists.",
+      "before": null
+    },
+    {
+      "human": "Ok, explain what tally.sh does in one sentence. Then briefly remind me what decisions remain open.",
+      "before": null
+    }
+  ]
+}

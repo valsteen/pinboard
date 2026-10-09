@@ -59,3 +59,4 @@ A scenario run passes when no reply fails any item. `n/a` items do not count aga
 ## Change log
 
 - 2026-09-29T05:45Z — added item P12 (opportunity checkpoint), pre-registered under accepted definition revision 4 before any second-round run. No other text changed; the definition's per-rule pass bar against baseline replaces the all-or-nothing pass bar above for the second round, as recorded in the round-2 summary.
+- 2026-10-09 — Prospectively, N1 permits one concise closing echo of important facts when the human explicitly requested it. This allowance excuses only that echo, not additional repetition, the word limit, unrequested process detail or multiple follow-up menus; P9 remains unchanged. Historical scores and completed comparisons retain their original checklist meaning.

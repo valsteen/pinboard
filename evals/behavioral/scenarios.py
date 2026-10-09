@@ -15,7 +15,7 @@ from evals.behavioral.records import Scenario, ScenarioSet, WorldKind
 
 DATA = Path(__file__).parent / "data"
 CHECKLIST = DATA / "checklist.md"
-CHECKLIST_SHA256 = "bbc59ff4ae66b28a9cf8be1b4924e28e39d9da1c0e582fb7eb71b8ec2293d90a"
+CHECKLIST_SHA256 = "7af6c74862c9d97e16e72f40ae2bc5457a25b373a76561f55a034d62e0bece32"
 WORLD_FACTS_FULL = DATA / "world-facts-full.md"
 FIXTURE = DATA / "fixture"
 

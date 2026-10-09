@@ -105,6 +105,7 @@ from pinboard.mcp.contracts import (
     ProposalRejected,
     PrReviewRejected,
     PrReviewSuccess,
+    ReplacementReadinessReady,
     RequestBoundary,
     ResultBoundary,
     RetainedV3BriefReviewNeedsCorrection,
@@ -538,6 +539,7 @@ def _apply_job_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
         }
     for name in (
         "DispatchReady",
+        "ReplacementReadinessReady",
         "ReviewJobReady",
         "CandidateReviewRecorded",
         "DispatchFailedAfterPublication",
@@ -569,7 +571,7 @@ def _apply_job_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
                 "effect": {"const": "committed" if surfaces else "unchanged"},
                 "retry": {"const": "do-not-retry" if surfaces else "safe-to-repeat"},
             }
-            if not failed and name != "CandidateReviewRecorded":
+            if not failed and name not in ("CandidateReviewRecorded", "ReplacementReadinessReady"):
                 reference_properties: dict[str, JsonSchemaValue] = {}
                 if "immutable-artifact" not in surfaces:
                     reference_properties["artifact_created"] = {"const": False}
@@ -770,6 +772,8 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     elif tool_name == "pinboard_dispatch":
         if status == "ready":
             result_type = DispatchReady
+        elif status == "replacement-ready":
+            result_type = ReplacementReadinessReady
         elif status == "failed-after-publication":
             result_type = DispatchFailedAfterPublication
         elif status == "infrastructure-failure":

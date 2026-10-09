@@ -16,6 +16,7 @@ import msgspec
 from pinboard.adapters import dispatch_operations
 from pinboard.adapters.files import root
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     action_models,
@@ -25,14 +26,19 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
+from pinboard.application import (
+    dispatch as application_dispatch,
+)
+from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.brief_source_models import BriefSourceFailure, authority_selector
 from pinboard.application.dispatch_models import DispatchArtifactPort
 from pinboard.application.ports import WorkStore
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import AttemptId, HistoryId
+from pinboard.domain.identifiers import AttemptId, HistoryId, ReviewId
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import job_operations as mcp_jobs
 from pinboard.mcp import server
+from pinboard.mcp.contracts import JsonValue
 from tests import test_dispatch
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_native_tool
@@ -533,6 +539,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
     def test_replacement_brief_uses_historical_findings_but_requires_a_new_current_return(self) -> None:
         with (
             patch("pinboard.mcp.job_operations.datetime", wraps=datetime) as boundary_clock,
+            patch("pinboard.adapters.dispatch_operations.datetime", wraps=datetime) as dispatch_clock,
             patch("tests.checkpoint_support.datetime", wraps=datetime) as fixture_clock,
         ):
             clock_ticks = count()
@@ -541,22 +548,176 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                 return SQLITE_NOW + timedelta(seconds=next(clock_ticks))
 
             boundary_clock.now.side_effect = sampled_time
+            dispatch_clock.now.side_effect = sampled_time
             fixture_clock.now.return_value = SQLITE_NOW
-            for publish_ready in (False, True):
-                with self.subTest(publish_ready=publish_ready):
-                    self.replacement_brief_recovery(publish_ready)
+            for publish_ready, failure in (
+                (False, "infrastructure"),
+                (True, "infrastructure"),
+                (True, "source"),
+                (True, "candidate"),
+            ):
+                with self.subTest(publish_ready=publish_ready, failure=failure):
+                    self.replacement_brief_recovery(publish_ready, failure)
 
-    def replacement_brief_recovery(self, publish_ready: bool) -> None:  # noqa: PLR0915 - one complete causal recovery journey
+    def replacement_readiness_checks(self, fixture: CheckpointFixture, choice: JsonObject, failure: str) -> None:  # noqa: PLR0915 - one ordered rejection/publication recovery matrix
+        mutations: tuple[tuple[tuple[str, ...], JsonValue], ...] = (
+            (("checkpoint_id",), "wrong-checkpoint"),
+            (("correction_history_id",), 999999),
+            (("receipt", "subject_revision"), "1"),
+            (("brief_review", "contract_review", "reviewer_task_id"), fixture.brief.owner_task_id),
+            (("brief_review", "contract_review", "coverage"), []),
+            (("brief_review", "contract_review", "accepted_brief_sha256"), "f" * 64),
+            (("brief_review", "starting_candidate", "content_sha256"), "f" * 64),
+            (("brief_review", "starting_candidate", "size_bytes"), 1),
+            (("brief_review", "correction_input", "reason"), "Another return's reason."),
+        )
+        before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        files = {path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()}
+        for keys, value in mutations:
+            with self.subTest(invalid=keys):
+                changed = deepcopy(choice)
+                target = changed
+                for key in keys[:-1]:
+                    target = self.json_object(target[key])
+                target[keys[-1]] = value
+                rejected = self.dispatch_native(fixture, changed)
+                self.assertEqual("rejected", rejected["status"], rejected)
+                self.assertFalse(rejected["state_changed"], rejected)
+                self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+                self.assertEqual(
+                    files,
+                    {path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()},
+                )
+        for relative in ("new-authority.md", "tests/test_only.py"):
+            selected = fixture.project / relative
+            original = selected.read_bytes()
+            selected.write_bytes(b"changed candidate\n")
+            rejected = self.dispatch_native(fixture, choice)
+            self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected["code"], rejected)
+            self.assertFalse(rejected["state_changed"])
+            selected.write_bytes(original)
+        publish = dispatch_operations.publish_dispatch_review
+        changed_path = fixture.project / ("new-authority.md" if failure == "source" else "tests/test_only.py")
+        original = changed_path.read_bytes()
+
+        def second_publication_fails(
+            store: WorkStore,
+            artifacts: DispatchArtifactPort,
+            attempt_id: AttemptId,
+            key: str,
+            content: bytes,
+            review_id: ReviewId,
+            accepted_at: datetime,
+        ) -> (
+            application_dispatch.DispatchResult[application_dispatch.AcceptedDispatchReview]
+            | ArtifactAcceptanceFailure
+            | ArtifactWriteFailure
+        ):
+            if not key.startswith("replacement-readiness-") and failure == "infrastructure":
+                raise ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, "plain readiness publication failed")
+            result = publish(store, artifacts, attempt_id, key, content, review_id, accepted_at)
+            if key.startswith("replacement-readiness-") and failure in ("source", "candidate"):
+                changed_path.write_bytes(b"Controlled change after proof publication.\n")
+            return result
+
+        with patch(
+            "pinboard.adapters.dispatch_operations.publish_dispatch_review", side_effect=second_publication_fails
+        ):
+            failed = self.dispatch_native(fixture, choice)
+        self.assertEqual("failed-after-publication", failed["status"], failed)
+        self.assertEqual("do-not-retry", failed["retry"])
+        self.assertEqual(["immutable-artifact", "accepted-artifact-reference", "ledger"], failed["changed_surfaces"])
+        if failure in ("source", "candidate"):
+            self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", failed["code"], failed)
+            changed_path.write_bytes(original)
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+        self.assertIsNone(
+            fresh.read_artifact_reference(
+                work_models.ArtifactKind.EVIDENCE,
+                f"work-a-1-brief-review-{work_briefs.ready_review_key_sha256(fixture.brief)}",
+                1,
+            )
+        )
+
+        def pause_after_plain_publication(
+            store: WorkStore,
+            artifacts: DispatchArtifactPort,
+            attempt_id: AttemptId,
+            key: str,
+            content: bytes,
+            review_id: ReviewId,
+            accepted_at: datetime,
+        ) -> (
+            application_dispatch.DispatchResult[application_dispatch.AcceptedDispatchReview]
+            | ArtifactAcceptanceFailure
+            | ArtifactWriteFailure
+        ):
+            result = publish(store, artifacts, attempt_id, key, content, review_id, accepted_at)
+            if not key.startswith("replacement-readiness-"):
+                paused = self.transition_result(
+                    fixture, self.project_action(fixture, "pause:work-a-1"), {"reason": "Controlled concurrent action."}
+                )
+                self.assertEqual("committed", paused["status"], paused)
+            return result
+
+        with patch(
+            "pinboard.adapters.dispatch_operations.publish_dispatch_review", side_effect=pause_after_plain_publication
+        ):
+            failed = self.dispatch_native(fixture, choice)
+        self.assertEqual("failed-after-publication", failed["status"], failed)
+        self.assertEqual("do-not-retry", failed["retry"])
+        self.assertEqual(["immutable-artifact", "accepted-artifact-reference", "ledger"], failed["changed_surfaces"])
+        self.pause_and_resume(fixture, 0)
+        self.assertEqual(
+            "committed", self.transition_result(fixture, self.project_action(fixture, "resume:work-a"), {})["status"]
+        )
+        action = self.project_action(fixture, "dispatch:work-a-1")
+        choice["receipt"] = {"action_id": action["action_id"], "subject_revision": action["subject_revision"]}
+
+    def replacement_brief_recovery(self, publish_ready: bool, failure: str) -> None:  # noqa: PLR0915 - one complete causal recovery journey
         fixture = self.correction_fixture()
         old_history, old_choice = self.submit_and_return(fixture, "returned-test", committed=True)
-        candidate = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=fixture.project, check=True, capture_output=True, text=True
-        ).stdout.strip()
+        # Candidate sources moved, removed and added after base; its accepted snapshot owns those bytes.
+        (fixture.project / "architecture.md").rename(fixture.project / "replacement.md")
+        (fixture.project / "new-authority.md").write_text("New candidate authority.\n", encoding="utf-8")
+        candidate = self.commit_all(fixture.project, "moved and newly added candidate authorities")
+        lease = self.native_attempt_acquire(fixture, "structural-return")
+        self.assertEqual(
+            "committed",
+            self.transition_result(
+                fixture,
+                self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease),
+                {"candidate": candidate},
+            )["status"],
+        )
+        returned = self.transition_result(
+            fixture,
+            self.project_action(fixture, "return-for-correction:work-a-1"),
+            {"reason": "Repair the test-only candidate."},
+        )
+        old_history = returned["history_id"]
+        assert isinstance(old_history, int)
+        old_choice["correction_history_id"] = old_history
+        checkpoint = fixture.brief.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        moved = msgspec.structs.replace(checkpoint.reviewed_authorities[0], selector="replacement.md#Contract")
+        added = msgspec.structs.replace(
+            moved,
+            authority_id="new-authority",
+            selector="new-authority.md",
+            reviewed_sha256=hashlib.sha256((fixture.project / "new-authority.md").read_bytes()).hexdigest(),
+        )
         replacement = msgspec.structs.replace(
             fixture.brief,
             artifact_revision=fixture.brief.artifact_revision + 1,
             checkpoint=msgspec.structs.replace(
-                fixture.brief.checkpoint, title="Review a genuinely distinct replacement checkpoint"
+                checkpoint,
+                title="Review a genuinely distinct replacement checkpoint",
+                reviewed_authorities=(moved, added),
+                coverage=(
+                    *checkpoint.coverage,
+                    msgspec.structs.replace(checkpoint.coverage[0], authority_id="new-authority"),
+                ),
             ),
             bootstrap=(
                 *fixture.brief.bootstrap,
@@ -600,34 +761,68 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertFalse(stale["state_changed"])
         self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
 
+        replacement_choice: JsonObject | None = None
         if publish_ready:
-            environment = msgspec.structs.replace(
-                test_dispatch.DispatchTest().environment(fixture.project),
-                branch=replacement.branch,
-                starting_revision=replacement.base_revision,
+            ordinary = deepcopy(old_choice)
+            ordinary["kind"] = "reviewed"
+            ordinary["brief_review"] = msgspec.json.decode(ready_review(replacement))
+            del ordinary["correction_history_id"]
+            rejected = self.dispatch_native(fixture, ordinary)
+            self.assertEqual("DISPATCH_AUTHORITY_UNREADABLE", rejected["code"], rejected)
+            self.assertFalse(rejected["state_changed"])
+            returned_context = SQLiteWorkStore(fixture.work / "state.sqlite3").read_review_job_context(
+                AttemptId("work-a-1"), None, HistoryId(old_history), None, None
             )
+            assert returned_context is not None and returned_context.returned_candidate_reference is not None
+            replacement_choice = self.correction_choice(
+                fixture,
+                "replacement-readiness",
+                returned_context.returned_candidate_reference,
+                old_history,
+                "Repair the test-only candidate.",
+            )
+            replacement_choice["kind"] = "replacement-readiness"
+            replacement_review = self.json_object(replacement_choice["brief_review"])
+            self.json_object(replacement_review["contract_review"])["reviewer_task_id"] = "replacement-reviewer"
+            replacement_review["assessment"] = (
+                "The unchanged returned structural candidate satisfies the complete replacement contracts."
+            )
+            del replacement_choice["environment"]
+            del replacement_choice["prompt"]
+            self.replacement_readiness_checks(fixture, replacement_choice, failure)
             published_ready = call_native_tool(
                 server.DISPATCH_TOOL,
                 {
                     "project_root": str(fixture.project),
                     "work_root": str(fixture.work),
-                    "dispatch": {
-                        "kind": "reviewed",
-                        "receipt": {
-                            "action_id": {"kind": "dispatch", "subject": "work-a-1"},
-                            "subject_revision": action["subject_revision"],
-                        },
-                        "checkpoint_id": replacement.checkpoint.checkpoint_id,
-                        "environment": msgspec.to_builtins(
-                            environment, enc_hook=test_dispatch.dispatch_environment_enc_hook
-                        ),
-                        "prompt": None,
-                        "brief_review": msgspec.json.decode(ready_review(replacement)),
-                        "review_id": "replacement-readiness",
-                    },
+                    "dispatch": replacement_choice,
                 },
             )
-            self.assertEqual("ready", published_ready["status"], published_ready)
+            self.assertEqual("replacement-ready", published_ready["status"], published_ready)
+            self.assertNotIn("native_launch", published_ready)
+            self.assertNotIn("prompt_reference", published_ready)
+            proof = self.json_object(published_ready["proof_reference"])
+            proof_key, proof_revision = proof["key"], proof["revision"]
+            assert isinstance(proof_key, str) and isinstance(proof_revision, int)
+            accepted = SQLiteWorkStore(fixture.work / "state.sqlite3").read_artifact_reference(
+                work_models.ArtifactKind.EVIDENCE, proof_key, proof_revision
+            )
+            assert accepted is not None
+            self.assertEqual(proof["sha256"], accepted.content_sha256)
+            self.assertEqual(
+                msgspec.json.decode(msgspec.json.encode(replacement_choice["brief_review"])),
+                json.loads((fixture.work / accepted.selector).read_bytes()),
+            )
+            reused = self.dispatch_native(fixture, replacement_choice)
+            self.assertEqual("replacement-ready", reused["status"], reused)
+            self.assertFalse(reused["state_changed"])
+            collision = deepcopy(replacement_choice)
+            collision["review_id"] = "different-replacement-assessment"
+            self.json_object(collision["brief_review"])["assessment"] = "A differing independent assessment."
+            rejected = self.dispatch_native(fixture, collision)
+            self.assertEqual("DISPATCH_BRIEF_REVIEW_COLLISION", rejected["code"], rejected)
+            self.assertEqual("do-not-retry", rejected["retry"])
+            self.assertTrue(rejected["state_changed"])
         ready_reference = SQLiteWorkStore(fixture.work / "state.sqlite3").read_artifact_reference(
             work_models.ArtifactKind.EVIDENCE, ready_key, 1
         )
@@ -667,7 +862,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         # A deterministic reviewer verdict is evidence input, not a prose-semantic assertion.
         fresh_verdict = b"Complete replacement-brief review: prior finding revalidated; correction remains required.\n"
         (fixture.work / "attempts" / "work-a-1" / "review.md").write_bytes(fresh_verdict)
-        reason = "Apply the complete replacement-brief review, retaining the prior finding."
+        reason = "Repair the test-only candidate."
         returned = self.transition_result(
             fixture, self.project_action(fixture, "return-for-correction:work-a-1"), {"reason": reason}
         )
@@ -675,16 +870,24 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         new_history = returned["history_id"]
         assert isinstance(new_history, int)
         self.assertNotEqual(old_history, new_history)
+        if publish_ready:
+            assert replacement_choice is not None
+            current_action = self.project_action(fixture, "dispatch:work-a-1")
+            replacement_choice["receipt"] = {
+                "action_id": current_action["action_id"],
+                "subject_revision": current_action["subject_revision"],
+            }
+            rejected = self.dispatch_native(fixture, replacement_choice)
+            self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", rejected["code"], rejected)
+            self.assertFalse(rejected["state_changed"])
         current_choice = self.correction_choice(
             fixture, "replacement-correction", context.reference, new_history, reason
         )
-        self.assertEqual(
-            "ready",
-            call_native_tool(
-                server.DISPATCH_TOOL,
-                {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": current_choice},
-            )["status"],
+        dispatched = call_native_tool(
+            server.DISPATCH_TOOL,
+            {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": current_choice},
         )
+        self.assertEqual("ready", dispatched["status"], dispatched)
         reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3")
         fresh_context = reloaded.read_review_job_context(
             AttemptId("work-a-1"), None, HistoryId(new_history), None, None

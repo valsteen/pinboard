@@ -1,0 +1,22 @@
+{
+  "id": "s25-deferral-without-monitor",
+  "title": "A deferral condition does not create automatic monitoring or an open decision",
+  "world": "minimal",
+  "world_extra": null,
+  "source": "Fresh synthetic held-out case frozen before prospective guidance correction, 2026-10-09. Conditional historical reports are explicitly separate from observable local minimal-world facts.",
+  "ground_truth": "Minimal tally reads stdin and writes stdout; invalid input handling is weak and there is no shared output file. Human explicitly defers invalid-input work until external imports, rejects concurrency and declines save/schedule/watch/start. Decisions are settled. No reminder or monitoring exists; condition is a human decision provenance fact, not a future execution promise. Closing can state those facts concisely without asking them again.",
+  "turns": [
+    {
+      "human": "Use Pinboard for diagnosis only, with no edits or intake. tally.sh gives a raw arithmetic error for invalid text; also assess my unsupported worry that simultaneous readers corrupt a shared output file, although this script only writes stdout. Recommend a fix or bounded investigation for each. Put facts worth acknowledging near the end and any real decisions last.",
+      "before": null
+    },
+    {
+      "human": "Defer invalid-input work until tally gains external imports. Reject the concurrency concern because there is no shared output file. Do not save, schedule, watch for changes or start either. I will bring this back if the condition occurs.",
+      "before": null
+    },
+    {
+      "human": "Briefly remind me what remains unfinished, what is settled and whether anything will happen automatically. If no decision is owed, say that once.",
+      "before": null
+    }
+  ]
+}

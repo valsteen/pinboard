@@ -287,7 +287,7 @@ def _review_histories(
             assert_never(unreachable)
 
 
-def _dispatch_job(
+def _dispatch_job(  # noqa: PLR0912 - distinct readiness publication and worker launch outcomes
     project_root: str, work_root: str, dispatch: Mapping[str, JsonValue], token: execution.CancellationToken
 ) -> execution.OperationResult:
     token.checkpoint()
@@ -320,6 +320,8 @@ def _dispatch_job(
             preparation_choice = dispatch_operations.CorrectionDispatch(
                 choice.brief_review, ReviewId(choice.review_id), HistoryId(choice.correction_history_id)
             )
+        case contracts.ReplacementReadinessChoice():
+            preparation_choice = None
         case _ as unreachable:
             assert_never(unreachable)
     store = common.compose_store(durable)
@@ -342,16 +344,29 @@ def _dispatch_job(
     )
     token.checkpoint()
     # Publication has entered its commit section: finish terminal effects before honoring cancellation.
-    publication = dispatch_operations.prepare_dispatch(
-        store,
-        ArtifactRepository(durable),
-        source_checkout,
-        supplied_action,
-        choice.checkpoint_id,
-        choice.environment,
-        None if choice.prompt is None else choice.prompt.encode(),
-        preparation_choice,
-    )
+    if isinstance(choice, contracts.ReplacementReadinessChoice):
+        publication = dispatch_operations.prepare_replacement_readiness(
+            store,
+            ArtifactRepository(durable),
+            source_checkout,
+            supplied_action,
+            choice.checkpoint_id,
+            choice.brief_review,
+            ReviewId(choice.review_id),
+            HistoryId(choice.correction_history_id),
+        )
+    else:
+        assert preparation_choice is not None
+        publication = dispatch_operations.prepare_dispatch(
+            store,
+            ArtifactRepository(durable),
+            source_checkout,
+            supplied_action,
+            choice.checkpoint_id,
+            choice.environment,
+            None if choice.prompt is None else choice.prompt.encode(),
+            preparation_choice,
+        )
     if isinstance(publication, dispatch_operations.DispatchFailure):
         return _job_failure(schema, attempt_id, publication.code.value, publication.message, publication.details, False)
     if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
@@ -366,6 +381,32 @@ def _dispatch_job(
             True,
         )
     surfaces = _job_publication_surfaces(publication.changed_surfaces)
+    if isinstance(publication, dispatch_operations.ReplacementReadiness):
+        content = msgspec.to_builtins(
+            contracts.ReplacementReadinessReady(
+                schema,
+                "replacement-ready",
+                attempt_id,
+                choice.checkpoint_id,
+                msgspec.convert(
+                    common._artifact_reference_json(publication.proof), type=contracts.ReviewEvidenceReference
+                ),
+                msgspec.convert(
+                    common._artifact_reference_json(publication.ready_review), type=contracts.ReviewEvidenceReference
+                ),
+                "Protect the exact unchanged candidate using your own attempt authority, then commission a full candidate review "
+                "against the replacement brief, retaining every prior finding. Obtain a new current return before correction dispatch.",
+                bool(surfaces),
+                "committed" if surfaces else "unchanged",
+                "do-not-retry" if surfaces else "safe-to-repeat",
+                surfaces,
+            )
+        )
+        assert isinstance(content, dict)
+        return execution.OperationResult(
+            content, "committed" if surfaces else "unchanged", str(publication.ready_review.accepted_revision)
+        )
+    assert not isinstance(choice, contracts.ReplacementReadinessChoice)
     content = msgspec.to_builtins(
         contracts.DispatchReady(
             "ready",

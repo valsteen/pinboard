@@ -178,8 +178,6 @@ def _job_publication_surface(surface: ChangedSurface) -> contracts.JobPublicatio
             return "ledger"
         case (
             ChangedSurface.REPOSITORY_GIT_EXCLUDE
-            | ChangedSurface.WORK_ROOT
-            | ChangedSurface.COMPATIBILITY_ALIAS
             | ChangedSurface.MIGRATION_EVIDENCE
             | ChangedSurface.SELECTED_OUTPUT
             | ChangedSurface.SOURCE_CHECKOUT

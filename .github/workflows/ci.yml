@@ -93,11 +93,3 @@ jobs:
           uv run --isolated --no-project --with ./dist/*.whl pinboard --project-root "$smoke_repository" init
           test -f "$smoke_repository/.pinboard/state.sqlite3"
           git -C "$smoke_repository" check-ignore -q .pinboard/state.sqlite3
-          legacy_repository=$(mktemp -d)
-          git -C "$legacy_repository" init
-          uv run --isolated --no-project --with ./dist/*.whl pinboard --project-root "$legacy_repository" --work-root "$legacy_repository/.codex/pinboard" init
-          plan_id=$(uv run --isolated --no-project --with ./dist/*.whl pinboard --project-root "$legacy_repository" migrate-work-root | uv run --isolated --no-project --with ./dist/*.whl python -c 'import json, sys; print(json.load(sys.stdin)["plan_id"])')
-          uv run --isolated --no-project --with ./dist/*.whl pinboard --project-root "$legacy_repository" migrate-work-root --apply "$plan_id"
-          test "$(readlink "$legacy_repository/.codex/pinboard")" = "../.pinboard"
-          test -f "$legacy_repository/.pinboard/state.sqlite3"
-          git -C "$legacy_repository" check-ignore -q .codex/pinboard

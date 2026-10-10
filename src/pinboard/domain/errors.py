@@ -22,8 +22,6 @@ class ChangedSurface(Enum):
     ACCEPTED_ARTIFACT_REFERENCE = "accepted-artifact-reference"
     LEDGER = "ledger"
     REPOSITORY_GIT_EXCLUDE = "repository-git-exclude"
-    WORK_ROOT = "work-root"
-    COMPATIBILITY_ALIAS = "compatibility-alias"
     MIGRATION_EVIDENCE = "migration-evidence"
     SELECTED_OUTPUT = "selected-output"
     SOURCE_CHECKOUT = "source-checkout"
@@ -151,18 +149,6 @@ class DecisionFailureCode(DescribedCode):
     TRANSITION_INPUT_INVALID = (
         "TRANSITION_INPUT_INVALID",
         "The lifecycle transition failed validation for this operation.",
-    )
-    WORK_ROOT_MIGRATION_REQUIRED = (
-        "WORK_ROOT_MIGRATION_REQUIRED",
-        "The project still uses the legacy work-root layout and needs the explicit migration route.",
-    )
-    WORK_ROOT_MIGRATION_INVALID = (
-        "WORK_ROOT_MIGRATION_INVALID",
-        "The selected work-root migration failed validation for this operation.",
-    )
-    WORK_ROOT_MIGRATION_FAILED = (
-        "WORK_ROOT_MIGRATION_FAILED",
-        "Work-root migration failed after zero or more reported filesystem changes.",
     )
     SCHEMA_MIGRATION_INVALID = (
         "SCHEMA_MIGRATION_INVALID",

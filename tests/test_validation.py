@@ -118,6 +118,7 @@ class SQLiteValidationTest(unittest.TestCase):
 
     def test_missing_database_and_missing_accepted_artifacts_are_errors(self) -> None:
         missing = Path(tempfile.mkdtemp()).resolve() / ".codex" / "pinboard"
+        missing.parent.mkdir()
         result, stdout, _stderr = self.run_cli(
             "--project-root", str(missing.parent.parent), "--work-root", str(missing), "validate"
         )

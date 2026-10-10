@@ -1656,26 +1656,21 @@ class McpTransportTest(unittest.TestCase):
         )
         return temporary, project, roots
 
-    def test_legacy_default_roots_require_migration_before_mcp_access(self) -> None:
+    def test_native_reads_only_the_exact_selected_initialized_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory).resolve()
             subprocess.run(("git", "init", "--quiet", str(project)), check=True)
-            legacy = project / ".codex" / "pinboard"
-            initialize_database(resolve_durable_roots(project, legacy), SQLITE_NOW)
-
-            shim = project / "shim"
-            shim.mkdir()
-
-            for label, work_root in (
-                ("legacy", legacy),
-                ("current", project / ".pinboard"),
-                ("legacy-dot", project / ".codex" / "." / "pinboard"),
-                ("current-dot", project / "." / ".pinboard"),
-                ("legacy-dot-dot", shim / ".." / ".codex" / "pinboard"),
-                ("current-dot-dot", shim / ".." / ".pinboard"),
-            ):
-                with self.subTest(label=label), self.assertRaisesRegex(ValueError, "migrate-work-root"):
-                    mcp_common._require_initialized_durable(project, work_root)
+            selected = project / ".codex" / "pinboard"
+            selected.parent.mkdir()
+            initialize_database(resolve_durable_roots(project, selected), SQLITE_NOW)
+            before = (selected / "state.sqlite3").read_bytes()
+            self.assertEqual(selected, mcp_common._require_initialized_durable(project, selected).work_root)
+            default = project / ".pinboard"
+            with self.assertRaisesRegex(ValueError, f"unavailable at {default}"):
+                mcp_common._require_initialized_durable(project, default)
+            initialize_database(resolve_durable_roots(project), SQLITE_NOW)
+            self.assertEqual(default, mcp_common._require_initialized_durable(project, default).work_root)
+            self.assertEqual(before, (selected / "state.sqlite3").read_bytes())
 
     def test_stdio_authority_and_transition_tools_persist_exact_lifecycle_results(self) -> None:
         temporary, project, roots = self._project()

@@ -1015,6 +1015,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         project = Path(temporary.name).resolve()
         subprocess.run(("git", "init", "--quiet", str(project)), check=True)
         work = project / ".codex" / "work"
+        work.parent.mkdir(exist_ok=True)
         initialize_database(resolve_durable_roots(project, work), SQLITE_NOW)
         initialize_store(SQLiteWorkStore(work / "state.sqlite3"), complete_sqlite_state())
         return project, work

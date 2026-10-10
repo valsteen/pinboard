@@ -63,21 +63,6 @@ def resolve_durable_roots(shared_repository_root: Path, external_work_root: Path
 
     external = external_work_root.absolute()
     _validate_component(external.name)
-    compatibility_alias = shared_root / ".codex" / "pinboard"
-    if external == compatibility_alias and external.is_symlink():
-        try:
-            exact_alias = (
-                external.readlink() == Path("../.pinboard") and external.resolve(strict=True) == local_work_root
-            )
-        except OSError:
-            exact_alias = False
-        if exact_alias and local_work_root.is_dir():
-            anchor = _verified_directory(shared_repository_root, label="Shared repository root")
-            return DurableRoots(anchor, (".pinboard",))
-    if external.parent == shared_root / ".codex":
-        anchor = _verified_directory(shared_repository_root, label="Shared repository root")
-        _reject_symlinked_descendant(shared_root, external.parent, label="External work-root parent")
-        return DurableRoots(anchor, (".codex", external.name))
     _reject_symlinked_descendant(shared_root, external.parent, label="External work-root parent")
     anchor = _verified_directory(external.parent, label="External work-root parent")
     return DurableRoots(anchor, (external.name,))

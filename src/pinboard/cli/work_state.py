@@ -54,11 +54,7 @@ def initialize_work_state(
     store: ports.GeneratedViewSetReader,
     now: datetime | None = None,
 ) -> work_brief_models.WorkBriefResult[InitReceipt | InitializationAfterCommittedEffects]:
-    git_exclude_path = (
-        ensure_git_exclude(shared_repository_root, b"/.pinboard/", require_repository=False)
-        if default_work_root
-        else None
-    )
+    git_exclude_path = ensure_git_exclude(shared_repository_root) if default_work_root else None
     database_path: Path | None = None
     try:
         database_already_exists = roots.database_path.exists()

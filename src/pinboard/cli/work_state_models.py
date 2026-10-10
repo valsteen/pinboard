@@ -5,7 +5,6 @@ from typing import Literal
 
 import msgspec
 
-from pinboard.adapters.files.legacy_storage import RootPlan
 from pinboard.adapters.sqlite.schema_procedure import SchemaPlan
 from pinboard.domain.errors import DescribedCode
 
@@ -85,19 +84,6 @@ class InitializationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     resumed: bool
     optional_next_skills: tuple[str, ...]
     configuration_recommendation: str | None
-
-
-class WorkRootMigrationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-work-root-migration/v2"]
-    status: Literal["planned", "migrated", "reversed", "unchanged"]
-    plan_id: str
-    plan: RootPlan | None
-    work_root: str
-    compatibility_alias: str
-    state_changed: bool
-    effect: Literal["committed", "unchanged"]
-    retry: Literal["do-not-retry", "safe-to-repeat"]
-    changed_surfaces: tuple[str, ...]
 
 
 class SchemaMigrationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

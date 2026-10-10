@@ -164,6 +164,7 @@ class CliTest(unittest.TestCase):
     def test_fresh_init_has_one_structured_json_receipt(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         work = project / ".codex" / "work"
+        work.parent.mkdir(exist_ok=True)
 
         created = self.run_json_cli(
             "--project-root",
@@ -292,6 +293,7 @@ class CliTest(unittest.TestCase):
             with self.subTest(label=label):
                 project = Path(tempfile.mkdtemp()).resolve()
                 work = project / ".codex" / "work"
+                work.parent.mkdir(exist_ok=True)
                 codex_home = Path(tempfile.mkdtemp()).resolve()
                 config = codex_home / "config.toml"
                 if config_contents is not None:
@@ -316,6 +318,7 @@ class CliTest(unittest.TestCase):
     def test_explicit_claude_runtime_omits_only_codex_configuration_advice(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         work = project / ".codex" / "work"
+        work.parent.mkdir(exist_ok=True)
         codex_home = Path(tempfile.mkdtemp()).resolve()
 
         with patch.dict(os.environ, {"CODEX_HOME": str(codex_home), "PINBOARD_RUNTIME": "claude"}):
@@ -339,6 +342,7 @@ class CliTest(unittest.TestCase):
         project_contents = 'model_auto_compact_token_limit_scope = "total"\n'
         project_config.write_text(project_contents, encoding="utf-8")
         work = project / ".codex" / "work"
+        work.parent.mkdir(exist_ok=True)
         codex_home = Path(tempfile.mkdtemp()).resolve()
 
         with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}):
@@ -388,6 +392,7 @@ class CliTest(unittest.TestCase):
             with self.subTest(label=label):
                 project = Path(tempfile.mkdtemp()).resolve()
                 work = project / ".codex" / "work"
+                work.parent.mkdir(exist_ok=True)
                 codex_home = Path(tempfile.mkdtemp()).resolve()
                 config = codex_home / "config.toml"
                 if config_contents is None:
@@ -414,6 +419,7 @@ class CliTest(unittest.TestCase):
     def test_installed_initialization_samples_its_operation_time_once(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         work = project / ".codex" / "work"
+        work.parent.mkdir(exist_ok=True)
         initialized_at = datetime.now(UTC)
 
         with patch("pinboard.cli.work_state_commands.datetime") as clock:
@@ -462,6 +468,7 @@ class CliTest(unittest.TestCase):
     def test_validate_uses_one_snapshot_for_authority_and_projection_diagnostics(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         work = project / ".codex" / "work"
+        work.parent.mkdir(exist_ok=True)
         common = ("--project-root", str(project), "--work-root", str(work))
         initialized, _stdout, stderr = self.run_cli(*common, "init")
         self.assertEqual(0, initialized, stderr)
@@ -483,6 +490,7 @@ class CliTest(unittest.TestCase):
     def test_initialization_and_view_rebuild_read_only_declared_projection_facts(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         work = project / ".codex" / "work"
+        work.parent.mkdir(exist_ok=True)
         common = ("--project-root", str(project), "--work-root", str(work))
 
         with patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")):

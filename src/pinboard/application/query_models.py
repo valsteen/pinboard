@@ -949,6 +949,144 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
 
 
+type ItemIntegrationSchema = Literal["pinboard-item-integration/v1"]
+
+
+class IntegrationPresence(Enum):
+    """Whether the selected candidate's accepted diff is present in the named target's current content."""
+
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationItemFacts:
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationAttemptCandidateFacts:
+    """A live attempt's candidate identity and its latest accepted candidate snapshot reference."""
+
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+    candidate_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationCheckpointFacts:
+    """A live attempt's latest checkpoint-acceptance candidate and its snapshot reference."""
+
+    attempt_id: AttemptId
+    checkpoint_id: str
+    candidate_revision: str
+    candidate_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationCompletionFacts:
+    """A done item's closing attempt candidate and its latest accepted snapshot reference."""
+
+    attempt_id: AttemptId
+    candidate_revision: str
+    candidate_reference: stored_state.ArtifactReference
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationFacts:
+    project_revision: int
+    work_item: ItemIntegrationItemFacts
+    attempt: ItemIntegrationAttemptCandidateFacts | None
+    checkpoint: ItemIntegrationCheckpointFacts | None
+    completion: ItemIntegrationCompletionFacts | None
+    closure: ItemClosureFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewSelection:
+    """The protected review candidate of a live item's current attempt."""
+
+    attempt_id: AttemptId
+    candidate_revision: str
+    reference: stored_state.ArtifactReference
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointSelection:
+    """The latest checkpoint-acceptance candidate of a live item's current attempt."""
+
+    attempt_id: AttemptId
+    candidate_revision: str
+    checkpoint_id: str
+    reference: stored_state.ArtifactReference
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionSelection:
+    """The closing candidate of a done item completed by a completion receipt."""
+
+    attempt_id: AttemptId
+    candidate_revision: str
+    reference: stored_state.ArtifactReference
+
+
+type IntegrationCandidateSelection = ProtectedReviewSelection | AcceptedCheckpointSelection | CompletionSelection
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationObserved:
+    """A resolved target with the selected snapshot's compared-from revision and presence verdict."""
+
+    resolved_revision: str
+    compared_from_revision: str
+    presence: IntegrationPresence
+
+
+class ProtectedReviewIntegrationSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class AcceptedCheckpointIntegrationSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+    checkpoint_id: str
+
+
+class CompletionIntegrationSource(
+    msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type IntegrationSource = (
+    ProtectedReviewIntegrationSource | AcceptedCheckpointIntegrationSource | CompletionIntegrationSource
+)
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: ItemIntegrationSchema
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    resolved_revision: str
+    source: IntegrationSource
+    presence: IntegrationPresence
+
+
 class ParallelSelection(Enum):
     ALL_SAFE = "all-safe"
     SELECTED = "selected"

@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -126,13 +128,14 @@ def classify_checkout(cwd: Path) -> work_models.CheckoutSelection:
     )
 
 
-def _git_text(cwd: Path, *arguments: str) -> str:
+def _git_text(cwd: Path, *arguments: str, env: dict[str, str] | None = None) -> str:
     result = subprocess.run(
         ["git", *arguments],
         cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
+        env=env,
     )
     value = result.stdout.strip()
     if result.returncode != 0 or not value:
@@ -381,6 +384,85 @@ def restore_commit_candidate(
 
 def resolve_shared_repository_root(cwd: Path) -> Path:
     return _resolve_git_common_directory(cwd).parent
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationTargetPresence:
+    resolved_revision: str
+    present: bool
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedIntegrationTarget:
+    target: str
+
+
+type IntegrationTargetObservation = IntegrationTargetPresence | UnresolvedIntegrationTarget
+
+
+def observe_integration_target(cwd: Path, target: str, diff: bytes) -> IntegrationTargetObservation:
+    """Judge one accepted diff's presence in a caller-named target's current content.
+
+    The check is read-only: it resolves the target through the adapter's existing
+    rev-parse read, reads the resolved commit's tree into a private temporary index,
+    and reverse-applies the accepted diff against that index only. An empty diff is
+    decided present without any tree read.
+    """
+
+    if not target or target.startswith("-") or "\n" in target or "\0" in target:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            "An integration target must be a nonempty single-line Git revision name.",
+        )
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    resolved_revision = resolved.stdout.strip()
+    if resolved.returncode != 0 or not resolved_revision:
+        _git_text(cwd, "rev-parse", "--git-dir")
+        return UnresolvedIntegrationTarget(target)
+    if not diff:
+        return IntegrationTargetPresence(resolved_revision, True)
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
+        environment = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+        read = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", resolved_revision],
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        if read.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                read.stderr.decode(errors="replace").strip()
+                or f"Cannot read the tree of '{resolved_revision}' at '{cwd}'.",
+            )
+        applied = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "apply.whitespace=nowarn",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "--ignore-whitespace",
+                "-",
+            ],
+            cwd=cwd,
+            input=diff,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        return IntegrationTargetPresence(resolved_revision, applied.returncode == 0)
 
 
 def _exclude_contains_pinboard_line(stream: BinaryIO, entry: bytes) -> tuple[bool, bool]:

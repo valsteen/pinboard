@@ -731,6 +731,7 @@ class ContributorTraceTest(unittest.TestCase):
             examples: tuple[dict[str, JsonValue], ...] = (
                 {"item_id": "work-a"},
                 {"request": {"operation": "item", "item_id": "work-a"}},
+                {"request": {"operation": "integration", "item_id": "work-a", "target": "main"}},
                 {"brief": {"item_id": "work-a"}},
                 {"proposal": {"relation": {"item": "work-a"}}},
                 {"request": {"attempt_id": "work-a-1"}},

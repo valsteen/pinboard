@@ -1182,6 +1182,133 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
     )
 
 
+def _integration_candidate_unavailable(item: query_models.ItemIntegrationItemFacts, why: str) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.INTEGRATION_CANDIDATE_UNAVAILABLE,
+        f"Item '{item.work_item_id}' in state '{item.state.value}' has no reviewed candidate with accepted"
+        f" snapshot bytes: {why}.",
+        FailureDetails(
+            observed=(
+                FailureFact("item_id", str(item.work_item_id)),
+                FailureFact("item_state", item.state.value),
+            ),
+            mismatches=(),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def _select_integration_candidate(
+    facts: query_models.ItemIntegrationFacts,
+) -> DecisionResult[query_models.IntegrationCandidateSelection]:
+    item = facts.work_item
+    if stored_state.live_work_state(item.state) is not None:
+        attempt_state = None if facts.attempt is None else facts.attempt.state
+        if attempt_state not in stored_state.allowed_current_attempt_states(item.state):
+            expected_states = stored_state.allowed_current_attempt_states(item.state)
+            expected = " or ".join("none" if value is None else value.value for value in expected_states)
+            observed = "none" if attempt_state is None else attempt_state.value
+            return DecisionFailure(
+                DecisionFailureCode.ITEM_STATUS_INCONSISTENT,
+                f"Item '{item.work_item_id}' state '{item.state.value}' conflicts with current attempt state"
+                f" '{observed}'.",
+                FailureDetails(
+                    observed=(
+                        FailureFact("item_id", str(item.work_item_id)),
+                        FailureFact("item_state", item.state.value),
+                        FailureFact("attempt_id", None if facts.attempt is None else str(facts.attempt.attempt_id)),
+                        FailureFact("attempt_state", observed),
+                    ),
+                    mismatches=(FailureMismatch("current_attempt_state", expected, observed),),
+                    retry=RetryDisposition.DO_NOT_RETRY,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
+        if (
+            facts.attempt is not None
+            and facts.attempt.candidate_revision is not None
+            and facts.attempt.candidate_reference is not None
+        ):
+            return query_models.ProtectedReviewSelection(
+                facts.attempt.attempt_id, facts.attempt.candidate_revision, facts.attempt.candidate_reference
+            )
+        if facts.attempt is not None and facts.attempt.candidate_revision is not None:
+            return _integration_candidate_unavailable(
+                item, "its current attempt retains a pre-snapshot review candidate"
+            )
+        if facts.checkpoint is None:
+            return _integration_candidate_unavailable(
+                item, "the current attempt has no protected candidate and no checkpoint acceptance"
+            )
+        if facts.checkpoint.candidate_reference is None:
+            return _integration_candidate_unavailable(
+                item, "the latest checkpoint acceptance has no candidate snapshot reference"
+            )
+        return query_models.AcceptedCheckpointSelection(
+            facts.checkpoint.attempt_id,
+            facts.checkpoint.candidate_revision,
+            facts.checkpoint.checkpoint_id,
+            facts.checkpoint.candidate_reference,
+        )
+    if facts.completion is not None:
+        return query_models.CompletionSelection(
+            facts.completion.attempt_id, facts.completion.candidate_revision, facts.completion.candidate_reference
+        )
+    if facts.closure is not None and facts.closure.action_kind == decision_models.ActionKind.COMPLETE:
+        return _integration_candidate_unavailable(
+            item, "its completing attempt retains a pre-snapshot review candidate"
+        )
+    return _integration_candidate_unavailable(item, "it was closed directly without a completion")
+
+
+def _project_integration_source(
+    selection: query_models.IntegrationCandidateSelection, compared_from_revision: str
+) -> query_models.IntegrationSource:
+    if isinstance(selection, query_models.ProtectedReviewSelection):
+        return query_models.ProtectedReviewIntegrationSource(
+            str(selection.attempt_id), selection.candidate_revision, compared_from_revision
+        )
+    if isinstance(selection, query_models.AcceptedCheckpointSelection):
+        return query_models.AcceptedCheckpointIntegrationSource(
+            str(selection.attempt_id), selection.candidate_revision, compared_from_revision, selection.checkpoint_id
+        )
+    return query_models.CompletionIntegrationSource(
+        str(selection.attempt_id), selection.candidate_revision, compared_from_revision
+    )
+
+
+def project_item_integration(
+    facts_reader: ports.ItemIntegrationFactsReader,
+    evidence_reader: ports.IntegrationEvidenceReader,
+    work_item_id: WorkItemId,
+    target: str,
+) -> DecisionResult[query_models.ItemIntegration]:
+    facts = facts_reader.read_item_integration_facts(work_item_id)
+    if facts is None:
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' was not found.", None)
+    selection = _select_integration_candidate(facts)
+    if isinstance(selection, DecisionFailure):
+        return selection
+    observed = evidence_reader.read_integration_evidence(selection, target)
+    if isinstance(observed, DecisionFailure):
+        return observed
+    return query_models.ItemIntegration(
+        "pinboard-item-integration/v1",
+        "sqlite-v7",
+        str(facts.project_revision),
+        str(facts.work_item.work_item_id),
+        target,
+        observed.resolved_revision,
+        _project_integration_source(selection, observed.compared_from_revision),
+        observed.presence,
+    )
+
+
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
     return query_models.WorkItemDefinitionView(
         "pinboard-work-item-definition/v2",

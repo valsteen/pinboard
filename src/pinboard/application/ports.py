@@ -175,6 +175,16 @@ class BranchOwnerReader(Protocol):
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
 
 
+class ItemIntegrationFactsReader(Protocol):
+    def read_item_integration_facts(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationFacts | None: ...
+
+
+class IntegrationEvidenceReader(Protocol):
+    def read_integration_evidence(
+        self, selection: query_models.IntegrationCandidateSelection, target: str
+    ) -> DecisionResult[query_models.IntegrationObserved]: ...
+
+
 class AttemptContextReader(Protocol):
     def read_attempt_context(self, attempt_id: AttemptId) -> query_models.AttemptContextFacts | None: ...
 

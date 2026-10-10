@@ -53,6 +53,77 @@ def read_candidate_evidence_from_context(
         return DecisionFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
 
 
+def _integration_evidence_invalid(selection: query_models.IntegrationCandidateSelection, why: str) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.INTEGRATION_CANDIDATE_EVIDENCE_INVALID,
+        f"The accepted candidate evidence for attempt '{selection.attempt_id}' did not verify: {why}.",
+        FailureDetails(
+            observed=(
+                FailureFact("attempt_id", str(selection.attempt_id)),
+                FailureFact("candidate_revision", selection.candidate_revision),
+                FailureFact("artifact_key", selection.reference.key),
+                FailureFact("artifact_revision", str(selection.reference.revision)),
+            ),
+            mismatches=(),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def read_integration_evidence(
+    source_checkout: Path,
+    work_root: Path,
+    project_root: Path,
+    selection: query_models.IntegrationCandidateSelection,
+    target: str,
+) -> DecisionResult[query_models.IntegrationObserved]:
+    """Compose one verified accepted snapshot with the read-only integration-by-content Git read."""
+
+    try:
+        snapshot = candidate_snapshots.decode_candidate_snapshot(read_reference(work_root, selection.reference))
+        if snapshot.attempt_id != str(selection.attempt_id) or snapshot.candidate != selection.candidate_revision:
+            return _integration_evidence_invalid(
+                selection, "the snapshot bytes do not match the selected attempt and candidate"
+            )
+    except (ArtifactError, ValueError) as error:
+        return _integration_evidence_invalid(selection, str(error))
+    compared_from_revision = (
+        snapshot.preimage_revision
+        if candidate_snapshots.candidate_kind(snapshot) == "working-tree"
+        else snapshot.accepted_base_revision
+    )
+    observed = root.observe_integration_target(source_checkout, target, snapshot.diff)
+    if isinstance(observed, root.UnresolvedIntegrationTarget):
+        return DecisionFailure(
+            DecisionFailureCode.INTEGRATION_TARGET_UNRESOLVED,
+            f"Integration target '{target}' does not resolve to a commit in '{project_root}'.",
+            FailureDetails(
+                observed=(
+                    FailureFact("target", target),
+                    FailureFact("project_root", str(project_root)),
+                ),
+                mismatches=(),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    presence = (
+        query_models.IntegrationPresence.NO_CHANGE
+        if not snapshot.diff
+        else (
+            query_models.IntegrationPresence.CONTENT_PRESENT
+            if observed.present
+            else query_models.IntegrationPresence.CONTENT_NOT_PRESENT
+        )
+    )
+    return query_models.IntegrationObserved(observed.resolved_revision, compared_from_revision, presence)
+
+
 def observe_candidate_lineage(
     source_checkout: Path,
     evidence: candidate_snapshots.CandidateSnapshotEvidence,

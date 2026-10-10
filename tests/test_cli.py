@@ -458,8 +458,6 @@ class CliTest(unittest.TestCase):
                     f"- Preparation: {expected_status}".encode(),
                     (work / "views" / "items" / "work-c.md").read_bytes(),
                 )
-                self.assertFalse((work / "views" / "queue.md").exists())
-                self.assertFalse((work / "views" / "history.md").exists())
 
     def test_validate_uses_one_snapshot_for_authority_and_projection_diagnostics(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

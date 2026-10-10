@@ -342,3 +342,13 @@ class StoredWorkState:
     artifact_references: tuple[ArtifactReference, ...]
     authority: AuthorityRecords
     transition_receipts: tuple[StoredTransitionReceipt, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveHistoryFacts:
+    """Original terminal evidence selected for one archival certificate."""
+
+    attempt: StoredAttempt
+    artifact_references: tuple[ArtifactReference, ...]
+    transition_receipts: tuple[StoredTransitionReceipt, ...]
+    definition_revisions: tuple[ItemDefinitionRevision, ...]

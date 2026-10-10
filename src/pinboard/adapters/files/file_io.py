@@ -211,18 +211,3 @@ def atomic_replace(path: Path, content: bytes) -> None:
         ) from error
     finally:
         _cleanup_staging(staging, parent)
-
-
-def remove_replaceable(path: Path) -> None:
-    """Remove one known generated file without discovering sibling paths."""
-
-    parent = _verified_directory(path.parent, label="Replacement-file parent")
-    try:
-        existed = path.exists(follow_symlinks=False)
-        path.unlink(missing_ok=True)
-        if existed:
-            _sync_directory(parent)
-    except OSError as error:
-        raise FileIOError(
-            FileIOErrorCode.FILE_PUBLISH_FAILED, f"Replaceable file could not be removed: {path}"
-        ) from error

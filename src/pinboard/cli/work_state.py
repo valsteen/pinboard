@@ -25,6 +25,7 @@ from pinboard.application import (
     candidate_snapshots,
     checkpoint_compatibility_models,
     checkpoint_packages,
+    history_archives,
     ports,
     project_export,
     queries,
@@ -42,6 +43,7 @@ from pinboard.cli.errors import (
     InitializationAfterCommittedEffects,
 )
 from pinboard.cli.work_state_models import Diagnostic, Severity, ValidationDiagnosticCode, ValidationReport
+from pinboard.cli.work_views import archive_attempt_views
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId
 
@@ -83,9 +85,14 @@ def initialize_work_state(
                 database_path,
                 rendered_attempt_briefs,
             )
-        rebuild_result = rebuild_facts(
-            projection_facts, roots.work_root, rendered_attempt_briefs, store, operation_time
-        )
+        archived_briefs = archive_attempt_views(projection_facts, ArtifactRepository(roots), rendered_attempt_briefs)
+        if isinstance(archived_briefs, work_brief_models.WorkBriefFailure):
+            return (
+                archived_briefs
+                if git_exclude_path is None and database_path is None
+                else InitializationAfterCommittedEffects(git_exclude_path, database_path, archived_briefs)
+            )
+        rebuild_result = rebuild_facts(projection_facts, roots.work_root, archived_briefs, store, operation_time)
         if rebuild_result.warning is not None:
             raise FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, rebuild_result.warning.message)
     except (StorageError, ArtifactError, FileIOError) as error:
@@ -530,6 +537,14 @@ def validate_loaded_work_state(
             verified_artifacts[reference.artifact_ref_id] = read_reference(work_root, reference)
         except ArtifactError as error:
             diagnostics.append(_error_diagnostic(error.code.value, work_root / reference.selector, str(error)))
+    all_attempt_briefs = dict(attempt_briefs)
+    archived = history_archives.verify_archives(state, verified_artifacts)
+    if isinstance(archived, work_brief_models.WorkBriefFailure):
+        diagnostics.append(_error_diagnostic(archived.code.value, work_root, archived.message))
+    else:
+        all_attempt_briefs.update(
+            (identity, history_archives.render_archive(archive)) for identity, archive in archived.items()
+        )
     try:
         candidate_snapshots.validate_candidate_snapshot_history(state, verified_artifacts)
     except ValueError as error:
@@ -563,7 +578,7 @@ def validate_loaded_work_state(
         and (message := _close_decision_failure(receipt)) is not None
     )
     view_root = work_root / "views"
-    expected_views = derive_expected_view_bytes(state, attempt_briefs, now=now)
+    expected_views = derive_expected_view_bytes(state, all_attempt_briefs, now=now)
     diagnostics.extend(
         _error_diagnostic(
             ValidationDiagnosticCode.TRANSITION_RECEIPT_DAMAGED.value,

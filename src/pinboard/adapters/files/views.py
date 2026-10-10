@@ -20,7 +20,7 @@ from typing import Literal, assert_never
 import msgspec
 
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
-from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory, remove_replaceable
+from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.application import ports, pr_reviews, query_models, stored_state
 from pinboard.application.queries import (
@@ -760,8 +760,6 @@ def rebuild_facts(
 
     try:
         view_root = ensure_child_directory(work_root, "views")
-        remove_replaceable(view_root / "queue.md")
-        remove_replaceable(view_root / "history.md")
         damaged = _write_facts(facts, work_root, attempt_briefs)
         _write_board(view_root, portfolio, now)
     except FileIOError as error:

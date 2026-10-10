@@ -114,6 +114,7 @@ class ItemOverviewFacts:
 class AttemptProjectionFacts:
     attempt: stored_state.StoredAttempt
     brief_reference: artifacts.BriefArtifactRef | None
+    archive: tuple[stored_state.ArtifactReference, stored_state.ArchiveHistoryFacts] | None
 
 
 @dataclass(frozen=True, slots=True)

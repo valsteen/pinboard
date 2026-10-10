@@ -1,12 +1,11 @@
 """State-independent lookup of codes declared by installed result and emitter owners."""
 
 from types import UnionType
-from typing import Annotated, Literal, TypeAliasType, get_args, get_origin, get_type_hints
+from typing import Annotated, Literal, TypeAliasType, get_args, get_origin
 
 import msgspec
 
 from pinboard import __version__, diagnostic_codes
-from pinboard.adapters.checkpoint_compatibility import RecoveredReviewPreparationFailure
 from pinboard.adapters.dispatch_operations import DispatchErrorCode
 from pinboard.adapters.files.errors import ArtifactErrorCode, FileIOErrorCode, RootErrorCode
 from pinboard.adapters.sqlite.errors import StorageErrorCode
@@ -104,9 +103,6 @@ def _mcp_code_facts() -> tuple[set[str], dict[str, str]]:
         if isinstance(annotation, TypeAliasType):
             codes.update(_literal_values(annotation))
             meanings.update(_annotated_meanings(annotation))
-    recovered_code = get_type_hints(RecoveredReviewPreparationFailure, include_extras=True)["code"]
-    codes.update(_literal_values(recovered_code))
-    meanings.update(_annotated_meanings(recovered_code))
     return codes, meanings
 
 

@@ -45,6 +45,11 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             payload = msgspec.to_builtins(brief)
             assert isinstance(payload, dict)
             payload["schema"] = "pinboard-work-brief/v2"
+            checkpoint = payload["checkpoint"]
+            assert isinstance(checkpoint, dict)
+            disposition = checkpoint.pop("disposition")
+            assert isinstance(disposition, dict)
+            payload["remaining_work"] = disposition["remaining_work"]
             del payload["checkout_selection"]
             del payload["obligation_correspondence"]
             content = msgspec.json.encode(payload, order="sorted") + b"\n"

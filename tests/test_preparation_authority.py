@@ -43,6 +43,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             and value.capability.subject == WorkItemId("work-c")
         )
         assert isinstance(action, decision_models.ReviseWorkItemAction)
+        assert isinstance(current.definition, work_models.WorkItemDefinition)
         command = decision_models.ReviseWorkItemCommand(
             action,
             work_models.ReviseWorkItemDefinitionInput(
@@ -540,8 +541,6 @@ class PreparationAuthorityTest(unittest.TestCase):
         self.assertIn(b"- Preparation: active", before_views["items/work-c.md"])
         self.assertIn(b"- Preparation: expired", at_views["items/work-c.md"])
         self.assertNotEqual(before_views["items/work-c.md"], at_views["items/work-c.md"])
-        self.assertNotIn("queue.md", before_views)
-        self.assertNotIn("history.md", before_views)
 
     def test_live_preparation_rejects_prerequisite_proposal_atomically_then_expiry_admits_it(self) -> None:
         store, database_path = self._store()

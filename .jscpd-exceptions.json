@@ -4,137 +4,85 @@
   "records": [
     {
       "certification": {
-        "evidence_sha256": "e19bb3a3ce006ef4dedc5bdcfdb4ad094dfeead1385e9874189b555639c6baa7",
-        "reviewed_pair_sha256": "e8665ba6270c811658c0462815e38f7bdfb4e723678b625d6c711262a4554c36",
-        "reviewer_task_id": "01a0c09a-f2e0-7f81-ab27-de6c8d9c2424"
+        "evidence_sha256": "1ec2a637958f4957adb7da934ba41cd2cf7733fefa83433a5997463e6ec66818",
+        "reviewed_pair_sha256": "bc495cacbac62561c131490e7aaf652bcac2b84964ec259c0bec0e23e8ea3bd4",
+        "reviewer_task_id": "01a1247c-82e6-78c0-8e92-850edd7f9cad"
       },
       "identity": {
         "format": "python",
-        "id": "project-export-versioned-checkpoint-export-shapes",
-        "lines": 19,
-        "occurrences": [
-          {
-            "endpoint": {
-              "end": 336,
-              "endLoc": {
-                "column": 42,
-                "line": 336,
-                "position": 8663
-              },
-              "name": "application/project_export.py",
-              "start": 318,
-              "startLoc": {
-                "column": 47,
-                "line": 318,
-                "position": 8045
-              }
-            },
-            "sha256": "00452974893fb58602aa7d7eb228b0f51beb78a37efea081579b85903a54b835"
-          },
-          {
-            "endpoint": {
-              "end": 359,
-              "endLoc": {
-                "column": 42,
-                "line": 359,
-                "position": 9391
-              },
-              "name": "application/project_export.py",
-              "start": 341,
-              "startLoc": {
-                "column": 47,
-                "line": 341,
-                "position": 8773
-              }
-            },
-            "sha256": "00452974893fb58602aa7d7eb228b0f51beb78a37efea081579b85903a54b835"
-          }
-        ],
-        "owners": [
-          "src/pinboard/application/project_export.py#CompatibilityProjectExportCheckpointPackageV2",
-          "src/pinboard/application/project_export.py#ProjectExportCheckpointPackageV3"
-        ],
-        "rationale": "Retained patch-only v2 and current complete-state v3 are independently required exact tagged project-export records. The match repeats required frozen strict fields, not behavior; their distinct schema tags and explicit tagged union preserve independently owned version semantics. Sharing fields through inheritance would couple those schemas solely to suppress analyzer output. Revisit only if v2 is retired or both versions gain one accepted schema owner without changing tags, strictness, field order, validation, or dependency direction.",
-        "tokens": 60
-      }
-    },
-    {
-      "identity": {
-        "id": "definition-v1-v2-wire-shapes",
-        "format": "python",
-        "tokens": 79,
+        "id": "historical-v1-current-v2-wire-shapes",
         "lines": 9,
         "occurrences": [
           {
             "endpoint": {
-              "end": 23,
+              "end": 22,
               "endLoc": {
-                "column": 20,
-                "line": 23,
-                "position": 790
+                "column": 28,
+                "line": 22,
+                "position": 722
               },
-              "name": "domain/definition_compatibility.py",
-              "start": 15,
+              "name": "application/definition_compatibility.py",
+              "start": 14,
               "startLoc": {
-                "column": 33,
-                "line": 15,
-                "position": 416
+                "column": 78,
+                "line": 14,
+                "position": 383
               }
             },
-            "sha256": "fd66df12aec7aa1ef152890e072234325cc302d89c5c96bff813fabb7055bdf6"
+            "sha256": "e91bde71e7b7e5952f5d4ebb250ae56aec60f7a270d5c9feb45d24961bfb3476"
           },
           {
             "endpoint": {
-              "end": 37,
+              "end": 36,
               "endLoc": {
-                "column": 20,
-                "line": 37,
-                "position": 1220
+                "column": 28,
+                "line": 36,
+                "position": 1177
               },
               "name": "domain/history.py",
               "start": 29,
               "startLoc": {
-                "column": 31,
+                "column": 46,
                 "line": 29,
-                "position": 846
+                "position": 839
               }
             },
-            "sha256": "fd66df12aec7aa1ef152890e072234325cc302d89c5c96bff813fabb7055bdf6"
+            "sha256": "430dc6288f55d27d9374010e521b05ace2acb843a11cec73942dd58a79bf6e0e"
           }
         ],
         "owners": [
-          "src/pinboard/domain/definition_compatibility.py#WorkItemDefinitionPayloadV1",
+          "src/pinboard/application/definition_compatibility.py#HistoricalDefinitionV1",
           "src/pinboard/domain/history.py#WorkItemDefinitionPayload"
         ],
-        "rationale": "Retained definition v1 and current definition v2 are independently versioned strict canonical wire records. Sharing their required common fields would couple current code to compatibility structure without consolidating a decision; revisit only if both versions can share one schema owner without changing exact bytes, field order, validation independence, or dependency direction."
-      },
-      "certification": {
-        "reviewer_task_id": "01a0b8cb-6635-71c2-9045-24fe68e89a73",
-        "reviewed_pair_sha256": "daeee4c094842cb44ab5f20b75af531a6da2831f2b647f886bf8abe5aacb87f0",
-        "evidence_sha256": "935b935d64f7669ce72135e27bca50c94a0ba4c7e4684d6d1c2146416d47433b"
+        "rationale": "HistoricalDefinitionV1 preserves the exact original v1 structural field inventory at the application stored-history boundary. WorkItemDefinitionPayload is the current v2 canonical execution record and independently requires schema, checkout_policy and nonempty recorded obligations. Sharing fields through a base, union or cross-layer shape would couple frozen original historical facts to the evolving current execution contract without consolidating a product decision. Retain while original v1 revisions exist; remove this pair when no retained v1 revisions remain. Reopen if both wire shapes have one accepted schema owner and can share validation without changing original bytes, strict field inventories, current required execution authority or application-to-domain dependency direction.",
+        "tokens": 71
       }
     },
     {
+      "certification": {
+        "evidence_sha256": "1ec2a637958f4957adb7da934ba41cd2cf7733fefa83433a5997463e6ec66818",
+        "reviewed_pair_sha256": "3fbe7476fd21225586c727d0d271cffa69551cfda3a8d3071dbac9227487ecbe",
+        "reviewer_task_id": "01a1247c-82e6-78c0-8e92-850edd7f9cad"
+      },
       "identity": {
-        "id": "definition-v1-v2-unique-collection-validation",
         "format": "python",
-        "tokens": 78,
+        "id": "historical-v1-current-v2-unique-collection-validation",
         "lines": 10,
         "occurrences": [
           {
             "endpoint": {
-              "end": 37,
+              "end": 36,
               "endLoc": {
                 "column": 80,
-                "line": 37,
-                "position": 1392
+                "line": 36,
+                "position": 1289
               },
-              "name": "domain/definition_compatibility.py",
-              "start": 28,
+              "name": "application/definition_compatibility.py",
+              "start": 27,
               "startLoc": {
                 "column": 4,
-                "line": 28,
-                "position": 958
+                "line": 27,
+                "position": 855
               }
             },
             "sha256": "39d59f333b68d5ad2ed64952e6218c07b08c2c8e019557c17d3be05a4bf76c88"
@@ -145,29 +93,25 @@
               "endLoc": {
                 "column": 80,
                 "line": 53,
-                "position": 1985
+                "position": 1963
               },
               "name": "domain/history.py",
               "start": 44,
               "startLoc": {
                 "column": 4,
                 "line": 44,
-                "position": 1551
+                "position": 1529
               }
             },
             "sha256": "39d59f333b68d5ad2ed64952e6218c07b08c2c8e019557c17d3be05a4bf76c88"
           }
         ],
         "owners": [
-          "src/pinboard/domain/definition_compatibility.py#WorkItemDefinitionPayloadV1.__post_init__",
+          "src/pinboard/application/definition_compatibility.py#HistoricalDefinitionV1.__post_init__",
           "src/pinboard/domain/history.py#WorkItemDefinitionPayload.__post_init__"
         ],
-        "rationale": "The identical collection check validates two independently frozen schema versions. Extracting it would add a neutral module solely for ten lines or make current code depend on compatibility code; revisit if ordered-and-unique definition collections become one explicit domain-wide invariant across versions."
-      },
-      "certification": {
-        "reviewer_task_id": "01a0b8cb-6635-71c2-9045-24fe68e89a73",
-        "reviewed_pair_sha256": "2d4db855dd30e37b3a89e1a6120f896de7b25cb34a9453fc2c0636f7d47c7051",
-        "evidence_sha256": "935b935d64f7669ce72135e27bca50c94a0ba4c7e4684d6d1c2146416d47433b"
+        "rationale": "Each exact wire record independently rejects duplicate entries in its own acceptance_criteria, dependencies, evidence, non_scope and scope collections while preserving recorded order. The v1 check guards supported frozen historical data; the v2 check guards current execution data and also independently validates obligation identities. A current owner calling an application compatibility helper would reverse dependencies; moving a generic five-collection helper into domain would make current validation an implicit authority over old historical acceptance and add another navigation owner for a ten-line boundary invariant. Retain while original v1 revisions exist; remove this pair when no retained v1 revisions remain. Reopen if an accepted shared domain invariant becomes authoritative for both versions with demonstrated independent historical/current rejection and order preservation, or if the exact collections cease to require independent structural validation.",
+        "tokens": 78
       }
     }
   ]

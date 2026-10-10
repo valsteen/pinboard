@@ -218,8 +218,8 @@ class CandidateExclusionsTest(CheckpointPackageSupport):
         self.assertEqual(before, self.git(target, "status", "--porcelain"))
         self.assertEqual(b"preserve on collision", excluded.read_bytes())
 
-    def test_correction_start_uses_reloaded_declaration_and_legacy_working_tree_contract(self) -> None:
-        for committed, declared in ((False, False), (False, True), (True, True)):
+    def test_correction_start_preserves_reloaded_current_snapshot_formats(self) -> None:
+        for committed, declared in ((False, False), (False, True), (True, False), (True, True)):
             with self.subTest(committed=committed, declared=declared):
                 fixture = self.active_candidate()
                 if committed:
@@ -239,11 +239,12 @@ class CandidateExclusionsTest(CheckpointPackageSupport):
                     if committed
                     else root.read_working_tree_candidate(fixture.project).identity
                 )
-                (fixture.project / "local.txt").write_bytes(b"local")
+                if declared or not committed:
+                    (fixture.project / "local.txt").write_bytes(b"local")
                 if declared:
                     submitted = self.submit_declared(fixture, candidate, ["local.txt"])
                 else:
-                    lease = self.native_attempt_acquire(fixture, "legacy-worker")
+                    lease = self.native_attempt_acquire(fixture, "candidate-only-worker")
                     selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
                     submitted = self.transition_result(fixture, selected, {"candidate": candidate})
                 self.assertEqual("committed", submitted["status"], submitted)
@@ -291,6 +292,13 @@ class CandidateExclusionsTest(CheckpointPackageSupport):
                 )
                 self.assertEqual("ready", context["status"], context)
                 view = self.json_object(context["starting_snapshot"])
+                self.assertEqual(
+                    "pinboard-candidate-snapshot/v3"
+                    if declared
+                    else ("pinboard-candidate-snapshot/v1" if committed else "pinboard-candidate-snapshot/v2"),
+                    view["schema"],
+                )
+                self.assertEqual("commit" if committed else "working-tree", view["candidate_kind"])
                 self.assertEqual(["local.txt"] if declared else None, view.get("excluded_untracked_paths"))
                 (fixture.project / "tracked.txt").write_text("wrong candidate\n", encoding="utf-8")
                 rejected = dispatch_operations._read_correction_snapshot(

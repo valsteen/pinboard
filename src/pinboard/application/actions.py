@@ -13,6 +13,10 @@ from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
     DecisionResult,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    RetryDisposition,
 )
 from pinboard.domain.identifiers import ActionId, AttemptId, LeaseId, ProposalId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
@@ -150,7 +154,7 @@ def select_current_actions(
     """Read the minimum current facts and select an optional exact legal action."""
 
     if role == decision_models.Role.OBSERVER:
-        snapshot = LedgerSnapshot("", ())
+        snapshot = LedgerSnapshot("", (), dependency_facts=())
     elif action_id is not None:
         scope = action_identity_scope(action_id)
         if scope is None:
@@ -165,7 +169,7 @@ def select_current_actions(
     elif lease_id is not None and generation is not None:
         snapshot = reader.read_leased_action_snapshot(role, lease_id, generation, observed_at)
     else:
-        snapshot = LedgerSnapshot("", ())
+        snapshot = LedgerSnapshot("", (), dependency_facts=())
     discovered = discover_current_actions(snapshot, role, lease_id=lease_id, generation=generation)
     if isinstance(discovered, DecisionFailure) or action_id is None:
         return discovered
@@ -219,20 +223,17 @@ def completion_input_contract(
             None,
         )
     brief = work_briefs.decode_canonical_work_brief(artifacts.read(attempt.brief_reference))
-    if not isinstance(brief, work_brief_models.WorkBrief):
-        route = "return-for-correction" if attempt.state == work_models.AttemptState.REVIEW else "rebind-attempt"
-        return query_models.CompletionRecoveryRequired(
-            attempt.attempt_id,
-            attempt.work_item_id,
-            route,
-            str(attempt.attempt_id),
-            None,
-            None,
-            (
-                "Completion requires the retained reviewed candidate to return for correction before binding a "
-                "current v4 work brief with an explicit terminal disposition."
-                if route == "return-for-correction"
-                else "Completion requires a current v4 work brief with an explicit terminal disposition."
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            f"Completion cannot read the accepted current brief: {brief.message} Diagnose that artifact before retrying.",
+            FailureDetails(
+                observed=(FailureFact("accepted_brief_artifact_ref_id", int(attempt.brief_artifact_ref_id)),),
+                mismatches=(),
+                retry=RetryDisposition.REFRESH_ACTION,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
             ),
         )
     if not isinstance(brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition):

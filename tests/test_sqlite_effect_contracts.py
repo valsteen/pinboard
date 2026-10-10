@@ -532,7 +532,8 @@ class SQLiteEffectContractTest(unittest.TestCase):
             {value.work_item_id for value in closed.definitions},
         )
         self.assertIn(WorkItemId("work-b"), terminal_closed.history_items)
-        self.assertIn(WorkItemId("work-b"), {value.work_item_id for value in terminal_closed.definitions})
+        self.assertNotIn(WorkItemId("work-b"), {value.work_item_id for value in terminal_closed.definitions})
+        self.assertEqual((WorkItemId("work-a"),), terminal_closed.recorded_dependencies(WorkItemId("work-b")))
 
     def test_generated_item_view_does_not_follow_transitive_dependencies(self) -> None:
         state = complete_sqlite_state()

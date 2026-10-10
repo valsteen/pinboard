@@ -38,7 +38,7 @@ def _add_root_selection(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--work-root", type=Path)
 
 
-def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one explicit installed CLI grammar
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pinboard", description="Inspect and maintain one pinboard.")
     parser.add_argument("--version", action="version", version=__version__)
     _add_root_selection(parser)
@@ -80,12 +80,6 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one explicit i
     initialize = commands.add_parser("init", help="Create an empty current SQLite work state.")
     initialize.add_argument("--json", action="store_true")
     _select_command(initialize, cli_commands.InitializeCommand)
-    migrate = commands.add_parser("migrate-work-root", help="Move legacy project state to .pinboard explicitly.")
-    migrate.add_argument("--json", action="store_true")
-    migrate_action = migrate.add_mutually_exclusive_group()
-    migrate_action.add_argument("--apply", metavar="PLAN_ID")
-    migrate_action.add_argument("--reverse", metavar="FORWARD_PLAN_ID")
-    _select_command(migrate, cli_commands.MigrateWorkRootPreviewCommand)
     migrate_schema = commands.add_parser("migrate-schema", help="Upgrade a verified v6 ledger to v7 explicitly.")
     migrate_schema.add_argument("--json", action="store_true")
     schema_action = migrate_schema.add_mutually_exclusive_group()
@@ -108,25 +102,16 @@ def parse_invocation(argv: Sequence[str] | None = None) -> cli_commands.CliInvoc
     untyped_values = vars(raw).copy()
     untyped_values.pop("command_selection")
     untyped_values.pop("selected_parser")
-    if command_type in (cli_commands.MigrateSchemaPreviewCommand, cli_commands.MigrateWorkRootPreviewCommand):
+    if command_type is cli_commands.MigrateSchemaPreviewCommand:
         apply = untyped_values.pop("apply")
         reverse = untyped_values.pop("reverse")
-        if command_type is cli_commands.MigrateSchemaPreviewCommand:
-            command_type = (
-                cli_commands.MigrateSchemaApplyCommand
-                if apply is not None
-                else cli_commands.MigrateSchemaReverseCommand
-                if reverse is not None
-                else cli_commands.MigrateSchemaPreviewCommand
-            )
-        else:
-            command_type = (
-                cli_commands.MigrateWorkRootApplyCommand
-                if apply is not None
-                else cli_commands.MigrateWorkRootReverseCommand
-                if reverse is not None
-                else cli_commands.MigrateWorkRootPreviewCommand
-            )
+        command_type = (
+            cli_commands.MigrateSchemaApplyCommand
+            if apply is not None
+            else cli_commands.MigrateSchemaReverseCommand
+            if reverse is not None
+            else cli_commands.MigrateSchemaPreviewCommand
+        )
         if apply is not None:
             untyped_values["apply"] = apply
         if reverse is not None:
@@ -170,21 +155,6 @@ def installed_commands() -> tuple[InstalledCommand, ...]:
                     (
                         f"{operation_id}/reverse",
                         cli_commands.MigrateSchemaReverseCommand,
-                        preview_usage + " --reverse FORWARD_PLAN_ID",
-                    ),
-                )
-            elif command_type is cli_commands.MigrateWorkRootPreviewCommand:
-                preview_usage = usage.removesuffix(" [--apply PLAN_ID | --reverse FORWARD_PLAN_ID]")
-                variants = (
-                    (operation_id, cli_commands.MigrateWorkRootPreviewCommand, preview_usage),
-                    (
-                        f"{operation_id}/apply",
-                        cli_commands.MigrateWorkRootApplyCommand,
-                        preview_usage + " --apply PLAN_ID",
-                    ),
-                    (
-                        f"{operation_id}/reverse",
-                        cli_commands.MigrateWorkRootReverseCommand,
                         preview_usage + " --reverse FORWARD_PLAN_ID",
                     ),
                 )

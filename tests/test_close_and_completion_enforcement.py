@@ -284,15 +284,14 @@ class SubmittedCandidateSupport(CheckpointPackageSupport):
 
 
 class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
-    def completion_payloads(
-        self, fixture: AcceptedPackageFixture, candidate: str, reviewer: str
-    ) -> tuple[JsonObject, ...]:
+    def completion_payload(self, fixture: AcceptedPackageFixture, candidate: str, reviewer: str) -> JsonObject:
         state = fixture.store.validated_snapshot()
         checkpoint = next(
             value for value in state.transition_receipts if value.outcome_schema == "checkpoint-acceptance/v2"
         )
         attempt_root = fixture.work / "attempts" / "work-a-1"
-        common: JsonObject = {
+        return {
+            "schema": "pinboard-reviewed-completion/v2",
             "candidate": candidate,
             "evidence": "The commissioned reviewer accepted the exact candidate.",
             "reviewer_task_id": reviewer,
@@ -307,10 +306,6 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
                 }
             ],
         }
-        return (
-            {"schema": "pinboard-covered-completion/v1", **common},
-            {"schema": "pinboard-reviewed-completion/v2", **common},
-        )
 
     def assert_review_required(
         self, fixture: AcceptedPackageFixture, payload: JsonObject, recorded_reviewer: str | None
@@ -339,42 +334,33 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         self.assertEqual(before, fixture.store.validated_snapshot())
         return refused
 
-    def test_completion_through_both_leaves_requires_a_commissioned_review_by_the_named_reviewer(self) -> None:
+    def test_reviewed_completion_requires_a_commissioned_review_by_the_named_reviewer(self) -> None:
         fixture, candidate = self.review_fixture()
         fixture = self.terminalize_brief(fixture)
-        for payload in self.completion_payloads(fixture, candidate, "commissioned-reviewer"):
-            with self.subTest(leaf=payload["schema"], review="absent"):
-                self.assert_review_required(fixture, payload, None)
+        payload = self.completion_payload(fixture, candidate, "commissioned-reviewer")
+        self.assert_review_required(fixture, payload, None)
 
         self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
-        for payload in self.completion_payloads(fixture, candidate, "invented-reviewer"):
-            with self.subTest(leaf=payload["schema"], review="other-reviewer"):
-                refused = self.assert_review_required(fixture, payload, "commissioned-reviewer")
-                self.assertEqual(
-                    [
-                        {
-                            "field": "reviewer_task_id",
-                            "expected": "commissioned-reviewer",
-                            "observed": "invented-reviewer",
-                        }
-                    ],
-                    refused["mismatches"],
-                )
+        payload = self.completion_payload(fixture, candidate, "invented-reviewer")
+        refused = self.assert_review_required(fixture, payload, "commissioned-reviewer")
+        self.assertEqual(
+            [{"field": "reviewer_task_id", "expected": "commissioned-reviewer", "observed": "invented-reviewer"}],
+            refused["mismatches"],
+        )
 
-        covered, reviewed = self.completion_payloads(fixture, candidate, "commissioned-reviewer")
+        reviewed = self.completion_payload(fixture, candidate, "commissioned-reviewer")
         committed = call_advertised_tool(
             mcp_server.TRANSITION_TOOL,
-            self.native_transition_request(fixture, self.project_action(fixture, "complete:work-a-1"), covered),
+            self.native_transition_request(fixture, self.project_action(fixture, "complete:work-a-1"), reviewed),
         )
         self.assertEqual("committed", committed["status"], committed)
         self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
-        self.assertNotEqual(reviewed["schema"], covered["schema"])
 
     def test_reviewed_leaf_commits_after_review_job_record_ready_and_matching_reviewer(self) -> None:
         fixture, candidate = self.review_fixture()
         fixture = self.terminalize_brief(fixture)
         self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
-        _covered, reviewed = self.completion_payloads(fixture, candidate, "commissioned-reviewer")
+        reviewed = self.completion_payload(fixture, candidate, "commissioned-reviewer")
         committed = call_advertised_tool(
             mcp_server.TRANSITION_TOOL,
             self.native_transition_request(fixture, self.project_action(fixture, "complete:work-a-1"), reviewed),
@@ -441,27 +427,25 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
             datetime.now(UTC),
         )
         self.assertIsInstance(published, AcceptedArtifactPublication)
-        for payload in self.completion_payloads(fixture, candidate, "commissioned-reviewer"):
-            with self.subTest(leaf=payload["schema"]):
-                self.assert_review_required(fixture, payload, "commissioned-reviewer")
+        payload = self.completion_payload(fixture, candidate, "commissioned-reviewer")
+        self.assert_review_required(fixture, payload, "commissioned-reviewer")
 
     def test_commissioned_review_relaxes_no_continue_disposition_refusal(self) -> None:
         fixture, candidate = self.review_fixture()
         self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
         state = fixture.store.validated_snapshot()
         self.assertIn("checkpoint-acceptance/v2", {value.outcome_schema for value in state.transition_receipts})
-        for payload in self.completion_payloads(fixture, candidate, "commissioned-reviewer"):
-            with self.subTest(leaf=payload["schema"]):
-                before = fixture.store.validated_snapshot()
-                # Continue-disposition discovery withholds complete, so build its exact receipt from a sibling action.
-                action = self.project_action(fixture, "return-for-correction:work-a-1")
-                action["action_id"] = {"kind": "complete", "subject": "work-a-1"}
-                refused = call_advertised_tool(
-                    mcp_server.TRANSITION_TOOL, self.native_transition_request(fixture, action, payload)
-                )
-                self.assertEqual("TRANSITION_INPUT_INVALID", refused["code"], refused)
-                self.assertEqual("Completion requires a terminal checkpoint disposition.", refused["message"])
-                self.assertEqual(before, fixture.store.validated_snapshot())
+        payload = self.completion_payload(fixture, candidate, "commissioned-reviewer")
+        before = fixture.store.validated_snapshot()
+        # Continue-disposition discovery withholds complete, so build its exact receipt from a sibling action.
+        action = self.project_action(fixture, "return-for-correction:work-a-1")
+        action["action_id"] = {"kind": "complete", "subject": "work-a-1"}
+        refused = call_advertised_tool(
+            mcp_server.TRANSITION_TOOL, self.native_transition_request(fixture, action, payload)
+        )
+        self.assertEqual("TRANSITION_INPUT_INVALID", refused["code"], refused)
+        self.assertEqual("Completion requires a terminal checkpoint disposition.", refused["message"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
 
 
 class RecordReadyCommissionTest(SubmittedCandidateSupport):

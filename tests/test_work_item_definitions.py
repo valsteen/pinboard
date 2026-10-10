@@ -42,7 +42,7 @@ def definition() -> work_models.WorkItemDefinition:
 
 
 class WorkItemDefinitionContractTest(unittest.TestCase):
-    def test_retained_v1_definition_round_trips_exact_bytes_and_digest(self) -> None:
+    def test_historical_v1_cannot_become_a_current_definition(self) -> None:
         payload = (
             b'{"acceptance_criteria":["The next area is reachable."],'
             b'"dependencies":["survey-west","survey-east"],'
@@ -57,12 +57,11 @@ class WorkItemDefinitionContractTest(unittest.TestCase):
             b'"unlock":"The party can reach the next area."}\n'
         )
 
-        decoded = expect_success(decode_work_item_definition(payload))
+        decoded = decode_work_item_definition(payload)
 
-        self.assertEqual(work_models.CheckoutPolicy.LEGACY_UNRECORDED, decoded.checkout_policy)
-        self.assertEqual(payload, expect_success(work_item_definition_bytes(decoded)))
-        self.assertEqual(hashlib.sha256(payload).hexdigest(), expect_success(work_item_definition_digest(decoded)))
-        self.assertEqual(decoded.acceptance_criteria, tuple(value.statement for value in decoded.obligations))
+        self.assertIsInstance(decoded, DecisionFailure)
+        assert isinstance(decoded, DecisionFailure)
+        self.assertEqual(DecisionFailureCode.ITEM_DEFINITION_INVALID, decoded.code)
 
     def test_definition_has_one_frozen_canonical_identity(self) -> None:
         expected = (
@@ -123,6 +122,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             (item,),
             definitions=(work_models.DefinitionAnchor(item.work_item_id, 3, current_digest, current),),
             history_items=(WorkItemId("survey-west"), WorkItemId("survey-east")),
+            dependency_facts=(),
         )
 
         decision = expect_success(
@@ -175,6 +175,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
                 ),
             ),
             history_items=(WorkItemId("survey-east"),),
+            dependency_facts=(work_models.DefinitionDependencies(survey.work_item_id, (build.work_item_id,)),),
         )
 
         cases = (
@@ -215,8 +216,9 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         snapshot = LedgerSnapshot(
             "ledger-revision",
             (),
-            definitions=(work_models.DefinitionAnchor(WorkItemId("done"), 1, digest, current),),
+            definitions=(),
             history_items=(WorkItemId("done"),),
+            dependency_facts=(),
         )
 
         rejected = decide_definition_revision(
@@ -273,6 +275,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
                 work_models.SubjectRevision(item.work_item_id, "2"),
                 work_models.SubjectRevision(attempt_id, "1"),
             ),
+            dependency_facts=(),
         )
         project = expect_success(
             available_actions(

@@ -7,7 +7,6 @@ from typing import assert_never
 import msgspec
 
 from pinboard.application import (
-    checkpoint_compatibility_models,
     query_models,
     stored_state,
     work_brief_compatibility_models,
@@ -34,17 +33,10 @@ from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, WorkItemId
 
-type WorkBriefValue = (
+type HistoricalWorkBriefValue = (
     work_brief_models.WorkBrief
-    | work_brief_compatibility_models.WorkBriefV3
-    | work_brief_compatibility_models.WorkBriefV2
-)
-type WorkBriefReviewValue = work_brief_models.WorkBriefReview | work_brief_compatibility_models.WorkBriefReviewV2
-
-type CheckpointPackage = (
-    checkpoint_compatibility_models.CheckpointReviewPackage
-    | checkpoint_compatibility_models.CheckpointReviewPackageV2
-    | work_brief_models.CheckpointReviewPackageV3
+    | work_brief_compatibility_models.HistoricalWorkBriefV3
+    | work_brief_compatibility_models.HistoricalWorkBriefV2
 )
 
 
@@ -98,14 +90,8 @@ def _owner_key(owner: work_brief_models.CoverageOwner) -> tuple[str, str | int]:
             assert_never(unreachable)
 
 
-def decode_work_brief(data: bytes) -> work_brief_models.WorkBriefResult[WorkBriefValue]:
+def decode_work_brief(data: bytes) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBrief]:
     try:
-        schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
-        schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
-        if schema == "pinboard-work-brief/v2":
-            return msgspec.json.decode(data, type=work_brief_compatibility_models.WorkBriefV2)
-        if schema == "pinboard-work-brief/v3":
-            return msgspec.json.decode(data, type=work_brief_compatibility_models.WorkBriefV3)
         return msgspec.json.decode(data, type=work_brief_models.WorkBrief)
     except msgspec.DecodeError as error:
         return _invalid(f"Cannot decode canonical work brief: {error}")
@@ -115,7 +101,7 @@ def canonical_work_brief_bytes(brief: work_brief_models.ReadableWorkBrief) -> by
     return _canonical_bytes(brief) + b"\n"
 
 
-def decode_canonical_work_brief(data: bytes) -> work_brief_models.WorkBriefResult[WorkBriefValue]:
+def decode_canonical_work_brief(data: bytes) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBrief]:
     brief = decode_work_brief(data)
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return brief
@@ -127,12 +113,34 @@ def decode_canonical_work_brief(data: bytes) -> work_brief_models.WorkBriefResul
     return brief
 
 
+def decode_canonical_historical_work_brief(
+    data: bytes,
+) -> work_brief_models.WorkBriefResult[HistoricalWorkBriefValue]:
+    """Read exact original facts for archive, checkpoint and completion closure only."""
+    try:
+        schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
+        schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
+        if schema in ("pinboard-work-brief/v2", "pinboard-work-brief/v3"):
+            brief = (
+                msgspec.json.decode(data, type=work_brief_compatibility_models.HistoricalWorkBriefV2)
+                if schema == "pinboard-work-brief/v2"
+                else msgspec.json.decode(data, type=work_brief_compatibility_models.HistoricalWorkBriefV3)
+            )
+            if data != canonical_work_brief_bytes(brief):
+                return work_brief_models.WorkBriefFailure(
+                    work_brief_models.WorkBriefErrorCode.BRIEF_NOT_CANONICAL,
+                    "Historical work brief bytes are not the canonical msgspec encoding.",
+                )
+            return brief
+    except msgspec.DecodeError as error:
+        return _invalid(f"Cannot decode historical work brief facts: {error}")
+    return decode_canonical_work_brief(data)
+
+
 def validate_definition_brief_agreement(
     definition: work_models.WorkItemDefinition,
     brief: work_brief_models.WorkBrief,
 ) -> work_brief_models.WorkBriefFailure | None:
-    if definition.checkout_policy == work_models.CheckoutPolicy.LEGACY_UNRECORDED:
-        return _invalid("Current work briefs require a current definition with explicit checkout policy.")
     expected_ids = tuple(value.obligation_id for value in definition.obligations)
     observed_ids = tuple(work_models.ObligationId(value.obligation_id) for value in brief.obligation_correspondence)
     if len(observed_ids) != len(set(observed_ids)) or set(observed_ids) != set(expected_ids):
@@ -161,6 +169,7 @@ def _validate_current_definition(
     definition = selected.definition
     if (
         definition is None
+        or not isinstance(definition.definition, work_models.WorkItemDefinition)
         or definition.revision != brief.accepted_scope.revision
         or definition.digest != brief.accepted_scope.digest
     ):
@@ -170,13 +179,11 @@ def _validate_current_definition(
 
 def validate_executable_work_brief(
     store: WorkStore,
-    brief: WorkBriefValue,
+    brief: work_brief_models.WorkBrief,
     observed_checkout: work_models.CheckoutSelection,
 ) -> work_brief_models.WorkBriefFailure | None:
     """Require the exact current definition, current brief schema, and selected checkout."""
 
-    if not isinstance(brief, work_brief_models.WorkBrief):
-        return _invalid("Retained work brief v3/v2 is readable but cannot authorize execution.")
     if (failure := _validate_current_definition(store, brief)) is not None:
         return failure
     if brief.checkout_selection != observed_checkout:
@@ -210,12 +217,8 @@ def validate_reviewed_authority_digests(
     return None
 
 
-def decode_work_brief_review(data: bytes) -> work_brief_models.WorkBriefResult[WorkBriefReviewValue]:
+def decode_work_brief_review(data: bytes) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBriefReview]:
     try:
-        schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
-        schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
-        if schema == "pinboard-work-brief-review/v2":
-            return msgspec.json.decode(data, type=work_brief_compatibility_models.WorkBriefReviewV2)
         return msgspec.json.decode(data, type=work_brief_models.WorkBriefReview)
     except (msgspec.DecodeError, ValueError) as error:
         return work_brief_models.WorkBriefFailure(
@@ -224,7 +227,7 @@ def decode_work_brief_review(data: bytes) -> work_brief_models.WorkBriefResult[W
         )
 
 
-def canonical_work_brief_review_bytes(review: WorkBriefReviewValue) -> bytes:
+def canonical_work_brief_review_bytes(review: work_brief_models.WorkBriefReview) -> bytes:
     return _canonical_bytes(review) + b"\n"
 
 
@@ -392,7 +395,7 @@ def validate_candidate_review(
 
 def decode_canonical_work_brief_review(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[WorkBriefReviewValue]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBriefReview]:
     review = decode_work_brief_review(data)
     if isinstance(review, work_brief_models.WorkBriefFailure):
         return review
@@ -436,12 +439,9 @@ def decode_canonical_work_brief_review_needs_correction(
     return review
 
 
-def needs_correction_review_key(brief: work_brief_models.ReadableWorkBrief) -> str:
+def needs_correction_review_key(brief: work_brief_models.WorkBrief) -> str:
     checkpoint = brief.checkpoint
-    if not isinstance(
-        checkpoint,
-        (work_brief_models.CrossBoundaryCheckpoint, work_brief_compatibility_models.CrossBoundaryCheckpointV3),
-    ):
+    if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
         raise ValueError("Local checkpoints do not use needs-correction brief reviews.")
     brief_sha256 = hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
     checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
@@ -533,17 +533,10 @@ def read_brief_review_status(
 
 
 def _review_checkpoint(
-    brief: work_brief_models.ReadableWorkBrief,
-) -> (
-    work_brief_models.CrossBoundaryCheckpoint
-    | work_brief_compatibility_models.CrossBoundaryCheckpointV3
-    | work_brief_models.WorkBriefFailure
-):
+    brief: work_brief_models.WorkBrief,
+) -> work_brief_models.CrossBoundaryCheckpoint | work_brief_models.WorkBriefFailure:
     checkpoint = brief.checkpoint
-    if isinstance(
-        checkpoint,
-        (work_brief_models.CrossBoundaryCheckpoint, work_brief_compatibility_models.CrossBoundaryCheckpointV3),
-    ):
+    if isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
         return checkpoint
     return work_brief_models.WorkBriefFailure(
         work_brief_models.WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews."
@@ -552,7 +545,7 @@ def _review_checkpoint(
 
 def validate_work_brief_review_needs_correction(
     review: work_brief_models.WorkBriefReviewNeedsCorrection,
-    brief: work_brief_models.ReadableWorkBrief,
+    brief: work_brief_models.WorkBrief,
 ) -> work_brief_models.WorkBriefFailure | None:
     checkpoint = _review_checkpoint(brief)
     if isinstance(checkpoint, work_brief_models.WorkBriefFailure):
@@ -584,14 +577,11 @@ def validate_work_brief_review_needs_correction(
     return None
 
 
-def decode_checkpoint_review_package(data: bytes) -> work_brief_models.WorkBriefResult[CheckpointPackage]:
+def decode_checkpoint_review_package(
+    data: bytes,
+) -> work_brief_models.WorkBriefResult[work_brief_models.CheckpointReviewPackageV3]:
     try:
-        return msgspec.json.decode(
-            data,
-            type=checkpoint_compatibility_models.CheckpointReviewPackage
-            | checkpoint_compatibility_models.CheckpointReviewPackageV2
-            | work_brief_models.CheckpointReviewPackageV3,
-        )
+        return msgspec.json.decode(data, type=work_brief_models.CheckpointReviewPackageV3)
     except msgspec.DecodeError as error:
         return work_brief_models.WorkBriefFailure(
             work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
@@ -599,13 +589,13 @@ def decode_checkpoint_review_package(data: bytes) -> work_brief_models.WorkBrief
         )
 
 
-def canonical_checkpoint_review_package_bytes(package: CheckpointPackage) -> bytes:
+def canonical_checkpoint_review_package_bytes(package: work_brief_models.CheckpointReviewPackageV3) -> bytes:
     return _canonical_bytes(package) + b"\n"
 
 
 def decode_canonical_checkpoint_review_package(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[CheckpointPackage]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.CheckpointReviewPackageV3]:
     package = decode_checkpoint_review_package(data)
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return package
@@ -619,12 +609,8 @@ def decode_canonical_checkpoint_review_package(
 
 def decode_completion_review_package(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[work_brief_models.CompletionReviewPackageValue]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.CompletionReviewPackage]:
     try:
-        schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
-        schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
-        if schema == "pinboard-completion-review-package/v1":
-            return msgspec.json.decode(data, type=work_brief_models.CompletionReviewPackageV1)
         return msgspec.json.decode(data, type=work_brief_models.CompletionReviewPackage)
     except msgspec.DecodeError as error:
         return work_brief_models.WorkBriefFailure(
@@ -633,13 +619,36 @@ def decode_completion_review_package(
         )
 
 
-def canonical_completion_review_package_bytes(package: work_brief_models.CompletionReviewPackageValue) -> bytes:
+def canonical_completion_review_package_bytes(package: work_brief_models.CompletionReviewPackage) -> bytes:
     return _canonical_bytes(package) + b"\n"
+
+
+def decode_canonical_historical_completion_review_package(
+    data: bytes,
+) -> work_brief_models.WorkBriefResult[work_brief_compatibility_models.HistoricalCompletionReviewPackage]:
+    """Read completion history without admitting original facts as current input."""
+    try:
+        schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
+        schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
+        if schema != "pinboard-completion-review-package/v1":
+            return decode_canonical_completion_review_package(data)
+        package = msgspec.json.decode(data, type=work_brief_compatibility_models.HistoricalCompletionReviewPackageV1)
+    except msgspec.DecodeError as error:
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
+            f"Cannot decode historical completion review package facts: {error}",
+        )
+    if data != work_brief_compatibility_models.canonical_historical_completion_review_package_bytes(package):
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
+            "Historical completion review package bytes are not the canonical msgspec encoding.",
+        )
+    return package
 
 
 def decode_canonical_completion_review_package(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[work_brief_models.CompletionReviewPackageValue]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.CompletionReviewPackage]:
     package = decode_completion_review_package(data)
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return package
@@ -652,42 +661,30 @@ def decode_canonical_completion_review_package(
 
 
 def validate_work_brief_review(
-    review: WorkBriefReviewValue,
-    brief: work_brief_models.ReadableWorkBrief,
-    reviewer_task_id: str | None = None,
+    review: work_brief_models.WorkBriefReview,
+    brief: work_brief_models.WorkBrief | work_brief_compatibility_models.HistoricalWorkBriefV3,
 ) -> work_brief_models.WorkBriefFailure | None:
-    checkpoint = _review_checkpoint(brief)
-    if isinstance(checkpoint, work_brief_models.WorkBriefFailure):
-        return checkpoint
+    """Check exact ready-review facts; current callers separately require current briefs."""
+    checkpoint = brief.checkpoint
+    if not isinstance(
+        checkpoint,
+        (work_brief_models.CrossBoundaryCheckpoint, work_brief_compatibility_models.HistoricalCrossBoundaryCheckpoint),
+    ):
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews."
+        )
     if review.attempt_id != brief.attempt_id or review.checkpoint_id != checkpoint.checkpoint_id:
         return work_brief_models.WorkBriefFailure(
             work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
             "Brief review names a different attempt or checkpoint.",
         )
-    owner_task_id = brief.owner_task_id if reviewer_task_id is None else reviewer_task_id
-    if review.reviewer_task_id == owner_task_id:
+    if review.reviewer_task_id == brief.owner_task_id:
         return work_brief_models.WorkBriefFailure(
             work_brief_models.WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT,
             "The brief reviewer must be a different task from the attempt owner.",
         )
-    if isinstance(brief, (work_brief_models.WorkBrief, work_brief_compatibility_models.WorkBriefV3)):
-        if not isinstance(review, work_brief_models.WorkBriefReview):
-            return work_brief_models.WorkBriefFailure(
-                work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
-                "Work brief v3 and later require a ready review bound to the exact accepted brief.",
-            )
-        accepted_brief_stale = (
-            review.accepted_brief_sha256 != hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
-        )
-    else:
-        if not isinstance(review, work_brief_compatibility_models.WorkBriefReviewV2):
-            return work_brief_models.WorkBriefFailure(
-                work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
-                "Retained work brief v2 requires its exact retained ready-review format.",
-            )
-        accepted_brief_stale = False
     if (
-        accepted_brief_stale
+        review.accepted_brief_sha256 != hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
         or review.checkpoint_sha256 != hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
         or (
             review.reviewed_authority_set_sha256
@@ -709,11 +706,7 @@ def validate_work_brief_review(
 
 
 def ready_review_key_sha256(brief: work_brief_models.ReadableWorkBrief) -> str:
-    """Return the durable ready-review key without reinterpreting retained v2 evidence."""
-
-    if isinstance(brief, (work_brief_models.WorkBrief, work_brief_compatibility_models.WorkBriefV3)):
-        return hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
-    return hashlib.sha256(canonical_checkpoint_bytes(brief.checkpoint)).hexdigest()
+    return hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
 
 
 def _authorization_text(
@@ -766,18 +759,31 @@ def _obligation_target_text(target: work_brief_models.ObligationTarget) -> str:
 
 
 def _boundary_text(
-    checkpoint: work_brief_models.WorkBriefCheckpoint | work_brief_compatibility_models.WorkBriefCheckpointV3,
+    checkpoint: work_brief_models.WorkBriefCheckpoint | work_brief_compatibility_models.HistoricalWorkBriefCheckpoint,
 ) -> str:
     match checkpoint:
-        case work_brief_models.LocalCheckpoint() | work_brief_compatibility_models.LocalCheckpointV3():
+        case work_brief_models.LocalCheckpoint() | work_brief_compatibility_models.HistoricalLocalCheckpoint():
             return "local"
-        case work_brief_models.CrossBoundaryCheckpoint() | work_brief_compatibility_models.CrossBoundaryCheckpointV3():
+        case (
+            work_brief_models.CrossBoundaryCheckpoint()
+            | work_brief_compatibility_models.HistoricalCrossBoundaryCheckpoint()
+        ):
             return "cross-boundary"
         case _ as unreachable:
             assert_never(unreachable)
 
 
-def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:  # noqa: PLR0912 - closed brief projection
+def render_work_brief_markdown(brief: work_brief_models.WorkBrief) -> bytes:
+    """Render the selected operational brief family."""
+    return _render_work_brief_markdown(brief)
+
+
+def render_historical_work_brief_markdown(brief: HistoricalWorkBriefValue) -> bytes:
+    """Project verified historical facts without making them operational briefs."""
+    return _render_work_brief_markdown(brief)
+
+
+def _render_work_brief_markdown(brief: HistoricalWorkBriefValue) -> bytes:  # noqa: PLR0912 - closed factual projection
     checkpoint = brief.checkpoint
     lines = [
         "---",
@@ -793,7 +799,7 @@ def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:  # noqa: PLR0912
         f"artifact_revision: {brief.artifact_revision}",
         *(
             (f"checkout_selection: {brief.checkout_selection.value}",)
-            if not isinstance(brief, work_brief_compatibility_models.WorkBriefV2)
+            if not isinstance(brief, work_brief_compatibility_models.HistoricalWorkBriefV2)
             else ()
         ),
         "---",
@@ -820,7 +826,7 @@ def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:  # noqa: PLR0912
     _section(lines, "Non-goals", brief.non_goals)
     lines.extend(("## Product decision and provenance", "", brief.product_decision_and_provenance, ""))
     lines.extend(("## Testing strategy", "", brief.testing_strategy, ""))
-    if not isinstance(brief, work_brief_compatibility_models.WorkBriefV2):
+    if not isinstance(brief, work_brief_compatibility_models.HistoricalWorkBriefV2):
         lines.extend(("## Obligation correspondence", ""))
         lines.extend(
             f"- `{row.obligation_id}` — `{_obligation_target_text(row.target)}`"
@@ -829,7 +835,7 @@ def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:  # noqa: PLR0912
         lines.append("")
     if isinstance(
         checkpoint,
-        (work_brief_models.CrossBoundaryCheckpoint, work_brief_compatibility_models.CrossBoundaryCheckpointV3),
+        (work_brief_models.CrossBoundaryCheckpoint, work_brief_compatibility_models.HistoricalCrossBoundaryCheckpoint),
     ):
         lines.extend(("## Contract", ""))
         for record in checkpoint.contracts:
@@ -909,8 +915,8 @@ def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:  # noqa: PLR0912
                 case _ as unreachable:
                     assert_never(unreachable)
         case (
-            work_brief_compatibility_models.WorkBriefV3(remaining_work=remaining_work)
-            | work_brief_compatibility_models.WorkBriefV2(remaining_work=remaining_work)
+            work_brief_compatibility_models.HistoricalWorkBriefV3(remaining_work=remaining_work)
+            | work_brief_compatibility_models.HistoricalWorkBriefV2(remaining_work=remaining_work)
         ):
             lines.extend(("", "## Remaining work", "", remaining_work, ""))
         case _ as unreachable:

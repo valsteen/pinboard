@@ -131,6 +131,8 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
     definitions = tuple(
         work_models.DefinitionAnchor(value.item_id, value.revision, value.digest, value.definition)
         for value in latest_definitions.values()
+        if isinstance(value.definition, work_models.WorkItemDefinition)
+        and stored_state.live_work_state(stored_items_by_id[value.item_id].state) is not None
     )
     work_items = tuple(
         work_models.WorkItem(
@@ -303,6 +305,12 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
                 value.recorded_at,
             )
             for value in state.replacements.dispositions
+        ),
+        dependency_facts=tuple(
+            work_models.DefinitionDependencies(
+                value.item_id, tuple(WorkItemId(dependency) for dependency in value.definition.dependencies)
+            )
+            for value in latest_definitions.values()
         ),
     )
 

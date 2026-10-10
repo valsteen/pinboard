@@ -18,7 +18,6 @@ from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.application import (
     candidate_snapshots,
-    checkpoint_compatibility_models,
     checkpoint_packages,
     dispatch_models,
     ports,
@@ -58,7 +57,7 @@ class PriorCheckpointPackage(msgspec.Struct, tag="present", tag_field="kind", fr
     artifact_ref_id: int
     path: str
     sha256: str
-    package: work_briefs.CheckpointPackage
+    package: work_brief_models.CheckpointReviewPackageV3
     candidate_artifact_ref_id: int
     candidate_path: str
     candidate_sha256: str
@@ -88,7 +87,7 @@ type ReviewRound = InitialReviewRound | CorrectionReviewRound
 @dataclass(frozen=True, slots=True)
 class PreparedReviewJob:
     candidate_evidence: candidate_snapshots.CandidateSnapshotEvidence
-    brief: work_brief_models.ReadableWorkBrief
+    brief: work_brief_models.WorkBrief
     brief_reference: BriefArtifactRef
     result_path: Path
     result_sha256: str
@@ -114,15 +113,6 @@ class CurrentCandidateReview:
 @dataclass(frozen=True, slots=True)
 class ReviewPromptPublicationFailure:
     cause: ArtifactError | ports.WorkStoreError
-
-
-@dataclass(frozen=True, slots=True)
-class CompatibilityCandidateRequired(DecisionFailure):
-    """Captured v1 facts needed by explicit sibling remedies; this owner never repairs."""
-
-    package: checkpoint_compatibility_models.CheckpointReviewPackage
-    candidate_reference: stored_state.ArtifactReference | None
-    checkpoint_history_id: HistoryId
 
 
 def _review_job_failure(message: str) -> DecisionFailure:
@@ -346,7 +336,7 @@ def read_current_candidate_review(
     store: ports.WorkStore,
     artifacts: dispatch_models.DispatchArtifactPort,
     *,
-    brief: work_brief_models.ReadableWorkBrief,
+    brief: work_brief_models.WorkBrief,
     candidate_revision: str,
     candidate_snapshot: stored_state.ArtifactReference,
     accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
@@ -378,7 +368,7 @@ def _current_candidate_review_from_reference(
     reference: stored_state.ArtifactReference | None,
     artifacts: dispatch_models.DispatchArtifactPort,
     *,
-    brief: work_brief_models.ReadableWorkBrief,
+    brief: work_brief_models.WorkBrief,
     candidate_revision: str,
     candidate_snapshot: stored_state.ArtifactReference,
     accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
@@ -441,7 +431,7 @@ def commissioned_review_failure(
     artifacts: dispatch_models.DispatchArtifactPort,
     *,
     attempt: query_models.NonterminalAttemptContextFacts,
-    brief: work_brief_models.ReadableWorkBrief,
+    brief: work_brief_models.WorkBrief,
     result_sha256: str,
     review_sha256: str,
     reviewer_task_id: str,
@@ -508,14 +498,9 @@ def commissioned_review_failure(
 
 
 def _candidate_reconstruction(
-    package: work_briefs.CheckpointPackage,
+    package: work_brief_models.CheckpointReviewPackageV3,
     candidate_bytes: bytes,
 ) -> DecisionResult[str]:
-    if not isinstance(package, work_brief_models.CheckpointReviewPackageV3):
-        return (
-            "The retained candidate is a raw binary patch. Without independent evidence of its actual HEAD, "
-            "applying it to the brief base is only historical patch assurance, not complete original-state reconstruction. "
-        )
     snapshot = candidate_snapshots.decode_candidate_snapshot(candidate_bytes)
     if (snapshot.attempt_id, snapshot.item_id, snapshot.candidate) != (
         package.attempt_id,
@@ -555,44 +540,17 @@ def _select_prior_checkpoint_package(
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return _review_job_failure(package.message)
     candidate_reference = facts.checkpoint_candidate_reference
-    if (
-        isinstance(
-            package,
-            (work_brief_models.CheckpointReviewPackageV3, checkpoint_compatibility_models.CheckpointReviewPackageV2),
-        )
-        and candidate_reference is None
-    ):
+    if candidate_reference is None:
         return _review_job_failure("Current checkpoint package candidate evidence is incomplete.")
-    if isinstance(package, checkpoint_compatibility_models.CheckpointReviewPackage) and (
-        not package.candidate.startswith("working-tree-sha256:")
-        or len(package.candidate.removeprefix("working-tree-sha256:")) != 64
-        or candidate_reference is None
-    ):
-        return CompatibilityCandidateRequired(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "Selected historical v1 candidate bytes are not accepted; use the explicit retained-v1 recovery.",
-            None,
-            package,
-            candidate_reference,
-            checkpoint_history_id,
-        )
-    assert candidate_reference is not None
     try:
         candidate_bytes = read_reference(work_root, candidate_reference)
     except ArtifactError as error:
         return _review_job_failure(str(error))
-    if not checkpoint_packages.canonical_checkpoint_candidate_reference(package, candidate_reference) or (
-        isinstance(package, checkpoint_compatibility_models.CheckpointReviewPackage)
-        and candidate_reference.content_sha256 != package.candidate.removeprefix("working-tree-sha256:")
-    ):
+    if not checkpoint_packages.canonical_checkpoint_candidate_reference(package, candidate_reference):
         return _review_job_failure("Selected checkpoint candidate evidence does not match its accepted package.")
-    if isinstance(
-        package,
-        (work_brief_models.CheckpointReviewPackageV3, checkpoint_compatibility_models.CheckpointReviewPackageV2),
-    ):
-        identity = package.candidate_snapshot
-        if not checkpoint_packages.portable_candidate_identity_matches(identity, candidate_reference):
-            return _review_job_failure("Selected checkpoint candidate evidence does not match its portable identity.")
+    identity = package.candidate_snapshot
+    if not checkpoint_packages.portable_candidate_identity_matches(identity, candidate_reference):
+        return _review_job_failure("Selected checkpoint candidate evidence does not match its portable identity.")
     package_path = work_root / package_reference.selector
     candidate_path = work_root / candidate_reference.selector
     selection = PriorCheckpointPackage(

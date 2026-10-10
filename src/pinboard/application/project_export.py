@@ -43,7 +43,7 @@ class ProjectExportDefinitionRevision(msgspec.Struct, frozen=True, forbid_unknow
     item_id: str
     revision: int
     digest: str
-    definition: query_models.WorkItemDefinitionView
+    definition: query_models.DefinitionView
     reason: str
     source_task_id: str
     before_digest: str | None
@@ -292,53 +292,6 @@ class ProjectExportCrossBoundaryReviewBasis(
 type ProjectExportReviewBasis = ProjectExportLocalReviewBasis | ProjectExportCrossBoundaryReviewBasis
 
 
-# The retained v1 export binding shares the portable identities and complete
-# project export union here; moving it alone would create a reverse import.
-class CompatibilityProjectExportCheckpointPackage(
-    msgspec.Struct,
-    tag="pinboard-checkpoint-review-package/v1",
-    tag_field="schema",
-    frozen=True,
-    forbid_unknown_fields=True,
-):
-    history_id: int
-    package_artifact_ref_id: int
-    attempt_id: str
-    item_id: str
-    candidate: str
-    acceptance_evidence: str
-    accepted_scope: ProjectExportAcceptedScope
-    checkpoint: ProjectExportCheckpointIdentity
-    accepted_brief: ProjectExportPortableArtifactIdentity
-    result: ProjectExportPortableArtifactIdentity
-    implementation_review: ProjectExportPortableArtifactIdentity
-    verdict: Literal["ready"]
-    review_basis: ProjectExportReviewBasis
-
-
-class CompatibilityProjectExportCheckpointPackageV2(
-    msgspec.Struct,
-    tag="pinboard-checkpoint-review-package/v2",
-    tag_field="schema",
-    frozen=True,
-    forbid_unknown_fields=True,
-):
-    history_id: int
-    package_artifact_ref_id: int
-    attempt_id: str
-    item_id: str
-    candidate: str
-    acceptance_evidence: str
-    accepted_scope: ProjectExportAcceptedScope
-    checkpoint: ProjectExportCheckpointIdentity
-    candidate_snapshot: ProjectExportPortableArtifactIdentity
-    accepted_brief: ProjectExportPortableArtifactIdentity
-    result: ProjectExportPortableArtifactIdentity
-    implementation_review: ProjectExportPortableArtifactIdentity
-    verdict: Literal["ready"]
-    review_basis: ProjectExportReviewBasis
-
-
 class ProjectExportCheckpointPackageV3(
     msgspec.Struct,
     tag="pinboard-checkpoint-review-package/v3",
@@ -360,13 +313,6 @@ class ProjectExportCheckpointPackageV3(
     implementation_review: ProjectExportPortableArtifactIdentity
     verdict: Literal["ready"]
     review_basis: ProjectExportReviewBasis
-
-
-type ProjectExportCheckpointPackageValue = (
-    CompatibilityProjectExportCheckpointPackage
-    | CompatibilityProjectExportCheckpointPackageV2
-    | ProjectExportCheckpointPackageV3
-)
 
 
 class ProjectExportAcceptedBriefCompletionIdentity(
@@ -455,7 +401,7 @@ class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_artifact_links: tuple[ProjectExportItemArtifactLink, ...]
     artifact_references: tuple[ProjectExportArtifactReference, ...]
     artifact_contents: tuple[ProjectExportArtifactContent, ...]
-    checkpoint_packages: tuple[ProjectExportCheckpointPackageValue, ...]
+    checkpoint_packages: tuple[ProjectExportCheckpointPackageV3, ...]
     completion_packages: tuple[ProjectExportCompletionReviewPackage, ...]
 
 
@@ -541,31 +487,6 @@ def project_artifact_reference(
     )
 
 
-def _project_definition(value: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
-    return query_models.WorkItemDefinitionView(
-        "pinboard-work-item-definition/v2",
-        value.title,
-        value.objective,
-        value.hypothesis,
-        value.evidence,
-        value.scope,
-        value.non_scope,
-        value.acceptance_criteria,
-        tuple(value.dependencies),
-        value.effect,
-        value.unlock,
-        value.checkout_policy,
-        tuple(
-            query_models.WorkObligationView(
-                obligation.obligation_id,
-                obligation.statement,
-                obligation.deferral_policy,
-            )
-            for obligation in value.obligations
-        ),
-    )
-
-
 def _project_proposal_relation(value: stored_state.StoredProposal) -> ProjectExportProposalRelation:
     proposal_id = str(value.proposal_id)
     match value.relation:
@@ -618,7 +539,7 @@ def project_export_from_state(
     state: ProjectExportState,
     artifact_references: tuple[ProjectExportArtifactReference, ...],
     artifact_contents: tuple[ProjectExportArtifactContent, ...],
-    checkpoint_packages: tuple[ProjectExportCheckpointPackageValue, ...],
+    checkpoint_packages: tuple[ProjectExportCheckpointPackageV3, ...],
     completion_packages: tuple[ProjectExportCompletionReviewPackage, ...],
 ) -> ProjectExport:
     """Project one already-loaded export selection without outer effects."""
@@ -668,7 +589,7 @@ def project_export_from_state(
                 str(value.item_id),
                 value.revision,
                 value.digest,
-                _project_definition(value.definition),
+                query_models.project_definition(value.definition),
                 value.reason,
                 str(value.source_task_id),
                 value.before_digest,

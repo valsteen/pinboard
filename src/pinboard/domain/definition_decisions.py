@@ -32,9 +32,9 @@ def introduces_dependency_cycle(
         if dependency in visited:
             continue
         visited.add(dependency)
-        anchor = snapshot.definition(dependency)
-        if anchor is not None:
-            pending.extend(anchor.definition.dependencies)
+        recorded = snapshot.recorded_dependencies(dependency)
+        if recorded is not None:
+            pending.extend(recorded)
     return False
 
 

@@ -18,7 +18,6 @@ from pinboard.adapters.files import root
 from pinboard.adapters.files.brief_sources import select_base_brief_source, select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.application import (
-    candidate_snapshot_compatibility_models,
     candidate_snapshots,
     checkpoint_packages,
     queries,
@@ -584,12 +583,6 @@ def _read_dispatch_brief(
     brief = decode_canonical_work_brief(accepted_brief_bytes)
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, brief.message, None)
-    if not isinstance(brief, work_brief_models.WorkBrief):
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_INVALID,
-            "Retained work brief v3/v2 is readable but cannot authorize dispatch.",
-            None,
-        )
     if (
         failure := _validate_dispatch_identity(
             brief,
@@ -667,7 +660,7 @@ def _replacement_readiness_context(
             _fresh_review_details((FailureFact("selected_return_history_id", history_id),), ()),
         )
     brief = decode_canonical_work_brief(artifacts.read(selected.brief_reference))
-    if not isinstance(brief, work_brief_models.WorkBrief):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_INVALID, "Current canonical brief is unavailable.", None
         )
@@ -900,12 +893,6 @@ def _read_correction_snapshot(
     facts = store.read_review_job_context(AttemptId(brief.attempt_id), None, correction_history_id, None, None)
     receipt = None if facts is None else facts.correction_receipt
     assert receipt is not None  # the caller checked the selected canonical return before this operation
-    if isinstance(snapshot, candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot):
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
-            "A patch-only historical snapshot cannot authorize a new complete correction start; submit complete-state evidence.",
-            _fresh_review_details((), ()),
-        )
     outcome = checkpoint_packages.decode_correction_outcome(receipt, brief.attempt_id)
     if isinstance(outcome, DecisionFailure):
         return DispatchFailure(
@@ -1035,7 +1022,7 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
         brief = decode_canonical_work_brief(artifacts.read(attempt.brief_reference))
     except ArtifactError as error:
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, str(error), None)
-    if not isinstance(brief, work_brief_models.WorkBrief):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_INVALID, "Current canonical work brief is unavailable.", None
         )
@@ -1268,8 +1255,6 @@ def _validate_accepted_review(
             review = decode_canonical_work_brief_review(accepted_review)
             if isinstance(review, work_brief_models.WorkBriefFailure):
                 return review_failure(review)
-            if not isinstance(review, work_brief_models.WorkBriefReview):
-                return _stale_review_failure_from_legacy(brief)
             if (failure := validate_work_brief_review(review, brief)) is not None:
                 if failure.code == work_brief_models.WorkBriefErrorCode.REVIEW_STALE:
                     return _stale_review_failure(review, brief)
@@ -1277,21 +1262,6 @@ def _validate_accepted_review(
         case _ as unreachable:
             assert_never(unreachable)
     return None
-
-
-def _stale_review_failure_from_legacy(brief: work_brief_models.WorkBrief) -> DispatchFailure:
-    return DispatchFailure(
-        DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
-        "Current work briefs require a ready review bound to the exact accepted brief.",
-        _fresh_review_details(
-            (
-                FailureFact(
-                    "current_accepted_brief_sha256", hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
-                ),
-            ),
-            (FailureMismatch("review_schema", "pinboard-work-brief-review/v3", "pinboard-work-brief-review/v2"),),
-        ),
-    )
 
 
 def _render_dispatch_prompt(

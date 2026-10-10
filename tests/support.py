@@ -151,6 +151,7 @@ def with_definition_dependencies(
         (value for value in state.lifecycle.definition_revisions if value.item_id == item_id),
         key=revision_number,
     )
+    assert isinstance(current.definition, work_models.WorkItemDefinition)
     definition = replace(current.definition, dependencies=dependencies)
     digest = work_item_definition_digest(definition)
     assert isinstance(digest, str)

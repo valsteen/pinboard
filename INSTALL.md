@@ -103,16 +103,6 @@ Do not add the shared repository as a workspace root. Do not grant persistent ac
 
 If you deliberately use `--work-root`, add a direct write rule for only that exact selected directory.
 
-### Move an existing project from `.codex/pinboard`
-
-Default commands do not create a second board when they find only the legacy `.codex/pinboard` location. They return the exact recovery command instead:
-
-```sh
-<launcher-root>/scripts/pinboard --project-root /path/to/managed-project migrate-work-root --json
-```
-
-Run the migration only while no other Pinboard command is accessing that project. It verifies the current SQLite schema, adds the neutral Git exclusion, moves the directory without rewriting SQLite or artifact bytes, and creates the relative `.codex/pinboard -> ../.pinboard` compatibility alias. It keeps unrelated `.codex` content and any existing legacy exclusion. On a partial failure, inspect the reported changed surfaces before running the command again.
-
 ## Claude Code
 
 **Context setting:** `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` disables MCP tool search, loading all connected MCP tool schemas up front and potentially using a large part of the context window. Leave it unset if your gateway supports tool search; if your gateway requires this setting, connect fewer MCP servers. See [Claude Code environment variables](https://code.claude.com/docs/en/env-vars).
@@ -208,13 +198,13 @@ The free Claude chat plan and Claude Code access are separate product surfaces. 
 
 ## Local data
 
-By default, Pinboard keeps project decisions and evidence in the managed repository's ignored `.pinboard` directory, created by the [first setup](#first-setup). Primary and linked worktrees share that location; [Linked worktrees and custom data locations](#linked-worktrees-and-custom-data-locations) explains how to find and authorize it. Existing projects that still use `.codex/pinboard` run the one-time migration described in [Move an existing project from `.codex/pinboard`](#move-an-existing-project-from-codexpinboard); it preserves the existing bytes and leaves a compatibility alias.
+By default, Pinboard keeps project decisions and evidence in the managed repository's ignored `.pinboard` directory, created by the [first setup](#first-setup). Primary and linked worktrees share that location; [Linked worktrees and custom data locations](#linked-worktrees-and-custom-data-locations) explains how to find and authorize it. Explicit data locations remain at the selected path under the ordinary root rules.
 
 MCP startup advertises the same input and output schemas for every installation. Field patterns use JavaScript-compatible syntax, including constraints for identifiers, paths, text, and digests. Pinboard still validates requests and results against its canonical typed records. The former `[mcp] omitRegexLookarounds` setting is ignored; existing user configuration files are left as they are.
 
 Contributor traces use `contributor-traces.config` in the selected work root. The default shared `.pinboard` location is ignored by Git; an explicit work root uses its own setting and trace directory, so authorize writes only to that exact root. On first eligible use, Pinboard creates the file privately at mode `0600`, writes `[pinboard "unsafe_persist_exact_pinboard_traces"] mode = off` as one key, and reads the stored mode. An existing file missing that key gets the same write without losing item overrides. The setting, secret risk, retention, and diagnosis procedure are in [Diagnose Pinboard invocations during contributor work](CONTRIBUTING.md#diagnose-pinboard-invocations-during-contributor-work).
 
-Agent workflows use local stdio MCP tools for intake, briefs, inspection, authority, lifecycle changes, worker dispatch, and candidate-bound review publication. The CLI remains available through `<launcher-root>/scripts/pinboard` for root discovery, setup, storage migration, summary status, validation, view repair, portable human export, direct human closure, and its own diagnostics. It is not an agent-workflow fallback.
+Agent workflows use local stdio MCP tools for intake, briefs, inspection, authority, lifecycle changes, worker dispatch, and candidate-bound review publication. The CLI remains available through `<launcher-root>/scripts/pinboard` for root discovery, setup, schema migration, summary status, validation, view repair, portable human export, direct human closure, and its own diagnostics. It is not an agent-workflow fallback.
 
 An installed plugin keeps its private Python environment at `<launcher-root>/.pinboard-runtime/environment`, while Pinboard source development uses `<pinboard-source>/.venv`. Neither environment is created in or borrowed from the managed project.
 
@@ -256,7 +246,7 @@ A Git prompt has a different owner: follow [Git actions you request](#git-action
 
 For retained CLI mutations, a denied SQLite write reports `SQLITE_READONLY`, the affected location and operation, whether anything changed, and narrow permission recovery. Native tools report their own correlated failure, retry, and changed-surface facts rather than CLI-specific diagnostic prose. A native brief acceptance failure after immutable publication reports `ARTIFACT_ACCEPTANCE_FAILED` and its exact published selector; it does not claim the underlying failure is necessarily a permission error.
 
-For a normal primary checkout, grant only relative `.pinboard`. For a linked worktree or explicit data location, grant only the exact absolute location resolved by Pinboard. The one-time migration additionally needs the exact legacy root, canonical root, compatibility alias, and repository-local Git exclusion named by the command. If an immutable artifact or migration surface was already published, preserve it and inspect current state before selecting supported recovery; do not blindly replay the operation.
+For a normal primary checkout, grant only relative `.pinboard`. For a linked worktree or explicit data location, grant only the exact absolute location resolved by Pinboard. If an immutable artifact or migration surface was already published, preserve it and inspect current state before selecting supported recovery; do not blindly replay the operation.
 
 ### Claude Code reports the pinboard MCP server as failed
 

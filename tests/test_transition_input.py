@@ -126,11 +126,11 @@ class TransitionInputTest(unittest.TestCase):
             command,
         )
 
-    def test_complete_decodes_exact_direct_and_covered_leaves(self) -> None:
+    def test_complete_decodes_exact_direct_and_reviewed_leaves(self) -> None:
         complete = action(decision_models.CompleteAction, AttemptId("attempt-1"))
         direct = expect_transition_command(parse_transition_input(complete, '{"evidence":"accepted"}'))
         covered_payload = {
-            "schema": "pinboard-covered-completion/v1",
+            "schema": "pinboard-reviewed-completion/v2",
             "candidate": "candidate-1",
             "evidence": "all checkpoints remain covered",
             "reviewer_task_id": "reviewer-task",
@@ -146,7 +146,9 @@ class TransitionInputTest(unittest.TestCase):
             ],
         }
         covered = expect_transition_command(parse_transition_input(complete, json.dumps(covered_payload)))
-        typed_covered = msgspec.json.decode(json.dumps(covered_payload), type=action_models.CoveredCompleteInputPayload)
+        typed_covered = msgspec.json.decode(
+            json.dumps(covered_payload), type=action_models.ReviewedCompleteInputPayload
+        )
         with patch(
             "pinboard.adapters.transition_input.msgspec.json.decode", side_effect=AssertionError("typed re-decode")
         ):
@@ -159,7 +161,7 @@ class TransitionInputTest(unittest.TestCase):
         invalid_payloads = (
             covered_payload | {"unknown": True},
             covered_payload | {"schema": "unknown"},
-            covered_payload | {"packages": list[JsonValue]()},
+            covered_payload | {"schema": "pinboard-covered-completion/v1"},
             covered_payload | {"packages": [covered_payload["packages"][0], covered_payload["packages"][0]]},
             {"candidate": "candidate-1", "evidence": "accepted"},
             {"evidence": "accepted", "schema": "pinboard-covered-completion/v1"},
@@ -168,6 +170,11 @@ class TransitionInputTest(unittest.TestCase):
             with self.subTest(payload=payload):
                 rejected = parse_transition_input(complete, json.dumps(payload))
                 self.assertIsInstance(rejected, TransitionInputFailure)
+
+        empty_coverage = expect_transition_command(
+            parse_transition_input(complete, json.dumps(covered_payload | {"packages": []}))
+        )
+        self.assertIsInstance(empty_coverage, decision_models.CoveredCompleteCommand)
 
     def test_current_inputs_decode_exact_models(self) -> None:
         activation_action = action(decision_models.ActivateAction, WorkItemId("item-1"))

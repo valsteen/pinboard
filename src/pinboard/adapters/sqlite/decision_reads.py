@@ -10,6 +10,7 @@ import msgspec
 from pinboard.adapters.sqlite.database import decode_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
+    current_definition_anchor,
     read_current_definitions,
     read_pause_reasons,
     validate_current_attempt_relation,
@@ -654,13 +655,16 @@ def read_current_snapshot(
         preparation_authorities=preparation_authorities,
         command_preparation_authorities=command_preparation_authorities,
         history_items=history_items,
-        definitions=tuple(
-            work_models.DefinitionAnchor(value.item_id, value.revision, value.digest, value.definition)
-            for value in definitions
-        ),
+        definitions=tuple(current_definition_anchor(value) for value in definitions),
         host_epoch=project.host_epoch,
         planned_replacements=planned_replacements,
         replacement_dispositions=replacement_dispositions,
+        dependency_facts=tuple(
+            work_models.DefinitionDependencies(
+                value.item_id, tuple(WorkItemId(dependency) for dependency in value.definition.dependencies)
+            )
+            for value in definitions
+        ),
     )
 
 
@@ -976,13 +980,18 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         command_preparation_authorities=command_preparation_authorities,
         history_items=tuple(dict.fromkeys(history_items)),
         definitions=tuple(
-            work_models.DefinitionAnchor(value.item_id, value.revision, value.digest, value.definition)
-            for value in definitions.values()
+            current_definition_anchor(value) for value in definitions.values() if value.item_id in item_rows
         ),
         host_epoch=project.host_epoch,
         checkpoint_history_ids=checkpoint_history_ids,
         planned_replacements=planned_replacements,
         replacement_dispositions=replacement_dispositions,
+        dependency_facts=tuple(
+            work_models.DefinitionDependencies(
+                value.item_id, tuple(WorkItemId(dependency) for dependency in value.definition.dependencies)
+            )
+            for value in definitions.values()
+        ),
     )
     return query_models.DecisionFacts(
         snapshot,

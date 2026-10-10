@@ -173,7 +173,11 @@ def _every_state() -> stored_state.StoredWorkState:
 
 def _with_hostile_text(state: stored_state.StoredWorkState, item_id: WorkItemId) -> stored_state.StoredWorkState:
     revisions = tuple(
-        _definition(item_id, value.definition.dependencies, HOSTILE_TITLE) if value.item_id == item_id else value
+        _definition(
+            item_id, tuple(WorkItemId(dependency) for dependency in value.definition.dependencies), HOSTILE_TITLE
+        )
+        if value.item_id == item_id
+        else value
         for value in state.lifecycle.definition_revisions
     )
     items = tuple(

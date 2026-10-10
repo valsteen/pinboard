@@ -167,7 +167,7 @@ def damaged_receipt_validation_recovery(damaged: query_models.DamagedTransitionR
 
 def validate_attempt_brief_identity(
     context: query_models.NonterminalAttemptContextFacts,
-    brief: work_brief_models.ReadableWorkBrief,
+    brief: work_brief_models.WorkBrief,
 ) -> DecisionFailure | None:
     """Require one decoded brief to be the exact accepted identity for an attempt."""
 
@@ -197,7 +197,7 @@ def validate_attempt_brief_identity(
 def project_attempt_continuation(
     context: query_models.AttemptContextFacts,
     owner_task_id: TaskId | None,
-    brief: work_brief_models.ReadableWorkBrief | None,
+    brief: work_brief_models.WorkBrief | None,
     reconciliation: query_models.AttemptReconciliation | None,
     candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
@@ -398,34 +398,12 @@ def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-
 def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuation selection
     context: query_models.NonterminalAttemptContextFacts,
     actions: tuple[decision_models.Action, ...],
-    brief: work_brief_models.ReadableWorkBrief,
+    brief: work_brief_models.WorkBrief,
     reconciliation: query_models.AttemptReconciliation | None,
     candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
 ) -> DecisionResult[query_models.NonterminalContinuationOperation]:
-    if not isinstance(brief, work_brief_models.WorkBrief):
-        expected_kind = (
-            decision_models.ActionKind.RETURN_FOR_CORRECTION
-            if context.state == work_models.AttemptState.REVIEW
-            else decision_models.ActionKind.REBIND_ATTEMPT
-            if context.state == work_models.AttemptState.ACTIVE
-            else decision_models.ActionKind.RESUME
-        )
-        recovery = (
-            "Return the reviewed candidate for correction first. Then publish and independently review a matching "
-            "pinboard-work-brief/v4, rebind the active attempt, dispatch, and submit a new candidate."
-            if expected_kind == decision_models.ActionKind.RETURN_FOR_CORRECTION
-            else "Publish and independently review a matching pinboard-work-brief/v4, then bind that accepted brief "
-            "through this exact action before dispatch and candidate submission."
-        )
-        for action in actions:
-            if action.kind == expected_kind:
-                return query_models.ActionContinuation(
-                    decision_models.action_id(action),
-                    action.kind,
-                    recovery,
-                )
-    if isinstance(brief, work_brief_models.WorkBrief) and context.state == work_models.AttemptState.REVIEW:
+    if context.state == work_models.AttemptState.REVIEW:
         if context.candidate_revision is None:
             return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Review has no protected candidate.", None)
         if reconciliation is not None:
@@ -445,9 +423,7 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 "that phase needs; then inspect again with those reconciliation facts to select disposition, "
                 "refresh, correction, cleanup, or completion.",
             )
-    if isinstance(brief, work_brief_models.WorkBrief) and isinstance(
-        brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition
-    ):
+    if isinstance(brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition):
         for action in actions:
             if isinstance(action, decision_models.CompleteAction):
                 if context.state == work_models.AttemptState.REVIEW:
@@ -1315,31 +1291,6 @@ def select_integration_source(
     return _checkpoint_selection(facts.work_item_id, state, attempt.attempt_id, attempt.latest_checkpoint)
 
 
-def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
-    return query_models.WorkItemDefinitionView(
-        "pinboard-work-item-definition/v2",
-        definition.title,
-        definition.objective,
-        definition.hypothesis,
-        definition.evidence,
-        definition.scope,
-        definition.non_scope,
-        definition.acceptance_criteria,
-        tuple(definition.dependencies),
-        definition.effect,
-        definition.unlock,
-        definition.checkout_policy,
-        tuple(
-            query_models.WorkObligationView(
-                obligation.obligation_id,
-                obligation.statement,
-                obligation.deferral_policy,
-            )
-            for obligation in definition.obligations
-        ),
-    )
-
-
 def select_item_definition(
     reader: ports.ItemDefinitionReader, work_item_id: WorkItemId
 ) -> DecisionResult[query_models.ItemDefinition]:
@@ -1360,7 +1311,7 @@ def select_item_definition(
         selected.item_subject_revision,
         selected.definition.revision,
         selected.definition.digest,
-        _project_definition(selected.definition.definition),
+        query_models.project_definition(selected.definition.definition),
     )
 
 
@@ -1379,7 +1330,7 @@ def select_item_definition_history(
         query_models.ItemDefinitionHistoryRow(
             value.revision,
             value.digest,
-            _project_definition(value.definition),
+            query_models.project_definition(value.definition),
             value.reason,
             value.source_task_id,
             value.accepted_at.isoformat(),

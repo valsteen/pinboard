@@ -20,9 +20,9 @@ from typing import Literal, assert_never
 import msgspec
 
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
-from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory, remove_replaceable
+from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
-from pinboard.application import ports, pr_reviews, query_models, stored_state
+from pinboard.application import definition_compatibility, ports, pr_reviews, query_models, stored_state
 from pinboard.application.queries import (
     damaged_receipt_message,
     damaged_receipt_recovery,
@@ -105,6 +105,22 @@ def _render_item(
         next_step = ""
     else:
         next_step = "No current action is recorded for this finished item.\n\n"
+    match accepted:
+        case work_models.WorkItemDefinition():
+            execution_details = "\n### Obligations\n\n" + _bullets(
+                tuple(
+                    f"{value.obligation_id} ({_deferral_label(value.deferral_policy)}): {value.statement}"
+                    for value in accepted.obligations
+                )
+            )
+            policy_details = f"- Checkout policy: {accepted.checkout_policy.value}\n"
+            format_details = ""
+        case definition_compatibility.HistoricalDefinitionV1():
+            execution_details = ""
+            policy_details = ""
+            format_details = "- Historical definition schema: pinboard-work-item-definition/v1\n"
+        case _ as unreachable:
+            assert_never(unreachable)
     return (
         _render_header("work-item-view")
         + f"# {accepted.title}\n\n{accepted.objective}\n\n"
@@ -133,13 +149,7 @@ def _render_item(
         + _bullets(accepted.evidence)
         + "\n### Dependencies\n\n"
         + _bullets(dependency_reasons)
-        + "\n### Obligations\n\n"
-        + _bullets(
-            tuple(
-                f"{value.obligation_id} ({_deferral_label(value.deferral_policy)}): {value.statement}"
-                for value in accepted.obligations
-            )
-        )
+        + execution_details
         + "\n"
         + pr_reviews.render_review_history(item.item_id, review_history)
         + "\n## Record details\n\n"
@@ -162,7 +172,8 @@ def _render_item(
         + f"- Outcome evidence: {item.outcome_evidence or 'none'}\n"
         + f"- Definition revision: {definition.revision}\n"
         + f"- Definition digest: {definition.digest}\n"
-        + f"- Checkout policy: {accepted.checkout_policy.value}\n"
+        + format_details
+        + policy_details
     ).encode()
 
 
@@ -760,8 +771,6 @@ def rebuild_facts(
 
     try:
         view_root = ensure_child_directory(work_root, "views")
-        remove_replaceable(view_root / "queue.md")
-        remove_replaceable(view_root / "history.md")
         damaged = _write_facts(facts, work_root, attempt_briefs)
         _write_board(view_root, portfolio, now)
     except FileIOError as error:

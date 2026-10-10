@@ -44,6 +44,8 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     NonterminalAttemptContextSelection,
     TerminalAttemptContextSelection,
+    current_definition_anchor,
+    decode_definition_revision,
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
@@ -77,6 +79,7 @@ from pinboard.adapters.sqlite.proposals import (
 from pinboard.application import (
     candidate_snapshots,
     checkpoint_packages,
+    history_archives,
     queries,
     query_models,
     stored_state,
@@ -118,6 +121,73 @@ class _SelectedAttemptLinkRow(msgspec.Struct, frozen=True, forbid_unknown_fields
     attempt_id: AttemptId
     state: work_models.AttemptState
     subject_revision: int
+
+
+def _read_archive_projections(
+    connection: sqlite3.Connection,
+    attempt_ids: tuple[AttemptId, ...],
+    selected_attempt_records: dict[AttemptId, stored_state.StoredAttempt],
+) -> dict[AttemptId, tuple[stored_state.ArtifactReference, stored_state.ArchiveHistoryFacts]]:
+    archive_references = {
+        value.key: value
+        for value in (
+            decode_row(row, stored_state.ArtifactReference)
+            for row in select_by_ids(
+                connection,
+                """SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+                          relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+                   FROM artifact_refs WHERE artifact_key IN ({ids})""",
+                tuple(history_archives.archive_key(str(value)) for value in attempt_ids),
+            )
+        )
+    }
+    archived_attempt_ids = tuple(
+        value for value in attempt_ids if history_archives.archive_key(str(value)) in archive_references
+    )
+    # Read candidate references; the shared selector preserves exact links and original ownership.
+    archive_sources = tuple(
+        decode_row(row, stored_state.ArtifactReference)
+        for row in select_by_ids(
+            connection,
+            """SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+                      relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+               FROM artifact_refs WHERE EXISTS (
+                   SELECT 1 FROM attempts WHERE attempt_id IN ({ids}) AND
+                   (artifact_key = attempt_id OR substr(artifact_key, 1, length(attempt_id) + 1) = attempt_id || '-')
+               ) ORDER BY artifact_ref_id""",
+            archived_attempt_ids,
+        )
+    )
+    # Subject text supplies candidates; the shared selector resolves receipt-family ownership.
+    archive_history_ids = tuple(
+        decode_row(row, HistoryIdRow).history_id
+        for row in select_by_ids(
+            connection,
+            "SELECT history_id FROM transition_history WHERE subject_id IN ({ids}) ORDER BY history_id",
+            archived_attempt_ids,
+        )
+    )
+    archive_receipts = tuple(sqlite_state.read_history_receipts_by_ids(connection, archive_history_ids).values())
+    archive_definitions = tuple(
+        decode_definition_revision(row)
+        for row in select_by_ids(
+            connection,
+            """SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+                      definition_json, reason, source_task_id, before_digest, after_digest,
+                      accepted_project_revision, accepted_at
+               FROM work_item_definition_revisions WHERE item_id IN ({ids}) ORDER BY item_id, definition_revision""",
+            tuple(dict.fromkeys(selected_attempt_records[value].item_id for value in archived_attempt_ids)),
+        )
+    )
+    return {
+        attempt_id: (
+            archive_references[history_archives.archive_key(str(attempt_id))],
+            history_archives.select_archive_facts(
+                selected_attempt_records[attempt_id], archive_sources, archive_receipts, archive_definitions
+            ),
+        )
+        for attempt_id in archived_attempt_ids
+    }
 
 
 def _read_generated_view_facts(
@@ -222,12 +292,7 @@ def _read_generated_view_facts(
                         item.outcome_evidence,
                     ),
                     tuple((value.dependency_id, value.queue_position is not None) for value in dependency_rows),
-                    work_models.DefinitionAnchor(
-                        definition.item_id,
-                        definition.revision,
-                        definition.digest,
-                        definition.definition,
-                    ),
+                    current_definition_anchor(definition),
                     selected_proposals,
                     selected_preparations.get(item_id),
                     replacements_by_item.get(item_id),
@@ -268,6 +333,7 @@ def _read_generated_view_facts(
             if attempt.state != work_models.AttemptState.DONE
         ),
     )
+    archives = _read_archive_projections(connection, attempt_ids, selected_attempt_records)
     attempts: list[query_models.AttemptProjectionFacts] = []
     for attempt_id in attempt_ids:
         attempt = selected_attempt_records.get(attempt_id)
@@ -289,6 +355,7 @@ def _read_generated_view_facts(
                     reference.size_bytes,
                     reference.kind,
                 ),
+                archives.get(attempt_id),
             )
         )
     selected_receipts = sqlite_state.read_history_receipts_by_ids(connection, history_ids)
@@ -402,7 +469,7 @@ def _read_candidate_snapshot_context_facts(
     attempt_row = connection.execute(
         """
         SELECT attempt_id, item_id, state, branch, base_revision,
-               candidate_revision, candidate_recorded_at, subject_revision
+               candidate_revision, candidate_recorded_at
         FROM attempts WHERE attempt_id = ?
         """,
         (attempt_id,),
@@ -424,25 +491,6 @@ def _read_candidate_snapshot_context_facts(
     )
     if reference is None:
         if closing_candidate_revision is not None:
-            return None
-        history_row = connection.execute(
-            "SELECT history_id FROM transition_history WHERE project_revision = ?",
-            (attempt.subject_revision,),
-        ).fetchone()
-        receipt = (
-            None
-            if history_row is None
-            else sqlite_state.read_history_receipt(connection, decode_row(history_row, HistoryIdRow).history_id)
-        )
-        try:
-            legacy_candidate = None if receipt is None else candidate_snapshots.legacy_review_candidate(receipt)
-        except ValueError as error:
-            raise StorageError(StorageErrorCode.INVALID_STATE, str(error)) from error
-        if (
-            receipt is not None
-            and receipt.committed_at == attempt.candidate_recorded_at
-            and legacy_candidate == attempt.candidate_revision
-        ):
             return None
         raise StorageError(
             StorageErrorCode.INVALID_STATE,

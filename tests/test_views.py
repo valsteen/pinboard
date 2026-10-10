@@ -53,8 +53,6 @@ class GeneratedViewsTest(unittest.TestCase):
         ):
             text = (work_root / selector).read_text(encoding="utf-8")
             self.assertNotIn("database_revision:", text)
-        self.assertFalse((work_root / "views" / "queue.md").exists())
-        self.assertFalse((work_root / "views" / "history.md").exists())
         sparse_item = (work_root / "views" / "items" / "intake-work.md").read_text(encoding="utf-8")
         self.assertIn("- Source: none", sparse_item)
         self.assertIn("- Notes at intake: none", sparse_item)
@@ -89,6 +87,7 @@ class GeneratedViewsTest(unittest.TestCase):
         state = store.validated_snapshot()
         revisions = state.lifecycle.definition_revisions
         revision = next(value for value in revisions if value.item_id == work_models.WorkItemId("work-a"))
+        assert isinstance(revision.definition, work_models.WorkItemDefinition)
         allowed = replace(
             revision,
             definition=replace(
@@ -133,18 +132,13 @@ class GeneratedViewsTest(unittest.TestCase):
         self.assertIn("generated views need repair", result.warning.message)
         self.assertIn("pinboard views rebuild", result.warning.repair)
 
-    def test_rebuild_removes_legacy_aggregates_and_preserves_equal_projection_metadata(self) -> None:
+    def test_rebuild_preserves_equal_projection_metadata(self) -> None:
         work_root, store = self._state()
         view_root = work_root / "views"
-        view_root.mkdir(parents=True)
-        (view_root / "queue.md").write_text("legacy queue\n", encoding="utf-8")
-        (view_root / "history.md").write_text("legacy history\n", encoding="utf-8")
 
         first = rebuild_facts(store.read_all_generated_view_facts(SQLITE_NOW), work_root, {}, store, SQLITE_NOW)
 
         self.assertIsNone(first.warning)
-        self.assertFalse((view_root / "queue.md").exists())
-        self.assertFalse((view_root / "history.md").exists())
         paths = tuple(path for path in view_root.rglob("*.md") if path.is_file())
         before = {path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns) for path in paths}
 

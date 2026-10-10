@@ -252,6 +252,7 @@ class ServiceTest(unittest.TestCase):
                 accepted_definition = next(
                     value for value in state.lifecycle.definition_revisions if value.item_id == WorkItemId("work-a")
                 )
+                assert isinstance(accepted_definition.definition, work_models.WorkItemDefinition)
                 current_definition_value = replace(
                     accepted_definition.definition,
                     objective="Accept current scope while correcting the Git lineage.",
@@ -1006,6 +1007,7 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(stored_state.StoredWorkItemState.READY, ready_item.state)
         self.assertEqual(5, ready_item.queue_position)
         self.assertEqual("proposal:sqlite-proposal", ready_item.source)
+        assert isinstance(intake_definition, work_models.WorkItemDefinition)
         self.assertEqual(work_models.CheckoutPolicy.COORDINATOR_SELECTED, intake_definition.checkout_policy)
         self.assertEqual(
             (work_models.ObligationId("proposal-outcome"),),

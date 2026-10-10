@@ -28,7 +28,6 @@ from pinboard.application import (
     brief_source_codec,
     brief_source_models,
     brief_sources,
-    candidate_snapshot_compatibility_models,
     candidate_snapshots,
     ports,
     queries,
@@ -182,8 +181,8 @@ def _integration_unavailable_message(unavailable: query_models.IntegrationCandid
             return f"{item} closed without a completion, so no reviewed candidate was accepted."
         case query_models.IntegrationUnavailableReason.CHECKPOINT_WITHOUT_CANDIDATE_SNAPSHOT:
             return (
-                f"{item}: the latest checkpoint acceptance of {attempt} has no candidate snapshot; its retained "
-                "package names patch bytes or nothing."
+                f"{item}: the latest checkpoint acceptance of {attempt} has no accepted package reference "
+                "for its complete candidate snapshot."
             )
         case query_models.IntegrationUnavailableReason.PRE_SNAPSHOT_CANDIDATE:
             return f"{item}: the reviewed candidate of {attempt} predates accepted candidate snapshots."
@@ -391,10 +390,7 @@ def _read_correction_context(
             snapshot_view = contracts.DeclaredCorrectionSnapshot(*snapshot_fields, snapshot.excluded_untracked_paths)
         case candidate_snapshots.WorkingTreeCandidateSnapshot():
             snapshot_view = contracts.CorrectionSnapshotV2(*snapshot_fields)
-        case (
-            candidate_snapshots.CommitCandidateSnapshot()
-            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
-        ):
+        case candidate_snapshots.CommitCandidateSnapshot():
             snapshot_view = contracts.CorrectionSnapshotV1(*snapshot_fields)
         case _ as unreachable:
             assert_never(unreachable)
@@ -1319,7 +1315,7 @@ def _current_candidate_review(
     durable: DurableRoots,
     store: WorkStore,
     context: query_models.AttemptContextFacts,
-    brief: work_brief_models.ReadableWorkBrief | None,
+    brief: work_brief_models.WorkBrief | None,
     result: contracts.EvidenceReference,
     review: contracts.EvidenceReference,
 ) -> tuple[review_operations.CurrentCandidateReview | None, contracts.CandidateReviewReference]:
@@ -1671,7 +1667,7 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
     token.checkpoint()
     accepted_brief: contracts.AcceptedBriefIdentity | None = None
     owner_task_id: TaskId | None = None
-    decoded_brief: work_brief_models.ReadableWorkBrief | None = None
+    decoded_brief: work_brief_models.WorkBrief | None = None
     if isinstance(context, query_models.NonterminalAttemptContextFacts):
         reference = context.brief_reference
         try:

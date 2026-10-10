@@ -18,7 +18,7 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 
-type MutationClass = Literal["read-only", "mutates-ledger", "repairs-derived-views", "migrates-work-root"]
+type MutationClass = Literal["read-only", "mutates-ledger", "repairs-derived-views"]
 type DataScope = Literal["static", "focused", "current-project", "explicit-project-wide"]
 
 
@@ -170,38 +170,6 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
             precondition = "source-checkout-resolvable"
             postcondition = "Return work_root, resumed state, and optional next guidance; default initialization also owns its exact local Git exclusion."
             retry = "inspect-current-state-before-retry"
-        case "migrate-work-root":
-            purpose = "Preview a bound legacy move, current alias repair, or already-aliased no-op."
-            mutation = "read-only"
-            scope = "explicit-project-wide"
-            roles = ("local-caller",)
-            authority = "read-access-to-roots-and-repository-git-exclude"
-            subject = "work-root"
-            precondition = "default-root-state-is-legacy-current-or-exact-compatibility-alias"
-            postcondition = "Return one canonical plan and digest without changing files or Git metadata."
-            retry = "safe-to-repeat"
-        case "migrate-work-root/apply":
-            purpose = "Apply or resume only the named bound work-root plan, retaining predecessor evidence."
-            mutation = "migrates-work-root"
-            scope = "explicit-project-wide"
-            roles = ("local-caller",)
-            authority = "filesystem-and-repository-git-exclude-access"
-            subject = "work-root"
-            precondition = "matching-preview-or-persisted-plan-with-unchanged-authoritative-tree"
-            postcondition = (
-                "Record progress, verify backup before a legacy move, and install or reverse the exact alias."
-            )
-            retry = "resume-only-the-same-plan-after-inspecting-effects"
-        case "migrate-work-root/reverse":
-            purpose = "Preview reversal of an effectful root plan while its migrated tree is unchanged."
-            mutation = "read-only"
-            scope = "explicit-project-wide"
-            roles = ("local-caller",)
-            authority = "read-access-to-roots-sidecar-and-repository-git-exclude"
-            subject = "work-root"
-            precondition = "completed-forward-plan-with-unchanged-postimage"
-            postcondition = "Return one bound reverse plan without changing files or Git metadata."
-            retry = "safe-to-repeat"
         case "migrate-schema":
             purpose = "Preview an exact v6-to-v7 upgrade or current-v7 no-op."
             mutation = "read-only"

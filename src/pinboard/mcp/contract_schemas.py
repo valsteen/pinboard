@@ -86,8 +86,6 @@ from pinboard.mcp.contracts import (
     ItemStatusUnavailable,
     JsonSchemaValue,
     JsonValue,
-    LegacyBriefReviewNeedsCorrection,
-    LegacyBriefReviewNoEvidence,
     NonterminalAttemptInspectionSuccess,
     OrderCommitted,
     OrderRejected,
@@ -108,9 +106,6 @@ from pinboard.mcp.contracts import (
     ReplacementReadinessReady,
     RequestBoundary,
     ResultBoundary,
-    RetainedV3BriefReviewNeedsCorrection,
-    RetainedV3BriefReviewNoEvidence,
-    ReviewJobCandidateRequired,
     ReviewJobFailedAfterPublication,
     ReviewJobInfrastructureFailure,
     ReviewJobInvalid,
@@ -729,32 +724,16 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         else:
             msgspec.convert(content, type=ItemDefinitionRejected, strict=True)
     elif tool_name == "pinboard_brief_review":
-        brief = content.get("brief")
-        brief_schema = brief.get("schema") if isinstance(brief, dict) else None
         if status == "no-needs-correction-evidence":
-            result_type = (
-                LegacyBriefReviewNoEvidence
-                if brief_schema == "pinboard-work-brief/v2"
-                else RetainedV3BriefReviewNoEvidence
-                if brief_schema == "pinboard-work-brief/v3"
-                else BriefReviewNoEvidence
-            )
             msgspec.convert(
                 content,
-                type=result_type,
+                type=BriefReviewNoEvidence,
                 strict=True,
             )
         elif status == "needs-correction":
-            result_type = (
-                LegacyBriefReviewNeedsCorrection
-                if brief_schema == "pinboard-work-brief/v2"
-                else RetainedV3BriefReviewNeedsCorrection
-                if brief_schema == "pinboard-work-brief/v3"
-                else BriefReviewNeedsCorrection
-            )
             msgspec.convert(
                 content,
-                type=result_type,
+                type=BriefReviewNeedsCorrection,
                 strict=True,
             )
         elif status == "committed":
@@ -794,8 +773,6 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
             result_type = ReviewJobInfrastructureFailure
         elif code == "REVIEW_JOB_INVALID":
             result_type = ReviewJobInvalid
-        elif "recovery" in content:
-            result_type = ReviewJobCandidateRequired
         else:
             result_type = ReviewJobRejected
         msgspec.convert(content, type=result_type, strict=True)

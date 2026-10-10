@@ -3,8 +3,16 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal, assert_never
 
-from pinboard.application import released_v6_compatibility
+import msgspec
+
+from pinboard.application import definition_compatibility, released_v6_compatibility
 from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain.errors import DecisionResult
+from pinboard.domain.history import (
+    WorkItemDefinitionPayload,
+    work_item_definition_bytes,
+    work_item_definition_from_payload,
+)
 from pinboard.domain.identifiers import (
     ActionId,
     ArtifactRefId,
@@ -17,6 +25,36 @@ from pinboard.domain.identifiers import (
     TaskId,
     WorkItemId,
 )
+
+type StoredDefinition = work_models.WorkItemDefinition | definition_compatibility.HistoricalDefinitionV1
+
+
+def decode_stored_definition(payload: bytes) -> StoredDefinition:
+    schema = msgspec.json.decode(payload, type=dict[str, msgspec.Raw]).get("schema")
+    record: WorkItemDefinitionPayload | definition_compatibility.HistoricalDefinitionV1
+    if schema is not None and msgspec.json.decode(schema, type=str) == "pinboard-work-item-definition/v1":
+        record = msgspec.json.decode(payload, type=definition_compatibility.HistoricalDefinitionV1, strict=True)
+    else:
+        record = msgspec.json.decode(payload, type=WorkItemDefinitionPayload, strict=True)
+    if msgspec.json.encode(record, order="sorted") + b"\n" != payload:
+        raise ValueError("Definition JSON must use the canonical encoding.")
+    match record:
+        case WorkItemDefinitionPayload():
+            return work_item_definition_from_payload(record)
+        case definition_compatibility.HistoricalDefinitionV1():
+            return record
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def stored_definition_bytes(definition: StoredDefinition) -> DecisionResult[bytes]:
+    match definition:
+        case work_models.WorkItemDefinition():
+            return work_item_definition_bytes(definition)
+        case definition_compatibility.HistoricalDefinitionV1():
+            return msgspec.json.encode(definition, order="sorted") + b"\n"
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 class StoredWorkItemState(Enum):
@@ -145,7 +183,7 @@ class ItemDefinitionRevision:
     item_id: WorkItemId
     revision: int
     digest: str
-    definition: work_models.WorkItemDefinition
+    definition: StoredDefinition
     reason: str
     source_task_id: TaskId
     before_digest: str | None
@@ -342,3 +380,13 @@ class StoredWorkState:
     artifact_references: tuple[ArtifactReference, ...]
     authority: AuthorityRecords
     transition_receipts: tuple[StoredTransitionReceipt, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveHistoryFacts:
+    """Original terminal evidence selected for one archival certificate."""
+
+    attempt: StoredAttempt
+    artifact_references: tuple[ArtifactReference, ...]
+    transition_receipts: tuple[StoredTransitionReceipt, ...]
+    definition_revisions: tuple[ItemDefinitionRevision, ...]

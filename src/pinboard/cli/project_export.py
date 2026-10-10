@@ -8,7 +8,7 @@ from types import MappingProxyType
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import candidate_snapshots, ports, project_export, work_brief_models
+from pinboard.application import candidate_snapshots, history_archives, ports, project_export, work_brief_models
 from pinboard.cli import cli_commands, work_state
 from pinboard.cli.cli_output import write_json
 from pinboard.domain.identifiers import ArtifactRefId
@@ -72,8 +72,11 @@ def export_project(
     projected_references, encoded_contents, verified_artifacts = _read_and_encode_artifacts(
         captured_state, artifact_repository
     )
+    archived = history_archives.verify_archives(captured_state, verified_artifacts)
+    if isinstance(archived, work_brief_models.WorkBriefFailure):
+        return archived
     try:
-        candidate_snapshots.validate_candidate_snapshot_history(captured_state, verified_artifacts)
+        candidate_snapshots.validate_candidate_snapshot_history(captured_state, verified_artifacts, archived)
     except ValueError as error:
         return work_brief_models.WorkBriefFailure(
             work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
@@ -84,6 +87,7 @@ def export_project(
         captured_state.artifact_references,
         captured_state.transition_receipts,
         verified_artifacts,
+        archived,
     )
     if isinstance(checkpoint_packages, work_brief_models.WorkBriefFailure):
         return checkpoint_packages
@@ -93,6 +97,7 @@ def export_project(
         captured_state.transition_receipts,
         verified_artifacts,
         checkpoint_packages,
+        archived,
     )
     if isinstance(completion_packages, work_brief_models.WorkBriefFailure):
         return completion_packages

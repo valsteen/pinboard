@@ -27,7 +27,6 @@ from pinboard.adapters.lifecycle_operations import SelectedTransition
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.application import (
     candidate_snapshots,
-    checkpoint_compatibility_models,
     checkpoint_packages,
     ports,
     query_models,
@@ -399,19 +398,6 @@ def _read_current_attempt_brief(
     brief = decode_canonical_work_brief(artifacts.read(context.brief_reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _unchanged(f"The accepted brief is invalid: {brief.message}", candidate=None)
-    if not isinstance(brief, work_brief_models.WorkBrief):
-        return DecisionFailure(
-            DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            "Retained work brief v3/v2 cannot authorize current lifecycle execution.",
-            FailureDetails(
-                observed=(FailureFact("accepted_brief_schema", brief.schema),),
-                mismatches=(),
-                retry=RetryDisposition.REFRESH_ACTION,
-                effect=EffectDisposition.UNCHANGED,
-                changed_surfaces=(),
-                alternatives=(),
-            ),
-        )
     if (
         brief.attempt_id,
         brief.item_id,
@@ -693,11 +679,7 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
         if isinstance(package, work_brief_models.WorkBriefFailure):
             return _unchanged(package.message, candidate=None)
         identities = [package.accepted_brief, package.result, package.implementation_review]
-        if isinstance(
-            package,
-            (work_brief_models.CheckpointReviewPackageV3, checkpoint_compatibility_models.CheckpointReviewPackageV2),
-        ):
-            identities.append(package.candidate_snapshot)
+        identities.append(package.candidate_snapshot)
         if isinstance(package.review_basis, work_brief_models.CrossBoundaryReviewBasis):
             identities.append(package.review_basis.brief_review)
         references: list[stored_state.ArtifactReference] = []

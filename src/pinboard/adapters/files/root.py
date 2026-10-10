@@ -537,13 +537,15 @@ def _exclude_contains_pinboard_line(stream: BinaryIO, entry: bytes) -> tuple[boo
     return False, last_byte is not None and last_byte not in (10, 13)
 
 
-def ensure_git_exclude(shared_repository_root: Path, entry: bytes, *, require_repository: bool) -> Path | None:
-    """Add an exact local exclusion; optionally require Git to be available."""
+def ensure_git_exclude(shared_repository_root: Path) -> Path | None:
+    """Add the exact default-root exclusion when the project has a Git repository."""
+
+    entry = b"/.pinboard/"
 
     try:
         common_directory = _resolve_git_common_directory(shared_repository_root)
     except RootError as error:
-        if error.code == RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE and not require_repository:
+        if error.code == RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE:
             return None
         raise
     exclude = common_directory / "info" / "exclude"

@@ -662,21 +662,6 @@ class PackageCorrectionReviewChoice(ReviewChoiceBase, tag="package-correction", 
     correction_history_id: PositiveInt
 
 
-class PackageInitialRecoveryReviewChoice(
-    ReviewChoiceBase, tag="package-initial-recovery", tag_field="kind", frozen=True
-):
-    checkpoint_history_id: PositiveInt
-    candidate_patch: bytes
-
-
-class PackageCorrectionRecoveryReviewChoice(
-    ReviewChoiceBase, tag="package-correction-recovery", tag_field="kind", frozen=True
-):
-    checkpoint_history_id: PositiveInt
-    correction_history_id: PositiveInt
-    candidate_patch: bytes
-
-
 class RecordReadyReviewChoice(
     msgspec.Struct, tag="record-ready", tag_field="kind", frozen=True, forbid_unknown_fields=True
 ):
@@ -693,12 +678,7 @@ class RecordReadyReviewChoice(
 
 
 type ReviewLaunchChoice = (
-    InitialReviewChoice
-    | PackageInitialReviewChoice
-    | CorrectionReviewChoice
-    | PackageCorrectionReviewChoice
-    | PackageInitialRecoveryReviewChoice
-    | PackageCorrectionRecoveryReviewChoice
+    InitialReviewChoice | PackageInitialReviewChoice | CorrectionReviewChoice | PackageCorrectionReviewChoice
 )
 type ReviewChoice = ReviewLaunchChoice | RecordReadyReviewChoice
 
@@ -2764,46 +2744,6 @@ class ReviewJobInfrastructureFailure(JobInfrastructureFailure, frozen=True):
     schema: Literal["pinboard-mcp-review-job-result/v1"]
 
 
-class InitialRecoveryTemplate(ReviewChoiceBase, tag="package-initial-recovery", tag_field="kind", frozen=True):
-    checkpoint_history_id: PositiveInt
-    candidate_patch: None
-
-
-class CorrectionRecoveryTemplate(ReviewChoiceBase, tag="package-correction-recovery", tag_field="kind", frozen=True):
-    checkpoint_history_id: PositiveInt
-    correction_history_id: PositiveInt
-    candidate_patch: None
-
-
-class ReviewRecoveryArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    project_root: RootPath
-    work_root: RootPath
-    review: InitialRecoveryTemplate | CorrectionRecoveryTemplate
-
-
-class ReviewRecoveryInvocation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    tool: Literal["pinboard_review_job"]
-    arguments: ReviewRecoveryArguments
-    unresolved_fields: tuple[Literal["review.candidate_patch"]]
-    historical_candidate: NonEmptyText
-    expected_patch_sha256: Sha256
-
-
-class ReviewJobCandidateRequired(ReviewJobRejected, frozen=True):
-    recovery: ReviewRecoveryInvocation
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        remedy = self.recovery
-        if (
-            self.code != DecisionFailureCode.ACTION_NOT_AVAILABLE.value
-            or self.attempt_id != remedy.arguments.review.attempt_id
-        ):
-            raise ValueError("Retained recovery must preserve its rejected attempt and expected missing-evidence code.")
-        if remedy.historical_candidate != f"working-tree-sha256:{remedy.expected_patch_sha256}":
-            raise ValueError("Retained recovery must bind the selected historical patch identity.")
-
-
 class JobFailedAfterPublication(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     status: Literal["failed-after-publication"]
     attempt_id: PathComponent
@@ -2862,7 +2802,6 @@ REVIEW_JOB_RESULT_TYPES = (
     ReviewJobInvalid,
     ReviewJobRejected,
     ReviewJobInfrastructureFailure,
-    ReviewJobCandidateRequired,
     ReviewJobFailedAfterPublication,
     ExecutorBusyResult,
 )
@@ -3172,7 +3111,6 @@ type ResultBoundary = (
     | type[ReviewJobInvalid]
     | type[ReviewJobRejected]
     | type[ReviewJobInfrastructureFailure]
-    | type[ReviewJobCandidateRequired]
     | type[ReviewJobFailedAfterPublication]
     | type[CandidateRestoreReady]
     | type[CandidateObserved]

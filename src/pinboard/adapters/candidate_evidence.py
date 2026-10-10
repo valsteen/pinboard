@@ -248,10 +248,7 @@ def _checkpoint_snapshot(
     match package:
         case work_brief_models.CheckpointReviewPackageV3():
             identity = package.candidate_snapshot
-        case (
-            checkpoint_compatibility_models.CheckpointReviewPackage()
-            | checkpoint_compatibility_models.CheckpointReviewPackageV2()
-        ):
+        case checkpoint_compatibility_models.CheckpointReviewPackageV2():
             # Retained packages name patch bytes, not a candidate snapshot with its compared-from revision.
             return query_models.IntegrationUnavailableReason.CHECKPOINT_WITHOUT_CANDIDATE_SNAPSHOT
         case _ as unreachable:

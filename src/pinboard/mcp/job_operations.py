@@ -14,7 +14,6 @@ import msgspec
 
 from pinboard.adapters import (
     candidate_evidence,
-    checkpoint_compatibility,
     dispatch_operations,
     review_operations,
 )
@@ -277,11 +276,11 @@ def _review_histories(
     match choice:
         case contracts.InitialReviewChoice():
             return None, None
-        case contracts.PackageInitialReviewChoice() | contracts.PackageInitialRecoveryReviewChoice():
+        case contracts.PackageInitialReviewChoice():
             return HistoryId(choice.checkpoint_history_id), None
         case contracts.CorrectionReviewChoice():
             return None, HistoryId(choice.correction_history_id)
-        case contracts.PackageCorrectionReviewChoice() | contracts.PackageCorrectionRecoveryReviewChoice():
+        case contracts.PackageCorrectionReviewChoice():
             return HistoryId(choice.checkpoint_history_id), HistoryId(choice.correction_history_id)
         case _ as unreachable:
             assert_never(unreachable)
@@ -460,45 +459,17 @@ def _review_job(
     checkpoint_history_id, correction_history_id = _review_histories(choice)
     token.checkpoint()
     # Cancellation cannot turn an entered publication into an unchanged/replayable result.
-    if isinstance(
-        choice, (contracts.PackageInitialRecoveryReviewChoice, contracts.PackageCorrectionRecoveryReviewChoice)
-    ):
-        assert checkpoint_history_id is not None
-        prepared = checkpoint_compatibility.prepare_recovered_review_job(
-            durable.work_root,
-            store,
-            ArtifactRepository(durable),
-            AttemptId(choice.attempt_id),
-            choice.candidate_revision,
-            checkpoint_history_id,
-            correction_history_id,
-            choice.candidate_patch,
-        )
-    else:
-        prepared = review_operations.prepare_review_job(
-            durable.work_root,
-            store,
-            ArtifactRepository(durable),
-            AttemptId(choice.attempt_id),
-            choice.candidate_revision,
-            checkpoint_history_id,
-            correction_history_id,
-        )
+    prepared = review_operations.prepare_review_job(
+        durable.work_root,
+        store,
+        ArtifactRepository(durable),
+        AttemptId(choice.attempt_id),
+        choice.candidate_revision,
+        checkpoint_history_id,
+        correction_history_id,
+    )
     if isinstance(prepared, DecisionFailure):
-        if isinstance(prepared, review_operations.CompatibilityCandidateRequired):
-            return _review_candidate_required(
-                source_checkout, durable.work_root, choice, prepared, correction_history_id
-            )
         return _job_failure(schema, choice.attempt_id, prepared.code.value, prepared.message, prepared.details, False)
-    if isinstance(prepared, checkpoint_compatibility.RecoveredReviewPreparationFailure):
-        return _job_failure(
-            schema,
-            choice.attempt_id,
-            prepared.code,
-            str(prepared.cause),
-            prepared.details,
-            True,
-        )
     if isinstance(prepared, review_operations.ReviewPromptPublicationFailure):
         raise prepared.cause
     if isinstance(prepared, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
@@ -555,62 +526,6 @@ def _review_job(
     return execution.OperationResult(
         content, "committed" if surfaces else "unchanged", str(publication.reference.accepted_revision)
     )
-
-
-def _review_candidate_required(
-    source_checkout: Path,
-    work_root: Path,
-    choice: contracts.ReviewLaunchChoice,
-    required: review_operations.CompatibilityCandidateRequired,
-    correction_history_id: HistoryId | None,
-) -> execution.OperationResult:
-    historical = required.package.candidate
-    if not historical.startswith("working-tree-sha256:") or len(historical.removeprefix("working-tree-sha256:")) != 64:
-        return _job_failure(
-            "pinboard-mcp-review-job-result/v1",
-            choice.attempt_id,
-            required.code.value,
-            "Selected historical candidate has no recoverable patch identity.",
-            required.details,
-            False,
-        )
-    if correction_history_id is None:
-        template = contracts.InitialRecoveryTemplate(
-            choice.attempt_id,
-            choice.candidate_revision,
-            choice.runtime,
-            choice.background,
-            int(required.checkpoint_history_id),
-            None,
-        )
-    else:
-        template = contracts.CorrectionRecoveryTemplate(
-            choice.attempt_id,
-            choice.candidate_revision,
-            choice.runtime,
-            choice.background,
-            int(required.checkpoint_history_id),
-            int(correction_history_id),
-            None,
-        )
-    failure = _job_failure(
-        "pinboard-mcp-review-job-result/v1",
-        choice.attempt_id,
-        required.code.value,
-        "Selected retained-v1 patch bytes are missing; supply exact historical patch bytes in the native recovery request.",
-        required.details,
-        False,
-    )
-    failure.content["recovery"] = msgspec.to_builtins(
-        contracts.ReviewRecoveryInvocation(
-            tool_names.REVIEW_JOB_TOOL,
-            contracts.ReviewRecoveryArguments(str(source_checkout), str(work_root), template),
-            ("review.candidate_patch",),
-            historical,
-            historical.removeprefix("working-tree-sha256:"),
-        )
-    )
-    return failure
 
 
 def _observe_candidate(

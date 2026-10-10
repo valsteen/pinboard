@@ -539,14 +539,15 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             selected_result: work_brief_models.PortableArtifactIdentity,
             selected_implementation_review: work_brief_models.PortableArtifactIdentity,
             review_basis: work_brief_models.ReviewBasis,
-        ) -> checkpoint_compatibility_models.CheckpointReviewPackage:
-            return checkpoint_compatibility_models.CheckpointReviewPackage(
+        ) -> checkpoint_compatibility_models.CheckpointReviewPackageV2:
+            return checkpoint_compatibility_models.CheckpointReviewPackageV2(
                 value.attempt_id,
                 value.item_id,
-                "candidate-a",
+                f"working-tree-sha256:{candidate_snapshot.content_sha256}",
                 "Accepted.",
                 value.accepted_scope,
                 work_brief_models.CheckpointIdentity(checkpoint.checkpoint_id, checkpoint_sha256),
+                candidate_snapshot,
                 selected_brief,
                 selected_result,
                 selected_implementation_review,

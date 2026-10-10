@@ -8,7 +8,6 @@ import msgspec
 from pinboard.application import (
     action_models,
     candidate_snapshots,
-    checkpoint_compatibility_models,
     stored_state,
     work_brief_compatibility_models,
     work_brief_models,
@@ -99,19 +98,15 @@ def _artifact_identities(
     if isinstance(implementation_review, work_brief_models.WorkBriefFailure):
         return implementation_review
     checkpoint_id = package.checkpoint.id
-    if isinstance(
-        package,
-        (work_brief_models.CheckpointReviewPackageV3, checkpoint_compatibility_models.CheckpointReviewPackageV2),
+    candidate = _portable_reference(package.candidate_snapshot, references, artifact_bytes)
+    if isinstance(candidate, work_brief_models.WorkBriefFailure):
+        return candidate
+    if (package.candidate_snapshot.kind, package.candidate_snapshot.key, package.candidate_snapshot.revision) != (
+        work_models.ArtifactKind.EVIDENCE.value,
+        checkpoint_candidate_key(package.attempt_id, checkpoint_id),
+        1,
     ):
-        candidate = _portable_reference(package.candidate_snapshot, references, artifact_bytes)
-        if isinstance(candidate, work_brief_models.WorkBriefFailure):
-            return candidate
-        if (package.candidate_snapshot.kind, package.candidate_snapshot.key, package.candidate_snapshot.revision) != (
-            work_models.ArtifactKind.EVIDENCE.value,
-            checkpoint_candidate_key(package.attempt_id, checkpoint_id),
-            1,
-        ):
-            return _invalid("Checkpoint package candidate snapshot identity is not canonical.")
+        return _invalid("Checkpoint package candidate snapshot identity is not canonical.")
     if (
         (package.accepted_brief.kind, package.accepted_brief.key)
         != (work_models.ArtifactKind.BRIEF.value, package.attempt_id)

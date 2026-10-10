@@ -110,7 +110,6 @@ from pinboard.mcp.contracts import (
     ResultBoundary,
     RetainedV3BriefReviewNeedsCorrection,
     RetainedV3BriefReviewNoEvidence,
-    ReviewJobCandidateRequired,
     ReviewJobFailedAfterPublication,
     ReviewJobInfrastructureFailure,
     ReviewJobInvalid,
@@ -794,8 +793,6 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
             result_type = ReviewJobInfrastructureFailure
         elif code == "REVIEW_JOB_INVALID":
             result_type = ReviewJobInvalid
-        elif "recovery" in content:
-            result_type = ReviewJobCandidateRequired
         else:
             result_type = ReviewJobRejected
         msgspec.convert(content, type=result_type, strict=True)

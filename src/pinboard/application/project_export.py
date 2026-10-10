@@ -292,30 +292,6 @@ class ProjectExportCrossBoundaryReviewBasis(
 type ProjectExportReviewBasis = ProjectExportLocalReviewBasis | ProjectExportCrossBoundaryReviewBasis
 
 
-# The retained v1 export binding shares the portable identities and complete
-# project export union here; moving it alone would create a reverse import.
-class CompatibilityProjectExportCheckpointPackage(
-    msgspec.Struct,
-    tag="pinboard-checkpoint-review-package/v1",
-    tag_field="schema",
-    frozen=True,
-    forbid_unknown_fields=True,
-):
-    history_id: int
-    package_artifact_ref_id: int
-    attempt_id: str
-    item_id: str
-    candidate: str
-    acceptance_evidence: str
-    accepted_scope: ProjectExportAcceptedScope
-    checkpoint: ProjectExportCheckpointIdentity
-    accepted_brief: ProjectExportPortableArtifactIdentity
-    result: ProjectExportPortableArtifactIdentity
-    implementation_review: ProjectExportPortableArtifactIdentity
-    verdict: Literal["ready"]
-    review_basis: ProjectExportReviewBasis
-
-
 class CompatibilityProjectExportCheckpointPackageV2(
     msgspec.Struct,
     tag="pinboard-checkpoint-review-package/v2",
@@ -363,9 +339,7 @@ class ProjectExportCheckpointPackageV3(
 
 
 type ProjectExportCheckpointPackageValue = (
-    CompatibilityProjectExportCheckpointPackage
-    | CompatibilityProjectExportCheckpointPackageV2
-    | ProjectExportCheckpointPackageV3
+    CompatibilityProjectExportCheckpointPackageV2 | ProjectExportCheckpointPackageV3
 )
 
 

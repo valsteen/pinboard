@@ -385,6 +385,49 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 self.assertNotIn("recovery_command", observed)
                 self.assertEqual(before, fixture.store.validated_snapshot())
 
+    def test_retired_package_and_recovery_leaves_reject_before_publication(self) -> None:
+        fixture, history_id, correction_id = self.review_job_fixture()
+        package = self.package(fixture)
+        retired = msgspec.to_builtins(package)
+        assert isinstance(retired, dict)
+        retired["schema"] = "pinboard-checkpoint-review-package/v1"
+        retired.pop("candidate_snapshot")
+        self.replace_artifact_bytes(
+            fixture, fixture.package_reference, msgspec.json.encode(retired, order="sorted") + b"\n"
+        )
+        before = fixture.store.validated_snapshot()
+        before_files = tuple(
+            sorted(path.relative_to(fixture.work) for path in fixture.work.glob("artifacts/**/*") if path.is_file())
+        )
+        reviews: tuple[JsonObject, ...] = (
+            {"kind": "package-initial", "checkpoint_history_id": history_id},
+            {"kind": "package-correction", "checkpoint_history_id": history_id, "correction_history_id": correction_id},
+            {"kind": "package-initial-recovery", "checkpoint_history_id": history_id, "candidate_patch": ""},
+            {
+                "kind": "package-correction-recovery",
+                "checkpoint_history_id": history_id,
+                "correction_history_id": correction_id,
+                "candidate_patch": "",
+            },
+        )
+        for review in reviews:
+            with self.subTest(kind=review["kind"]):
+                rejected = self.review_result(fixture, review)
+                self.assertEqual("rejected", rejected["status"], rejected)
+                self.assertFalse(rejected["state_changed"])
+                self.assertEqual([], rejected["changed_surfaces"])
+                self.assertEqual(before, fixture.store.validated_snapshot())
+                self.assertEqual(
+                    before_files,
+                    tuple(
+                        sorted(
+                            path.relative_to(fixture.work)
+                            for path in fixture.work.glob("artifacts/**/*")
+                            if path.is_file()
+                        )
+                    ),
+                )
+
     def test_native_review_supports_independent_package_and_round_dimensions(self) -> None:
         fixture, package_history_id, correction_history_id = self.review_job_fixture()
         combinations: tuple[tuple[JsonObject, str, str], ...] = (

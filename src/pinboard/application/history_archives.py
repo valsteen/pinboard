@@ -1,7 +1,7 @@
 """Exact, non-executable certificates for terminal historical evidence.
 
-Certificates supplement retained readers. Their accepted source references,
-receipt bodies, definition bindings and readable facts must agree independently;
+Certificates own captured retired checkpoint facts. Their accepted source references,
+receipt bodies, definition bindings and retained readable facts agree independently;
 current candidate snapshots retain their ordinary validation. This owner performs
 no publication, persistence, lifecycle operation or candidate restoration.
 """
@@ -20,7 +20,7 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId
 
 type Sha256 = Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
@@ -187,24 +187,83 @@ def _candidate(
             identity = package.candidate_snapshot
             reference = references[(identity.kind, identity.key, identity.revision)]
             return PatchCandidate(package.candidate, int(reference.artifact_ref_id))
-        case checkpoint_compatibility_models.CheckpointReviewPackage():
-            reference = references.get(
-                (work_models.ArtifactKind.EVIDENCE.value, f"{package.attempt_id}-{package.checkpoint.id}-candidate", 1)
-            )
-            return (
-                UnavailableCandidate(package.candidate)
-                if reference is None
-                else PatchCandidate(package.candidate, int(reference.artifact_ref_id))
-            )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def retired_checkpoint_package(data: bytes) -> bool:
+    # Accepted canonical source bytes retain their format tag without decoding retired fields.
+    return b'"schema":"pinboard-checkpoint-review-package/v1"' in data
+
+
+def _retired_checkpoint(
+    captured: tuple[ArchiveCheckpoint, ...],
+    receipt: stored_state.StoredTransitionReceipt,
+    reference: stored_state.ArtifactReference,
+    facts: stored_state.ArchiveHistoryFacts,
+    artifact_bytes: Mapping[ArtifactRefId, bytes],
+) -> work_brief_models.WorkBriefResult[ArchiveCheckpoint]:
+    checkpoint = next((value for value in captured if value.history_id == int(receipt.history_id)), None)
+    if checkpoint is None or checkpoint.package_artifact_ref_id != int(reference.artifact_ref_id):
+        return _failure("Retired checkpoint lacks its exact accepted archival checkpoint binding.")
+    try:
+        outcome = msgspec.json.decode(bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome)
+    except msgspec.DecodeError as error:
+        return _failure(f"Retired checkpoint receipt is invalid: {error}")
+    if (
+        msgspec.json.encode(outcome, order="sorted") != bytes(receipt.outcome_payload)
+        or receipt.action_kind != decision_models.ActionKind.ACCEPT_CHECKPOINT
+        or receipt.authorization != decision_models.AuthorizationKind.PROJECT
+        or str(receipt.action_id) != f"accept-checkpoint:{facts.attempt.attempt_id}"
+        or str(receipt.subject_id) != str(facts.attempt.attempt_id)
+        or outcome.candidate != checkpoint.candidate.candidate
+        or outcome.checkpoint != checkpoint.checkpoint_id
+        or outcome.evidence != checkpoint.acceptance_evidence
+        or outcome.outcome != decision_models.ActionKind.ACCEPT_CHECKPOINT.value
+        or reference.kind != work_models.ArtifactKind.EVIDENCE
+        or reference.key != f"{facts.attempt.attempt_id}-{checkpoint.checkpoint_id}-review-package"
+        or reference.revision != 1
+        or not any(
+            (value.revision, value.digest) == (checkpoint.accepted_scope_revision, checkpoint.accepted_scope_digest)
+            for value in facts.definition_revisions
+        )
+    ):
+        return _failure("Retired checkpoint differs from its original receipt, package identity or definition.")
+    candidate_reference = next(
+        (
+            value
+            for value in facts.artifact_references
+            if value.kind == work_models.ArtifactKind.EVIDENCE
+            and value.key == f"{facts.attempt.attempt_id}-{checkpoint.checkpoint_id}-candidate"
+            and value.revision == 1
+        ),
+        None,
+    )
+    match checkpoint.candidate:
+        case UnavailableCandidate():
+            if candidate_reference is not None:
+                return _failure("Retired checkpoint cannot discard accepted patch evidence.")
+        case PatchCandidate(artifact_ref_id=artifact_ref_id, candidate=candidate):
+            if (
+                candidate_reference is None
+                or int(candidate_reference.artifact_ref_id) != artifact_ref_id
+                or candidate != f"working-tree-sha256:{candidate_reference.content_sha256}"
+                or candidate_reference.artifact_ref_id not in artifact_bytes
+            ):
+                return _failure("Retired checkpoint patch assurance differs from its original accepted bytes.")
+        case CompleteCandidate():
+            return _failure("Retired checkpoint cannot claim complete-state reconstruction.")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return checkpoint
 
 
 def derive_archive(  # noqa: C901, PLR0912 - one complete original-history projection
     facts: stored_state.ArchiveHistoryFacts,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
+    captured_checkpoints: tuple[ArchiveCheckpoint, ...],
 ) -> work_brief_models.WorkBriefResult[HistoryArchive]:
-    """Derive archival facts from original bytes; retained readers still certify semantics."""
+    """Verify original closure and retained semantics around accepted retired facts."""
 
     attempt = facts.attempt
     if attempt.state != work_models.AttemptState.DONE:
@@ -256,7 +315,14 @@ def derive_archive(  # noqa: C901, PLR0912 - one complete original-history proje
         if reference is None:
             return _failure("Archived acceptance is missing its original package reference.")
         if receipt.outcome_schema == "checkpoint-acceptance/v2":
-            package = work_briefs.decode_canonical_checkpoint_review_package(artifact_bytes[reference.artifact_ref_id])
+            package_bytes = artifact_bytes[reference.artifact_ref_id]
+            if retired_checkpoint_package(package_bytes):
+                archived = _retired_checkpoint(captured_checkpoints, receipt, reference, facts, artifact_bytes)
+                if isinstance(archived, work_brief_models.WorkBriefFailure):
+                    return archived
+                checkpoints.append(archived)
+                continue
+            package = work_briefs.decode_canonical_checkpoint_review_package(package_bytes)
             if isinstance(package, work_brief_models.WorkBriefFailure):
                 return package
             try:
@@ -405,7 +471,7 @@ def verify_archive(
     supplied = decode_archive(data)
     if isinstance(supplied, work_brief_models.WorkBriefFailure):
         return supplied
-    expected = derive_archive(facts, artifact_bytes)
+    expected = derive_archive(facts, artifact_bytes, supplied.checkpoints)
     if isinstance(expected, work_brief_models.WorkBriefFailure):
         return expected
     if canonical_archive_bytes(supplied) != canonical_archive_bytes(expected):

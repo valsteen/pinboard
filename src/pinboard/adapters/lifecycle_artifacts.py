@@ -27,7 +27,6 @@ from pinboard.adapters.lifecycle_operations import SelectedTransition
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.application import (
     candidate_snapshots,
-    checkpoint_compatibility_models,
     checkpoint_packages,
     ports,
     query_models,
@@ -693,11 +692,7 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
         if isinstance(package, work_brief_models.WorkBriefFailure):
             return _unchanged(package.message, candidate=None)
         identities = [package.accepted_brief, package.result, package.implementation_review]
-        if isinstance(
-            package,
-            (work_brief_models.CheckpointReviewPackageV3, checkpoint_compatibility_models.CheckpointReviewPackageV2),
-        ):
-            identities.append(package.candidate_snapshot)
+        identities.append(package.candidate_snapshot)
         if isinstance(package.review_basis, work_brief_models.CrossBoundaryReviewBasis):
             identities.append(package.review_basis.brief_review)
         references: list[stored_state.ArtifactReference] = []

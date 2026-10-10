@@ -202,10 +202,6 @@ def _validate_one_checkpoint_package(
             return msgspec.convert(
                 packaged, type=project_export.CompatibilityProjectExportCheckpointPackageV2, strict=True
             )
-        case checkpoint_compatibility_models.CheckpointReviewPackage():
-            return msgspec.convert(
-                packaged, type=project_export.CompatibilityProjectExportCheckpointPackage, strict=True
-            )
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -215,6 +211,7 @@ def validate_checkpoint_review_packages(
     artifact_references: tuple[stored_state.ArtifactReference, ...],
     transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
+    archives: Mapping[AttemptId, history_archives.HistoryArchive],
 ) -> work_brief_models.WorkBriefResult[tuple[project_export.ProjectExportCheckpointPackageValue, ...]]:
     """Validate historical package provenance from one loaded state and verified bytes."""
 
@@ -240,6 +237,15 @@ def validate_checkpoint_review_packages(
                 f"Checkpoint acceptance history {int(receipt.history_id)} links an unavailable review package."
             )
         linked_package_ids.add(receipt.artifact_ref_id)
+        if history_archives.retired_checkpoint_package(artifact_bytes[receipt.artifact_ref_id]):
+            archive = archives.get(AttemptId(str(receipt.subject_id)))
+            if archive is None or not any(
+                value.history_id == int(receipt.history_id)
+                and value.package_artifact_ref_id == int(receipt.artifact_ref_id)
+                for value in archive.checkpoints
+            ):
+                return _package_provenance_failure("Retired checkpoint requires its verified terminal archive.")
+            continue
         package = decode_canonical_checkpoint_review_package(artifact_bytes[receipt.artifact_ref_id])
         if isinstance(package, work_brief_models.WorkBriefFailure):
             return work_brief_models.WorkBriefFailure(
@@ -370,14 +376,39 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
     transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
     checkpoint_packages: tuple[project_export.ProjectExportCheckpointPackageValue, ...],
+    archives: Mapping[AttemptId, history_archives.HistoryArchive],
 ) -> work_brief_models.WorkBriefResult[tuple[project_export.ProjectExportCompletionReviewPackage, ...]]:
     references_by_id = {value.artifact_ref_id: value for value in artifact_references}
     references = {(value.kind.value, value.key, value.revision): value for value in artifact_references}
     attempts = {str(value.attempt_id): value for value in lifecycle.attempts}
     definitions = {(str(value.item_id), value.revision): value.digest for value in lifecycle.definition_revisions}
-    checkpoints_by_attempt: dict[str, list[project_export.ProjectExportCheckpointPackageValue]] = {}
+    checkpoints_by_attempt: dict[str, list[tuple[int, str, str, str, int]]] = {}
     for checkpoint in checkpoint_packages:
-        checkpoints_by_attempt.setdefault(checkpoint.attempt_id, []).append(checkpoint)
+        checkpoints_by_attempt.setdefault(checkpoint.attempt_id, []).append(
+            (
+                checkpoint.history_id,
+                checkpoint.checkpoint.id,
+                checkpoint.checkpoint.sha256,
+                checkpoint.candidate,
+                checkpoint.package_artifact_ref_id,
+            )
+        )
+    for archive in archives.values():
+        for checkpoint in archive.checkpoints:
+            if history_archives.retired_checkpoint_package(
+                artifact_bytes[ArtifactRefId(checkpoint.package_artifact_ref_id)]
+            ):
+                checkpoints_by_attempt.setdefault(archive.attempt_id, []).append(
+                    (
+                        checkpoint.history_id,
+                        checkpoint.checkpoint_id,
+                        checkpoint.checkpoint_sha256,
+                        checkpoint.candidate.candidate,
+                        checkpoint.package_artifact_ref_id,
+                    )
+                )
+    for checkpoints in checkpoints_by_attempt.values():
+        checkpoints.sort()
     linked_package_ids: set[ArtifactRefId] = set()
     completed: list[project_export.ProjectExportCompletionReviewPackage] = []
     for receipt in transition_receipts:
@@ -462,7 +493,7 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
             return _package_provenance_failure("Completion package accepted brief is invalid or stale.")
         expected_checkpoints = checkpoints_by_attempt.get(package.attempt_id, [])
         if tuple(row.history_id for row in package.checkpoint_coverage) != tuple(
-            value.history_id for value in expected_checkpoints
+            value[0] for value in expected_checkpoints
         ):
             return _package_provenance_failure("Completion checkpoint coverage is incomplete or stale.")
         for row, checkpoint in zip(package.checkpoint_coverage, expected_checkpoints, strict=True):
@@ -470,10 +501,10 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
             if isinstance(package_reference, work_brief_models.WorkBriefFailure):
                 return package_reference
             if (
-                row.checkpoint.id != checkpoint.checkpoint.id
-                or row.checkpoint.sha256 != checkpoint.checkpoint.sha256
-                or row.candidate != checkpoint.candidate
-                or int(package_reference.artifact_ref_id) != checkpoint.package_artifact_ref_id
+                row.checkpoint.id != checkpoint[1]
+                or row.checkpoint.sha256 != checkpoint[2]
+                or row.candidate != checkpoint[3]
+                or int(package_reference.artifact_ref_id) != checkpoint[4]
             ):
                 return _package_provenance_failure("Completion checkpoint coverage does not match its package.")
         completed.append(
@@ -556,6 +587,7 @@ def validate_loaded_work_state(
         state.artifact_references,
         state.transition_receipts,
         verified_artifacts,
+        {} if isinstance(archived, work_brief_models.WorkBriefFailure) else archived,
     )
     if isinstance(packages, work_brief_models.WorkBriefFailure):
         diagnostics.append(_error_diagnostic(packages.code.value, work_root, packages.message))
@@ -566,6 +598,7 @@ def validate_loaded_work_state(
             state.transition_receipts,
             verified_artifacts,
             packages,
+            {} if isinstance(archived, work_brief_models.WorkBriefFailure) else archived,
         )
         if isinstance(completion_packages, work_brief_models.WorkBriefFailure):
             diagnostics.append(

@@ -87,6 +87,7 @@ def export_project(
         captured_state.artifact_references,
         captured_state.transition_receipts,
         verified_artifacts,
+        archived,
     )
     if isinstance(checkpoint_packages, work_brief_models.WorkBriefFailure):
         return checkpoint_packages
@@ -96,6 +97,7 @@ def export_project(
         captured_state.transition_receipts,
         verified_artifacts,
         checkpoint_packages,
+        archived,
     )
     if isinstance(completion_packages, work_brief_models.WorkBriefFailure):
         return completion_packages

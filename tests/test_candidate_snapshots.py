@@ -42,7 +42,6 @@ from pinboard.application.candidate_snapshots import (
     candidate_snapshot_key,
     canonical_candidate_snapshot_bytes,
     decode_candidate_snapshot,
-    legacy_review_candidate,
     validate_candidate_snapshot_history,
     verify_candidate_snapshot_context,
 )
@@ -439,7 +438,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             query_models.CandidateLineage.DRIFTED, candidate_evidence.observe_candidate_lineage(source, evidence)
         )
 
-    def test_legacy_review_receipts_remain_valid_with_exact_live_correlation(self) -> None:
+    def test_opaque_submission_history_cannot_cover_a_live_missing_snapshot(self) -> None:
         state = complete_sqlite_state()
         candidate = "working-tree-sha256:" + "0" * 64
         legacy_receipt = replace(
@@ -461,6 +460,10 @@ class CandidateSnapshotTest(unittest.TestCase):
         historical = replace(state, transition_receipts=(legacy_receipt,))
 
         self.assertEqual((), validate_candidate_snapshot_history(historical, {}))
+        opaque = replace(legacy_receipt, outcome_payload=work_models.CanonicalJson(b'{"retained":"opaque history"}'))
+        self.assertEqual(
+            (), validate_candidate_snapshot_history(replace(historical, transition_receipts=(opaque,)), {})
+        )
 
         attempt = historical.lifecycle.attempts[0]
         live_attempt = replace(
@@ -473,7 +476,8 @@ class CandidateSnapshotTest(unittest.TestCase):
             historical,
             lifecycle=replace(historical.lifecycle, attempts=(live_attempt,)),
         )
-        self.assertEqual((), validate_candidate_snapshot_history(live, {}))
+        with self.assertRaisesRegex(ValueError, "live review attempt lacks"):
+            validate_candidate_snapshot_history(live, {})
 
         mismatched = replace(
             live,
@@ -484,47 +488,6 @@ class CandidateSnapshotTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "live review attempt lacks"):
             validate_candidate_snapshot_history(mismatched, {})
-
-    def test_legacy_review_receipt_requires_exact_canonical_outcome(self) -> None:
-        state = complete_sqlite_state()
-        candidate = "working-tree-sha256:" + "0" * 64
-        receipt = replace(
-            state.transition_receipts[0],
-            action_kind=decision_models.ActionKind.SUBMIT_REVIEW,
-            artifact_ref_id=None,
-            input_schema="decision/v1",
-            input_payload=work_models.CanonicalJson(b"{}"),
-            outcome_schema="transition-receipt/v1",
-            outcome_payload=work_models.CanonicalJson(
-                history.encode_transition_receipt_outcome(
-                    evidence=None,
-                    outcome="submit-review",
-                    candidate=candidate,
-                )
-            ),
-        )
-        self.assertIsNone(legacy_review_candidate(state.transition_receipts[0]))
-        self.assertEqual(candidate, legacy_review_candidate(receipt))
-        invalid = (
-            replace(receipt, input_payload=work_models.CanonicalJson(b'{"extra":true}')),
-            replace(receipt, outcome_schema="wrong/v1"),
-            replace(receipt, outcome_payload=work_models.CanonicalJson(bytes(receipt.outcome_payload) + b" ")),
-            replace(
-                receipt,
-                outcome_payload=work_models.CanonicalJson(
-                    history.encode_transition_receipt_outcome(evidence=None, outcome="continue", candidate=candidate)
-                ),
-            ),
-            replace(
-                receipt,
-                outcome_payload=work_models.CanonicalJson(
-                    history.encode_transition_receipt_outcome(evidence=None, outcome="submit-review")
-                ),
-            ),
-        )
-        for malformed in invalid:
-            with self.subTest(malformed=malformed), self.assertRaises((ValueError, msgspec.ValidationError)):
-                legacy_review_candidate(malformed)
 
     def test_snapshot_verification_rejects_each_uncorrelated_source(self) -> None:
         snapshot, context, encoded = self.snapshot_context()

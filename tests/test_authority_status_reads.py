@@ -1201,10 +1201,10 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assertEqual(before_review, after_review)
         self.assertEqual(unrelated_before, (unrelated_view.read_bytes(), unrelated_view.stat().st_mtime_ns))
         review_tables, review_statements = review_reads
-        self.assertEqual(read_tables | {"transition_history"}, review_tables)
+        self.assertEqual(read_tables, review_tables)
         self.assert_keyed_status_queries(database, review_statements)
 
-    def test_attempt_inspection_preserves_live_legacy_review_without_snapshot_recovery(self) -> None:
+    def test_attempt_inspection_rejects_live_review_without_snapshot(self) -> None:
         state = complete_sqlite_state()
         candidate = "working-tree-sha256:" + "0" * 64
         items = tuple(
@@ -1243,16 +1243,17 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         project, work, store = self.initialized_attempt_context(legacy)
 
-        stdout = self.native(
-            mcp_server.ATTEMPT_INSPECT_TOOL,
-            str(project),
-            str(work),
-            {"attempt_id": "work-a-1", "reconciliation": None},
-        )
-
-        self.assertNotIn("code", stdout)
-        self.assertEqual("absent", self.json_object(stdout["candidate_recovery"])["kind"])
-        self.assertIsNone(store.read_candidate_snapshot_context(AttemptId("work-a-1")))
+        before = store.validated_snapshot()
+        with self.rejected_storage():
+            self.native(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                str(project),
+                str(work),
+                {"attempt_id": "work-a-1", "reconciliation": None},
+            )
+        with self.assertRaisesRegex(StorageError, "no accepted snapshot artifact"):
+            store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
     def test_terminal_attempt_inspection_stops_before_related_rows_and_artifacts(self) -> None:
         state = self.state_with_unrelated_attempt_authority()

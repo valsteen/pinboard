@@ -473,7 +473,7 @@ def _read_candidate_snapshot_context_facts(
     attempt_row = connection.execute(
         """
         SELECT attempt_id, item_id, state, branch, base_revision,
-               candidate_revision, candidate_recorded_at, subject_revision
+               candidate_revision, candidate_recorded_at
         FROM attempts WHERE attempt_id = ?
         """,
         (attempt_id,),
@@ -495,25 +495,6 @@ def _read_candidate_snapshot_context_facts(
     )
     if reference is None:
         if closing_candidate_revision is not None:
-            return None
-        history_row = connection.execute(
-            "SELECT history_id FROM transition_history WHERE project_revision = ?",
-            (attempt.subject_revision,),
-        ).fetchone()
-        receipt = (
-            None
-            if history_row is None
-            else sqlite_state.read_history_receipt(connection, decode_row(history_row, HistoryIdRow).history_id)
-        )
-        try:
-            legacy_candidate = None if receipt is None else candidate_snapshots.legacy_review_candidate(receipt)
-        except ValueError as error:
-            raise StorageError(StorageErrorCode.INVALID_STATE, str(error)) from error
-        if (
-            receipt is not None
-            and receipt.committed_at == attempt.candidate_recorded_at
-            and legacy_candidate == attempt.candidate_revision
-        ):
             return None
         raise StorageError(
             StorageErrorCode.INVALID_STATE,

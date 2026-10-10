@@ -179,6 +179,44 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
         self.assertIn("attempt-authority/v1", {value.input_schema for value in selected.transition_receipts})
         self.assertIn("submit-review", {value.action_kind.value for value in selected.transition_receipts})
 
+    def test_archive_membership_preserves_independent_current_snapshot_validation(self) -> None:
+        fixture = self.completed_fixture()
+        state = fixture.store.validated_snapshot()
+        facts = history_archives.select_archive_facts(
+            state.lifecycle.attempts[0],
+            state.artifact_references,
+            state.transition_receipts,
+            state.lifecycle.definition_revisions,
+        )
+        roots = resolve_durable_roots(fixture.project, fixture.work)
+        artifacts = ArtifactRepository(roots)
+        source_bytes = {value.artifact_ref_id: artifacts.read(value) for value in facts.artifact_references}
+        archive = history_archives.derive_archive(facts, source_bytes, ())
+        assert isinstance(archive, history_archives.HistoryArchive)
+        published = write_revision(
+            roots,
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                history_archives.archive_key(archive.attempt_id),
+                1,
+                ".json",
+                history_archives.canonical_archive_bytes(archive),
+            ),
+        )
+        accepted = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW)
+        assert not isinstance(accepted, DecisionFailure)
+        self.assert_archive_readable(fixture, archive)
+        snapshot_reference = next(value for value in facts.artifact_references if "-candidate-snapshot-" in value.key)
+        snapshot_payload = json.loads(artifacts.read(snapshot_reference))
+        snapshot_payload["recorded_at"] = "2000-01-01T00:00:00+00:00"
+        self.replace_artifact_bytes(fixture, snapshot_reference, msgspec.json.encode(snapshot_payload, order="sorted"))
+        code, stdout, stderr = self.run_cli(*fixture.common, "validate", "--json")
+        self.assertEqual(10, code, stderr)
+        mixed = self.json_object(json.loads(stdout))
+        diagnostics = self.json_array(mixed["diagnostics"])
+        self.assertIn("CANDIDATE_SNAPSHOT_INVALID", [self.json_object(value)["code"] for value in diagnostics])
+        self.assertNotEqual(0, self.run_cli(*fixture.common, "export", "--json")[0])
+
     def test_archive_preserves_exact_history_through_sibling_and_same_name_proposal_publication(self) -> None:
         fixture = self.completed_fixture()
         original = fixture.store.validated_snapshot()

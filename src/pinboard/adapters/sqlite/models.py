@@ -73,4 +73,3 @@ class CandidateSnapshotAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fi
     base_revision: str
     candidate_revision: str | None
     candidate_recorded_at: datetime | None
-    subject_revision: int

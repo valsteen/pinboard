@@ -949,6 +949,86 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
 
 
+type ItemIntegrationSchema = Literal["pinboard-item-integration/v1"]
+type IntegrationSource = Literal["protected-review", "accepted-checkpoint", "completion"]
+type IntegrationPresence = Literal["content-present", "content-not-present", "no-change"]
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: ItemIntegrationSchema
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    target_revision: str
+    source: IntegrationSource
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+    presence: IntegrationPresence
+    checkpoint_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewIntegrationCandidate:
+    """The current review attempt's protected candidate as the integration comparison source."""
+
+    attempt_id: AttemptId
+    snapshot_context: CandidateSnapshotContextFacts
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointIntegrationCandidate:
+    """The current attempt's latest checkpoint-accepted candidate as the integration comparison source."""
+
+    attempt_id: AttemptId
+    item_state: stored_state.StoredWorkItemState
+    checkpoint_id: str
+    checkpoint_receipt: stored_state.StoredTransitionReceipt
+    package_reference: stored_state.ArtifactReference
+    snapshot_reference: stored_state.ArtifactReference
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionIntegrationCandidate:
+    """A completed attempt's retained candidate as the integration comparison source."""
+
+    attempt_id: AttemptId
+    snapshot_context: CandidateSnapshotContextFacts
+
+
+type ItemIntegrationCandidate = (
+    ReviewIntegrationCandidate | CheckpointIntegrationCandidate | CompletionIntegrationCandidate
+)
+
+
+type MissingIntegrationReason = Literal[
+    "no-protected-candidate",
+    "direct-close",
+    "checkpoint-package-without-candidate-snapshot",
+    "retained-pre-snapshot-review-candidate",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class MissingIntegrationCandidate:
+    """The item is known but names no reviewed candidate with accepted snapshot bytes."""
+
+    item_state: stored_state.StoredWorkItemState
+    reason: MissingIntegrationReason
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationSelection:
+    """The focused facts one integration read compares, with the project revision they were read at."""
+
+    project_revision: int
+    facts: ItemIntegrationFacts
+
+
+type ItemIntegrationFacts = ItemIntegrationCandidate | MissingIntegrationCandidate
+
+
 class ParallelSelection(Enum):
     ALL_SAFE = "all-safe"
     SELECTED = "selected"

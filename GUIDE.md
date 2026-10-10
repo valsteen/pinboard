@@ -78,6 +78,8 @@ The agent compares the repository result with the goal you agreed on, the saved 
 
 An honest reply might be: “The change is in `main`, but no review covered it. I'd have a separate reviewer check the commit as it landed before the work is closed.” If the work was never started, your decision to mark it completed or dropped takes the shorter close route.
 
+To answer a direct question like “is this change actually in `main`?”, the agent can compare the reviewed change's content with the named target and report whether it is present, absent, or unchanged there. That comparison reads your local repository only; it never fetches or checks a remote.
+
 ## Review a pull request owned by a person
 
 > Can you review my pull request? I wrote the code; please tell me what you find as it changes.

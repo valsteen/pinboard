@@ -1,14 +1,19 @@
 import fcntl
+import os
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
 from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.domain import work_models
 
 _READ_CHUNK_BYTES = 64 * 1024
+
+type IntegrationPresence = Literal["content-present", "content-not-present", "no-change"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,6 +386,114 @@ def restore_commit_candidate(
 
 def resolve_shared_repository_root(cwd: Path) -> Path:
     return _resolve_git_common_directory(cwd).parent
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationTargetResolved:
+    """One resolved target commit with a closed content-presence verdict."""
+
+    target_revision: str
+    presence: IntegrationPresence
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationTargetUnresolved:
+    """One caller-named target that did not resolve to a commit in this checkout."""
+
+    target: str
+
+
+type IntegrationTargetObservation = IntegrationTargetResolved | IntegrationTargetUnresolved
+
+
+def read_integration_content_presence(
+    cwd: Path,
+    target: str,
+    diff: bytes,
+) -> IntegrationTargetObservation:
+    """Compare one reviewed candidate diff against a caller-named target by content.
+
+    Resolves the target to a full commit, reads that commit's tree into a private
+    temporary index outside the repository, and reverse-applies the reviewed diff
+    against that index with --check, so the verdict depends only on recorded
+    content. The recorded diff is captured before the target was chosen, so a
+    clean reverse-apply means the target's tree already contains the candidate's
+    change. An empty recorded diff is no-change by itself. The reads write
+    nothing to the checkout and the temporary directory is removed before
+    returning.
+    """
+
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if resolved.returncode != 0:
+        # Keep the existing root error for a broken or non-Git checkout and
+        # reserve the unresolved observation for a readable checkout that
+        # simply lacks the named target.
+        resolve_source_checkout_root(cwd)
+        return IntegrationTargetUnresolved(target)
+    target_revision = resolved.stdout.strip()
+    if not diff:
+        return IntegrationTargetResolved(target_revision, "no-change")
+    directory = Path(tempfile.mkdtemp(prefix="pinboard-integration-"))
+    try:
+        index_path = directory / "index"
+        environment = {**os.environ, "GIT_INDEX_FILE": str(index_path)}
+        read_tree = subprocess.run(
+            [
+                "git",
+                "-c",
+                "index.splitIndex=false",
+                "read-tree",
+                f"--index-output={index_path}",
+                target_revision,
+            ],
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        if read_tree.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                read_tree.stderr.decode(errors="replace").strip()
+                or f"Cannot read the tree of target '{target_revision}' at '{cwd}'.",
+            )
+        applied = subprocess.run(
+            [
+                "git",
+                "-c",
+                "index.splitIndex=false",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "--whitespace=nowarn",
+                "-",
+            ],
+            cwd=cwd,
+            input=diff,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        if applied.returncode == 0:
+            presence: IntegrationPresence = "content-present"
+        elif applied.returncode == 1:
+            presence = "content-not-present"
+        else:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                applied.stderr.decode(errors="replace").strip()
+                or f"Cannot compare the reviewed candidate against target '{target_revision}' at '{cwd}'.",
+            )
+        return IntegrationTargetResolved(target_revision, presence)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def _exclude_contains_pinboard_line(stream: BinaryIO, entry: bytes) -> tuple[bool, bool]:

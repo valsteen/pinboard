@@ -44,6 +44,7 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     NonterminalAttemptContextSelection,
     TerminalAttemptContextSelection,
+    _read_item_closure,
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
@@ -433,6 +434,144 @@ def _read_candidate_snapshot_context_facts(
     )
 
 
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+
+
+def read_item_integration_facts(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> query_models.ItemIntegrationSelection | None:
+    """Read the one reviewed candidate an integration comparison compares, or why none exists.
+
+    The read touches only the named item row, its current attempt or a completion's
+    closing attempt by primary key, the one receipt at a terminal item's subject
+    revision, at most the current attempt's latest checkpoint-acceptance receipt
+    through its partial subject index, that receipt's linked checkpoint package, and
+    one accepted candidate snapshot reference by key. It never walks review verdicts
+    or scans retained attempts.
+    """
+
+    project_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    project_revision = decode_row(project_row, ProjectRevisionRow).revision
+    candidate_facts = _read_item_integration_candidate_facts(connection, item_id)
+    if candidate_facts is None:
+        return None
+    return query_models.ItemIntegrationSelection(project_revision, candidate_facts)
+
+
+def _read_completion_integration_facts(
+    connection: sqlite3.Connection,
+    item_id: WorkItemId,
+    item: _IntegrationItemRow,
+) -> query_models.ItemIntegrationFacts:
+    """Read a terminal item's closing attempt as the integration comparison source."""
+
+    closure = _read_item_closure(connection, item_id, item.subject_revision)
+    if closure is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The terminal item has no closure receipt.")
+    if closure.action_kind != decision_models.ActionKind.COMPLETE:
+        return query_models.MissingIntegrationCandidate(item.state, "direct-close")
+    if closure.closing_attempt is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The completion receipt names no closing attempt.")
+    snapshot_context = _read_candidate_snapshot_context_facts(connection, closure.closing_attempt.attempt_id)
+    if snapshot_context is None:
+        return query_models.MissingIntegrationCandidate(item.state, "retained-pre-snapshot-review-candidate")
+    return query_models.CompletionIntegrationCandidate(closure.closing_attempt.attempt_id, snapshot_context)
+
+
+def _read_checkpoint_integration_facts(
+    connection: sqlite3.Connection,
+    item: _IntegrationItemRow,
+    attempt: _IntegrationAttemptRow,
+) -> query_models.ItemIntegrationFacts:
+    """Read the current attempt's latest checkpoint-accepted candidate as the comparison source."""
+
+    history_row = connection.execute(
+        """
+        SELECT history_id FROM transition_history
+        INDEXED BY checkpoint_history_by_subject
+        WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+        ORDER BY history_id DESC
+        LIMIT 1
+        """,
+        (attempt.attempt_id,),
+    ).fetchone()
+    if history_row is None:
+        return query_models.MissingIntegrationCandidate(item.state, "no-protected-candidate")
+    receipt = sqlite_state.read_history_receipt(connection, decode_row(history_row, HistoryIdRow).history_id)
+    if receipt is None or receipt.artifact_ref_id is None:
+        return query_models.MissingIntegrationCandidate(item.state, "checkpoint-package-without-candidate-snapshot")
+    package_reference = read_artifact_reference_by_id(connection, receipt.artifact_ref_id)
+    if package_reference is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The checkpoint receipt names a missing package artifact.")
+    try:
+        outcome = msgspec.json.decode(
+            bytes(receipt.outcome_payload),
+            type=history.CheckpointAcceptanceOutcome,
+            strict=True,
+        )
+    except msgspec.DecodeError:
+        return query_models.MissingIntegrationCandidate(item.state, "checkpoint-package-without-candidate-snapshot")
+    snapshot_reference = read_artifact_reference(
+        connection,
+        work_models.ArtifactKind.EVIDENCE,
+        f"{attempt.attempt_id}-{outcome.checkpoint}-candidate",
+        1,
+    )
+    if snapshot_reference is None:
+        return query_models.MissingIntegrationCandidate(item.state, "checkpoint-package-without-candidate-snapshot")
+    return query_models.CheckpointIntegrationCandidate(
+        attempt.attempt_id,
+        item.state,
+        outcome.checkpoint,
+        receipt,
+        package_reference,
+        snapshot_reference,
+    )
+
+
+def _read_item_integration_candidate_facts(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> query_models.ItemIntegrationFacts | None:
+    """Read the reviewed-candidate facts of one item without the project revision header."""
+
+    item_row = connection.execute(
+        "SELECT state, subject_revision FROM work_items WHERE item_id = ?",
+        (item_id,),
+    ).fetchone()
+    if item_row is None:
+        return None
+    item = decode_row(item_row, _IntegrationItemRow)
+    if stored_state.live_work_state(item.state) is None:
+        return _read_completion_integration_facts(connection, item_id, item)
+    attempt_row = connection.execute(
+        """
+        SELECT attempt_id, state, candidate_revision
+        FROM attempts INDEXED BY one_live_attempt_per_item
+        WHERE item_id = ? AND state != 'done'
+        """,
+        (item_id,),
+    ).fetchone()
+    if attempt_row is None:
+        return query_models.MissingIntegrationCandidate(item.state, "no-protected-candidate")
+    attempt = decode_row(attempt_row, _IntegrationAttemptRow)
+    if attempt.state == work_models.AttemptState.REVIEW and attempt.candidate_revision is not None:
+        snapshot_context = _read_candidate_snapshot_context_facts(connection, attempt.attempt_id)
+        if snapshot_context is None:
+            return query_models.MissingIntegrationCandidate(item.state, "retained-pre-snapshot-review-candidate")
+        return query_models.ReviewIntegrationCandidate(attempt.attempt_id, snapshot_context)
+    return _read_checkpoint_integration_facts(connection, item, attempt)
+
+
 class SQLiteWorkStore:
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -753,6 +892,14 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return _read_candidate_snapshot_context_facts(connection, attempt_id)
+        finally:
+            connection.close()
+
+    def read_item_integration_facts(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationSelection | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_item_integration_facts(connection, work_item_id)
         finally:
             connection.close()
 

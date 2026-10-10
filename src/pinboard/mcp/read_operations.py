@@ -101,7 +101,7 @@ class _AttemptReviewEvidence:
 def _branch_owner_not_found(branch: str, work_root: Path) -> execution.OperationResult:
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v2",
+            "schema": "pinboard-mcp-item-status-result/v3",
             "status": "rejected",
             "code": "BRANCH_OWNER_NOT_FOUND",
             "message": f"No retained attempt in work root {work_root} records branch '{branch}'.",
@@ -127,12 +127,53 @@ def _branch_owner_not_found(branch: str, work_root: Path) -> execution.Operation
     )
 
 
+def _integration_rejection(failure: candidate_evidence.ItemIntegrationFailure) -> execution.OperationResult:
+    rendered = {
+        "schema": "pinboard-mcp-item-status-result/v3",
+        "status": "rejected",
+        "code": failure.code,
+        "message": failure.message,
+        "state_changed": False,
+        **common._details_json(
+            FailureDetails(
+                observed=failure.observed,
+                mismatches=(),
+                retry=failure.retry,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            )
+        ),
+    }
+    if failure.recovery is not None:
+        rendered["recovery"] = failure.recovery
+    return execution.OperationResult(rendered, "rejected", None)
+
+
 def _read_item_status(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.ItemStatusEnvelope, strict=True).request
-        durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
+        return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    try:
+        durable = common._resolve_durable(request.project_root, request.work_root)
+    except RootError as error:
+        if not isinstance(request, contracts.ItemStatusIntegrationRequest):
+            raise
+        return _integration_rejection(
+            candidate_evidence.ItemIntegrationFailure(
+                error.code.value,
+                str(error),
+                (
+                    FailureFact("project_root", request.project_root),
+                    FailureFact("git_diagnostic", str(error).removeprefix(f"{error.code.value}: ")),
+                ),
+                RetryDisposition.CORRECT_INPUT,
+                candidate_evidence._READ_UNAVAILABLE_RECOVERY,
+            )
+        )
+    except OSError as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
     token.checkpoint()
     store = common.compose_store(durable)
@@ -144,13 +185,25 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
             if isinstance(projected, DecisionFailure):
                 return common._item_status_failure(projected.code.value, projected.message, projected.details)
             if isinstance(projected, query_models.DamagedTransitionReceipt):
-                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v2", projected)
-            selected: query_models.ItemStatus | query_models.BranchOwners = projected
+                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", projected)
+            selected: query_models.ItemStatus | query_models.BranchOwners | query_models.ItemIntegration = projected
         case contracts.ItemStatusBranchRequest():
             owners = queries.project_branch_owners(store, request.branch)
             if owners is None:
                 return _branch_owner_not_found(request.branch, durable.work_root)
             selected = owners
+        case contracts.ItemStatusIntegrationRequest():
+            integrated = candidate_evidence.read_item_integration(
+                Path(request.project_root),
+                durable.work_root,
+                store,
+                WorkItemId(request.item_id),
+                request.target,
+                request.project_root,
+            )
+            if isinstance(integrated, candidate_evidence.ItemIntegrationFailure):
+                return _integration_rejection(integrated)
+            selected = integrated
         case _ as unreachable:
             assert_never(unreachable)
     token.checkpoint()

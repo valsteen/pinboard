@@ -12,7 +12,7 @@ After cloning the repository or creating a new implementation worktree, prepare 
 scripts/prepare-worktree
 ```
 
-The command runs `uv sync --locked` and `npm ci --prefer-offline --no-audit --no-fund` from the selected `<pinboard-source>` checkout. Each checkout keeps its own ignored `.venv/` and `node_modules/` directories while uv and npm may reuse their package caches. The checked-in locks make setup repeatable. jscpd 5.1.2 is the sole non-Python development dependency; it requires Node.js 18 or newer and npm, but no global installation.
+The command runs `uv sync --locked` and `npm ci --prefer-offline --no-audit --no-fund` from the selected `<pinboard-source>` checkout. Each checkout keeps its own ignored `.venv/` and `node_modules/` directories while uv and npm may reuse their package caches. The checked-in locks make setup repeatable. jscpd 5.4.1 is the sole non-Python development dependency; it requires Node.js 18 or newer and npm, but no global installation.
 
 This setup is a shell command, so Pinboard MCP pre-approval does not cover it. Cache access or dependency downloads can need filesystem or network approval beyond the selected checkout. Inspect the exact diagnostic first: a missing prerequisite or locked-install failure needs a different remedy from a sandbox denial.
 
@@ -77,7 +77,7 @@ npm run duplication
 npm run duplication:ci
 ```
 
-The local scan uses four-line and 40-token limits. It is intentionally sensitive: matches are prompts for judgment, not defects to eliminate mechanically. The CI profile uses eight-line and 60-token limits, rejects clones that are new relative to `origin/main`, and enforces a 0.3% ceiling; the current accepted scan reports 0.2%. Lower the ceiling after accepted cleanup reduces the baseline; do not raise it merely to admit new duplication.
+The local scan uses four-line and 40-token limits. It is intentionally sensitive: matches are prompts for judgment, not defects to eliminate mechanically. The CI profile uses eight-line and 60-token limits, rejects clones that are new relative to `origin/main`, and enforces a 0.3% ceiling; the current nonexempt scan reports 0.0%. The checker uses inclusive native line counts and deducts only separately reviewed, byte-certified exact pairs; raw reports retain every match. Lower the ceiling after accepted cleanup reduces the baseline; do not raise it merely to admit new duplication.
 
 Every pull request and main-branch update runs the supported checks on macOS and Linux, including plugin and skill validation.
 

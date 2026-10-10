@@ -142,7 +142,7 @@ def _brief(
 
 def _review_basis(
     package: work_brief_models.CheckpointReviewPackageV3,
-    brief: work_brief_models.ReadableWorkBrief,
+    brief: work_briefs.HistoricalWorkBriefValue,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> work_brief_models.WorkBriefFailure | None:
@@ -153,8 +153,10 @@ def _review_basis(
         ):
             return None
         case (
-            work_brief_models.CrossBoundaryCheckpoint(reviewed_authorities=authorities)
-            | work_brief_compatibility_models.CrossBoundaryCheckpointV3(reviewed_authorities=authorities),
+            (
+                work_brief_models.CrossBoundaryCheckpoint(reviewed_authorities=authorities)
+                | work_brief_compatibility_models.CrossBoundaryCheckpointV3(reviewed_authorities=authorities)
+            ) as checkpoint,
             work_brief_models.CrossBoundaryReviewBasis(
                 brief_review=review_identity,
                 checkpoint_sha256=checkpoint_sha256,
@@ -164,17 +166,39 @@ def _review_basis(
             review_reference = _portable_reference(review_identity, references, artifact_bytes)
             if isinstance(review_reference, work_brief_models.WorkBriefFailure):
                 return review_reference
+            review_key_sha256 = (
+                package.checkpoint.sha256
+                if isinstance(brief, work_brief_compatibility_models.HistoricalWorkBriefV2)
+                else ready_review_key_sha256(brief)
+            )
             if (
                 (review_identity.kind, review_identity.key)
                 != (
                     work_models.ArtifactKind.EVIDENCE.value,
-                    f"{package.attempt_id}-brief-review-{ready_review_key_sha256(brief)}",
+                    f"{package.attempt_id}-brief-review-{review_key_sha256}",
                 )
                 or checkpoint_sha256 != package.checkpoint.sha256
                 or authority_set_sha256
                 != hashlib.sha256(canonical_reviewed_authority_set_bytes(authorities)).hexdigest()
             ):
                 return _invalid("The cross-boundary review basis has a stale identity or digest.")
+            if isinstance(brief, work_brief_compatibility_models.HistoricalWorkBriefV2):
+                original_review = work_brief_compatibility_models.decode_canonical_historical_work_brief_review(
+                    artifact_bytes[review_reference.artifact_ref_id]
+                )
+                if isinstance(original_review, work_brief_models.WorkBriefFailure):
+                    return _invalid(f"The historical package brief review is invalid: {original_review.message}")
+                if (
+                    original_review.attempt_id != brief.attempt_id
+                    or original_review.checkpoint_id != checkpoint.checkpoint_id
+                    or original_review.checkpoint_sha256 != checkpoint_sha256
+                    or original_review.reviewed_authority_set_sha256 != authority_set_sha256
+                    or original_review.reviewer_task_id == brief.owner_task_id
+                    or {(row.authority_id, row.family, row.owner) for row in original_review.coverage}
+                    != {(row.authority_id, row.family, row.owner) for row in checkpoint.coverage}
+                ):
+                    return _invalid("The historical package brief review does not match its original binding.")
+                return None
             review = decode_canonical_work_brief_review(artifact_bytes[review_reference.artifact_ref_id])
             if isinstance(review, work_brief_models.WorkBriefFailure):
                 return _invalid(f"The package brief review is invalid: {review.message}")

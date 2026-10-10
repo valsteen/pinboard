@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +23,7 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     candidate_snapshots,
+    checkpoint_packages,
     stored_state,
     work_brief_compatibility_models,
     work_brief_models,
@@ -49,20 +51,24 @@ from tests.support import SQLITE_NOW, JsonObject, JsonValue
 
 
 class CheckpointPackageTest(CheckpointPackageSupport):
-    def test_retained_v3_brief_keeps_cross_boundary_package_provenance(self) -> None:
+    def historical_package_fixture(self, original: bool) -> AcceptedPackageFixture:
         fixture = self.accepted_package_fixture()
         current = fixture.brief
         payload = msgspec.to_builtins(current)
         assert isinstance(payload, dict)
-        payload["schema"] = "pinboard-work-brief/v3"
+        payload["schema"] = "pinboard-work-brief/v2" if original else "pinboard-work-brief/v3"
         payload["artifact_revision"] = 2
         checkpoint = payload["checkpoint"]
         assert isinstance(checkpoint, dict)
         disposition = checkpoint.pop("disposition")
         assert isinstance(disposition, dict)
         payload["remaining_work"] = disposition["remaining_work"]
+        if original:
+            del payload["checkout_selection"]
+            del payload["obligation_correspondence"]
         brief_bytes = msgspec.json.encode(payload, order="sorted") + b"\n"
-        retained = msgspec.json.decode(brief_bytes, type=work_brief_compatibility_models.WorkBriefV3)
+        retained = work_briefs.decode_canonical_historical_work_brief(brief_bytes)
+        assert not isinstance(retained, work_brief_models.WorkBriefFailure)
         retained_checkpoint = retained.checkpoint
         assert isinstance(retained_checkpoint, work_brief_compatibility_models.CrossBoundaryCheckpointV3)
         checkpoint_sha256 = hashlib.sha256(work_briefs.canonical_checkpoint_bytes(retained_checkpoint)).hexdigest()
@@ -92,6 +98,11 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 ),
             )
         )
+        if original:
+            review_payload = self.json_object(json.loads(review_bytes))
+            review_payload["schema"] = "pinboard-work-brief-review/v2"
+            del review_payload["accepted_brief_sha256"]
+            review_bytes = msgspec.json.encode(review_payload, order="sorted") + b"\n"
         roots = resolve_durable_roots(fixture.project)
 
         def accepted_identity(
@@ -124,7 +135,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         review_identity = accepted_identity(
             "brief-review",
             work_models.ArtifactKind.EVIDENCE,
-            f"{retained.attempt_id}-brief-review-{hashlib.sha256(brief_bytes).hexdigest()}",
+            f"{retained.attempt_id}-brief-review-{checkpoint_sha256 if original else hashlib.sha256(brief_bytes).hexdigest()}",
             1,
             review_bytes,
         )
@@ -147,7 +158,65 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             ),
         )
 
+        return fixture
+
+    def test_retained_v3_brief_keeps_cross_boundary_package_provenance(self) -> None:
+        fixture = self.historical_package_fixture(False)
         self.run_json_cli(*fixture.common, "validate")
+
+    def test_original_ready_review_facts_validate_and_export_without_current_readiness(self) -> None:
+        fixture = self.historical_package_fixture(True)
+        self.run_json_cli(*fixture.common, "validate")
+        self.run_json_cli(*fixture.common, "export")
+        package = self.package(fixture)
+        basis = package.review_basis
+        assert isinstance(basis, work_brief_models.CrossBoundaryReviewBasis)
+        state = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        reference = next(row for row in state.artifact_references if row.key == basis.brief_review.key)
+        data = {row.artifact_ref_id: (fixture.work / row.selector).read_bytes() for row in state.artifact_references}
+        self.assertIsInstance(
+            decode_canonical_work_brief_review(data[reference.artifact_ref_id]), work_brief_models.WorkBriefFailure
+        )
+        original_review = work_brief_compatibility_models.decode_canonical_historical_work_brief_review(
+            data[reference.artifact_ref_id]
+        )
+        assert not isinstance(original_review, work_brief_models.WorkBriefFailure)
+        self.assertIsNone(
+            checkpoint_packages.validate_checkpoint_package_closure(package, state.artifact_references, data)
+        )
+        for changed in (
+            {"attempt_id": "foreign-attempt"},
+            {"checkpoint_id": "foreign-checkpoint"},
+            {"checkpoint_sha256": "f" * 64},
+            {"reviewed_authority_set_sha256": "f" * 64},
+            {"reviewer_task_id": fixture.brief.owner_task_id},
+            {"coverage": ()},
+            {
+                "coverage": (
+                    replace_struct(original_review.coverage[0], owner=work_brief_models.AcceptanceCoverageOwner(1)),
+                )
+            },
+        ):
+            with self.subTest(changed=changed):
+                raw = msgspec.json.encode(replace_struct(original_review, **changed), order="sorted") + b"\n"
+                digest = hashlib.sha256(raw).hexdigest()
+                references = tuple(
+                    replace(row, content_sha256=digest, size_bytes=len(raw)) if row == reference else row
+                    for row in state.artifact_references
+                )
+                changed_package = replace_struct(
+                    package,
+                    review_basis=replace_struct(
+                        basis,
+                        brief_review=replace_struct(basis.brief_review, content_sha256=digest, size_bytes=len(raw)),
+                    ),
+                )
+                self.assertIsInstance(
+                    checkpoint_packages.validate_checkpoint_package_closure(
+                        changed_package, references, {**data, reference.artifact_ref_id: raw}
+                    ),
+                    work_brief_models.WorkBriefFailure,
+                )
 
     def test_completion_package_round_trips_exact_closed_identities_and_coverage(self) -> None:
         accepted_brief = work_brief_models.AcceptedBriefCompletionIdentity(

@@ -673,6 +673,12 @@ class ReviewCoverageResult(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     counterexample_result: NonEmptyText
 
 
+def validate_review_coverage(coverage: tuple[ReviewCoverageResult, ...]) -> None:
+    coverage_keys = tuple((record.authority_id, record.family) for record in coverage)
+    if len(set(coverage_keys)) != len(coverage_keys):
+        raise ValueError("Brief review coverage must identify every authority family at most once.")
+
+
 class WorkBriefReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-work-brief-review/v3"]
     attempt_id: KebabId
@@ -686,9 +692,7 @@ class WorkBriefReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     coverage: Annotated[tuple[ReviewCoverageResult, ...], msgspec.Meta(min_length=1)]
 
     def __post_init__(self) -> None:
-        coverage_keys = tuple((record.authority_id, record.family) for record in self.coverage)
-        if len(set(coverage_keys)) != len(coverage_keys):
-            raise ValueError("Brief review coverage must identify every authority family at most once.")
+        validate_review_coverage(self.coverage)
 
 
 class BlockingReviewFinding(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

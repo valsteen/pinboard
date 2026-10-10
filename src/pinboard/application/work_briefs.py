@@ -35,7 +35,6 @@ from pinboard.domain.identifiers import ArtifactRefId, AttemptId, WorkItemId
 
 type WorkBriefValue = work_brief_models.WorkBrief | work_brief_compatibility_models.WorkBriefV3
 type HistoricalWorkBriefValue = WorkBriefValue | work_brief_compatibility_models.HistoricalWorkBriefV2
-type WorkBriefReviewValue = work_brief_models.WorkBriefReview | work_brief_compatibility_models.WorkBriefReviewV2
 
 
 def publish_work_brief(
@@ -217,12 +216,8 @@ def validate_reviewed_authority_digests(
     return None
 
 
-def decode_work_brief_review(data: bytes) -> work_brief_models.WorkBriefResult[WorkBriefReviewValue]:
+def decode_work_brief_review(data: bytes) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBriefReview]:
     try:
-        schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
-        schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
-        if schema == "pinboard-work-brief-review/v2":
-            return msgspec.json.decode(data, type=work_brief_compatibility_models.WorkBriefReviewV2)
         return msgspec.json.decode(data, type=work_brief_models.WorkBriefReview)
     except (msgspec.DecodeError, ValueError) as error:
         return work_brief_models.WorkBriefFailure(
@@ -231,7 +226,7 @@ def decode_work_brief_review(data: bytes) -> work_brief_models.WorkBriefResult[W
         )
 
 
-def canonical_work_brief_review_bytes(review: WorkBriefReviewValue) -> bytes:
+def canonical_work_brief_review_bytes(review: work_brief_models.WorkBriefReview) -> bytes:
     return _canonical_bytes(review) + b"\n"
 
 
@@ -399,7 +394,7 @@ def validate_candidate_review(
 
 def decode_canonical_work_brief_review(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[WorkBriefReviewValue]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBriefReview]:
     review = decode_work_brief_review(data)
     if isinstance(review, work_brief_models.WorkBriefFailure):
         return review
@@ -656,8 +651,8 @@ def decode_canonical_completion_review_package(
 
 
 def validate_work_brief_review(
-    review: WorkBriefReviewValue,
-    brief: work_brief_models.ReadableWorkBrief,
+    review: work_brief_models.WorkBriefReview,
+    brief: WorkBriefValue,
     reviewer_task_id: str | None = None,
 ) -> work_brief_models.WorkBriefFailure | None:
     checkpoint = _review_checkpoint(brief)
@@ -674,24 +669,8 @@ def validate_work_brief_review(
             work_brief_models.WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT,
             "The brief reviewer must be a different task from the attempt owner.",
         )
-    if isinstance(brief, (work_brief_models.WorkBrief, work_brief_compatibility_models.WorkBriefV3)):
-        if not isinstance(review, work_brief_models.WorkBriefReview):
-            return work_brief_models.WorkBriefFailure(
-                work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
-                "Work brief v3 and later require a ready review bound to the exact accepted brief.",
-            )
-        accepted_brief_stale = (
-            review.accepted_brief_sha256 != hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
-        )
-    else:
-        if not isinstance(review, work_brief_compatibility_models.WorkBriefReviewV2):
-            return work_brief_models.WorkBriefFailure(
-                work_brief_models.WorkBriefErrorCode.REVIEW_STALE,
-                "Retained work brief v2 requires its exact retained ready-review format.",
-            )
-        accepted_brief_stale = False
     if (
-        accepted_brief_stale
+        review.accepted_brief_sha256 != hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
         or review.checkpoint_sha256 != hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
         or (
             review.reviewed_authority_set_sha256
@@ -712,12 +691,8 @@ def validate_work_brief_review(
     return None
 
 
-def ready_review_key_sha256(brief: work_brief_models.ReadableWorkBrief) -> str:
-    """Return the durable ready-review key without reinterpreting retained v2 evidence."""
-
-    if isinstance(brief, (work_brief_models.WorkBrief, work_brief_compatibility_models.WorkBriefV3)):
-        return hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
-    return hashlib.sha256(canonical_checkpoint_bytes(brief.checkpoint)).hexdigest()
+def ready_review_key_sha256(brief: WorkBriefValue) -> str:
+    return hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
 
 
 def _authorization_text(

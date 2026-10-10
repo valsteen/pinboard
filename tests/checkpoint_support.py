@@ -476,7 +476,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         candidate_form: Literal["working-tree", "current-head"] = "working-tree",
         accepted_base: str | None = None,
         committed_context: bool = False,
-        review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready",
+        review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner", "original"] = "ready",
     ) -> CheckpointFixture:
         state = complete_sqlite_state()
         now = datetime.now(UTC)
@@ -600,6 +600,12 @@ class CheckpointPackageSupport(unittest.TestCase):
                 review_bytes = canonical_work_brief_review_bytes(
                     replace_struct(review, reviewer_task_id=brief.owner_task_id)
                 )
+            elif review_condition == "original":
+                original_review = msgspec.to_builtins(review)
+                assert isinstance(original_review, dict)
+                original_review["schema"] = "pinboard-work-brief-review/v2"
+                del original_review["accepted_brief_sha256"]
+                review_bytes = msgspec.json.encode(original_review, order="sorted") + b"\n"
             published_review = write_revision(
                 roots,
                 NewArtifact(

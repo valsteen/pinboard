@@ -184,7 +184,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             )
         current_review = msgspec.json.decode(ready_review(current), type=work_brief_models.WorkBriefReview)
         legacy_checkpoint = legacy.checkpoint
-        review = work_brief_compatibility_models.WorkBriefReviewV2(
+        review = work_brief_compatibility_models.HistoricalWorkBriefReviewV2(
             "pinboard-work-brief-review/v2",
             current_review.attempt_id,
             current_review.checkpoint_id,
@@ -195,7 +195,30 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             current_review.verdict,
             current_review.coverage,
         )
-        self.assertIsNone(validate_work_brief_review(review, legacy))
+        original_review_bytes = msgspec.json.encode(review, order="sorted") + b"\n"
+        historical_reader = work_brief_compatibility_models.decode_canonical_historical_work_brief_review
+        self.assertEqual(review, expect_work_brief_success(historical_reader(original_review_bytes)))
+        expect_work_brief_failure(
+            decode_work_brief_review(original_review_bytes),
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
+        )
+        expect_work_brief_failure(
+            historical_reader(original_review_bytes.rstrip()), work_brief_models.WorkBriefErrorCode.REVIEW_NOT_CANONICAL
+        )
+        payload = msgspec.to_builtins(review)
+        assert isinstance(payload, dict)
+        coverage = payload["coverage"]
+        assert isinstance(coverage, tuple)
+        for invalid_bytes in (
+            original_review_bytes[:-2] + b',"unknown":true}\n',
+            msgspec.json.encode({**payload, "accepted_brief_sha256": "f" * 64}, order="sorted") + b"\n",
+            msgspec.json.encode({**payload, "coverage": coverage + coverage}, order="sorted") + b"\n",
+            b'{"schema":"pinboard-work-brief-review/v2"}\n',
+            b"not JSON",
+        ):
+            expect_work_brief_failure(
+                historical_reader(invalid_bytes), work_brief_models.WorkBriefErrorCode.REVIEW_INVALID
+            )
 
     def test_retained_v3_brief_remains_exactly_readable_reviewable_and_renderable(self) -> None:
         current = example_work_brief()

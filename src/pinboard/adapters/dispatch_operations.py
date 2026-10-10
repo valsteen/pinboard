@@ -1261,8 +1261,6 @@ def _validate_accepted_review(
             review = decode_canonical_work_brief_review(accepted_review)
             if isinstance(review, work_brief_models.WorkBriefFailure):
                 return review_failure(review)
-            if not isinstance(review, work_brief_models.WorkBriefReview):
-                return _stale_review_failure_from_legacy(brief)
             if (failure := validate_work_brief_review(review, brief)) is not None:
                 if failure.code == work_brief_models.WorkBriefErrorCode.REVIEW_STALE:
                     return _stale_review_failure(review, brief)
@@ -1270,21 +1268,6 @@ def _validate_accepted_review(
         case _ as unreachable:
             assert_never(unreachable)
     return None
-
-
-def _stale_review_failure_from_legacy(brief: work_brief_models.WorkBrief) -> DispatchFailure:
-    return DispatchFailure(
-        DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
-        "Current work briefs require a ready review bound to the exact accepted brief.",
-        _fresh_review_details(
-            (
-                FailureFact(
-                    "current_accepted_brief_sha256", hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
-                ),
-            ),
-            (FailureMismatch("review_schema", "pinboard-work-brief-review/v3", "pinboard-work-brief-review/v2"),),
-        ),
-    )
 
 
 def _render_dispatch_prompt(

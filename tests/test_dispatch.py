@@ -74,8 +74,6 @@ def supplied_review(content: bytes, review_id: ReviewId) -> ReviewedDispatch:
     review = decode_work_brief_review(content)
     if isinstance(review, work_brief_models.WorkBriefFailure):
         raise AssertionError(review.message)
-    if not isinstance(review, work_brief_models.WorkBriefReview):
-        raise AssertionError("Current dispatch fixtures require current ready-review evidence.")
     return ReviewedDispatch(review, review_id)
 
 
@@ -131,6 +129,35 @@ def prepare_dispatch_from_artifact(
 
 
 class DispatchTest(unittest.TestCase):
+    def test_native_dispatch_rejects_original_ready_review_before_prompt_publication(self) -> None:
+        project, roots, store, brief, action, environment = self.initialized()
+        payload = msgspec.to_builtins(msgspec.json.decode(ready_review(brief), type=work_brief_models.WorkBriefReview))
+        assert isinstance(payload, dict)
+        payload["schema"] = "pinboard-work-brief-review/v2"
+        del payload["accepted_brief_sha256"]
+        published = write_revision(
+            roots,
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                f"{brief.attempt_id}-brief-review-{sha256(canonical_work_brief_bytes(brief)).hexdigest()}",
+                1,
+                ".json",
+                msgspec.json.encode(payload, order="sorted") + b"\n",
+            ),
+        )
+        expect_success(store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW))
+        before = store.validated_snapshot()
+        rejected = self.native_dispatch(
+            project, roots, self.dispatch_choice(action(), environment, None, "unused", None)
+        )
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_INVALID", rejected["code"], rejected)
+        self.assertFalse(rejected["state_changed"])
+        self.assertEqual([], rejected["changed_surfaces"])
+        self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+        self.assertFalse(
+            any("-worker-prompt-" in path.name for path in (roots.work_root / "artifacts" / "evidence").iterdir())
+        )
+
     def test_dispatch_recheck_invariant_after_publication_keeps_traceback(self) -> None:
         project, roots, store, brief, action, environment = self.initialized()
         choice = self.dispatch_choice(action(), environment, ready_review(brief), "invariant-review", None)

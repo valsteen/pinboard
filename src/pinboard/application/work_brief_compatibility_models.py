@@ -1,4 +1,4 @@
-"""Exact retained brief v3 and historical-only original brief v2 facts."""
+"""Retained brief v3 and historical-only original brief v2 and ready-review facts."""
 
 from typing import Annotated, Literal, assert_never
 
@@ -147,8 +147,11 @@ class HistoricalWorkBriefV2(_RetainedWorkBriefBase, frozen=True):
     schema: Literal["pinboard-work-brief/v2"]
 
 
-class WorkBriefReviewV2(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Exact retained ready-review v2 evidence for retained brief v2 packages."""
+class HistoricalWorkBriefReviewV2(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Original nine-field facts, never current readiness or recovery authority.
+
+    Retain while supported historical package closure requires original reviews.
+    """
 
     schema: Literal["pinboard-work-brief-review/v2"]
     attempt_id: work_brief_models.KebabId
@@ -161,6 +164,23 @@ class WorkBriefReviewV2(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     coverage: Annotated[tuple[work_brief_models.ReviewCoverageResult, ...], msgspec.Meta(min_length=1)]
 
     def __post_init__(self) -> None:
-        coverage_keys = tuple((record.authority_id, record.family) for record in self.coverage)
-        if len(set(coverage_keys)) != len(coverage_keys):
-            raise ValueError("Brief review coverage must identify every authority family at most once.")
+        work_brief_models.validate_review_coverage(self.coverage)
+
+
+def decode_canonical_historical_work_brief_review(
+    data: bytes,
+) -> work_brief_models.WorkBriefResult[HistoricalWorkBriefReviewV2]:
+    """Read only exact original ready-review facts for historical package closure."""
+    try:
+        review = msgspec.json.decode(data, type=HistoricalWorkBriefReviewV2)
+    except (msgspec.DecodeError, ValueError) as error:
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,
+            f"Cannot decode historical work brief review facts: {error}",
+        )
+    if data != msgspec.json.encode(review, order="sorted") + b"\n":
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
+            "Historical work brief review bytes are not the canonical msgspec encoding.",
+        )
+    return review

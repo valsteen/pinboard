@@ -27,7 +27,7 @@ from tests.support import JsonObject
 
 class NativeCheckpointEffectsTest(CheckpointPackageSupport):
     def test_cross_boundary_unready_review_rejects_before_attempt_evidence_reads(self) -> None:
-        for condition in ("missing", "malformed", "stale", "wrong-owner"):
+        for condition in ("missing", "malformed", "stale", "wrong-owner", "original"):
             with self.subTest(condition=condition):
                 fixture = self.checkpoint_fixture(review_condition=condition)
                 action = self.project_action(fixture, "accept-checkpoint:work-a-1")

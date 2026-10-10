@@ -16,7 +16,6 @@ from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, RootError, RootErrorCode
 from pinboard.application import (
     candidate_snapshots,
-    checkpoint_compatibility_models,
     checkpoint_packages,
     ports,
     queries,
@@ -217,7 +216,7 @@ def _checkpoint_snapshot(
     work_root: Path,
     store: ports.WorkStore,
     selected: query_models.CheckpointSelection,
-) -> candidate_snapshots.CandidateSnapshot | query_models.IntegrationUnavailableReason | IntegrationEvidenceInvalid:
+) -> candidate_snapshots.CandidateSnapshot | IntegrationEvidenceInvalid:
     """Verify a checkpoint package and the candidate snapshot bytes it names."""
 
     package_reference = selected.package_reference
@@ -234,14 +233,7 @@ def _checkpoint_snapshot(
     )
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return IntegrationEvidenceInvalid(selected.attempt_id, package_reference, package.message)
-    match package:
-        case work_brief_models.CheckpointReviewPackageV3():
-            identity = package.candidate_snapshot
-        case checkpoint_compatibility_models.CheckpointReviewPackageV2():
-            # Retained packages name patch bytes, not a candidate snapshot with its compared-from revision.
-            return query_models.IntegrationUnavailableReason.CHECKPOINT_WITHOUT_CANDIDATE_SNAPSHOT
-        case _ as unreachable:
-            assert_never(unreachable)
+    identity = package.candidate_snapshot
     candidate_reference = store.read_artifact_reference(
         work_models.ArtifactKind.EVIDENCE, identity.key, identity.revision
     )
@@ -283,13 +275,8 @@ def _verified_snapshot(
 def _integration_source(
     work_root: Path,
     store: ports.WorkStore,
-    facts: query_models.IntegrationFacts,
     selected: query_models.IntegrationSourceSelection,
-) -> (
-    tuple[candidate_snapshots.CandidateSnapshot, query_models.IntegrationSource]
-    | query_models.IntegrationCandidateUnavailable
-    | IntegrationEvidenceInvalid
-):
+) -> tuple[candidate_snapshots.CandidateSnapshot, query_models.IntegrationSource] | IntegrationEvidenceInvalid:
     """Verify the selected candidate's accepted snapshot bytes and name the source they came from."""
 
     match selected:
@@ -309,10 +296,6 @@ def _integration_source(
             )
         case query_models.CheckpointSelection():
             snapshot = _checkpoint_snapshot(work_root, store, selected)
-            if isinstance(snapshot, query_models.IntegrationUnavailableReason):
-                return query_models.IntegrationCandidateUnavailable(
-                    facts.work_item_id, queries.presented_item_state(facts.state), selected.attempt_id, snapshot
-                )
             if isinstance(snapshot, IntegrationEvidenceInvalid):
                 return snapshot
             return snapshot, query_models.AcceptedCheckpointIntegrationSource(
@@ -366,7 +349,7 @@ def observe_item_integration(
     selected = queries.select_integration_source(facts)
     if isinstance(selected, query_models.IntegrationCandidateUnavailable | query_models.DamagedTransitionReceipt):
         return selected
-    verified = _integration_source(work_root, store, facts, selected)
+    verified = _integration_source(work_root, store, selected)
     if not isinstance(verified, tuple):
         return verified
     snapshot, source = verified

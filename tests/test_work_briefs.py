@@ -23,7 +23,7 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database, translate_database_error
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import checkpoint_compatibility_models, work_brief_compatibility_models, work_brief_models
+from pinboard.application import work_brief_compatibility_models, work_brief_models
 from pinboard.application.artifact_publication import validate_transition_work_brief
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.work_briefs import (
@@ -476,14 +476,11 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             work_brief_models.WorkBriefErrorCode.REVIEW_NOT_CANONICAL,
         )
 
-    def assert_current_and_retained_role_bindings(
+    def assert_current_role_bindings(
         self,
-        portable: checkpoint_compatibility_models.CheckpointReviewPackageV2,
+        portable: work_brief_models.CheckpointReviewPackageV3,
     ) -> None:
-        for schema, candidate in (
-            ("pinboard-checkpoint-review-package/v2", portable.candidate),
-            ("pinboard-checkpoint-review-package/v3", "working-tree-state-sha256:" + "d" * 64),
-        ):
+        for schema, candidate in (("pinboard-checkpoint-review-package/v3", "working-tree-state-sha256:" + "d" * 64),):
             valid = msgspec.json.decode(canonical_checkpoint_review_package_bytes(portable))
             assert isinstance(valid, dict)
             valid["schema"] = schema
@@ -534,16 +531,16 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         brief_review = identity("brief-review", "evidence", "brief-review")
         candidate_snapshot = identity("candidate", "evidence", "candidate")
 
-        def make_compatibility_package(
+        def make_package(
             selected_brief: work_brief_models.PortableArtifactIdentity,
             selected_result: work_brief_models.PortableArtifactIdentity,
             selected_implementation_review: work_brief_models.PortableArtifactIdentity,
             review_basis: work_brief_models.ReviewBasis,
-        ) -> checkpoint_compatibility_models.CheckpointReviewPackageV2:
-            return checkpoint_compatibility_models.CheckpointReviewPackageV2(
+        ) -> work_brief_models.CheckpointReviewPackageV3:
+            return work_brief_models.CheckpointReviewPackageV3(
                 value.attempt_id,
                 value.item_id,
-                f"working-tree-sha256:{candidate_snapshot.content_sha256}",
+                "working-tree-state-sha256:" + "d" * 64,
                 "Accepted.",
                 value.accepted_scope,
                 work_brief_models.CheckpointIdentity(checkpoint.checkpoint_id, checkpoint_sha256),
@@ -555,10 +552,8 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 review_basis,
             )
 
-        local = make_compatibility_package(
-            accepted_brief, result, implementation_review, work_brief_models.LocalReviewBasis()
-        )
-        cross = make_compatibility_package(
+        local = make_package(accepted_brief, result, implementation_review, work_brief_models.LocalReviewBasis())
+        cross = make_package(
             accepted_brief,
             result,
             implementation_review,
@@ -582,10 +577,10 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     work_brief_models.WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
                 )
 
-        portable = checkpoint_compatibility_models.CheckpointReviewPackageV2(
+        portable = work_brief_models.CheckpointReviewPackageV3(
             value.attempt_id,
             value.item_id,
-            f"working-tree-sha256:{candidate_snapshot.content_sha256}",
+            "working-tree-state-sha256:" + "d" * 64,
             "Accepted.",
             value.accepted_scope,
             work_brief_models.CheckpointIdentity(checkpoint.checkpoint_id, checkpoint_sha256),
@@ -606,7 +601,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 portable_package,
                 expect_work_brief_success(decode_canonical_checkpoint_review_package(encoded_portable)),
             )
-        self.assert_current_and_retained_role_bindings(portable)
+        self.assert_current_role_bindings(portable)
         payload = msgspec.json.decode(canonical_checkpoint_review_package_bytes(cross))
         if not isinstance(payload, dict):
             self.fail("checkpoint review package JSON must be an object")

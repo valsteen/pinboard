@@ -440,99 +440,118 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
         self.assertNotEqual(0, self.run_cli(*fixture.common, "views", "rebuild")[0])
 
     def test_retired_checkpoint_uses_captured_facts_and_rejects_broken_bindings(self) -> None:
-        fixture = self.completed_fixture()
-        state = fixture.store.validated_snapshot()
-        facts = history_archives.select_archive_facts(
-            state.lifecycle.attempts[0],
-            state.artifact_references,
-            state.transition_receipts,
-            state.lifecycle.definition_revisions,
-        )
-        artifacts = ArtifactRepository(resolve_durable_roots(fixture.project, fixture.work))
-        source_bytes = {value.artifact_ref_id: artifacts.read(value) for value in facts.artifact_references}
-        archive = history_archives.derive_archive(facts, source_bytes, ())
-        assert isinstance(archive, history_archives.HistoryArchive)
-        checkpoint = archive.checkpoints[0]
-        package_reference = next(
-            value
-            for value in facts.artifact_references
-            if int(value.artifact_ref_id) == checkpoint.package_artifact_ref_id
-        )
-        candidate_reference = next(value for value in facts.artifact_references if value.key.endswith("-candidate"))
-        patch_bytes = b"historical patch bytes"
-        patch_sha256 = hashlib.sha256(patch_bytes).hexdigest()
-        candidate = f"working-tree-sha256:{patch_sha256}"
-        package = json.loads(source_bytes[package_reference.artifact_ref_id])
-        package.update(schema="pinboard-checkpoint-review-package/v1", candidate=candidate)
-        package.pop("candidate_snapshot")
-        package_bytes = msgspec.json.encode(package, order="sorted") + b"\n"
-        references = tuple(
-            replace(value, content_sha256=hashlib.sha256(package_bytes).hexdigest(), size_bytes=len(package_bytes))
-            if value == package_reference
-            else replace(value, content_sha256=patch_sha256, size_bytes=len(patch_bytes))
-            if value == candidate_reference
-            else value
-            for value in facts.artifact_references
-        )
-        source_bytes[package_reference.artifact_ref_id] = package_bytes
-        source_bytes[candidate_reference.artifact_ref_id] = patch_bytes
-        receipts = []
-        for receipt in facts.transition_receipts:
-            if int(receipt.history_id) == checkpoint.history_id:
-                outcome = json.loads(bytes(receipt.outcome_payload))
-                outcome["candidate"] = candidate
-                receipt = replace(
-                    receipt, outcome_payload=work_models.CanonicalJson(msgspec.json.encode(outcome, order="sorted"))
-                )
-            receipts.append(receipt)
-        facts = replace(facts, artifact_references=references, transition_receipts=tuple(receipts))
-        captured = replace_struct(
-            checkpoint, candidate=history_archives.PatchCandidate(candidate, int(candidate_reference.artifact_ref_id))
-        )
-        derived = history_archives.derive_archive(facts, source_bytes, (captured,))
-        assert isinstance(derived, history_archives.HistoryArchive)
-        self.assertEqual(captured, derived.checkpoints[0])
-        for captured_checkpoints in (
-            (),
-            (replace_struct(captured, package_artifact_ref_id=999999),),
-            (replace_struct(captured, checkpoint_id="foreign"),),
-            (replace_struct(captured, accepted_scope_digest="0" * 64),),
-            (replace_struct(captured, candidate=history_archives.UnavailableCandidate(candidate)),),
-            (replace_struct(captured, candidate=replace_struct(captured.candidate, artifact_ref_id=999999)),),
-            (checkpoint,),
+        for schema, label in (
+            ("pinboard-checkpoint-review-package/v1", "working-tree"),
+            ("pinboard-checkpoint-review-package/v2", "working-tree"),
+            ("pinboard-checkpoint-review-package/v2", "commit"),
         ):
-            with self.subTest(captured=captured_checkpoints):
+            with self.subTest(schema=schema, label=label):
+                fixture = self.completed_fixture()
+                state = fixture.store.validated_snapshot()
+                facts = history_archives.select_archive_facts(
+                    state.lifecycle.attempts[0],
+                    state.artifact_references,
+                    state.transition_receipts,
+                    state.lifecycle.definition_revisions,
+                )
+                artifacts = ArtifactRepository(resolve_durable_roots(fixture.project, fixture.work))
+                source_bytes = {value.artifact_ref_id: artifacts.read(value) for value in facts.artifact_references}
+                archive = history_archives.derive_archive(facts, source_bytes, ())
+                assert isinstance(archive, history_archives.HistoryArchive)
+                checkpoint = archive.checkpoints[0]
+                package_reference = next(
+                    value
+                    for value in facts.artifact_references
+                    if int(value.artifact_ref_id) == checkpoint.package_artifact_ref_id
+                )
+                candidate_reference = next(
+                    value for value in facts.artifact_references if value.key.endswith("-candidate")
+                )
+                patch_bytes = b"historical patch bytes"
+                patch_sha256 = hashlib.sha256(patch_bytes).hexdigest()
+                candidate = f"working-tree-sha256:{patch_sha256}" if label == "working-tree" else "a" * 40
+                package = json.loads(source_bytes[package_reference.artifact_ref_id])
+                package.update(schema=schema, candidate=candidate)
+                if schema == "pinboard-checkpoint-review-package/v1":
+                    package.pop("candidate_snapshot")
+                package_bytes = msgspec.json.encode(package, order="sorted") + b"\n"
+                references = tuple(
+                    replace(
+                        value, content_sha256=hashlib.sha256(package_bytes).hexdigest(), size_bytes=len(package_bytes)
+                    )
+                    if value == package_reference
+                    else replace(value, content_sha256=patch_sha256, size_bytes=len(patch_bytes))
+                    if value == candidate_reference
+                    else value
+                    for value in facts.artifact_references
+                )
+                source_bytes[package_reference.artifact_ref_id] = package_bytes
+                source_bytes[candidate_reference.artifact_ref_id] = patch_bytes
+                receipts = []
+                for receipt in facts.transition_receipts:
+                    if int(receipt.history_id) == checkpoint.history_id:
+                        outcome = json.loads(bytes(receipt.outcome_payload))
+                        outcome["candidate"] = candidate
+                        receipt = replace(
+                            receipt,
+                            outcome_payload=work_models.CanonicalJson(msgspec.json.encode(outcome, order="sorted")),
+                        )
+                    receipts.append(receipt)
+                facts = replace(facts, artifact_references=references, transition_receipts=tuple(receipts))
+                captured = replace_struct(
+                    checkpoint,
+                    candidate=history_archives.PatchCandidate(candidate, int(candidate_reference.artifact_ref_id)),
+                )
+                derived = history_archives.derive_archive(facts, source_bytes, (captured,))
+                assert isinstance(derived, history_archives.HistoryArchive)
+                self.assertEqual(captured, derived.checkpoints[0])
+                for captured_checkpoints in (
+                    (),
+                    (replace_struct(captured, package_artifact_ref_id=999999),),
+                    (replace_struct(captured, checkpoint_id="foreign"),),
+                    (replace_struct(captured, accepted_scope_digest="0" * 64),),
+                    (replace_struct(captured, candidate=history_archives.UnavailableCandidate(candidate)),),
+                    (replace_struct(captured, candidate=replace_struct(captured.candidate, artifact_ref_id=999999)),),
+                    (checkpoint,),
+                ):
+                    with self.subTest(captured=captured_checkpoints):
+                        self.assertIsInstance(
+                            history_archives.derive_archive(facts, source_bytes, captured_checkpoints),
+                            work_brief_models.WorkBriefFailure,
+                        )
+                missing_candidate_facts = replace(
+                    facts,
+                    artifact_references=tuple(
+                        value
+                        for value in references
+                        if value
+                        != next(
+                            value
+                            for value in references
+                            if value.artifact_ref_id == candidate_reference.artifact_ref_id
+                        )
+                    ),
+                )
+                unavailable = replace_struct(captured, candidate=history_archives.UnavailableCandidate(candidate))
                 self.assertIsInstance(
-                    history_archives.derive_archive(facts, source_bytes, captured_checkpoints),
+                    history_archives.derive_archive(missing_candidate_facts, source_bytes, (unavailable,)),
+                    history_archives.HistoryArchive
+                    if schema == "pinboard-checkpoint-review-package/v1"
+                    else work_brief_models.WorkBriefFailure,
+                )
+                self.assertIsInstance(
+                    history_archives.derive_archive(missing_candidate_facts, source_bytes, (captured,)),
                     work_brief_models.WorkBriefFailure,
                 )
-        missing_candidate_facts = replace(
-            facts,
-            artifact_references=tuple(
-                value
-                for value in references
-                if value
-                != next(value for value in references if value.artifact_ref_id == candidate_reference.artifact_ref_id)
-            ),
-        )
-        unavailable = replace_struct(captured, candidate=history_archives.UnavailableCandidate(candidate))
-        self.assertIsInstance(
-            history_archives.derive_archive(missing_candidate_facts, source_bytes, (unavailable,)),
-            history_archives.HistoryArchive,
-        )
-        self.assertIsInstance(
-            history_archives.derive_archive(missing_candidate_facts, source_bytes, (captured,)),
-            work_brief_models.WorkBriefFailure,
-        )
-        invalid_receipts = tuple(
-            replace(value, outcome_payload=work_models.CanonicalJson(b"{}"))
-            if int(value.history_id) == captured.history_id
-            else value
-            for value in receipts
-        )
-        self.assertIsInstance(
-            history_archives.derive_archive(
-                replace(facts, transition_receipts=invalid_receipts), source_bytes, (captured,)
-            ),
-            work_brief_models.WorkBriefFailure,
-        )
+                invalid_receipts = tuple(
+                    replace(value, outcome_payload=work_models.CanonicalJson(b"{}"))
+                    if int(value.history_id) == captured.history_id
+                    else value
+                    for value in receipts
+                )
+                self.assertIsInstance(
+                    history_archives.derive_archive(
+                        replace(facts, transition_receipts=invalid_receipts), source_bytes, (captured,)
+                    ),
+                    work_brief_models.WorkBriefFailure,
+                )

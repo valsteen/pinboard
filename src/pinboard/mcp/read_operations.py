@@ -181,8 +181,8 @@ def _integration_unavailable_message(unavailable: query_models.IntegrationCandid
             return f"{item} closed without a completion, so no reviewed candidate was accepted."
         case query_models.IntegrationUnavailableReason.CHECKPOINT_WITHOUT_CANDIDATE_SNAPSHOT:
             return (
-                f"{item}: the latest checkpoint acceptance of {attempt} has no candidate snapshot; its retained "
-                "package names patch bytes or nothing."
+                f"{item}: the latest checkpoint acceptance of {attempt} has no accepted package reference "
+                "for its complete candidate snapshot."
             )
         case query_models.IntegrationUnavailableReason.PRE_SNAPSHOT_CANDIDATE:
             return f"{item}: the reviewed candidate of {attempt} predates accepted candidate snapshots."

@@ -292,29 +292,6 @@ class ProjectExportCrossBoundaryReviewBasis(
 type ProjectExportReviewBasis = ProjectExportLocalReviewBasis | ProjectExportCrossBoundaryReviewBasis
 
 
-class CompatibilityProjectExportCheckpointPackageV2(
-    msgspec.Struct,
-    tag="pinboard-checkpoint-review-package/v2",
-    tag_field="schema",
-    frozen=True,
-    forbid_unknown_fields=True,
-):
-    history_id: int
-    package_artifact_ref_id: int
-    attempt_id: str
-    item_id: str
-    candidate: str
-    acceptance_evidence: str
-    accepted_scope: ProjectExportAcceptedScope
-    checkpoint: ProjectExportCheckpointIdentity
-    candidate_snapshot: ProjectExportPortableArtifactIdentity
-    accepted_brief: ProjectExportPortableArtifactIdentity
-    result: ProjectExportPortableArtifactIdentity
-    implementation_review: ProjectExportPortableArtifactIdentity
-    verdict: Literal["ready"]
-    review_basis: ProjectExportReviewBasis
-
-
 class ProjectExportCheckpointPackageV3(
     msgspec.Struct,
     tag="pinboard-checkpoint-review-package/v3",
@@ -336,11 +313,6 @@ class ProjectExportCheckpointPackageV3(
     implementation_review: ProjectExportPortableArtifactIdentity
     verdict: Literal["ready"]
     review_basis: ProjectExportReviewBasis
-
-
-type ProjectExportCheckpointPackageValue = (
-    CompatibilityProjectExportCheckpointPackageV2 | ProjectExportCheckpointPackageV3
-)
 
 
 class ProjectExportAcceptedBriefCompletionIdentity(
@@ -429,7 +401,7 @@ class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_artifact_links: tuple[ProjectExportItemArtifactLink, ...]
     artifact_references: tuple[ProjectExportArtifactReference, ...]
     artifact_contents: tuple[ProjectExportArtifactContent, ...]
-    checkpoint_packages: tuple[ProjectExportCheckpointPackageValue, ...]
+    checkpoint_packages: tuple[ProjectExportCheckpointPackageV3, ...]
     completion_packages: tuple[ProjectExportCompletionReviewPackage, ...]
 
 
@@ -592,7 +564,7 @@ def project_export_from_state(
     state: ProjectExportState,
     artifact_references: tuple[ProjectExportArtifactReference, ...],
     artifact_contents: tuple[ProjectExportArtifactContent, ...],
-    checkpoint_packages: tuple[ProjectExportCheckpointPackageValue, ...],
+    checkpoint_packages: tuple[ProjectExportCheckpointPackageV3, ...],
     completion_packages: tuple[ProjectExportCompletionReviewPackage, ...],
 ) -> ProjectExport:
     """Project one already-loaded export selection without outer effects."""

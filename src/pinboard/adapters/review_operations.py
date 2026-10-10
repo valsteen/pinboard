@@ -57,7 +57,7 @@ class PriorCheckpointPackage(msgspec.Struct, tag="present", tag_field="kind", fr
     artifact_ref_id: int
     path: str
     sha256: str
-    package: work_briefs.CheckpointPackage
+    package: work_brief_models.CheckpointReviewPackageV3
     candidate_artifact_ref_id: int
     candidate_path: str
     candidate_sha256: str
@@ -498,14 +498,9 @@ def commissioned_review_failure(
 
 
 def _candidate_reconstruction(
-    package: work_briefs.CheckpointPackage,
+    package: work_brief_models.CheckpointReviewPackageV3,
     candidate_bytes: bytes,
 ) -> DecisionResult[str]:
-    if not isinstance(package, work_brief_models.CheckpointReviewPackageV3):
-        return (
-            "The retained candidate is a raw binary patch. Without independent evidence of its actual HEAD, "
-            "applying it to the brief base is only historical patch assurance, not complete original-state reconstruction. "
-        )
     snapshot = candidate_snapshots.decode_candidate_snapshot(candidate_bytes)
     if (snapshot.attempt_id, snapshot.item_id, snapshot.candidate) != (
         package.attempt_id,

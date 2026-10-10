@@ -8,7 +8,6 @@ artifacts, and only classifies replaceable view drift; it never repairs state.
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import assert_never
 
 import msgspec
 
@@ -23,7 +22,6 @@ from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
 from pinboard.application import (
     action_models,
     candidate_snapshots,
-    checkpoint_compatibility_models,
     checkpoint_packages,
     history_archives,
     ports,
@@ -31,7 +29,6 @@ from pinboard.application import (
     queries,
     stored_state,
     work_brief_models,
-    work_briefs,
 )
 from pinboard.application.work_briefs import (
     build_selected_attempt_brief_views,
@@ -128,41 +125,16 @@ def _package_provenance_failure(message: str) -> work_brief_models.WorkBriefFail
     return work_brief_models.WorkBriefFailure(work_brief_models.WorkBriefErrorCode.PACKAGE_PROVENANCE_INVALID, message)
 
 
-def validate_selected_checkpoint_review_package(
-    receipt: stored_state.StoredTransitionReceipt,
-    package_reference: stored_state.ArtifactReference,
-    package_bytes: bytes,
-    *,
-    attempt_id: str,
-    item_id: str,
-) -> work_brief_models.WorkBriefResult[work_briefs.CheckpointPackage]:
-    return checkpoint_packages.validate_selected_checkpoint_review_package(
-        receipt,
-        package_reference,
-        package_bytes,
-        attempt_id=attempt_id,
-        item_id=item_id,
-    )
-
-
-def validate_checkpoint_package_closure(
-    package: work_briefs.CheckpointPackage,
-    artifact_references: tuple[stored_state.ArtifactReference, ...],
-    artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefFailure | None:
-    return checkpoint_packages.validate_checkpoint_package_closure(package, artifact_references, artifact_bytes)
-
-
 def _validate_one_checkpoint_package(
     receipt: stored_state.StoredTransitionReceipt,
     package_reference: stored_state.ArtifactReference,
-    package: work_briefs.CheckpointPackage,
+    package: work_brief_models.CheckpointReviewPackageV3,
     attempts: Mapping[str, stored_state.StoredAttempt],
     item_ids: frozenset[str],
     definition_digests: Mapping[tuple[str, int], str],
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[project_export.ProjectExportCheckpointPackageValue]:
+) -> work_brief_models.WorkBriefResult[project_export.ProjectExportCheckpointPackageV3]:
     selected = checkpoint_packages.validate_selected_checkpoint_review_package(
         receipt,
         package_reference,
@@ -195,15 +167,7 @@ def _validate_one_checkpoint_package(
         "package_artifact_ref_id": int(receipt.artifact_ref_id),
         **msgspec.to_builtins(package),
     }
-    match package:
-        case work_brief_models.CheckpointReviewPackageV3():
-            return msgspec.convert(packaged, type=project_export.ProjectExportCheckpointPackageV3, strict=True)
-        case checkpoint_compatibility_models.CheckpointReviewPackageV2():
-            return msgspec.convert(
-                packaged, type=project_export.CompatibilityProjectExportCheckpointPackageV2, strict=True
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
+    return msgspec.convert(packaged, type=project_export.ProjectExportCheckpointPackageV3, strict=True)
 
 
 def validate_checkpoint_review_packages(
@@ -212,7 +176,7 @@ def validate_checkpoint_review_packages(
     transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
     archives: Mapping[AttemptId, history_archives.HistoryArchive],
-) -> work_brief_models.WorkBriefResult[tuple[project_export.ProjectExportCheckpointPackageValue, ...]]:
+) -> work_brief_models.WorkBriefResult[tuple[project_export.ProjectExportCheckpointPackageV3, ...]]:
     """Validate historical package provenance from one loaded state and verified bytes."""
 
     references_by_id = {value.artifact_ref_id: value for value in artifact_references}
@@ -223,7 +187,7 @@ def validate_checkpoint_review_packages(
         (str(value.item_id), value.revision): value.digest for value in lifecycle.definition_revisions
     }
     linked_package_ids: set[ArtifactRefId] = set()
-    packages: list[project_export.ProjectExportCheckpointPackageValue] = []
+    packages: list[project_export.ProjectExportCheckpointPackageV3] = []
     for receipt in transition_receipts:
         if receipt.outcome_schema != "checkpoint-acceptance/v2":
             continue
@@ -375,7 +339,7 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
     artifact_references: tuple[stored_state.ArtifactReference, ...],
     transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-    checkpoint_packages: tuple[project_export.ProjectExportCheckpointPackageValue, ...],
+    checkpoint_packages: tuple[project_export.ProjectExportCheckpointPackageV3, ...],
     archives: Mapping[AttemptId, history_archives.HistoryArchive],
 ) -> work_brief_models.WorkBriefResult[tuple[project_export.ProjectExportCompletionReviewPackage, ...]]:
     references_by_id = {value.artifact_ref_id: value for value in artifact_references}

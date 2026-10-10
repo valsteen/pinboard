@@ -15,7 +15,6 @@ import msgspec
 
 from pinboard.application import (
     candidate_snapshots,
-    checkpoint_compatibility_models,
     stored_state,
     work_brief_models,
     work_briefs,
@@ -162,34 +161,32 @@ def _digest(value: stored_state.StoredAttempt | stored_state.StoredTransitionRec
 
 
 def _candidate(
-    package: work_briefs.CheckpointPackage,
+    package: work_brief_models.CheckpointReviewPackageV3,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> ArchiveCandidate:
-    match package:
-        case work_brief_models.CheckpointReviewPackageV3():
-            identity = package.candidate_snapshot
-            reference = references[(identity.kind, identity.key, identity.revision)]
-            snapshot = candidate_snapshots.decode_candidate_snapshot(artifact_bytes[reference.artifact_ref_id])
-            return CompleteCandidate(
-                package.candidate,
-                int(reference.artifact_ref_id),
-                snapshot.branch,
-                snapshot.preimage_revision,
-                snapshot.accepted_base_revision,
-                hashlib.sha256(snapshot.diff).hexdigest(),
-            )
-        case checkpoint_compatibility_models.CheckpointReviewPackageV2():
-            identity = package.candidate_snapshot
-            reference = references[(identity.kind, identity.key, identity.revision)]
-            return PatchCandidate(package.candidate, int(reference.artifact_ref_id))
-        case _ as unreachable:
-            assert_never(unreachable)
+) -> CompleteCandidate:
+    identity = package.candidate_snapshot
+    reference = references[(identity.kind, identity.key, identity.revision)]
+    snapshot = candidate_snapshots.decode_candidate_snapshot(artifact_bytes[reference.artifact_ref_id])
+    return CompleteCandidate(
+        package.candidate,
+        int(reference.artifact_ref_id),
+        snapshot.branch,
+        snapshot.preimage_revision,
+        snapshot.accepted_base_revision,
+        hashlib.sha256(snapshot.diff).hexdigest(),
+    )
 
 
 def retired_checkpoint_package(data: bytes) -> bool:
     # Accepted canonical source bytes retain their format tag without decoding retired fields.
-    return b'"schema":"pinboard-checkpoint-review-package/v1"' in data
+    return any(
+        tag in data
+        for tag in (
+            b'"schema":"pinboard-checkpoint-review-package/v1"',
+            b'"schema":"pinboard-checkpoint-review-package/v2"',
+        )
+    )
 
 
 def _retired_checkpoint(
@@ -237,13 +234,22 @@ def _retired_checkpoint(
     )
     match checkpoint.candidate:
         case UnavailableCandidate():
-            if candidate_reference is not None:
+            if (
+                candidate_reference is not None
+                or b'"schema":"pinboard-checkpoint-review-package/v2"' in artifact_bytes[reference.artifact_ref_id]
+            ):
                 return _failure("Retired checkpoint cannot discard accepted patch evidence.")
         case PatchCandidate(artifact_ref_id=artifact_ref_id, candidate=candidate):
             if (
                 candidate_reference is None
                 or int(candidate_reference.artifact_ref_id) != artifact_ref_id
-                or candidate != f"working-tree-sha256:{candidate_reference.content_sha256}"
+                or not (
+                    candidate == f"working-tree-sha256:{candidate_reference.content_sha256}"
+                    or (
+                        b'"schema":"pinboard-checkpoint-review-package/v2"' in artifact_bytes[reference.artifact_ref_id]
+                        and work_brief_models.GIT_COMMIT_REVISION.fullmatch(candidate) is not None
+                    )
+                )
                 or candidate_reference.artifact_ref_id not in artifact_bytes
             ):
                 return _failure("Retired checkpoint patch assurance differs from its original accepted bytes.")

@@ -507,20 +507,40 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
             self.rejection(self.integration(returned, "main"), "INTEGRATION_CANDIDATE_UNAVAILABLE")["reason"],
         )
 
-    def test_retained_patch_checkpoint_package_is_unavailable(self) -> None:
+    def test_retired_v2_package_rejects_before_git_comparison(self) -> None:
         fixture = self.accepted_package_fixture(local=True, candidate_form="current-head")
         git(fixture.project, "branch", "main", fixture.brief.base_revision)
         self.retain_v2_checkpoint(fixture)
-        retained = self.integration(fixture, "main")
+        before = fixture.store.validated_snapshot()
+        with patch.object(
+            root, "observe_reviewed_diff_at_target", side_effect=AssertionError("Git comparison must not run")
+        ):
+            retained = self.integration(fixture, "main")
+        self.rejection(retained, "INTEGRATION_CANDIDATE_EVIDENCE_INVALID")
+        self.assertEqual(("unchanged", "do-not-retry"), (retained["effect"], retained["retry"]))
+        self.assertEqual([], retained["changed_surfaces"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def test_current_checkpoint_missing_package_keeps_unavailable_reason_before_git(self) -> None:
+        fixture = self.accepted_package_fixture(local=True, candidate_form="current-head")
+        git(fixture.project, "branch", "main", fixture.brief.base_revision)
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            connection.execute(
+                "UPDATE transition_history SET artifact_ref_id = NULL, artifact_kind = NULL WHERE outcome_schema = 'checkpoint-acceptance/v2'"
+            )
+        before = fixture.store.validated_snapshot()
+        with patch.object(
+            root, "observe_reviewed_diff_at_target", side_effect=AssertionError("Git comparison must not run")
+        ):
+            unavailable = self.integration(fixture, "main")
         self.assertEqual(
-            {
-                "item_id": "work-a",
-                "item_state": "paused",
-                "attempt_id": "work-a-1",
-                "reason": "checkpoint-without-candidate-snapshot",
-            },
-            self.rejection(retained, "INTEGRATION_CANDIDATE_UNAVAILABLE"),
+            "checkpoint-without-candidate-snapshot",
+            self.rejection(unavailable, "INTEGRATION_CANDIDATE_UNAVAILABLE")["reason"],
         )
+        self.assertIn("no accepted package reference", str(unavailable["message"]))
+        self.assertEqual(("unchanged", "correct-input"), (unavailable["effect"], unavailable["retry"]))
+        self.assertEqual([], unavailable["changed_surfaces"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_target_and_request_rejections_are_typed(self) -> None:
         fixture = self.checkpoint_fixture()

@@ -7,7 +7,6 @@ from typing import assert_never
 import msgspec
 
 from pinboard.application import (
-    checkpoint_compatibility_models,
     query_models,
     stored_state,
     work_brief_compatibility_models,
@@ -40,10 +39,6 @@ type WorkBriefValue = (
     | work_brief_compatibility_models.WorkBriefV2
 )
 type WorkBriefReviewValue = work_brief_models.WorkBriefReview | work_brief_compatibility_models.WorkBriefReviewV2
-
-type CheckpointPackage = (
-    checkpoint_compatibility_models.CheckpointReviewPackageV2 | work_brief_models.CheckpointReviewPackageV3
-)
 
 
 def publish_work_brief(
@@ -582,13 +577,11 @@ def validate_work_brief_review_needs_correction(
     return None
 
 
-def decode_checkpoint_review_package(data: bytes) -> work_brief_models.WorkBriefResult[CheckpointPackage]:
+def decode_checkpoint_review_package(
+    data: bytes,
+) -> work_brief_models.WorkBriefResult[work_brief_models.CheckpointReviewPackageV3]:
     try:
-        return msgspec.json.decode(
-            data,
-            type=checkpoint_compatibility_models.CheckpointReviewPackageV2
-            | work_brief_models.CheckpointReviewPackageV3,
-        )
+        return msgspec.json.decode(data, type=work_brief_models.CheckpointReviewPackageV3)
     except msgspec.DecodeError as error:
         return work_brief_models.WorkBriefFailure(
             work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
@@ -596,13 +589,13 @@ def decode_checkpoint_review_package(data: bytes) -> work_brief_models.WorkBrief
         )
 
 
-def canonical_checkpoint_review_package_bytes(package: CheckpointPackage) -> bytes:
+def canonical_checkpoint_review_package_bytes(package: work_brief_models.CheckpointReviewPackageV3) -> bytes:
     return _canonical_bytes(package) + b"\n"
 
 
 def decode_canonical_checkpoint_review_package(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[CheckpointPackage]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.CheckpointReviewPackageV3]:
     package = decode_checkpoint_review_package(data)
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return package

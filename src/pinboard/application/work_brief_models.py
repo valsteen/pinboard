@@ -857,45 +857,6 @@ class CrossBoundaryReviewBasis(
 type ReviewBasis = LocalReviewBasis | CrossBoundaryReviewBasis
 
 
-def validate_checkpoint_review_basis(
-    review_basis: ReviewBasis,
-    checkpoint_sha256: Sha256,
-    identities: tuple[PortableArtifactIdentity, ...],
-) -> None:
-    match review_basis:
-        case LocalReviewBasis():
-            pass
-        case CrossBoundaryReviewBasis(brief_review=brief_review, checkpoint_sha256=reviewed_checkpoint_sha256):
-            if (brief_review.role, brief_review.kind) != ("brief-review", "evidence"):
-                raise ValueError("Cross-boundary checkpoint packages require one brief-review Evidence identity.")
-            if reviewed_checkpoint_sha256 != checkpoint_sha256:
-                raise ValueError("Cross-boundary review basis must bind the package checkpoint digest.")
-            identities = (*identities, brief_review)
-        case _ as unreachable:
-            assert_never(unreachable)
-    portable_keys = tuple((value.kind, value.key, value.revision) for value in identities)
-    if len(portable_keys) != len(set(portable_keys)):
-        raise ValueError("Checkpoint package portable artifact identities must be unique.")
-
-
-def validate_checkpoint_artifact_roles(
-    candidate_snapshot: PortableArtifactIdentity,
-    accepted_brief: PortableArtifactIdentity,
-    result: PortableArtifactIdentity,
-    implementation_review: PortableArtifactIdentity,
-) -> tuple[PortableArtifactIdentity, PortableArtifactIdentity, PortableArtifactIdentity, PortableArtifactIdentity]:
-    identities = (candidate_snapshot, accepted_brief, result, implementation_review)
-    expected = (
-        ("candidate", "evidence"),
-        ("accepted-brief", "brief"),
-        ("result", "result"),
-        ("implementation-review", "evidence"),
-    )
-    if tuple((value.role, value.kind) for value in identities) != expected:
-        raise ValueError("Checkpoint package artifact roles and kinds do not match their bindings.")
-    return identities
-
-
 class CheckpointReviewPackageV3(
     msgspec.Struct,
     tag="pinboard-checkpoint-review-package/v3",
@@ -917,18 +878,34 @@ class CheckpointReviewPackageV3(
     review_basis: ReviewBasis
 
     def __post_init__(self) -> None:
-        identities = validate_checkpoint_artifact_roles(
-            self.candidate_snapshot,
-            self.accepted_brief,
-            self.result,
-            self.implementation_review,
+        identities = (self.candidate_snapshot, self.accepted_brief, self.result, self.implementation_review)
+        expected = (
+            ("candidate", "evidence"),
+            ("accepted-brief", "brief"),
+            ("result", "result"),
+            ("implementation-review", "evidence"),
         )
+        if tuple((value.role, value.kind) for value in identities) != expected:
+            raise ValueError("Checkpoint package artifact roles and kinds do not match their bindings.")
         if (
             re.fullmatch(r"working-tree-state-sha256:[0-9a-f]{64}", self.candidate) is None
             and GIT_COMMIT_REVISION.fullmatch(self.candidate) is None
         ):
             raise ValueError("Checkpoint candidate must be a complete working-tree state or full Git commit revision.")
-        validate_checkpoint_review_basis(self.review_basis, self.checkpoint.sha256, identities)
+        match self.review_basis:
+            case LocalReviewBasis():
+                pass
+            case CrossBoundaryReviewBasis(brief_review=brief_review, checkpoint_sha256=checkpoint_sha256):
+                if (brief_review.role, brief_review.kind) != ("brief-review", "evidence"):
+                    raise ValueError("Cross-boundary checkpoint packages require one brief-review Evidence identity.")
+                if checkpoint_sha256 != self.checkpoint.sha256:
+                    raise ValueError("Cross-boundary review basis must bind the package checkpoint digest.")
+                identities = (*identities, brief_review)
+            case _ as unreachable:
+                assert_never(unreachable)
+        portable_keys = tuple((value.kind, value.key, value.revision) for value in identities)
+        if len(portable_keys) != len(set(portable_keys)):
+            raise ValueError("Checkpoint package portable artifact identities must be unique.")
 
 
 class AcceptedBriefCompletionIdentity(

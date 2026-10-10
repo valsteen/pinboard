@@ -21,7 +21,6 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     candidate_snapshots,
-    checkpoint_compatibility_models,
     query_models,
     stored_state,
     work_brief_models,
@@ -705,7 +704,7 @@ class CheckpointPackageSupport(unittest.TestCase):
             )
         return replace(fixture, brief=terminal)
 
-    def package(self, fixture: AcceptedPackageFixture) -> work_briefs.CheckpointPackage:
+    def package(self, fixture: AcceptedPackageFixture) -> work_brief_models.CheckpointReviewPackageV3:
         package = decode_canonical_checkpoint_review_package(
             (fixture.work / fixture.package_reference.selector).read_bytes()
         )
@@ -854,21 +853,23 @@ class CheckpointPackageSupport(unittest.TestCase):
         checkpoint_identity = work_brief_models.CheckpointIdentity(
             checkpoint.checkpoint_id, hashlib.sha256(msgspec.json.encode(checkpoint, order="sorted")).hexdigest()
         )
-        legacy = checkpoint_compatibility_models.CheckpointReviewPackageV2(
-            brief.attempt_id,
-            brief.item_id,
-            current.candidate,
-            current.acceptance_evidence,
-            current.accepted_scope,
-            checkpoint_identity,
-            candidate_identity,
-            brief_identity,
-            result_identity,
-            review_identity,
-            "ready",
-            current.review_basis,
-        )
-        encoded = canonical_checkpoint_review_package_bytes(legacy)
+        # The fixture supplies opaque historical bytes; production has no v2 semantic model.
+        legacy = {
+            "schema": "pinboard-checkpoint-review-package/v2",
+            "attempt_id": brief.attempt_id,
+            "item_id": brief.item_id,
+            "candidate": current.candidate,
+            "acceptance_evidence": current.acceptance_evidence,
+            "accepted_scope": msgspec.to_builtins(current.accepted_scope),
+            "checkpoint": msgspec.to_builtins(checkpoint_identity),
+            "candidate_snapshot": msgspec.to_builtins(candidate_identity),
+            "accepted_brief": msgspec.to_builtins(brief_identity),
+            "result": msgspec.to_builtins(result_identity),
+            "implementation_review": msgspec.to_builtins(review_identity),
+            "verdict": "ready",
+            "review_basis": msgspec.to_builtins(current.review_basis),
+        }
+        encoded = msgspec.json.encode(legacy, order="sorted") + b"\n"
         published_package = write_revision(
             roots, NewArtifact(work_models.ArtifactKind.EVIDENCE, f"{prefix}-review-package", 1, ".json", encoded)
         )
@@ -889,15 +890,18 @@ class CheckpointPackageSupport(unittest.TestCase):
                     int(package_reference.artifact_ref_id),
                     msgspec.json.encode(
                         {
-                            "candidate": legacy.candidate,
+                            "candidate": current.candidate,
                             "checkpoint": checkpoint.checkpoint_id,
-                            "evidence": legacy.acceptance_evidence,
+                            "evidence": current.acceptance_evidence,
                         },
                         order="sorted",
                     ).decode(),
                     msgspec.json.encode(
                         history.CheckpointAcceptanceOutcome(
-                            legacy.candidate, checkpoint.checkpoint_id, legacy.acceptance_evidence, "accept-checkpoint"
+                            current.candidate,
+                            checkpoint.checkpoint_id,
+                            current.acceptance_evidence,
+                            "accept-checkpoint",
                         ),
                         order="sorted",
                     ).decode(),
@@ -912,7 +916,7 @@ class CheckpointPackageSupport(unittest.TestCase):
     def replace_package(
         self,
         fixture: AcceptedPackageFixture,
-        package: work_briefs.CheckpointPackage,
+        package: work_brief_models.CheckpointReviewPackageV3,
     ) -> None:
         self.replace_artifact_bytes(
             fixture,

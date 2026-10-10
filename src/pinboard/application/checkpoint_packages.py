@@ -36,7 +36,7 @@ def checkpoint_candidate_key(attempt_id: str, checkpoint_id: str) -> str:
 
 
 def canonical_checkpoint_candidate_reference(
-    package: work_briefs.CheckpointPackage, reference: stored_state.ArtifactReference
+    package: work_brief_models.CheckpointReviewPackageV3, reference: stored_state.ArtifactReference
 ) -> bool:
     return (reference.kind, reference.key, reference.revision) == (
         work_models.ArtifactKind.EVIDENCE,
@@ -84,7 +84,7 @@ def _portable_reference(
 
 
 def _artifact_identities(
-    package: work_briefs.CheckpointPackage,
+    package: work_brief_models.CheckpointReviewPackageV3,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> work_brief_models.WorkBriefResult[stored_state.ArtifactReference]:
@@ -120,7 +120,7 @@ def _artifact_identities(
 
 
 def _brief(
-    package: work_briefs.CheckpointPackage,
+    package: work_brief_models.CheckpointReviewPackageV3,
     reference: stored_state.ArtifactReference,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> work_brief_models.WorkBriefResult[work_briefs.WorkBriefValue]:
@@ -141,7 +141,7 @@ def _brief(
 
 
 def _review_basis(
-    package: work_briefs.CheckpointPackage,
+    package: work_brief_models.CheckpointReviewPackageV3,
     brief: work_brief_models.ReadableWorkBrief,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
@@ -192,7 +192,7 @@ def validate_selected_checkpoint_review_package(
     *,
     attempt_id: str,
     item_id: str,
-) -> work_brief_models.WorkBriefResult[work_briefs.CheckpointPackage]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.CheckpointReviewPackageV3]:
     package = decode_canonical_checkpoint_review_package(package_bytes)
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return package
@@ -228,7 +228,7 @@ def validate_selected_checkpoint_review_package(
 
 
 def validate_checkpoint_package_closure(
-    package: work_briefs.CheckpointPackage,
+    package: work_brief_models.CheckpointReviewPackageV3,
     artifact_references: tuple[stored_state.ArtifactReference, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> work_brief_models.WorkBriefFailure | None:
@@ -239,24 +239,21 @@ def validate_checkpoint_package_closure(
     brief = _brief(package, accepted_brief, artifact_bytes)
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return brief
-    if isinstance(package, work_brief_models.CheckpointReviewPackageV3):
-        candidate_reference = _portable_reference(package.candidate_snapshot, references, artifact_bytes)
-        if isinstance(candidate_reference, work_brief_models.WorkBriefFailure):
-            return candidate_reference
-        try:
-            snapshot = candidate_snapshots.decode_candidate_snapshot(
-                artifact_bytes[candidate_reference.artifact_ref_id]
-            )
-        except (msgspec.DecodeError, ValueError) as error:
-            return _invalid(f"The current portable candidate snapshot is invalid: {error}")
-        if (
-            snapshot.attempt_id,
-            snapshot.item_id,
-            snapshot.candidate,
-            snapshot.branch,
-            snapshot.accepted_base_revision,
-        ) != (package.attempt_id, package.item_id, package.candidate, brief.branch, brief.base_revision):
-            return _invalid("The portable candidate snapshot does not match its package and accepted brief.")
+    candidate_reference = _portable_reference(package.candidate_snapshot, references, artifact_bytes)
+    if isinstance(candidate_reference, work_brief_models.WorkBriefFailure):
+        return candidate_reference
+    try:
+        snapshot = candidate_snapshots.decode_candidate_snapshot(artifact_bytes[candidate_reference.artifact_ref_id])
+    except (msgspec.DecodeError, ValueError) as error:
+        return _invalid(f"The current portable candidate snapshot is invalid: {error}")
+    if (
+        snapshot.attempt_id,
+        snapshot.item_id,
+        snapshot.candidate,
+        snapshot.branch,
+        snapshot.accepted_base_revision,
+    ) != (package.attempt_id, package.item_id, package.candidate, brief.branch, brief.base_revision):
+        return _invalid("The portable candidate snapshot does not match its package and accepted brief.")
     return _review_basis(package, brief, references, artifact_bytes)
 
 

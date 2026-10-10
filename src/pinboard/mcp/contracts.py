@@ -2483,11 +2483,6 @@ class BriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
     brief: work_brief_models.WorkBrief
 
 
-class LegacyBriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
-    status: Literal["no-needs-correction-evidence"]
-    brief: work_brief_compatibility_models.WorkBriefV2
-
-
 class RetainedV3BriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
     status: Literal["no-needs-correction-evidence"]
     brief: work_brief_compatibility_models.WorkBriefV3
@@ -2496,13 +2491,6 @@ class RetainedV3BriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
 class BriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
     status: Literal["needs-correction"]
     brief: work_brief_models.WorkBrief
-    reference: ReviewEvidenceReference
-    review: work_brief_models.WorkBriefReviewNeedsCorrection
-
-
-class LegacyBriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
-    status: Literal["needs-correction"]
-    brief: work_brief_compatibility_models.WorkBriefV2
     reference: ReviewEvidenceReference
     review: work_brief_models.WorkBriefReviewNeedsCorrection
 
@@ -2906,10 +2894,8 @@ ITEM_DEFINITION_RESULT_TYPES = (
 )
 BRIEF_REVIEW_RESULT_TYPES = (
     BriefReviewNoEvidence,
-    LegacyBriefReviewNoEvidence,
     RetainedV3BriefReviewNoEvidence,
     BriefReviewNeedsCorrection,
-    LegacyBriefReviewNeedsCorrection,
     RetainedV3BriefReviewNeedsCorrection,
     BriefReviewCommitted,
     BriefReviewUnchanged,
@@ -3122,10 +3108,8 @@ type ResultBoundary = (
     | type[query_models.ItemDefinitionHistory]
     | type[ItemDefinitionRejected]
     | type[BriefReviewNoEvidence]
-    | type[LegacyBriefReviewNoEvidence]
     | type[RetainedV3BriefReviewNoEvidence]
     | type[BriefReviewNeedsCorrection]
-    | type[LegacyBriefReviewNeedsCorrection]
     | type[RetainedV3BriefReviewNeedsCorrection]
     | type[BriefReviewCommitted]
     | type[BriefReviewUnchanged]

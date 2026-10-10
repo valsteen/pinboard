@@ -302,13 +302,15 @@ def derive_archive(  # noqa: C901, PLR0912 - one complete original-history proje
         if reference.kind == work_models.ArtifactKind.BRIEF and reference.selector.endswith(".md"):
             briefs.append(ArchiveBrief(int(reference.artifact_ref_id), data.decode("utf-8")))
         elif reference.kind == work_models.ArtifactKind.BRIEF:
-            brief = work_briefs.decode_canonical_work_brief(data)
+            brief = work_briefs.decode_canonical_historical_work_brief(data)
             if isinstance(brief, work_brief_models.WorkBriefFailure):
                 return brief
             if (brief.attempt_id, brief.item_id) != (str(attempt.attempt_id), str(attempt.item_id)):
                 return _failure("Archived brief does not belong to its terminal attempt.")
             briefs.append(
-                ArchiveBrief(int(reference.artifact_ref_id), work_briefs.render_work_brief_markdown(brief).decode())
+                ArchiveBrief(
+                    int(reference.artifact_ref_id), work_briefs.render_historical_work_brief_markdown(brief).decode()
+                )
             )
     for receipt in facts.transition_receipts:
         if receipt.outcome_schema not in ("checkpoint-acceptance/v2", "completion-acceptance/v2"):

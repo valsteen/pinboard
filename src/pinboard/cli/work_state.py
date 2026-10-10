@@ -34,7 +34,7 @@ from pinboard.application.work_briefs import (
     build_selected_attempt_brief_views,
     decode_canonical_checkpoint_review_package,
     decode_canonical_completion_review_package,
-    decode_canonical_work_brief,
+    decode_canonical_historical_work_brief,
 )
 from pinboard.cli.errors import (
     InitializationAfterCommittedEffects,
@@ -446,7 +446,7 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
             or attempt.result_artifact_ref_id != terminal_result.artifact_ref_id
         ):
             return _package_provenance_failure("Completion package artifact identities are not canonical.")
-        brief = decode_canonical_work_brief(artifact_bytes[accepted_brief.artifact_ref_id])
+        brief = decode_canonical_historical_work_brief(artifact_bytes[accepted_brief.artifact_ref_id])
         if (
             isinstance(brief, work_brief_models.WorkBriefFailure)
             or brief.attempt_id != package.attempt_id

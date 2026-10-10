@@ -33,12 +33,15 @@ from pinboard.application.work_briefs import (
     canonical_work_brief_bytes,
     canonical_work_brief_review_needs_correction_bytes,
     decode_canonical_checkpoint_review_package,
+    decode_canonical_historical_work_brief,
     decode_canonical_work_brief,
     decode_canonical_work_brief_review_needs_correction,
     decode_checkpoint_review_package,
     decode_work_brief,
+    decode_work_brief_identity,
     decode_work_brief_review,
     read_selected_work_brief_identity,
+    render_historical_work_brief_markdown,
     render_work_brief_markdown,
     validate_definition_brief_agreement,
     validate_reviewed_authority_digests,
@@ -140,7 +143,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     decode_work_brief(msgspec.json.encode(payload)), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
                 )
 
-    def test_retained_v2_brief_remains_exactly_readable_reviewable_and_renderable(self) -> None:
+    def test_original_v2_facts_preserve_exact_history_without_operational_identity(self) -> None:
         current = example_work_brief()
         payload = msgspec.to_builtins(current)
         assert isinstance(payload, dict)
@@ -154,10 +157,31 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         del payload["obligation_correspondence"]
         legacy_bytes = msgspec.json.encode(payload, order="sorted") + b"\n"
 
-        legacy = expect_work_brief_success(decode_canonical_work_brief(legacy_bytes))
+        expect_work_brief_failure(
+            decode_canonical_work_brief(legacy_bytes), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
+        )
+        legacy = expect_work_brief_success(decode_canonical_historical_work_brief(legacy_bytes))
 
         self.assertEqual("pinboard-work-brief/v2", legacy.schema)
-        self.assertIn(b"authority: pinboard-work-brief/v2", render_work_brief_markdown(legacy))
+        self.assertIn(b"authority: pinboard-work-brief/v2", render_historical_work_brief_markdown(legacy))
+        self.assertEqual(legacy_bytes, canonical_work_brief_bytes(legacy))
+        expect_work_brief_failure(decode_work_brief(legacy_bytes), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID)
+        expect_work_brief_failure(
+            decode_work_brief_identity(legacy_bytes), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
+        )
+        expect_work_brief_failure(
+            decode_canonical_historical_work_brief(legacy_bytes.rstrip()),
+            work_brief_models.WorkBriefErrorCode.BRIEF_NOT_CANONICAL,
+        )
+        for invalid_bytes in (
+            legacy_bytes[:-2] + b',"unknown":true}\n',
+            b'{"schema":"pinboard-work-brief/v2"}\n',
+            b"not JSON",
+        ):
+            expect_work_brief_failure(
+                decode_canonical_historical_work_brief(invalid_bytes),
+                work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+            )
         current_review = msgspec.json.decode(ready_review(current), type=work_brief_models.WorkBriefReview)
         legacy_checkpoint = legacy.checkpoint
         review = work_brief_compatibility_models.WorkBriefReviewV2(

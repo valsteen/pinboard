@@ -401,7 +401,7 @@ def _read_current_attempt_brief(
     if not isinstance(brief, work_brief_models.WorkBrief):
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            "Retained work brief v3/v2 cannot authorize current lifecycle execution.",
+            "Retained work brief v3 cannot authorize current lifecycle execution.",
             FailureDetails(
                 observed=(FailureFact("accepted_brief_schema", brief.schema),),
                 mismatches=(),

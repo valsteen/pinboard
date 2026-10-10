@@ -586,7 +586,7 @@ def _read_dispatch_brief(
     if not isinstance(brief, work_brief_models.WorkBrief):
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_INVALID,
-            "Retained work brief v3/v2 is readable but cannot authorize dispatch.",
+            "Retained work brief v3 is readable but cannot authorize dispatch.",
             None,
         )
     if (

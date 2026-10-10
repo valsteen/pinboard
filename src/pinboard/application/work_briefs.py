@@ -33,11 +33,8 @@ from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, WorkItemId
 
-type WorkBriefValue = (
-    work_brief_models.WorkBrief
-    | work_brief_compatibility_models.WorkBriefV3
-    | work_brief_compatibility_models.WorkBriefV2
-)
+type WorkBriefValue = work_brief_models.WorkBrief | work_brief_compatibility_models.WorkBriefV3
+type HistoricalWorkBriefValue = WorkBriefValue | work_brief_compatibility_models.HistoricalWorkBriefV2
 type WorkBriefReviewValue = work_brief_models.WorkBriefReview | work_brief_compatibility_models.WorkBriefReviewV2
 
 
@@ -95,8 +92,6 @@ def decode_work_brief(data: bytes) -> work_brief_models.WorkBriefResult[WorkBrie
     try:
         schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
         schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
-        if schema == "pinboard-work-brief/v2":
-            return msgspec.json.decode(data, type=work_brief_compatibility_models.WorkBriefV2)
         if schema == "pinboard-work-brief/v3":
             return msgspec.json.decode(data, type=work_brief_compatibility_models.WorkBriefV3)
         return msgspec.json.decode(data, type=work_brief_models.WorkBrief)
@@ -118,6 +113,26 @@ def decode_canonical_work_brief(data: bytes) -> work_brief_models.WorkBriefResul
             "Accepted work brief bytes are not the canonical msgspec encoding.",
         )
     return brief
+
+
+def decode_canonical_historical_work_brief(
+    data: bytes,
+) -> work_brief_models.WorkBriefResult[HistoricalWorkBriefValue]:
+    """Read exact original facts for archive, checkpoint and completion closure only."""
+    try:
+        schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
+        schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
+        if schema == "pinboard-work-brief/v2":
+            brief = msgspec.json.decode(data, type=work_brief_compatibility_models.HistoricalWorkBriefV2)
+            if data != canonical_work_brief_bytes(brief):
+                return work_brief_models.WorkBriefFailure(
+                    work_brief_models.WorkBriefErrorCode.BRIEF_NOT_CANONICAL,
+                    "Historical work brief bytes are not the canonical msgspec encoding.",
+                )
+            return brief
+    except msgspec.DecodeError as error:
+        return _invalid(f"Cannot decode historical work brief facts: {error}")
+    return decode_canonical_work_brief(data)
 
 
 def validate_definition_brief_agreement(
@@ -168,7 +183,7 @@ def validate_executable_work_brief(
     """Require the exact current definition, current brief schema, and selected checkout."""
 
     if not isinstance(brief, work_brief_models.WorkBrief):
-        return _invalid("Retained work brief v3/v2 is readable but cannot authorize execution.")
+        return _invalid("Retained work brief v3 is readable but cannot authorize execution.")
     if (failure := _validate_current_definition(store, brief)) is not None:
         return failure
     if brief.checkout_selection != observed_checkout:
@@ -766,7 +781,17 @@ def _boundary_text(
             assert_never(unreachable)
 
 
-def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:  # noqa: PLR0912 - closed brief projection
+def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:
+    """Render the selected operational brief family."""
+    return _render_work_brief_markdown(brief)
+
+
+def render_historical_work_brief_markdown(brief: HistoricalWorkBriefValue) -> bytes:
+    """Project verified historical facts without making them operational briefs."""
+    return _render_work_brief_markdown(brief)
+
+
+def _render_work_brief_markdown(brief: HistoricalWorkBriefValue) -> bytes:  # noqa: PLR0912 - closed factual projection
     checkpoint = brief.checkpoint
     lines = [
         "---",
@@ -782,7 +807,7 @@ def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:  # noqa: PLR0912
         f"artifact_revision: {brief.artifact_revision}",
         *(
             (f"checkout_selection: {brief.checkout_selection.value}",)
-            if not isinstance(brief, work_brief_compatibility_models.WorkBriefV2)
+            if not isinstance(brief, work_brief_compatibility_models.HistoricalWorkBriefV2)
             else ()
         ),
         "---",
@@ -809,7 +834,7 @@ def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:  # noqa: PLR0912
     _section(lines, "Non-goals", brief.non_goals)
     lines.extend(("## Product decision and provenance", "", brief.product_decision_and_provenance, ""))
     lines.extend(("## Testing strategy", "", brief.testing_strategy, ""))
-    if not isinstance(brief, work_brief_compatibility_models.WorkBriefV2):
+    if not isinstance(brief, work_brief_compatibility_models.HistoricalWorkBriefV2):
         lines.extend(("## Obligation correspondence", ""))
         lines.extend(
             f"- `{row.obligation_id}` — `{_obligation_target_text(row.target)}`"
@@ -899,7 +924,7 @@ def render_work_brief_markdown(brief: WorkBriefValue) -> bytes:  # noqa: PLR0912
                     assert_never(unreachable)
         case (
             work_brief_compatibility_models.WorkBriefV3(remaining_work=remaining_work)
-            | work_brief_compatibility_models.WorkBriefV2(remaining_work=remaining_work)
+            | work_brief_compatibility_models.HistoricalWorkBriefV2(remaining_work=remaining_work)
         ):
             lines.extend(("", "## Remaining work", "", remaining_work, ""))
         case _ as unreachable:

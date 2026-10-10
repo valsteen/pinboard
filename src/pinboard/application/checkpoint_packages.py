@@ -17,7 +17,7 @@ from pinboard.application.work_briefs import (
     canonical_checkpoint_bytes,
     canonical_reviewed_authority_set_bytes,
     decode_canonical_checkpoint_review_package,
-    decode_canonical_work_brief,
+    decode_canonical_historical_work_brief,
     decode_canonical_work_brief_review,
     ready_review_key_sha256,
     validate_work_brief_review,
@@ -123,8 +123,8 @@ def _brief(
     package: work_brief_models.CheckpointReviewPackageV3,
     reference: stored_state.ArtifactReference,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[work_briefs.WorkBriefValue]:
-    brief = decode_canonical_work_brief(artifact_bytes[reference.artifact_ref_id])
+) -> work_brief_models.WorkBriefResult[work_briefs.HistoricalWorkBriefValue]:
+    brief = decode_canonical_historical_work_brief(artifact_bytes[reference.artifact_ref_id])
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _invalid(f"The package accepted brief is invalid: {brief.message}")
     if (

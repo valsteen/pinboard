@@ -86,8 +86,6 @@ from pinboard.mcp.contracts import (
     ItemStatusUnavailable,
     JsonSchemaValue,
     JsonValue,
-    LegacyBriefReviewNeedsCorrection,
-    LegacyBriefReviewNoEvidence,
     NonterminalAttemptInspectionSuccess,
     OrderCommitted,
     OrderRejected,
@@ -732,11 +730,7 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         brief_schema = brief.get("schema") if isinstance(brief, dict) else None
         if status == "no-needs-correction-evidence":
             result_type = (
-                LegacyBriefReviewNoEvidence
-                if brief_schema == "pinboard-work-brief/v2"
-                else RetainedV3BriefReviewNoEvidence
-                if brief_schema == "pinboard-work-brief/v3"
-                else BriefReviewNoEvidence
+                RetainedV3BriefReviewNoEvidence if brief_schema == "pinboard-work-brief/v3" else BriefReviewNoEvidence
             )
             msgspec.convert(
                 content,
@@ -745,9 +739,7 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
             )
         elif status == "needs-correction":
             result_type = (
-                LegacyBriefReviewNeedsCorrection
-                if brief_schema == "pinboard-work-brief/v2"
-                else RetainedV3BriefReviewNeedsCorrection
+                RetainedV3BriefReviewNeedsCorrection
                 if brief_schema == "pinboard-work-brief/v3"
                 else BriefReviewNeedsCorrection
             )

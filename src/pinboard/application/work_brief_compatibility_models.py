@@ -1,4 +1,4 @@
-"""Exact retained work-brief v2 boundary model."""
+"""Exact retained brief v3 and historical-only original brief v2 facts."""
 
 from typing import Annotated, Literal, assert_never
 
@@ -138,7 +138,12 @@ class WorkBriefV3(_RetainedWorkBriefBase, frozen=True):
         )
 
 
-class WorkBriefV2(_RetainedWorkBriefBase, frozen=True):
+class HistoricalWorkBriefV2(_RetainedWorkBriefBase, frozen=True):
+    """Original full-field facts for archive and package closure, never execution.
+
+    Retain while original brief bytes have supported historical consumers.
+    """
+
     schema: Literal["pinboard-work-brief/v2"]
 
 

@@ -467,7 +467,7 @@ def _with_retained_brief_recovery(
         identity.kind != decision_models.ActionKind.SUBMIT_REVIEW
         or details is None
         or not any(
-            fact.field == "accepted_brief_schema" and fact.value in {"pinboard-work-brief/v2", "pinboard-work-brief/v3"}
+            fact.field == "accepted_brief_schema" and fact.value == "pinboard-work-brief/v3"
             for fact in details.observed
         )
     ):

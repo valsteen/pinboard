@@ -329,7 +329,7 @@ class DispatchTest(unittest.TestCase):
                     DispatchErrorCode.DISPATCH_BRIEF_INVALID,
                 )
                 if invalidity == "legacy":
-                    self.assertIn("Retained work brief", failure.message)
+                    self.assertIn("Cannot decode canonical work brief", failure.message)
                 else:
                     self.assertIn("checkout", failure.message)
                 self.assertEqual(before, store.validated_snapshot())

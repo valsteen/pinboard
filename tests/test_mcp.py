@@ -149,19 +149,6 @@ def _representative_transition_requests() -> tuple[dict[str, contracts.JsonValue
             "complete",
             "project",
             {
-                "schema": "pinboard-covered-completion/v1",
-                "candidate": "candidate",
-                **evidence,
-                "reviewer_task_id": "reviewer",
-                "result_sha256": "a" * 64,
-                "review_sha256": "b" * 64,
-                "packages": [{"history_id": 1, "package_sha256": "c" * 64, "disposition": "revalidated", **evidence}],
-            },
-        ),
-        (
-            "complete",
-            "project",
-            {
                 "schema": "pinboard-reviewed-completion/v2",
                 "candidate": "candidate",
                 **evidence,
@@ -1870,6 +1857,42 @@ class McpTransportTest(unittest.TestCase):
         encoded_schema = msgspec.json.encode(contract_schemas.transition_request_schema())
         for advisory_kind in (b'"continue"', b'"dispatch"', b'"inspect"', b'"report-blocker"'):
             self.assertNotIn(advisory_kind, encoded_schema)
+        self.assertNotIn(b"pinboard-covered-completion/v1", encoded_schema)
+        self.assertIn(b"pinboard-reviewed-completion/v2", encoded_schema)
+
+    def test_original_covered_completion_rejects_before_source_or_state_access(self) -> None:
+        raw: dict[str, contracts.JsonValue] = {
+            "request": {
+                "project_root": "/project",
+                "work_root": "/work",
+                "role": "project",
+                "receipt": {"action_id": {"kind": "complete", "subject": "attempt-1"}, "subject_revision": "1"},
+                "actor_task_id": "owner",
+                "actor_host_id": "host",
+                "payload": {
+                    "schema": "pinboard-covered-completion/v1",
+                    "candidate": "candidate",
+                    "evidence": "accepted",
+                    "reviewer_task_id": "reviewer",
+                    "result_sha256": "a" * 64,
+                    "review_sha256": "b" * 64,
+                    "packages": [
+                        {
+                            "history_id": 1,
+                            "package_sha256": "c" * 64,
+                            "disposition": "revalidated",
+                            "evidence": "checked",
+                        }
+                    ],
+                },
+            }
+        }
+        with patch.object(mcp_mutations, "resolve_source_checkout_root") as resolve:
+            result = mcp_mutations._transition(raw, mcp_execution.CancellationToken())
+        self.assertEqual("TRANSITION_INPUT_INVALID", result.content["code"])
+        self.assertEqual(("unchanged", []), (result.content["effect"], result.content["changed_surfaces"]))
+        resolve.assert_not_called()
+        contract_schemas.validate_result(mcp_server.TRANSITION_TOOL, result.content)
 
     def test_review_submission_expired_during_publication_preserves_artifact_without_ledger_commit(self) -> None:
         with patch(f"{__name__}.datetime") as fixture_clock:

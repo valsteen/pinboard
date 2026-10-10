@@ -609,12 +609,8 @@ def decode_canonical_checkpoint_review_package(
 
 def decode_completion_review_package(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[work_brief_models.CompletionReviewPackageValue]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.CompletionReviewPackage]:
     try:
-        schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
-        schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
-        if schema == "pinboard-completion-review-package/v1":
-            return msgspec.json.decode(data, type=work_brief_models.CompletionReviewPackageV1)
         return msgspec.json.decode(data, type=work_brief_models.CompletionReviewPackage)
     except msgspec.DecodeError as error:
         return work_brief_models.WorkBriefFailure(
@@ -623,13 +619,36 @@ def decode_completion_review_package(
         )
 
 
-def canonical_completion_review_package_bytes(package: work_brief_models.CompletionReviewPackageValue) -> bytes:
+def canonical_completion_review_package_bytes(package: work_brief_models.CompletionReviewPackage) -> bytes:
     return _canonical_bytes(package) + b"\n"
+
+
+def decode_canonical_historical_completion_review_package(
+    data: bytes,
+) -> work_brief_models.WorkBriefResult[work_brief_compatibility_models.HistoricalCompletionReviewPackage]:
+    """Read completion history without admitting original facts as current input."""
+    try:
+        schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
+        schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
+        if schema != "pinboard-completion-review-package/v1":
+            return decode_canonical_completion_review_package(data)
+        package = msgspec.json.decode(data, type=work_brief_compatibility_models.HistoricalCompletionReviewPackageV1)
+    except msgspec.DecodeError as error:
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
+            f"Cannot decode historical completion review package facts: {error}",
+        )
+    if data != work_brief_compatibility_models.canonical_historical_completion_review_package_bytes(package):
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
+            "Historical completion review package bytes are not the canonical msgspec encoding.",
+        )
+    return package
 
 
 def decode_canonical_completion_review_package(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[work_brief_models.CompletionReviewPackageValue]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.CompletionReviewPackage]:
     package = decode_completion_review_package(data)
     if isinstance(package, work_brief_models.WorkBriefFailure):
         return package

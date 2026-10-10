@@ -28,12 +28,13 @@ from pinboard.application import (
     project_export,
     queries,
     stored_state,
+    work_brief_compatibility_models,
     work_brief_models,
 )
 from pinboard.application.work_briefs import (
     build_selected_attempt_brief_views,
     decode_canonical_checkpoint_review_package,
-    decode_canonical_completion_review_package,
+    decode_canonical_historical_completion_review_package,
     decode_canonical_historical_work_brief,
 )
 from pinboard.cli.errors import (
@@ -261,7 +262,7 @@ def _completion_outcome(
 def _completion_input(
     receipt: stored_state.StoredTransitionReceipt,
 ) -> work_brief_models.WorkBriefResult[
-    action_models.CoveredCompleteInputPayload | action_models.ReviewedCompleteInputPayload
+    work_brief_compatibility_models.HistoricalCoveredCompletionInput | action_models.ReviewedCompleteInputPayload
 ]:
     if receipt.input_schema not in ("pinboard-covered-completion/v1", "pinboard-reviewed-completion/v2"):
         return _package_provenance_failure(
@@ -269,7 +270,7 @@ def _completion_input(
         )
     try:
         model = (
-            action_models.CoveredCompleteInputPayload
+            work_brief_compatibility_models.HistoricalCoveredCompletionInput
             if receipt.input_schema == "pinboard-covered-completion/v1"
             else action_models.ReviewedCompleteInputPayload
         )
@@ -286,8 +287,9 @@ def _completion_input(
 
 
 def _completion_input_matches_package(
-    value: action_models.CoveredCompleteInputPayload | action_models.ReviewedCompleteInputPayload,
-    package: work_brief_models.CompletionReviewPackageValue,
+    value: work_brief_compatibility_models.HistoricalCoveredCompletionInput
+    | action_models.ReviewedCompleteInputPayload,
+    package: work_brief_compatibility_models.HistoricalCompletionReviewPackage,
 ) -> bool:
     return (
         value.candidate == package.candidate
@@ -393,7 +395,7 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
             return _package_provenance_failure(
                 f"Completion history {int(receipt.history_id)} links an unavailable review package."
             )
-        package = decode_canonical_completion_review_package(artifact_bytes[receipt.artifact_ref_id])
+        package = decode_canonical_historical_completion_review_package(artifact_bytes[receipt.artifact_ref_id])
         if isinstance(package, work_brief_models.WorkBriefFailure):
             return package
         if (

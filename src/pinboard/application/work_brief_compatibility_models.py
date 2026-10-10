@@ -1,11 +1,61 @@
-"""Strict original brief and ready-review facts for historical consumers only."""
+"""Strict original brief, review and completion facts for historical consumers only."""
 
 from typing import Annotated, Literal
 
 import msgspec
 
-from pinboard.application import work_brief_models
+from pinboard.application import action_models, work_brief_models
 from pinboard.domain import work_models
+
+
+class HistoricalCoveredCompletionInput(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Exact original receipt facts, retained while completion history requires them."""
+
+    schema: Literal["pinboard-covered-completion/v1"]
+    candidate: action_models.NonEmptyLine
+    evidence: action_models.NonEmptyLine
+    reviewer_task_id: action_models.NonEmptyLine
+    result_sha256: action_models.Sha256
+    review_sha256: action_models.Sha256
+    packages: Annotated[tuple[action_models.CoveredCompletionPackageInputPayload, ...], msgspec.Meta(min_length=1)]
+
+    def __post_init__(self) -> None:
+        history_ids = tuple(row.history_id for row in self.packages)
+        if history_ids != tuple(sorted(set(history_ids))):
+            raise ValueError("packages must be unique and strictly ascending by history_id")
+
+
+class HistoricalCompletionReviewPackageV1(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Original package facts for archive, validation and export; never execution.
+
+    Remove only when no supported retained completion consumer requires them.
+    """
+
+    schema: Literal["pinboard-completion-review-package/v1"]
+    attempt_id: work_brief_models.KebabId
+    item_id: work_brief_models.KebabId
+    candidate: work_brief_models.NonEmptyLine
+    outcome_evidence: work_brief_models.NonEmptyLine
+    reviewer_task_id: work_brief_models.NonEmptyLine
+    accepted_scope: work_brief_models.AcceptedScope
+    accepted_brief: work_brief_models.AcceptedBriefCompletionIdentity
+    terminal_result: work_brief_models.TerminalResultCompletionIdentity
+    final_review: work_brief_models.FinalReviewCompletionIdentity
+    checkpoint_coverage: Annotated[
+        tuple[work_brief_models.CompletionCheckpointCoverage, ...], msgspec.Meta(min_length=1)
+    ]
+
+    def __post_init__(self) -> None:
+        history_ids = tuple(row.history_id for row in self.checkpoint_coverage)
+        if history_ids != tuple(sorted(set(history_ids))):
+            raise ValueError("checkpoint_coverage must be unique and strictly ascending by history_id")
+
+
+type HistoricalCompletionReviewPackage = work_brief_models.CompletionReviewPackage | HistoricalCompletionReviewPackageV1
+
+
+def canonical_historical_completion_review_package_bytes(package: HistoricalCompletionReviewPackageV1) -> bytes:
+    return msgspec.json.encode(package, order="sorted") + b"\n"
 
 
 class HistoricalLocalCheckpoint(

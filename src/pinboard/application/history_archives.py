@@ -346,7 +346,7 @@ def derive_archive(  # noqa: C901, PLR0912 - one complete original-history proje
                 )
             )
         else:
-            completed = work_briefs.decode_canonical_completion_review_package(
+            completed = work_briefs.decode_canonical_historical_completion_review_package(
                 artifact_bytes[reference.artifact_ref_id]
             )
             if isinstance(completed, work_brief_models.WorkBriefFailure):

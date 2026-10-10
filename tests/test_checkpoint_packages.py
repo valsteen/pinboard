@@ -231,7 +231,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         checkpoint_package = work_brief_models.CheckpointPackageCompletionIdentity(
             "evidence", "attempt-1-checkpoint-review-package", 1, "artifacts/evidence/package.json", "d" * 64, 13
         )
-        package = work_brief_models.CompletionReviewPackageV1(
+        package = work_brief_compatibility_models.HistoricalCompletionReviewPackageV1(
             "pinboard-completion-review-package/v1",
             "attempt-1",
             "item-1",
@@ -254,18 +254,44 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             ),
         )
 
-        encoded = canonical_completion_review_package_bytes(package)
+        encoded = work_brief_compatibility_models.canonical_historical_completion_review_package_bytes(package)
 
-        self.assertEqual(package, decode_canonical_completion_review_package(encoded))
+        self.assertEqual(package, work_briefs.decode_canonical_historical_completion_review_package(encoded))
+        self.assertIsInstance(decode_canonical_completion_review_package(encoded), work_brief_models.WorkBriefFailure)
+        payload = json.loads(encoded)
+        for changes in (
+            {"unknown": True},
+            {"schema": "pinboard-unknown/v1"},
+            {"checkpoint_coverage": list[JsonValue]()},
+            {"checkpoint_coverage": [*payload["checkpoint_coverage"], *payload["checkpoint_coverage"]]},
+            {
+                "checkpoint_coverage": [
+                    payload["checkpoint_coverage"][0] | {"history_id": 8},
+                    payload["checkpoint_coverage"][0],
+                ]
+            },
+        ):
+            with self.subTest(original_completion=changes):
+                self.assertIsInstance(
+                    work_briefs.decode_canonical_historical_completion_review_package(
+                        msgspec.json.encode(payload | changes, order="sorted") + b"\n"
+                    ),
+                    work_brief_models.WorkBriefFailure,
+                )
+        self.assertIsInstance(
+            work_briefs.decode_canonical_historical_completion_review_package(encoded.rstrip()),
+            work_brief_models.WorkBriefFailure,
+        )
         mixed = json.loads(encoded)
         assert isinstance(mixed, dict)
         mixed["accepted_brief"]["role"] = "terminal-result"
         self.assertIsInstance(
-            decode_canonical_completion_review_package(json.dumps(mixed).encode()), work_brief_models.WorkBriefFailure
+            work_briefs.decode_canonical_historical_completion_review_package(json.dumps(mixed).encode()),
+            work_brief_models.WorkBriefFailure,
         )
 
     def test_current_completion_package_round_trips_without_checkpoint_history(self) -> None:
-        retained = work_brief_models.CompletionReviewPackageV1(
+        retained = work_brief_compatibility_models.HistoricalCompletionReviewPackageV1(
             "pinboard-completion-review-package/v1",
             "attempt-1",
             "item-1",
@@ -1192,7 +1218,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             *(
                 (
                     f"wrong-{field}",
-                    "pinboard-covered-completion/v1",
+                    completion_receipt.input_schema,
                     changed_input(field, value),
                     actor_task_id,
                     actor_host_id,
@@ -1202,7 +1228,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             *(
                 (
                     f"wrong-package-{field}",
-                    "pinboard-covered-completion/v1",
+                    completion_receipt.input_schema,
                     changed_package_row(field, value),
                     actor_task_id,
                     actor_host_id,
@@ -1211,28 +1237,28 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             ),
             (
                 "noncanonical-input",
-                "pinboard-covered-completion/v1",
+                completion_receipt.input_schema,
                 f"{original_input} ",
                 actor_task_id,
                 actor_host_id,
             ),
             (
                 "stored-reviewer-invoker-collision",
-                "pinboard-covered-completion/v1",
+                completion_receipt.input_schema,
                 original_input,
                 "terminal-reviewer",
                 actor_host_id,
             ),
             (
                 "missing-actor-task",
-                "pinboard-covered-completion/v1",
+                completion_receipt.input_schema,
                 original_input,
                 None,
                 actor_host_id,
             ),
             (
                 "missing-actor-host",
-                "pinboard-covered-completion/v1",
+                completion_receipt.input_schema,
                 original_input,
                 actor_task_id,
                 None,

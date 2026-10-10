@@ -736,9 +736,6 @@ type ActivateTransitionRequest = PreparerTransitionRequest[Literal["activate"], 
 type BlockTransitionRequest = ProjectTransitionRequest[Literal["block"], action_models.BlockInputPayload]
 type BlockItemTransitionRequest = ProjectTransitionRequest[Literal["block-item"], action_models.BlockInputPayload]
 type DirectCompleteTransitionRequest = ProjectTransitionRequest[Literal["complete"], action_models.EvidenceInputPayload]
-type CoveredCompleteTransitionRequest = ProjectTransitionRequest[
-    Literal["complete"], action_models.CoveredCompleteInputPayload
-]
 type ReviewedCompleteTransitionRequest = ProjectTransitionRequest[
     Literal["complete"], action_models.ReviewedCompleteInputPayload
 ]
@@ -781,7 +778,6 @@ type TransitionRequest = (
     | BlockTransitionRequest
     | BlockItemTransitionRequest
     | DirectCompleteTransitionRequest
-    | CoveredCompleteTransitionRequest
     | ReviewedCompleteTransitionRequest
     | DeferTransitionRequest
     | MergeProposalTransitionRequest
@@ -846,11 +842,7 @@ def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest
         case "complete":
             payload = inner.get("payload") if isinstance(inner, dict) else None
             schema = payload.get("schema") if isinstance(payload, dict) else None
-            if schema == "pinboard-covered-completion/v1":
-                request = msgspec.convert(
-                    raw, type=TransitionEnvelope[CoveredCompleteTransitionRequest], strict=True
-                ).request
-            elif schema == "pinboard-reviewed-completion/v2":
+            if schema == "pinboard-reviewed-completion/v2":
                 request = msgspec.convert(
                     raw, type=TransitionEnvelope[ReviewedCompleteTransitionRequest], strict=True
                 ).request

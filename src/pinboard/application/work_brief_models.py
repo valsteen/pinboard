@@ -993,25 +993,6 @@ class CompletionCheckpointCoverage(msgspec.Struct, frozen=True, forbid_unknown_f
     evidence: NonEmptyLine
 
 
-class CompletionReviewPackageV1(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-completion-review-package/v1"]
-    attempt_id: KebabId
-    item_id: KebabId
-    candidate: NonEmptyLine
-    outcome_evidence: NonEmptyLine
-    reviewer_task_id: NonEmptyLine
-    accepted_scope: AcceptedScope
-    accepted_brief: AcceptedBriefCompletionIdentity
-    terminal_result: TerminalResultCompletionIdentity
-    final_review: FinalReviewCompletionIdentity
-    checkpoint_coverage: Annotated[tuple[CompletionCheckpointCoverage, ...], msgspec.Meta(min_length=1)]
-
-    def __post_init__(self) -> None:
-        history_ids = tuple(row.history_id for row in self.checkpoint_coverage)
-        if history_ids != tuple(sorted(set(history_ids))):
-            raise ValueError("checkpoint_coverage must be unique and strictly ascending by history_id")
-
-
 class CompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-completion-review-package/v2"]
     attempt_id: KebabId
@@ -1029,6 +1010,3 @@ class CompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields
         history_ids = tuple(row.history_id for row in self.checkpoint_coverage)
         if history_ids != tuple(sorted(set(history_ids))):
             raise ValueError("checkpoint_coverage must be unique and strictly ascending by history_id")
-
-
-type CompletionReviewPackageValue = CompletionReviewPackage | CompletionReviewPackageV1

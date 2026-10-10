@@ -90,21 +90,6 @@ class CoveredCompletionPackageInputPayload(msgspec.Struct, frozen=True, forbid_u
     evidence: NonEmptyLine
 
 
-class CoveredCompleteInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-covered-completion/v1"]
-    candidate: NonEmptyLine
-    evidence: NonEmptyLine
-    reviewer_task_id: NonEmptyLine
-    result_sha256: Sha256
-    review_sha256: Sha256
-    packages: Annotated[tuple[CoveredCompletionPackageInputPayload, ...], msgspec.Meta(min_length=1)]
-
-    def __post_init__(self) -> None:
-        history_ids = tuple(row.history_id for row in self.packages)
-        if history_ids != tuple(sorted(set(history_ids))):
-            raise ValueError("packages must be unique and strictly ascending by history_id")
-
-
 class ReviewedCompleteInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-reviewed-completion/v2"]
     candidate: NonEmptyLine
@@ -200,7 +185,6 @@ type InputPayload = (
     | DeferInputPayload
     | MergeProposalInputPayload
     | ReviseItemInputPayload
-    | CoveredCompleteInputPayload
     | ReviewedCompleteInputPayload
 )
 type InputModel = type[InputPayload]
@@ -278,11 +262,10 @@ def action_payload_schema(kind: decision_models.ActionKind) -> JsonSchema | None
         }
     if kind == decision_models.ActionKind.COMPLETE:
         direct = msgspec.json.schema(EvidenceInputPayload)
-        retained = msgspec.json.schema(CoveredCompleteInputPayload)
         reviewed = msgspec.json.schema(ReviewedCompleteInputPayload)
         return {
-            "oneOf": [{"$ref": direct["$ref"]}, {"$ref": retained["$ref"]}, {"$ref": reviewed["$ref"]}],
-            "$defs": {**direct["$defs"], **retained["$defs"], **reviewed["$defs"]},
+            "oneOf": [{"$ref": direct["$ref"]}, {"$ref": reviewed["$ref"]}],
+            "$defs": {**direct["$defs"], **reviewed["$defs"]},
         }
     model = action_input_model(kind)
     return None if model is None else msgspec.json.schema(model)

@@ -11,6 +11,7 @@ from pinboard.adapters.files import candidate_compatibility, root
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, RootError
 from pinboard.application import candidate_snapshot_compatibility_models, candidate_snapshots, ports, query_models
+from pinboard.domain import work_models
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -97,6 +98,85 @@ def observe_candidate_lineage(
             f"Cannot reobserve the protected candidate checkout: {error}",
             None,
         )
+
+
+def observe_integration_content(
+    work_root: Path,
+    source_checkout: Path,
+    selection: query_models.IntegrationCandidateFacts,
+    target: str,
+) -> DecisionResult[query_models.ObservedIntegration]:
+    """Compare one selected source's verified accepted bytes with a caller-named target commit."""
+
+    verified = _verified_integration_snapshot(work_root, selection)
+    if isinstance(verified, DecisionFailure):
+        return verified
+    observation = root.observe_integration_content(source_checkout, target, verified.diff)
+    if isinstance(observation, root.IntegrationTargetUnresolved):
+        return DecisionFailure(
+            DecisionFailureCode.INTEGRATION_TARGET_UNRESOLVED,
+            f"Target '{target}' resolves to no commit in the project checkout.",
+            FailureDetails(
+                observed=(
+                    FailureFact("target", target),
+                    FailureFact("project_root", str(source_checkout)),
+                ),
+                mismatches=(),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    return query_models.ObservedIntegration(
+        selection.project_revision,
+        selection.work_item_id,
+        selection.variant,
+        selection.attempt_id,
+        verified.candidate,
+        candidate_snapshots.compared_from_revision(verified),
+        selection.checkpoint,
+        target,
+        observation.revision,
+        query_models.IntegrationPresence(observation.presence),
+    )
+
+
+def _verified_integration_snapshot(
+    work_root: Path, selection: query_models.IntegrationCandidateFacts
+) -> DecisionResult[candidate_snapshots.CandidateSnapshot]:
+    """Decode and correlate the one accepted candidate snapshot the selected source names."""
+
+    reference = selection.reference
+    if reference.kind is not work_models.ArtifactKind.EVIDENCE:
+        return _invalid_integration_evidence(
+            selection, f"Accepted candidate reference '{reference.artifact_ref_id}' is not evidence."
+        )
+    try:
+        snapshot = candidate_snapshots.decode_candidate_snapshot(read_reference(work_root, reference))
+        if snapshot.attempt_id != str(selection.attempt_id) or snapshot.item_id != str(selection.work_item_id):
+            raise ValueError("the accepted candidate snapshot names a different attempt or item")
+    except (ArtifactError, ValueError) as error:
+        return _invalid_integration_evidence(selection, str(error))
+    return snapshot
+
+
+def _invalid_integration_evidence(selection: query_models.IntegrationCandidateFacts, detail: str) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.INTEGRATION_CANDIDATE_EVIDENCE_INVALID,
+        f"The accepted candidate evidence selected for attempt '{selection.attempt_id}' failed verification: {detail}.",
+        FailureDetails(
+            observed=(
+                FailureFact("attempt_id", str(selection.attempt_id)),
+                FailureFact("artifact_reference_id", str(selection.reference.artifact_ref_id)),
+            ),
+            mismatches=(),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
 
 
 def restore_candidate(

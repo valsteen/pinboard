@@ -136,6 +136,14 @@ class IntegrationRelation(Enum):
     TARGET_STALE = "target-stale"
 
 
+class IntegrationPresence(Enum):
+    """Whether one accepted candidate snapshot's recorded diff reverse-applies at a target commit."""
+
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
 class RepositoryPhase(Enum):
     DISPOSITION = "disposition"
     CLEANUP = "cleanup"
@@ -801,6 +809,65 @@ class ItemStatusFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class ItemIntegrationAttemptFacts:
+    """The item's current non-done attempt row, without definition, pause, or review reads."""
+
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    branch: str
+    candidate_revision: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationCheckpointFacts:
+    """One attempt's latest checkpoint acceptance, its checkpoint id, and its linked references."""
+
+    checkpoint: str | None
+    package_reference: stored_state.ArtifactReference | None
+    candidate_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationFacts:
+    """Focused item facts for the integration leaf; never the item leaf's definition or review walk."""
+
+    project_revision: int
+    work_item: ItemStatusItemFacts
+    attempt: ItemIntegrationAttemptFacts | None
+    closure: ItemClosureFacts | None
+    candidate_snapshot: CandidateSnapshotContextFacts | None
+    checkpoint: ItemIntegrationCheckpointFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateFacts:
+    """One selected candidate source whose accepted bytes the integration read verifies and compares."""
+
+    project_revision: int
+    variant: IntegrationSourceVariant
+    attempt_id: AttemptId
+    work_item_id: WorkItemId
+    checkpoint: str | None
+    reference: stored_state.ArtifactReference
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedIntegration:
+    """One verified candidate source compared with the caller's resolved target commit."""
+
+    project_revision: int
+    item_id: WorkItemId
+    variant: IntegrationSourceVariant
+    attempt_id: AttemptId
+    candidate_revision: str
+    compared_from: str
+    checkpoint: str | None
+    target: str
+    target_revision: str
+    presence: IntegrationPresence
+
+
+@dataclass(frozen=True, slots=True)
 class ReadyCandidateReview:
     candidate_revision: str
     reference: stored_state.ArtifactReference
@@ -947,6 +1014,55 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     revision: str
     branch: str
     owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
+
+
+type ItemIntegrationSchema = Literal["pinboard-item-integration/v1"]
+type IntegrationSourceVariant = Literal["protected-review", "accepted-checkpoint", "completion"]
+
+
+class ProtectedReviewSource(
+    msgspec.Struct, tag="protected-review", tag_field="variant", frozen=True, forbid_unknown_fields=True
+):
+    """The current review-state attempt's protected candidate."""
+
+    attempt_id: str
+    candidate_revision: str
+    compared_from: str
+
+
+class AcceptedCheckpointSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="variant", frozen=True, forbid_unknown_fields=True
+):
+    """The current attempt's latest checkpoint-acceptance candidate and its checkpoint id."""
+
+    attempt_id: str
+    checkpoint: str
+    candidate_revision: str
+    compared_from: str
+
+
+class CompletionSource(msgspec.Struct, tag="completion", tag_field="variant", frozen=True, forbid_unknown_fields=True):
+    """The closing attempt's retained candidate of a done item's completion."""
+
+    attempt_id: str
+    candidate_revision: str
+    compared_from: str
+
+
+type ItemIntegrationSource = ProtectedReviewSource | AcceptedCheckpointSource | CompletionSource
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Whether one accepted candidate snapshot's recorded content reached a named target commit."""
+
+    schema: ItemIntegrationSchema
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    target_revision: str
+    source: ItemIntegrationSource
+    presence: IntegrationPresence
 
 
 class ParallelSelection(Enum):

@@ -422,6 +422,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         candidate_form: Literal["working-tree", "current-head"] = "working-tree",
         accepted_base: str | None = None,
         committed_context: bool = False,
+        unchanged: bool = False,
         review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready",
     ) -> CheckpointFixture:
         state = complete_sqlite_state()
@@ -468,7 +469,10 @@ class CheckpointPackageSupport(unittest.TestCase):
         if committed_context:
             (project / "context.txt").write_text("committed surrounding state\n", encoding="utf-8")
             preimage_revision = self.commit_all(project, "context")
-        tracked.write_text("candidate\n", encoding="utf-8")
+        if unchanged:
+            candidate_form = "working-tree"
+        else:
+            tracked.write_text("candidate\n", encoding="utf-8")
         if candidate_form == "current-head":
             candidate_revision = self.commit_all(project, "candidate")
             candidate_diff = subprocess.run(

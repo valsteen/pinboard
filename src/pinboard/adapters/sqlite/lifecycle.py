@@ -573,13 +573,16 @@ def read_item_definition(connection: sqlite3.Connection, item_id: WorkItemId) ->
     )
 
 
-def read_item_status(
-    connection: sqlite3.Connection, item_id: WorkItemId
-) -> query_models.ItemStatusLifecycleFacts | None:
+def _read_project_revision(connection: sqlite3.Connection) -> int:
     project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
     if project_revision_row is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
-    project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
+    return decode_row(project_revision_row, _ProjectRevisionRow).revision
+
+
+def _read_item_status_item(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> query_models.ItemStatusItemFacts | None:
     item_row = connection.execute(
         """
         SELECT item_id AS work_item_id, state, timing, outcome_evidence, next_action, source, notes, queue_position,
@@ -591,7 +594,16 @@ def read_item_status(
     ).fetchone()
     if item_row is None:
         return None
-    item = decode_row(item_row, query_models.ItemStatusItemFacts)
+    return decode_row(item_row, query_models.ItemStatusItemFacts)
+
+
+def read_item_status(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> query_models.ItemStatusLifecycleFacts | None:
+    project_revision = _read_project_revision(connection)
+    item = _read_item_status_item(connection, item_id)
+    if item is None:
+        return None
     definition_row = connection.execute(
         """
         SELECT item_id, definition_revision AS revision, definition_digest AS digest,
@@ -646,14 +658,41 @@ def read_item_status(
     )
 
 
+def read_item_integration(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> query_models.ItemIntegrationFacts | None:
+    """Read only the item row, its current live attempt, and one terminal closure receipt.
+
+    Unlike the item leaf this reads no definition revision, pause reason, or review walk, and the
+    candidate-snapshot and checkpoint reads are composed by the caller.
+    """
+
+    project_revision = _read_project_revision(connection)
+    item = _read_item_status_item(connection, item_id)
+    if item is None:
+        return None
+    attempt_row = connection.execute(
+        """
+        SELECT attempt_id, state, branch, candidate_revision
+        FROM attempts INDEXED BY one_live_attempt_per_item
+        WHERE item_id = ? AND state != 'done'
+        """,
+        (item_id,),
+    ).fetchone()
+    attempt = None if attempt_row is None else decode_row(attempt_row, query_models.ItemIntegrationAttemptFacts)
+    closure = (
+        _read_item_closure(connection, item.work_item_id, item.subject_revision)
+        if stored_state.live_work_state(item.state) is None
+        else None
+    )
+    return query_models.ItemIntegrationFacts(project_revision, item, attempt, closure, None, None)
+
+
 def read_parallel_preview_lifecycle(
     connection: sqlite3.Connection,
     item_ids: tuple[WorkItemId, ...],
 ) -> ParallelPreviewLifecycleSelection | None:
-    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
-    if project_revision_row is None:
-        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
-    project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
+    project_revision = _read_project_revision(connection)
     selected_items = {
         item.item_id: item
         for item in (

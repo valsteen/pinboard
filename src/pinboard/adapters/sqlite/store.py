@@ -47,6 +47,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
+    read_item_integration,
     read_item_status,
     read_parallel_preview_lifecycle,
     read_recorded_pause_reasons,
@@ -433,6 +434,46 @@ def _read_candidate_snapshot_context_facts(
     )
 
 
+def _integration_candidate_attempt_id(facts: query_models.ItemIntegrationFacts) -> AttemptId | None:
+    """The attempt whose retained candidate the integration leaf may compare, if any."""
+
+    if facts.closure is not None:
+        return None if facts.closure.closing_attempt is None else facts.closure.closing_attempt.attempt_id
+    return None if facts.attempt is None else facts.attempt.attempt_id
+
+
+def _read_integration_checkpoint_facts(
+    connection: sqlite3.Connection, attempt_id: AttemptId
+) -> query_models.ItemIntegrationCheckpointFacts | None:
+    """Read one attempt's latest checkpoint acceptance, its package, and its candidate reference."""
+
+    receipt = sqlite_state.read_latest_checkpoint_receipt(connection, attempt_id)
+    if receipt is None:
+        return None
+    package_reference = (
+        None if receipt.artifact_ref_id is None else read_artifact_reference_by_id(connection, receipt.artifact_ref_id)
+    )
+    checkpoint = None
+    candidate_reference = None
+    try:
+        checkpoint_outcome = msgspec.json.decode(
+            bytes(receipt.outcome_payload),
+            type=history.CheckpointAcceptanceOutcome,
+            strict=True,
+        )
+    except msgspec.DecodeError:
+        pass
+    else:
+        checkpoint = checkpoint_outcome.checkpoint
+        candidate_reference = read_artifact_reference(
+            connection,
+            work_models.ArtifactKind.EVIDENCE,
+            f"{attempt_id}-{checkpoint_outcome.checkpoint}-candidate",
+            1,
+        )
+    return query_models.ItemIntegrationCheckpointFacts(checkpoint, package_reference, candidate_reference)
+
+
 class SQLiteWorkStore:
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -717,6 +758,28 @@ class SQLiteWorkStore:
                     lifecycle.closure,
                     preparation,
                 )
+        finally:
+            connection.close()
+
+    def read_item_integration(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                facts = read_item_integration(connection, work_item_id)
+                if facts is None:
+                    return None
+                candidate_attempt_id = _integration_candidate_attempt_id(facts)
+                candidate_snapshot = (
+                    None
+                    if candidate_attempt_id is None
+                    else _read_candidate_snapshot_context_facts(connection, candidate_attempt_id)
+                )
+                checkpoint = (
+                    None
+                    if candidate_snapshot is not None or facts.attempt is None
+                    else _read_integration_checkpoint_facts(connection, facts.attempt.attempt_id)
+                )
+                return replace(facts, candidate_snapshot=candidate_snapshot, checkpoint=checkpoint)
         finally:
             connection.close()
 

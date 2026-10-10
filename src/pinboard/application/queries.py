@@ -1182,6 +1182,124 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
     )
 
 
+def select_integration_candidate(
+    reader: ports.ItemIntegrationReader, work_item_id: WorkItemId
+) -> DecisionResult[query_models.IntegrationCandidateFacts]:
+    """Select the one accepted candidate source the integration leaf may compare, or reject it.
+
+    Source precedence is closed: a review-state attempt's protected candidate, otherwise a
+    nonterminal attempt's latest checkpoint acceptance, otherwise a completing item's retained
+    closing candidate. Every other item shape has no comparable candidate source.
+    """
+
+    facts = reader.read_item_integration(work_item_id)
+    if facts is None:
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' was not found.", None)
+    item = facts.work_item
+    if facts.closure is not None:
+        if _closure_action(facts.closure.action_kind) is not query_models.ItemClosureAction.COMPLETE:
+            return _unavailable_integration_source(
+                work_item_id,
+                item.state,
+                f"the item closed by '{facts.closure.action_kind.value}' instead of completing",
+            )
+        snapshot = facts.candidate_snapshot
+        if snapshot is None:
+            return _unavailable_integration_source(
+                work_item_id, item.state, "the completing attempt retained no candidate snapshot"
+            )
+        return query_models.IntegrationCandidateFacts(
+            facts.project_revision,
+            "completion",
+            snapshot.attempt_id,
+            work_item_id,
+            None,
+            snapshot.reference,
+        )
+    if facts.candidate_snapshot is not None:
+        snapshot = facts.candidate_snapshot
+        return query_models.IntegrationCandidateFacts(
+            facts.project_revision,
+            "protected-review",
+            snapshot.attempt_id,
+            work_item_id,
+            None,
+            snapshot.reference,
+        )
+    if facts.attempt is None:
+        return _unavailable_integration_source(work_item_id, item.state, "the item has no current attempt")
+    checkpoint = facts.checkpoint
+    if checkpoint is None:
+        return _unavailable_integration_source(
+            work_item_id,
+            item.state,
+            "the current attempt has no protected candidate and no checkpoint acceptance",
+        )
+    if checkpoint.checkpoint is None or checkpoint.candidate_reference is None:
+        return _unavailable_integration_source(
+            work_item_id,
+            item.state,
+            "the current attempt's latest checkpoint acceptance references no candidate snapshot",
+        )
+    return query_models.IntegrationCandidateFacts(
+        facts.project_revision,
+        "accepted-checkpoint",
+        facts.attempt.attempt_id,
+        work_item_id,
+        checkpoint.checkpoint,
+        checkpoint.candidate_reference,
+    )
+
+
+def _unavailable_integration_source(
+    work_item_id: WorkItemId,
+    state: stored_state.StoredWorkItemState,
+    why: str,
+) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.INTEGRATION_CANDIDATE_UNAVAILABLE,
+        f"Item '{work_item_id}' in state '{state.value}' has no comparable candidate source: {why}.",
+        FailureDetails(
+            observed=(FailureFact("item_id", str(work_item_id)), FailureFact("item_state", state.value)),
+            mismatches=(),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def project_item_integration(observed: query_models.ObservedIntegration) -> query_models.ItemIntegration:
+    """Present one verified candidate source's content presence at a caller-named target commit."""
+
+    attempt_id = str(observed.attempt_id)
+    match observed.variant:
+        case "protected-review":
+            source: query_models.ItemIntegrationSource = query_models.ProtectedReviewSource(
+                attempt_id, observed.candidate_revision, observed.compared_from
+            )
+        case "accepted-checkpoint":
+            assert observed.checkpoint is not None
+            source = query_models.AcceptedCheckpointSource(
+                attempt_id, observed.checkpoint, observed.candidate_revision, observed.compared_from
+            )
+        case "completion":
+            source = query_models.CompletionSource(attempt_id, observed.candidate_revision, observed.compared_from)
+        case _ as unreachable:
+            assert_never(unreachable)
+    return query_models.ItemIntegration(
+        "pinboard-item-integration/v1",
+        "sqlite-v7",
+        str(observed.project_revision),
+        str(observed.item_id),
+        observed.target,
+        observed.target_revision,
+        source,
+        observed.presence,
+    )
+
+
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
     return query_models.WorkItemDefinitionView(
         "pinboard-work-item-definition/v2",

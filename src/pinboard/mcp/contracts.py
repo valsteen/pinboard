@@ -1073,6 +1073,20 @@ class ItemStatusUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbi
     mismatches: Empty
 
 
+class ItemStatusIntegrationItemNotFound(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
+    status: Literal["rejected"]
+    code: Literal["ITEM_NOT_FOUND"]
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input"]
+    changed_surfaces: Empty
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
+    mismatches: Empty
+    next_step: NonEmptyText
+
+
 class ItemStatusInconsistent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-item-status-result/v3"]
     status: Literal["rejected"]
@@ -2945,6 +2959,7 @@ ITEM_STATUS_RESULT_TYPES = (
     query_models.ItemIntegration,
     ItemStatusInvalid,
     ItemStatusUnavailable,
+    ItemStatusIntegrationItemNotFound,
     ItemStatusInconsistent,
     BranchOwnerNotFound,
     ItemStatusReceiptDamaged,
@@ -3057,6 +3072,7 @@ type ResultBoundary = (
     | type[query_models.BranchOwners]
     | type[ItemStatusInvalid]
     | type[ItemStatusUnavailable]
+    | type[ItemStatusIntegrationItemNotFound]
     | type[ItemStatusInconsistent]
     | type[BranchOwnerNotFound]
     | type[ItemStatusReceiptDamaged]

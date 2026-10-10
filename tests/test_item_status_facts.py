@@ -64,6 +64,19 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.assertIsInstance(next_step, str)
         self.assertIn(next_step_fragment, next_step)
 
+    def assert_integration_source(
+        self,
+        result: JsonObject,
+        kind: str,
+        candidate: str,
+        compared_from: str,
+    ) -> None:
+        source = self.json_object(result["source"])
+        self.assertEqual(kind, source["kind"])
+        self.assertEqual("work-a-1", source["attempt_id"])
+        self.assertEqual(candidate, source["candidate_revision"])
+        self.assertEqual(compared_from, source["compared_from_revision"])
+
     def roots(self, fixture: CheckpointFixture) -> JsonObject:
         return {"project_root": str(fixture.project), "work_root": str(fixture.work)}
 
@@ -117,8 +130,9 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.assertEqual("content-not-present", absent["presence"])
         self.assertEqual("HEAD", absent["target"])
         self.assertEqual(base, absent["resolved_target_revision"])
-        self.assertEqual("protected-review", self.json_object(absent["source"])["kind"])
-        self.assertEqual(fixture.candidate_revision, self.json_object(absent["source"])["candidate_revision"])
+        self.assert_integration_source(
+            absent, "protected-review", fixture.candidate_revision, fixture.brief.base_revision
+        )
         integrated = self.fixed_commit(fixture.project, "squash candidate")
         present = self.integration_leaf(fixture, "HEAD")
         self.assertEqual("content-present", present["presence"])
@@ -244,7 +258,9 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
     def test_integration_leaf_selects_accepted_checkpoint_and_completion_sources(self) -> None:
         fixture = self.accepted_package_fixture()
         checkpoint = self.integration_leaf(fixture)
-        self.assertEqual("accepted-checkpoint", self.json_object(checkpoint["source"])["kind"])
+        self.assert_integration_source(
+            checkpoint, "accepted-checkpoint", fixture.candidate_revision, fixture.brief.base_revision
+        )
         self.assertEqual(
             fixture.brief.checkpoint.checkpoint_id, self.json_object(checkpoint["source"])["checkpoint_id"]
         )
@@ -253,11 +269,15 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         resumed = self.transition_result(fixture, resume, {})
         self.assertEqual("committed", resumed["status"], resumed)
         resumed_checkpoint = self.integration_leaf(fixture)
-        self.assertEqual("accepted-checkpoint", self.json_object(resumed_checkpoint["source"])["kind"])
+        self.assert_integration_source(
+            resumed_checkpoint, "accepted-checkpoint", fixture.candidate_revision, fixture.brief.base_revision
+        )
         completed_fixture = self.checkpoint_fixture(candidate_form="current-head")
         self.complete(completed_fixture, "Completed candidate retained for integration check.")
         completed = self.integration_leaf(completed_fixture)
-        self.assertEqual("completion", self.json_object(completed["source"])["kind"])
+        self.assert_integration_source(
+            completed, "completion", completed_fixture.candidate_revision, completed_fixture.brief.base_revision
+        )
         self.assertEqual("content-present", completed["presence"])
 
     def test_integration_candidate_read_uses_keyed_and_indexed_queries(self) -> None:
@@ -337,10 +357,13 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                 },
             )
         self.assertEqual("PROJECT_GIT_ROOT_UNAVAILABLE", non_git["code"])
+        self.assertEqual("pinboard-mcp-item-status-result/v3", non_git["schema"])
         self.assertEqual("unchanged", non_git["effect"])
         self.assertEqual("correct-input", non_git["retry"])
         observed = self.json_array(non_git["observed"])
-        self.assertIn("git_diagnostic", [self.json_object(fact)["field"] for fact in observed])
+        observed_fields = {self.json_object(fact)["field"]: self.json_object(fact)["value"] for fact in observed}
+        self.assertIn("git_diagnostic", observed_fields)
+        self.assertEqual(non_git_directory, observed_fields["project_root"])
         non_git_next_step = non_git["next_step"]
         self.assertIsInstance(non_git_next_step, str)
         self.assertIn("Correct the local Git checkout", non_git_next_step)
@@ -348,14 +371,18 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.assert_integration_rejection(
             missing_target,
             "INTEGRATION_TARGET_UNRESOLVED",
-            {"target": "missing-target"},
+            {"target": "missing-target", "project_root": str(fixture.project)},
             "correct-input",
             "fetch outside Pinboard",
         )
         missing_item = self.integration_leaf(fixture, "HEAD", "missing-item")
-        self.assertEqual("ITEM_NOT_FOUND", missing_item["code"])
-        self.assertEqual("unchanged", missing_item["effect"])
-        self.assertEqual("correct-input", missing_item["retry"])
+        self.assert_integration_rejection(
+            missing_item,
+            "ITEM_NOT_FOUND",
+            {"item_id": "missing-item"},
+            "correct-input",
+            "Correct item_id",
+        )
         context = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
         self.assertIsNotNone(context)
         assert context is not None
@@ -418,6 +445,8 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.assertIn("does not decode", defect)
         recovery = result["recovery"]
         self.assertIsInstance(recovery, str)
+        self.assertIn("Report to the human", recovery)
+        self.assertIn("does not repair receipts", recovery)
         self.assertIn("do not retry", recovery)
 
     def inspection(self, fixture: CheckpointFixture) -> JsonObject:

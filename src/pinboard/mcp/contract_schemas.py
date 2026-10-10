@@ -77,6 +77,7 @@ from pinboard.mcp.contracts import (
     ExecutorBusyResult,
     ItemDefinitionRejected,
     ItemStatusInconsistent,
+    ItemStatusIntegrationItemNotFound,
     ItemStatusIntegrationRejected,
     ItemStatusInvalid,
     ItemStatusReceiptDamaged,
@@ -888,6 +889,8 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         msgspec.convert(content, type=query_models.ItemIntegration, strict=True)
     elif tool_name == "pinboard_item_status" and code == "ITEM_STATUS_INVALID":
         msgspec.convert(content, type=ItemStatusInvalid, strict=True)
+    elif tool_name == "pinboard_item_status" and code == "ITEM_NOT_FOUND" and "next_step" in content:
+        msgspec.convert(content, type=ItemStatusIntegrationItemNotFound, strict=True)
     elif tool_name == "pinboard_item_status" and code in {"ITEM_NOT_FOUND", "ITEM_DEFINITION_INVALID"}:
         msgspec.convert(content, type=ItemStatusUnavailable, strict=True)
     elif tool_name == "pinboard_item_status" and code == "BRANCH_OWNER_NOT_FOUND":

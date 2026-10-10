@@ -16,6 +16,7 @@ import msgspec
 from mcp.server.mcpserver.exceptions import ToolError
 from msgspec.structs import replace as replace_struct
 
+from pinboard.adapters.files.errors import RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
 from pinboard.adapters.sqlite import database as sqlite_database
@@ -236,6 +237,44 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                         ["git", "rev-parse", "main"], cwd=fixture.project, check=True, capture_output=True, text=True
                     ).stdout.strip(),
                 )
+
+    def test_integration_leaf_recognizes_squashed_protected_working_tree_candidate(self) -> None:
+        fixture = self.checkpoint_fixture()
+        base = fixture.brief.base_revision
+        subprocess.run(["git", "branch", "main", base], cwd=fixture.project, check=True, capture_output=True)
+        candidate_commit = self.fixed_commit(fixture.project, "commit protected working-tree candidate")
+        subprocess.run(["git", "switch", "main"], cwd=fixture.project, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "merge", "--squash", fixture.brief.branch], cwd=fixture.project, check=True, capture_output=True
+        )
+        squash_commit = self.fixed_commit(fixture.project, "squash protected working-tree candidate")
+
+        result = self.integration_leaf(fixture, "main")
+
+        self.assertEqual("pinboard-item-integration/v1", result["schema"])
+        self.assertEqual("content-present", result["presence"])
+        self.assertEqual("main", result["target"])
+        self.assertEqual(squash_commit, result["resolved_target_revision"])
+        self.assertNotEqual(candidate_commit, squash_commit)
+        self.assert_integration_source(
+            result, "protected-review", fixture.candidate_revision, fixture.brief.base_revision
+        )
+
+    def test_integration_leaf_maps_git_read_failures_to_typed_rejection(self) -> None:
+        fixture = self.checkpoint_fixture()
+        with patch(
+            "pinboard.mcp.read_operations.git_root.observe_integration_content",
+            side_effect=RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "target tree read failed"),
+        ):
+            result = self.integration_leaf(fixture, "HEAD")
+
+        self.assert_integration_rejection(
+            result,
+            "PROJECT_GIT_CHECKOUT_UNAVAILABLE",
+            {"project_root": str(fixture.project), "git_diagnostic": "target tree read failed"},
+            "correct-input",
+            "Correct the local Git checkout",
+        )
 
     def test_integration_leaf_reads_local_remote_tracking_refs_and_empty_diffs(self) -> None:
         fixture = self.checkpoint_fixture()

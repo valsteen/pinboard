@@ -3,62 +3,6 @@
   "detector_version": "5.1.2",
   "records": [
     {
-      "certification": {
-        "evidence_sha256": "e19bb3a3ce006ef4dedc5bdcfdb4ad094dfeead1385e9874189b555639c6baa7",
-        "reviewed_pair_sha256": "e8665ba6270c811658c0462815e38f7bdfb4e723678b625d6c711262a4554c36",
-        "reviewer_task_id": "01a0c09a-f2e0-7f81-ab27-de6c8d9c2424"
-      },
-      "identity": {
-        "format": "python",
-        "id": "project-export-versioned-checkpoint-export-shapes",
-        "lines": 19,
-        "occurrences": [
-          {
-            "endpoint": {
-              "end": 336,
-              "endLoc": {
-                "column": 42,
-                "line": 336,
-                "position": 8663
-              },
-              "name": "application/project_export.py",
-              "start": 318,
-              "startLoc": {
-                "column": 47,
-                "line": 318,
-                "position": 8045
-              }
-            },
-            "sha256": "00452974893fb58602aa7d7eb228b0f51beb78a37efea081579b85903a54b835"
-          },
-          {
-            "endpoint": {
-              "end": 359,
-              "endLoc": {
-                "column": 42,
-                "line": 359,
-                "position": 9391
-              },
-              "name": "application/project_export.py",
-              "start": 341,
-              "startLoc": {
-                "column": 47,
-                "line": 341,
-                "position": 8773
-              }
-            },
-            "sha256": "00452974893fb58602aa7d7eb228b0f51beb78a37efea081579b85903a54b835"
-          }
-        ],
-        "owners": [
-          "src/pinboard/application/project_export.py#CompatibilityProjectExportCheckpointPackageV2",
-          "src/pinboard/application/project_export.py#ProjectExportCheckpointPackageV3"
-        ],
-        "rationale": "Retained patch-only v2 and current complete-state v3 are independently required exact tagged project-export records. The match repeats required frozen strict fields, not behavior; their distinct schema tags and explicit tagged union preserve independently owned version semantics. Sharing fields through inheritance would couple those schemas solely to suppress analyzer output. Revisit only if v2 is retired or both versions gain one accepted schema owner without changing tags, strictness, field order, validation, or dependency direction.",
-        "tokens": 60
-      }
-    },
-    {
       "identity": {
         "id": "definition-v1-v2-wire-shapes",
         "format": "python",

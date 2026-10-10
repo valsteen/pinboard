@@ -577,7 +577,9 @@ def validate_loaded_work_state(
             (identity, history_archives.render_archive(archive)) for identity, archive in archived.items()
         )
     try:
-        candidate_snapshots.validate_candidate_snapshot_history(state, verified_artifacts)
+        candidate_snapshots.validate_candidate_snapshot_history(
+            state, verified_artifacts, {} if isinstance(archived, work_brief_models.WorkBriefFailure) else archived
+        )
     except ValueError as error:
         diagnostics.append(
             _error_diagnostic(ValidationDiagnosticCode.CANDIDATE_SNAPSHOT_INVALID.value, work_root, str(error))

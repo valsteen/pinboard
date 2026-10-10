@@ -1,10 +1,8 @@
 import asyncio
-import contextlib
 import io
 import json
 import os
 import re
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -22,23 +20,18 @@ from mcp_types import CallToolResult
 
 from pinboard.adapters import candidate_evidence, dispatch_operations
 from pinboard.adapters.files import root
-from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
-from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
-    candidate_snapshot_compatibility_models,
     candidate_snapshots,
     dispatch_models,
     stored_state,
     work_brief_models,
     work_briefs,
 )
-from pinboard.application.artifacts import ArtifactPublication, NewArtifact
 from pinboard.application.brief_source_models import BriefSourceFailure, authority_selector
-from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import common as mcp_common
@@ -237,7 +230,7 @@ class McpJobsTest(CheckpointPackageSupport):
             executor.shutdown()
 
     def test_native_restore_executes_inspected_snapshot_and_preserves_board_on_real_git(self) -> None:  # noqa: PLR0915 - complete native persisted-snapshot journey
-        for form in ("working-tree", "current-head", "retained-working-tree"):
+        for form in ("working-tree", "current-head"):
             with self.subTest(form=form):
                 fixture = self.checkpoint_fixture(
                     candidate_form="current-head" if form == "current-head" else "working-tree"
@@ -261,67 +254,6 @@ class McpJobsTest(CheckpointPackageSupport):
                 selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
                 payload.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
                 self.transition_json(fixture, selected, payload)
-                if form == "retained-working-tree":
-                    store = SQLiteWorkStore(fixture.work / "state.sqlite3")
-                    context = store.read_candidate_snapshot_context(AttemptId("work-a-1"))
-                    assert context is not None
-                    current = candidate_snapshots.decode_candidate_snapshot(
-                        (fixture.work / context.reference.selector).read_bytes()
-                    )
-                    candidate = "working-tree-sha256:" + sha256(current.diff).hexdigest()
-                    retained = candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot(
-                        "pinboard-candidate-snapshot/v1",
-                        current.attempt_id,
-                        current.item_id,
-                        candidate,
-                        current.branch,
-                        current.preimage_revision,
-                        current.accepted_base_revision,
-                        current.recorded_at,
-                        current.diff,
-                    )
-                    repository = ArtifactRepository(resolve_durable_roots(fixture.project, fixture.work))
-                    published = repository.publish(
-                        NewArtifact(
-                            work_models.ArtifactKind.EVIDENCE,
-                            candidate_snapshots.candidate_snapshot_key(retained),
-                            1,
-                            ".json",
-                            candidate_snapshots.canonical_candidate_snapshot_bytes(retained),
-                        )
-                    )
-                    assert isinstance(published, ArtifactPublication)
-                    accepted = store.accept_artifact_reference(
-                        fixture.work, published.reference, context.receipt.committed_at
-                    )
-                    assert not isinstance(accepted, DecisionFailure)
-                    with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
-                        connection.execute(
-                            "DELETE FROM artifact_refs WHERE artifact_ref_id = ?",
-                            (int(context.reference.artifact_ref_id),),
-                        )
-                        connection.execute(
-                            "UPDATE artifact_refs SET accepted_revision = ? WHERE artifact_ref_id = ?",
-                            (context.reference.accepted_revision, int(accepted.reference.artifact_ref_id)),
-                        )
-                        connection.execute(
-                            "UPDATE attempts SET candidate_revision = ? WHERE attempt_id = 'work-a-1'", (candidate,)
-                        )
-                        connection.execute(
-                            "UPDATE transition_history SET artifact_ref_id = ?, input_schema = ?, "
-                            "input_json = json_set(input_json, '$.candidate', ?, '$.snapshot_artifact_ref_id', ?), "
-                            "outcome_json = json_set(outcome_json, '$.candidate', ?) WHERE history_id = ?",
-                            (
-                                int(accepted.reference.artifact_ref_id),
-                                retained.schema,
-                                candidate,
-                                int(accepted.reference.artifact_ref_id),
-                                candidate,
-                                int(context.receipt.history_id),
-                            ),
-                        )
-                    (fixture.work / context.reference.selector).unlink()
-                    self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
                 inspected = mcp_reads._read_attempt_inspection(
                     str(fixture.project), str(fixture.work), "work-a-1", None, mcp_execution.CancellationToken()
                 )
@@ -391,7 +323,7 @@ class McpJobsTest(CheckpointPackageSupport):
                 asyncio.run(scenario(fixture, invocation, arguments, before, previously_inspected_candidate))
                 self.assertEqual(other_before, other_store.validated_snapshot())
                 self.assertEqual("fresh candidate\n", (target / "tracked.txt").read_text())
-                if form in ("working-tree", "retained-working-tree"):
+                if form == "working-tree":
                     self.assertIn(
                         "M  tracked.txt",
                         subprocess.run(

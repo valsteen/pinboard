@@ -18,7 +18,6 @@ from pinboard.adapters.files import root
 from pinboard.adapters.files.brief_sources import select_base_brief_source, select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.application import (
-    candidate_snapshot_compatibility_models,
     candidate_snapshots,
     checkpoint_packages,
     queries,
@@ -900,12 +899,6 @@ def _read_correction_snapshot(
     facts = store.read_review_job_context(AttemptId(brief.attempt_id), None, correction_history_id, None, None)
     receipt = None if facts is None else facts.correction_receipt
     assert receipt is not None  # the caller checked the selected canonical return before this operation
-    if isinstance(snapshot, candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot):
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
-            "A patch-only historical snapshot cannot authorize a new complete correction start; submit complete-state evidence.",
-            _fresh_review_details((), ()),
-        )
     outcome = checkpoint_packages.decode_correction_outcome(receipt, brief.attempt_id)
     if isinstance(outcome, DecisionFailure):
         return DispatchFailure(

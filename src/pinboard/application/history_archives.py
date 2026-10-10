@@ -171,10 +171,6 @@ def _candidate(
             identity = package.candidate_snapshot
             reference = references[(identity.kind, identity.key, identity.revision)]
             snapshot = candidate_snapshots.decode_candidate_snapshot(artifact_bytes[reference.artifact_ref_id])
-            if isinstance(
-                snapshot, candidate_snapshots.candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot
-            ):
-                raise ValueError("Current checkpoint evidence cannot lose complete-state assurance.")
             return CompleteCandidate(
                 package.candidate,
                 int(reference.artifact_ref_id),

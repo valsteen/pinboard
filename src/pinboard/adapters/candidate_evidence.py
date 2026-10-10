@@ -11,11 +11,10 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.adapters.files import candidate_compatibility, root
+from pinboard.adapters.files import root
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, RootError, RootErrorCode
 from pinboard.application import (
-    candidate_snapshot_compatibility_models,
     candidate_snapshots,
     checkpoint_compatibility_models,
     checkpoint_packages,
@@ -120,8 +119,6 @@ def observe_candidate_lineage(
                 if isinstance(committed, root.CurrentHeadCandidate) and committed.diff == snapshot.diff:
                     return query_models.CandidateLineage.COMMIT_CURRENT
                 return query_models.CandidateLineage.DRIFTED
-            case candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot():
-                return query_models.CandidateLineage.DRIFTED
             case candidate_snapshots.CommitCandidateSnapshot() | candidate_snapshots.DeclaredCommitCandidateSnapshot():
                 current = root.read_current_head_candidate(
                     source_checkout,
@@ -167,14 +164,6 @@ def restore_candidate(
                     candidate=snapshot.candidate,
                     diff=snapshot.diff,
                     excluded_untracked_paths=excluded,
-                )
-            case candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot():
-                restored = candidate_compatibility.restore_working_tree_candidate(
-                    source_checkout,
-                    expected_branch=snapshot.branch,
-                    preimage_revision=snapshot.preimage_revision,
-                    candidate=snapshot.candidate,
-                    diff=snapshot.diff,
                 )
             case candidate_snapshots.CommitCandidateSnapshot() | candidate_snapshots.DeclaredCommitCandidateSnapshot():
                 restored = root.restore_commit_candidate(

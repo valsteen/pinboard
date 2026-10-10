@@ -76,7 +76,7 @@ def export_project(
     if isinstance(archived, work_brief_models.WorkBriefFailure):
         return archived
     try:
-        candidate_snapshots.validate_candidate_snapshot_history(captured_state, verified_artifacts)
+        candidate_snapshots.validate_candidate_snapshot_history(captured_state, verified_artifacts, archived)
     except ValueError as error:
         return work_brief_models.WorkBriefFailure(
             work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,

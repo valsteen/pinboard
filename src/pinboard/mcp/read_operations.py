@@ -28,7 +28,6 @@ from pinboard.application import (
     brief_source_codec,
     brief_source_models,
     brief_sources,
-    candidate_snapshot_compatibility_models,
     candidate_snapshots,
     ports,
     queries,
@@ -391,10 +390,7 @@ def _read_correction_context(
             snapshot_view = contracts.DeclaredCorrectionSnapshot(*snapshot_fields, snapshot.excluded_untracked_paths)
         case candidate_snapshots.WorkingTreeCandidateSnapshot():
             snapshot_view = contracts.CorrectionSnapshotV2(*snapshot_fields)
-        case (
-            candidate_snapshots.CommitCandidateSnapshot()
-            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
-        ):
+        case candidate_snapshots.CommitCandidateSnapshot():
             snapshot_view = contracts.CorrectionSnapshotV1(*snapshot_fields)
         case _ as unreachable:
             assert_never(unreachable)

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -10,11 +11,18 @@ from msgspec.structs import replace as replace_struct
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import dispatch_models, history_archives, stored_state, work_brief_models, work_briefs
+from pinboard.application import (
+    candidate_snapshots,
+    dispatch_models,
+    history_archives,
+    stored_state,
+    work_brief_models,
+    work_briefs,
+)
 from pinboard.application.artifact_publication import AcceptedArtifactPublication
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.project_export import ProjectExport
-from pinboard.domain import work_models
+from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import WorkItemId
 from pinboard.mcp import server as mcp_server
@@ -178,6 +186,107 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
         self.assertEqual(facts.transition_receipts, selected.transition_receipts)
         self.assertIn("attempt-authority/v1", {value.input_schema for value in selected.transition_receipts})
         self.assertIn("submit-review", {value.action_kind.value for value in selected.transition_receipts})
+
+    def test_retired_snapshot_requires_verified_terminal_closure_and_remains_exact_exported_bytes(self) -> None:
+        fixture = self.completed_fixture()
+        state = fixture.store.validated_snapshot()
+        receipt = next(
+            value
+            for value in state.transition_receipts
+            if value.action_kind == decision_models.ActionKind.SUBMIT_REVIEW
+        )
+        reference = next(
+            value for value in state.artifact_references if value.artifact_ref_id == receipt.artifact_ref_id
+        )
+        payload = json.loads((fixture.work / reference.selector).read_bytes())
+        payload["schema"] = "pinboard-candidate-snapshot/v1"
+        payload["candidate_kind"] = "working-tree"
+        diff = msgspec.json.decode(msgspec.json.encode(payload["diff"]), type=bytes)
+        payload["candidate"] = "working-tree-sha256:" + hashlib.sha256(diff).hexdigest()
+        encoded = msgspec.json.encode(payload, order="sorted")
+        self.replace_artifact_bytes(fixture, reference, encoded)
+        receipt_input = json.loads(bytes(receipt.input_payload))
+        receipt_input["candidate"] = payload["candidate"]
+        outcome = json.loads(bytes(receipt.outcome_payload))
+        outcome["candidate"] = payload["candidate"]
+        with sqlite3.connect(fixture.work / "state.sqlite3") as connection:
+            connection.execute(
+                "UPDATE transition_history SET input_schema = ?, input_json = ?, outcome_json = ? WHERE history_id = ?",
+                (
+                    "pinboard-candidate-snapshot/v1",
+                    msgspec.json.encode(receipt_input, order="sorted").decode(),
+                    msgspec.json.encode(outcome, order="sorted").decode(),
+                    int(receipt.history_id),
+                ),
+            )
+        original = fixture.store.validated_snapshot()
+        self.assertEqual(10, self.run_cli(*fixture.common, "validate", "--json")[0])
+        self.assertNotEqual(0, self.run_cli(*fixture.common, "export", "--json")[0])
+        facts = history_archives.select_archive_facts(
+            original.lifecycle.attempts[0],
+            original.artifact_references,
+            original.transition_receipts,
+            original.lifecycle.definition_revisions,
+        )
+        roots = resolve_durable_roots(fixture.project, fixture.work)
+        artifacts = ArtifactRepository(roots)
+        source_bytes = {value.artifact_ref_id: artifacts.read(value) for value in facts.artifact_references}
+        archive = history_archives.derive_archive(facts, source_bytes, ())
+        assert isinstance(archive, history_archives.HistoryArchive)
+        published = write_revision(
+            roots,
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                history_archives.archive_key(archive.attempt_id),
+                1,
+                ".json",
+                history_archives.canonical_archive_bytes(archive),
+            ),
+        )
+        accepted = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW)
+        assert not isinstance(accepted, DecisionFailure)
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        all_bytes = {value.artifact_ref_id: artifacts.read(value) for value in fresh.artifact_references}
+        verified = history_archives.verify_archives(fresh, all_bytes)
+        assert not isinstance(verified, work_brief_models.WorkBriefFailure)
+        candidate_snapshots.validate_candidate_snapshot_history(fresh, all_bytes, verified)
+        self.assert_archive_readable(fixture, archive)
+        self.assertEqual(
+            encoded,
+            artifacts.read(
+                next(value for value in fresh.artifact_references if value.artifact_ref_id == reference.artifact_ref_id)
+            ),
+        )
+        self.assertEqual(original.transition_receipts, fresh.transition_receipts)
+        self.assertEqual(original.lifecycle.attempts, fresh.lifecycle.attempts)
+        self.assertEqual(original.lifecycle.work_items, fresh.lifecycle.work_items)
+        self.assertEqual(original.lifecycle.definition_revisions, fresh.lifecycle.definition_revisions)
+        with self.assertRaises(msgspec.DecodeError):
+            candidate_snapshots.decode_candidate_snapshot(encoded)
+        for changed in (
+            replace_struct(
+                archive,
+                sources=tuple(
+                    value for value in archive.sources if value.artifact_ref_id != int(reference.artifact_ref_id)
+                ),
+            ),
+            replace_struct(
+                archive,
+                receipts=tuple(value for value in archive.receipts if value.history_id != int(receipt.history_id)),
+            ),
+        ):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "exact verified terminal archive"):
+                candidate_snapshots.validate_candidate_snapshot_history(
+                    fresh, all_bytes, {facts.attempt.attempt_id: changed}
+                )
+        nonterminal = replace(
+            fresh,
+            lifecycle=replace(
+                fresh.lifecycle, attempts=(replace(fresh.lifecycle.attempts[0], state=work_models.AttemptState.ACTIVE),)
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "exact verified terminal archive"):
+            candidate_snapshots.validate_candidate_snapshot_history(nonterminal, all_bytes, verified)
 
     def test_archive_membership_preserves_independent_current_snapshot_validation(self) -> None:
         fixture = self.completed_fixture()

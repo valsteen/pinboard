@@ -3,14 +3,17 @@
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Annotated, Literal, Protocol, assert_never
+from typing import TYPE_CHECKING, Annotated, Literal, Protocol, assert_never
 
 import msgspec
 
-from pinboard.application import action_models, candidate_snapshot_compatibility_models, query_models, stored_state
+from pinboard.application import action_models, query_models, stored_state
 from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId
+
+if TYPE_CHECKING:
+    from pinboard.application.history_archives import HistoryArchive
 
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\r\n]+\z")]
 type Sha256 = Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
@@ -97,7 +100,6 @@ class DeclaredCommitCandidateSnapshot(
 type CandidateSnapshot = (
     WorkingTreeCandidateSnapshot
     | CommitCandidateSnapshot
-    | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot
     | DeclaredWorkingTreeCandidateSnapshot
     | DeclaredCommitCandidateSnapshot
 )
@@ -109,11 +111,7 @@ def excluded_untracked_paths(snapshot: CandidateSnapshot) -> tuple[str, ...]:
     match snapshot:
         case DeclaredWorkingTreeCandidateSnapshot() | DeclaredCommitCandidateSnapshot():
             return snapshot.excluded_untracked_paths
-        case (
-            WorkingTreeCandidateSnapshot()
-            | CommitCandidateSnapshot()
-            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
-        ):
+        case WorkingTreeCandidateSnapshot() | CommitCandidateSnapshot():
             return ()
         case _ as unreachable:
             assert_never(unreachable)
@@ -148,11 +146,7 @@ def canonical_candidate_snapshot_bytes(snapshot: CandidateSnapshot) -> bytes:
 
 def candidate_kind(snapshot: CandidateSnapshot) -> Literal["working-tree", "commit"]:
     match snapshot:
-        case (
-            WorkingTreeCandidateSnapshot()
-            | DeclaredWorkingTreeCandidateSnapshot()
-            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
-        ):
+        case WorkingTreeCandidateSnapshot() | DeclaredWorkingTreeCandidateSnapshot():
             return "working-tree"
         case CommitCandidateSnapshot() | DeclaredCommitCandidateSnapshot():
             return "commit"
@@ -164,11 +158,7 @@ def compared_from_revision(snapshot: CandidateSnapshot) -> str:
     """Name the revision the recorded diff starts from: a working tree's preimage or a commit's accepted base."""
 
     match snapshot:
-        case (
-            WorkingTreeCandidateSnapshot()
-            | DeclaredWorkingTreeCandidateSnapshot()
-            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
-        ):
+        case WorkingTreeCandidateSnapshot() | DeclaredWorkingTreeCandidateSnapshot():
             return snapshot.preimage_revision
         case CommitCandidateSnapshot() | DeclaredCommitCandidateSnapshot():
             return snapshot.accepted_base_revision
@@ -182,14 +172,7 @@ def decode_candidate_snapshot(value: bytes) -> CandidateSnapshot:
             value, type=DeclaredWorkingTreeCandidateSnapshot | DeclaredCommitCandidateSnapshot, strict=True
         )
     except msgspec.DecodeError:
-        try:
-            decoded = msgspec.json.decode(
-                value, type=WorkingTreeCandidateSnapshot | CommitCandidateSnapshot, strict=True
-            )
-        except msgspec.DecodeError:
-            decoded = msgspec.json.decode(
-                value, type=candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot, strict=True
-            )
+        decoded = msgspec.json.decode(value, type=WorkingTreeCandidateSnapshot | CommitCandidateSnapshot, strict=True)
     if canonical_candidate_snapshot_bytes(decoded) != value:
         raise ValueError("candidate snapshot is not canonical")
     return decoded
@@ -272,12 +255,14 @@ def verify_candidate_snapshot_context(
 def validate_candidate_snapshot_history(
     state: CandidateSnapshotState,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
+    archived: Mapping[AttemptId, HistoryArchive],
 ) -> tuple[CandidateSnapshotEvidence, ...]:
-    """Verify every retained review snapshot and every live-review correlation."""
+    """Verify current snapshots and independent terminal archive closure for retired bytes."""
 
     attempts = {value.attempt_id: value for value in state.lifecycle.attempts}
     references = {value.artifact_ref_id: value for value in state.artifact_references}
     verified: list[CandidateSnapshotEvidence] = []
+    linked: set[ArtifactRefId] = set()
     for receipt in state.transition_receipts:
         if receipt.action_kind != decision_models.ActionKind.SUBMIT_REVIEW or receipt.input_schema == "decision/v1":
             continue
@@ -297,6 +282,19 @@ def validate_candidate_snapshot_history(
         encoded = artifact_bytes.get(receipt.artifact_ref_id)
         if attempt is None or reference is None or encoded is None:
             raise ValueError("Candidate snapshot history is missing its attempt, reference, or verified bytes.")
+        if b'"candidate_kind":"working-tree"' in encoded and b'"schema":"pinboard-candidate-snapshot/v1"' in encoded:
+            archive = archived.get(attempt_id)
+            if (
+                attempt.state != work_models.AttemptState.DONE
+                or archive is None
+                or archive.attempt_id != str(attempt_id)
+                or archive.item_id != str(attempt.item_id)
+                or not any(value.artifact_ref_id == int(reference.artifact_ref_id) for value in archive.sources)
+                or not any(value.history_id == int(receipt.history_id) for value in archive.receipts)
+            ):
+                raise ValueError("Retired patch-only snapshot lacks its exact verified terminal archive closure.")
+            linked.add(reference.artifact_ref_id)
+            continue
         current = attempt.candidate_recorded_at == receipt.committed_at
         context = query_models.CandidateSnapshotContextFacts(
             attempt.attempt_id,
@@ -318,7 +316,7 @@ def validate_candidate_snapshot_history(
             for evidence in verified
         ):
             raise ValueError("A live review attempt lacks its exact accepted candidate snapshot.")
-    linked = {evidence.reference.artifact_ref_id for evidence in verified}
+    linked.update(evidence.reference.artifact_ref_id for evidence in verified)
     if any(
         reference.kind == work_models.ArtifactKind.EVIDENCE
         and "-candidate-snapshot-" in reference.key

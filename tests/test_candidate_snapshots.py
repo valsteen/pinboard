@@ -10,7 +10,6 @@ from unittest.mock import patch
 import msgspec
 
 from pinboard.adapters import candidate_evidence, lifecycle_artifacts
-from pinboard.adapters.files import candidate_compatibility
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
@@ -30,7 +29,7 @@ from pinboard.adapters.files.root import (
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import candidate_snapshot_compatibility_models, query_models
+from pinboard.application import query_models
 from pinboard.application.artifact_publication import ArtifactWriteFailure
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef
 from pinboard.application.candidate_identity import working_tree_identity
@@ -331,25 +330,6 @@ class CandidateSnapshotTest(unittest.TestCase):
             candidate_evidence.observe_candidate_lineage(source, evidence),
         )
 
-        legacy = candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot(
-            "pinboard-candidate-snapshot/v1",
-            snapshot.attempt_id,
-            snapshot.item_id,
-            f"working-tree-sha256:{hashlib.sha256(snapshot.diff).hexdigest()}",
-            snapshot.branch,
-            snapshot.preimage_revision,
-            snapshot.accepted_base_revision,
-            snapshot.recorded_at,
-            snapshot.diff,
-        )
-        self.assertEqual(
-            query_models.CandidateLineage.DRIFTED,
-            candidate_evidence.observe_candidate_lineage(
-                source,
-                CandidateSnapshotEvidence(legacy, context.reference, context.receipt),
-            ),
-        )
-
         with patch(
             "pinboard.adapters.candidate_evidence.root.observe_candidate_checkout_identity",
             side_effect=RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "unavailable"),
@@ -459,10 +439,10 @@ class CandidateSnapshotTest(unittest.TestCase):
         )
         historical = replace(state, transition_receipts=(legacy_receipt,))
 
-        self.assertEqual((), validate_candidate_snapshot_history(historical, {}))
+        self.assertEqual((), validate_candidate_snapshot_history(historical, {}, {}))
         opaque = replace(legacy_receipt, outcome_payload=work_models.CanonicalJson(b'{"retained":"opaque history"}'))
         self.assertEqual(
-            (), validate_candidate_snapshot_history(replace(historical, transition_receipts=(opaque,)), {})
+            (), validate_candidate_snapshot_history(replace(historical, transition_receipts=(opaque,)), {}, {})
         )
 
         attempt = historical.lifecycle.attempts[0]
@@ -477,7 +457,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             lifecycle=replace(historical.lifecycle, attempts=(live_attempt,)),
         )
         with self.assertRaisesRegex(ValueError, "live review attempt lacks"):
-            validate_candidate_snapshot_history(live, {})
+            validate_candidate_snapshot_history(live, {}, {})
 
         mismatched = replace(
             live,
@@ -487,7 +467,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             ),
         )
         with self.assertRaisesRegex(ValueError, "live review attempt lacks"):
-            validate_candidate_snapshot_history(mismatched, {})
+            validate_candidate_snapshot_history(mismatched, {}, {})
 
     def test_snapshot_verification_rejects_each_uncorrelated_source(self) -> None:
         snapshot, context, encoded = self.snapshot_context()
@@ -560,7 +540,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             transition_receipts=(context.receipt,),
         )
         self.assertEqual(
-            1, len(validate_candidate_snapshot_history(correlated, {context.reference.artifact_ref_id: encoded}))
+            1, len(validate_candidate_snapshot_history(correlated, {context.reference.artifact_ref_id: encoded}, {}))
         )
 
         missing = (
@@ -569,16 +549,18 @@ class CandidateSnapshotTest(unittest.TestCase):
         )
         for invalid in missing:
             with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "missing its attempt"):
-                validate_candidate_snapshot_history(invalid, {})
+                validate_candidate_snapshot_history(invalid, {}, {})
         with self.assertRaisesRegex(ValueError, "Every review submission"):
             validate_candidate_snapshot_history(
                 replace(correlated, transition_receipts=(replace(context.receipt, input_schema="unknown/v1"),)),
+                {},
                 {},
             )
         with self.assertRaisesRegex(ValueError, "not linked from review history"):
             validate_candidate_snapshot_history(
                 replace(correlated, transition_receipts=(), lifecycle=replace(correlated.lifecycle, attempts=())),
                 {context.reference.artifact_ref_id: encoded},
+                {},
             )
 
     def test_working_tree_snapshot_is_canonical_and_restores_with_index(self) -> None:
@@ -639,39 +621,22 @@ class CandidateSnapshotTest(unittest.TestCase):
             ),
         )
 
-    def test_retained_patch_only_snapshot_restores_its_known_preimage_without_relabeling(self) -> None:
-        source, base = self.repository()
-        (source / "tracked.txt").write_text("historical candidate\n", encoding="utf-8")
-        diff = read_working_tree_candidate(source).diff
-        candidate = f"working-tree-sha256:{hashlib.sha256(diff).hexdigest()}"
-        snapshot = candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot(
-            "pinboard-candidate-snapshot/v1",
-            "attempt-1",
-            "item-1",
-            candidate,
-            "main",
-            base,
-            base,
-            SQLITE_NOW.isoformat(),
-            diff,
+    def test_retired_patch_only_snapshot_cannot_decode_or_authorize_restore(self) -> None:
+        snapshot, context, _encoded = self.snapshot_context()
+        retired = msgspec.to_builtins(snapshot)
+        retired["schema"] = "pinboard-candidate-snapshot/v1"
+        retired["candidate"] = f"working-tree-sha256:{hashlib.sha256(snapshot.diff).hexdigest()}"
+        encoded = msgspec.json.encode(retired, order="sorted")
+        with self.assertRaises(msgspec.DecodeError):
+            decode_candidate_snapshot(encoded)
+        reference = replace(
+            context.reference, content_sha256=hashlib.sha256(encoded).hexdigest(), size_bytes=len(encoded)
         )
-        encoded = canonical_candidate_snapshot_bytes(snapshot)
-        decoded = decode_candidate_snapshot(encoded)
-        self.assertEqual(encoded, canonical_candidate_snapshot_bytes(decoded))
-        target = self.clone(source)
-
-        restored = candidate_compatibility.restore_working_tree_candidate(
-            target,
-            expected_branch="main",
-            preimage_revision=decoded.preimage_revision,
-            candidate=decoded.candidate,
-            diff=decoded.diff,
-        )
-
-        self.assertEqual(CandidateRestoreSuccess(True, candidate), restored)
-        self.assertEqual("historical candidate\n", (target / "tracked.txt").read_text())
-        self.assertEqual(base, self.git(target, "rev-parse", "HEAD"))
-        self.assertNotEqual(candidate, read_working_tree_candidate(target).identity)
+        receipt = replace(context.receipt, input_schema="pinboard-candidate-snapshot/v1")
+        context = replace(context, reference=reference, receipt=receipt)
+        with patch("pinboard.adapters.candidate_evidence.read_reference", return_value=encoded):
+            rejected = candidate_evidence.read_candidate_evidence_from_context(Path("/unused"), context, None)
+        self.assertIsInstance(rejected, DecisionFailure)
 
     def test_working_tree_restore_rejects_each_unsafe_precondition_and_reports_changed_failure(self) -> None:
         source, base = self.repository()

@@ -1340,29 +1340,33 @@ type DefinitionView = WorkItemDefinitionView | definition_compatibility.Historic
 
 
 def project_definition(definition: stored_state.StoredDefinition) -> DefinitionView:
-    if isinstance(definition, definition_compatibility.HistoricalDefinitionV1):
-        return definition
-    return WorkItemDefinitionView(
-        definition.title,
-        definition.objective,
-        definition.hypothesis,
-        definition.evidence,
-        definition.scope,
-        definition.non_scope,
-        definition.acceptance_criteria,
-        tuple(definition.dependencies),
-        definition.effect,
-        definition.unlock,
-        definition.checkout_policy,
-        tuple(
-            WorkObligationView(
-                obligation.obligation_id,
-                obligation.statement,
-                obligation.deferral_policy,
+    match definition:
+        case definition_compatibility.HistoricalDefinitionV1():
+            return definition
+        case work_models.WorkItemDefinition():
+            return WorkItemDefinitionView(
+                definition.title,
+                definition.objective,
+                definition.hypothesis,
+                definition.evidence,
+                definition.scope,
+                definition.non_scope,
+                definition.acceptance_criteria,
+                tuple(definition.dependencies),
+                definition.effect,
+                definition.unlock,
+                definition.checkout_policy,
+                tuple(
+                    WorkObligationView(
+                        obligation.obligation_id,
+                        obligation.statement,
+                        obligation.deferral_policy,
+                    )
+                    for obligation in definition.obligations
+                ),
             )
-            for obligation in definition.obligations
-        ),
-    )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

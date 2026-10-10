@@ -318,6 +318,34 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.assertEqual(
             fixture.brief.checkpoint.checkpoint_id, self.json_object(checkpoint["source"])["checkpoint_id"]
         )
+        subprocess.run(
+            ["git", "branch", "main", fixture.brief.base_revision],
+            cwd=fixture.project,
+            check=True,
+            capture_output=True,
+        )
+        candidate_commit = self.fixed_commit(fixture.project, "commit accepted checkpoint candidate")
+        subprocess.run(["git", "switch", "main"], cwd=fixture.project, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "merge", "--squash", fixture.brief.branch], cwd=fixture.project, check=True, capture_output=True
+        )
+        squash_commit = self.fixed_commit(fixture.project, "squash accepted checkpoint candidate")
+        integrated_checkpoint = self.integration_leaf(fixture, "main")
+        self.assertEqual("pinboard-item-integration/v1", integrated_checkpoint["schema"])
+        self.assertEqual("content-present", integrated_checkpoint["presence"])
+        self.assertEqual("main", integrated_checkpoint["target"])
+        self.assertEqual(squash_commit, integrated_checkpoint["resolved_target_revision"])
+        self.assertNotEqual(candidate_commit, squash_commit)
+        self.assert_integration_source(
+            integrated_checkpoint,
+            "accepted-checkpoint",
+            fixture.candidate_revision,
+            fixture.brief.base_revision,
+        )
+        self.assertEqual(
+            fixture.brief.checkpoint.checkpoint_id,
+            self.json_object(integrated_checkpoint["source"])["checkpoint_id"],
+        )
         self.close_prerequisite(fixture)
         resume = self.project_action(fixture, "resume:work-a")
         resumed = self.transition_result(fixture, resume, {})

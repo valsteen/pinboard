@@ -455,6 +455,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         original = next(value for value in state.lifecycle.definition_revisions if value.item_id == item_id)
         definitions = state.lifecycle.definition_revisions
         if historical:
+            assert isinstance(original.definition, work_models.WorkItemDefinition)
             revised_definition = replace(original.definition, objective="The current objective changed.")
             revised_digest = work_item_definition_digest(revised_definition)
             assert isinstance(revised_digest, str)
@@ -484,6 +485,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         )
         unrelated_definitions = []
         for index, item in enumerate(unrelated_items):
+            assert isinstance(original.definition, work_models.WorkItemDefinition)
             definition = replace(original.definition, objective=f"Unrelated preparation objective {index}.")
             digest = work_item_definition_digest(definition)
             assert isinstance(digest, str)

@@ -5,6 +5,7 @@ reads the filesystem, or obtains time. Expected stale CAS writes return a
 ``DecisionFailure``; SQLite and persisted-invariant failures remain exceptional.
 """
 
+import hashlib
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -20,9 +21,7 @@ from pinboard.application import queries, query_models, released_v6_compatibilit
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.history import (
-    decode_work_item_definition,
     work_item_definition_bytes,
-    work_item_definition_digest,
 )
 from pinboard.domain.identifiers import (
     ActionId,
@@ -459,11 +458,11 @@ def validate_current_attempt_relation(
 
 def decode_definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionRevision:
     value = decode_row(row, _DefinitionRevisionRow)
-    definition = decode_work_item_definition(value.definition_json)
-    if isinstance(definition, DecisionFailure):
-        raise StorageError(StorageErrorCode.INVALID_STATE, definition.message)
-    digest = work_item_definition_digest(definition)
-    if not isinstance(digest, str) or digest != value.digest or value.after_digest != value.digest:
+    try:
+        definition = stored_state.decode_stored_definition(value.definition_json)
+    except (msgspec.DecodeError, ValueError) as error:
+        raise StorageError(StorageErrorCode.INVALID_STATE, f"Definition history is invalid: {error}") from error
+    if hashlib.sha256(value.definition_json).hexdigest() != value.digest or value.after_digest != value.digest:
         raise StorageError(
             StorageErrorCode.INVALID_STATE,
             "Definition history digest does not match its canonical definition.",
@@ -480,6 +479,12 @@ def decode_definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionR
         value.accepted_project_revision,
         value.accepted_at,
     )
+
+
+def current_definition_anchor(value: stored_state.ItemDefinitionRevision) -> work_models.DefinitionAnchor:
+    if not isinstance(value.definition, work_models.WorkItemDefinition):
+        raise StorageError(StorageErrorCode.INVALID_STATE, "A live work item requires a genuine current v2 definition.")
+    return work_models.DefinitionAnchor(value.item_id, value.revision, value.digest, value.definition)
 
 
 def read_current_definition(
@@ -925,7 +930,7 @@ def read_item_definition_history(
 
 
 def _definition_revision_values(value: stored_state.ItemDefinitionRevision) -> tuple[str | int | bytes | None, ...]:
-    payload = work_item_definition_bytes(value.definition)
+    payload = work_item_definition_bytes(current_definition_anchor(value).definition)
     if isinstance(payload, DecisionFailure):
         raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, payload.message)
     return (

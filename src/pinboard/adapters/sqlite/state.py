@@ -6,6 +6,7 @@ persisted-invariant failures remain exceptional; the transaction owner stays in
 ``store``.
 """
 
+import hashlib
 import sqlite3
 from collections import Counter
 from collections.abc import Mapping, Set
@@ -28,7 +29,6 @@ from pinboard.adapters.sqlite.pr_review import validate_review_history
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
 from pinboard.application import project_export, stored_state
 from pinboard.domain import authority_models, work_models
-from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
     AttemptId,
     HistoryId,
@@ -215,8 +215,12 @@ def _current_definitions(
         if value.item_id not in definitions_by_item:
             raise StorageError(error_code, "Definition history names an unknown work item.")
         definitions_by_item[value.item_id].append(value)
-        digest = work_item_definition_digest(value.definition)
-        if not isinstance(digest, str) or digest != value.digest or value.after_digest != value.digest:
+        payload = stored_state.stored_definition_bytes(value.definition)
+        if (
+            not isinstance(payload, bytes)
+            or hashlib.sha256(payload).hexdigest() != value.digest
+            or value.after_digest != value.digest
+        ):
             raise StorageError(error_code, "Definition history digest does not match its canonical definition.")
     current_definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision] = {}
     for item_id, revisions in definitions_by_item.items():
@@ -303,6 +307,11 @@ def _validate_current_state(state: stored_state.StoredWorkState, error_code: Sto
     _validate_replacements(state.replacements, item_ids, error_code)
     current_definitions = _current_definitions(state, item_ids, error_code)
     item_states = {value.item_id: value.state for value in state.lifecycle.work_items}
+    for item_id, item_state in item_states.items():
+        if stored_state.live_work_state(item_state) is not None and not isinstance(
+            current_definitions[item_id].definition, work_models.WorkItemDefinition
+        ):
+            raise StorageError(error_code, "A live work item requires a genuine current v2 definition.")
     current_attempt_states = {
         value.item_id: value.state for value in state.lifecycle.attempts if value.state != work_models.AttemptState.DONE
     }

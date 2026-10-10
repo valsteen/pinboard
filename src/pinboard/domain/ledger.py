@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from pinboard.domain import work_models
@@ -10,6 +10,7 @@ from pinboard.domain.identifiers import AttemptId, HistoryId, LeaseId, ProposalI
 class LedgerSnapshot:
     revision: str
     items: tuple[work_models.WorkItem, ...]
+    dependency_facts: tuple[work_models.DefinitionDependencies, ...] = field(kw_only=True)
     attempts: tuple[work_models.AttemptRecord, ...] = ()
     artifacts: tuple[work_models.ArtifactRecord, ...] = ()
     proposals: tuple[work_models.ProposalRecord, ...] = ()
@@ -36,6 +37,9 @@ class LedgerSnapshot:
 
     def definition(self, work_item_id: WorkItemId) -> work_models.DefinitionAnchor | None:
         return next((definition for definition in self.definitions if definition.work_item_id == work_item_id), None)
+
+    def recorded_dependencies(self, work_item_id: WorkItemId) -> tuple[WorkItemId, ...] | None:
+        return next((value.dependencies for value in self.dependency_facts if value.work_item_id == work_item_id), None)
 
     def attempts_by_id(self) -> Mapping[AttemptId, work_models.AttemptRecord]:
         return MappingProxyType({attempt.attempt: attempt for attempt in self.attempts})

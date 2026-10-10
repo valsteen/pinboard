@@ -1315,31 +1315,6 @@ def select_integration_source(
     return _checkpoint_selection(facts.work_item_id, state, attempt.attempt_id, attempt.latest_checkpoint)
 
 
-def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
-    return query_models.WorkItemDefinitionView(
-        "pinboard-work-item-definition/v2",
-        definition.title,
-        definition.objective,
-        definition.hypothesis,
-        definition.evidence,
-        definition.scope,
-        definition.non_scope,
-        definition.acceptance_criteria,
-        tuple(definition.dependencies),
-        definition.effect,
-        definition.unlock,
-        definition.checkout_policy,
-        tuple(
-            query_models.WorkObligationView(
-                obligation.obligation_id,
-                obligation.statement,
-                obligation.deferral_policy,
-            )
-            for obligation in definition.obligations
-        ),
-    )
-
-
 def select_item_definition(
     reader: ports.ItemDefinitionReader, work_item_id: WorkItemId
 ) -> DecisionResult[query_models.ItemDefinition]:
@@ -1360,7 +1335,7 @@ def select_item_definition(
         selected.item_subject_revision,
         selected.definition.revision,
         selected.definition.digest,
-        _project_definition(selected.definition.definition),
+        query_models.project_definition(selected.definition.definition),
     )
 
 
@@ -1379,7 +1354,7 @@ def select_item_definition_history(
         query_models.ItemDefinitionHistoryRow(
             value.revision,
             value.digest,
-            _project_definition(value.definition),
+            query_models.project_definition(value.definition),
             value.reason,
             value.source_task_id,
             value.accepted_at.isoformat(),

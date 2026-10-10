@@ -44,6 +44,7 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     NonterminalAttemptContextSelection,
     TerminalAttemptContextSelection,
+    current_definition_anchor,
     decode_definition_revision,
     read_attempt_context,
     read_branch_owners,
@@ -291,12 +292,7 @@ def _read_generated_view_facts(
                         item.outcome_evidence,
                     ),
                     tuple((value.dependency_id, value.queue_position is not None) for value in dependency_rows),
-                    work_models.DefinitionAnchor(
-                        definition.item_id,
-                        definition.revision,
-                        definition.digest,
-                        definition.definition,
-                    ),
+                    current_definition_anchor(definition),
                     selected_proposals,
                     selected_preparations.get(item_id),
                     replacements_by_item.get(item_id),

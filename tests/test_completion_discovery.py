@@ -12,8 +12,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from pinboard.adapters.files.root import read_working_tree_candidate
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import actions, query_models
-from pinboard.domain import history
+from pinboard.application import actions, query_models, stored_state
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import contract_schemas
@@ -410,7 +409,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
             value for value in snapshot.lifecycle.definition_revisions if value.item_id == WorkItemId("work-a")
         )
         current = definitions[-1]
-        definition_bytes = history.work_item_definition_bytes(current.definition)
+        definition_bytes = stored_state.stored_definition_bytes(current.definition)
         self.assertNotIsInstance(definition_bytes, DecisionFailure)
         assert isinstance(definition_bytes, bytes)
         definition = self.json_object(json.loads(definition_bytes))

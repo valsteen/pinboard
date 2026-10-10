@@ -195,6 +195,7 @@ def _commit_same_definition_revision(
     )
     assert isinstance(action, decision_models.ReviseWorkItemAction)
     current = next(value for value in before.lifecycle.definition_revisions if value.item_id == WorkItemId("work-a"))
+    assert isinstance(current.definition, work_models.WorkItemDefinition)
     revised = replace(
         current.definition,
         objective="Commit exactly one concurrent definition revision.",
@@ -524,6 +525,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
             for value in state.lifecycle.definition_revisions
             if value.item_id == WorkItemId("work-a") and value.revision == 1
         )
+        assert isinstance(current_definition.definition, work_models.WorkItemDefinition)
         revised_definition = replace(current_definition.definition, title="Revised work A")
         revised_digest = expect_success(work_item_definition_digest(revised_definition))
         current_definition = replace(
@@ -673,6 +675,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         )
         self.assertEqual((1, 2), tuple(value.revision for value in revisions))
         self.assertEqual((WorkItemId("intake-work"),), revisions[-1].definition.dependencies)
+        assert isinstance(revisions[-1].definition, work_models.WorkItemDefinition)
         self.assertEqual(work_item_definition_digest(revisions[-1].definition), revisions[-1].digest)
         self.assertEqual(before.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
         self.assertEqual(len(before.transition_receipts) + 1, len(reloaded.transition_receipts))

@@ -395,6 +395,7 @@ class MutationPersistenceTest(unittest.TestCase):
             for value in state.lifecycle.definition_revisions
             if value.item_id == state.lifecycle.attempts[0].item_id
         )
+        assert isinstance(current_definition.definition, work_models.WorkItemDefinition)
         revised_definition = replace(current_definition.definition, dependencies=())
         revised_scope_digest = expect_success(work_item_definition_digest(revised_definition))
         current = state.artifact_references[0]

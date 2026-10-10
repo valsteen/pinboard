@@ -78,6 +78,8 @@ Use `pinboard_brief_review` operation `publish` with exact roots, `brief_artifac
 
 Focused project `pinboard_actions` discovery for the exact `complete` action supplies the current completion contract. If an active checkpointed attempt needs candidate protection, that focused MCP result supplies the executable authority, submission, and rediscovery recipe using these request shapes and the caller's exact roots. Make that focused discovery read when the transition result does not include a recovery recipe. Discovery neither acquires authority, submits evidence nor completes automatically.
 
+Historical definition queries and portable export preserve the original v1 schema and full fields without a checkout policy or synthesized obligations. These records are historical evidence, never current execution authority. Activation, rebind, resume and dispatch require a genuine current v2 definition.
+
 ## Brief construction and source preparation
 
 Use `pinboard_brief_contract` with a strict `request` containing exact roots and `operation: full`, or `operation: starter` with `boundary: local` or `cross-boundary`. Copy the returned complete starter, choose its structural variants, and fill unresolved values from accepted facts. Construction resolves no roots or ledger and grants no readiness or authority.

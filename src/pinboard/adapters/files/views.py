@@ -105,6 +105,19 @@ def _render_item(
         next_step = ""
     else:
         next_step = "No current action is recorded for this finished item.\n\n"
+    execution_details = ""
+    if isinstance(accepted, work_models.WorkItemDefinition):
+        execution_details = "\n### Obligations\n\n" + _bullets(
+            tuple(
+                f"{value.obligation_id} ({_deferral_label(value.deferral_policy)}): {value.statement}"
+                for value in accepted.obligations
+            )
+        )
+        policy_details = f"- Checkout policy: {accepted.checkout_policy.value}\n"
+        format_details = ""
+    else:
+        policy_details = ""
+        format_details = "- Historical definition schema: pinboard-work-item-definition/v1\n"
     return (
         _render_header("work-item-view")
         + f"# {accepted.title}\n\n{accepted.objective}\n\n"
@@ -133,13 +146,7 @@ def _render_item(
         + _bullets(accepted.evidence)
         + "\n### Dependencies\n\n"
         + _bullets(dependency_reasons)
-        + "\n### Obligations\n\n"
-        + _bullets(
-            tuple(
-                f"{value.obligation_id} ({_deferral_label(value.deferral_policy)}): {value.statement}"
-                for value in accepted.obligations
-            )
-        )
+        + execution_details
         + "\n"
         + pr_reviews.render_review_history(item.item_id, review_history)
         + "\n## Record details\n\n"
@@ -162,7 +169,8 @@ def _render_item(
         + f"- Outcome evidence: {item.outcome_evidence or 'none'}\n"
         + f"- Definition revision: {definition.revision}\n"
         + f"- Definition digest: {definition.digest}\n"
-        + f"- Checkout policy: {accepted.checkout_policy.value}\n"
+        + format_details
+        + policy_details
     ).encode()
 
 

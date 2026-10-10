@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 import msgspec
 
-from pinboard.domain import definition_compatibility, work_models
+from pinboard.domain import work_models
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -116,8 +116,6 @@ def _work_item_definition_payload(
     definition: work_models.WorkItemDefinition,
 ) -> DecisionResult[WorkItemDefinitionPayload]:
     try:
-        if definition.checkout_policy == work_models.CheckoutPolicy.LEGACY_UNRECORDED:
-            raise msgspec.ValidationError("current definitions require an explicit checkout policy")
         return msgspec.convert(
             {
                 "acceptance_criteria": definition.acceptance_criteria,
@@ -149,8 +147,6 @@ def _work_item_definition_payload(
 
 
 def work_item_definition_bytes(definition: work_models.WorkItemDefinition) -> DecisionResult[bytes]:
-    if definition.checkout_policy == work_models.CheckoutPolicy.LEGACY_UNRECORDED:
-        return definition_compatibility.encode_v1(definition)
     payload = _work_item_definition_payload(definition)
     if isinstance(payload, DecisionFailure):
         return payload
@@ -166,14 +162,6 @@ def work_item_definition_digest(definition: work_models.WorkItemDefinition) -> D
 
 def decode_work_item_definition(payload: bytes) -> DecisionResult[work_models.WorkItemDefinition]:
     try:
-        schema = msgspec.json.decode(payload, type=dict[str, msgspec.Raw]).get("schema")
-        if schema is not None and msgspec.json.decode(schema, type=str) == "pinboard-work-item-definition/v1":
-            return definition_compatibility.decode_v1(payload)
-    except (msgspec.DecodeError, ValueError) as error:
-        return DecisionFailure(
-            DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Definition JSON is invalid: {error}", None
-        )
-    try:
         record = msgspec.json.decode(payload, type=WorkItemDefinitionPayload, strict=True)
     except msgspec.DecodeError as error:
         return DecisionFailure(
@@ -185,6 +173,10 @@ def decode_work_item_definition(payload: bytes) -> DecisionResult[work_models.Wo
             "Definition JSON must use the canonical encoding.",
             None,
         )
+    return work_item_definition_from_payload(record)
+
+
+def work_item_definition_from_payload(record: WorkItemDefinitionPayload) -> work_models.WorkItemDefinition:
     return work_models.WorkItemDefinition(
         record.title,
         record.objective,

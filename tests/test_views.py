@@ -87,6 +87,7 @@ class GeneratedViewsTest(unittest.TestCase):
         state = store.validated_snapshot()
         revisions = state.lifecycle.definition_revisions
         revision = next(value for value in revisions if value.item_id == work_models.WorkItemId("work-a"))
+        assert isinstance(revision.definition, work_models.WorkItemDefinition)
         allowed = replace(
             revision,
             definition=replace(

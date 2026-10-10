@@ -124,8 +124,6 @@ def validate_definition_brief_agreement(
     definition: work_models.WorkItemDefinition,
     brief: work_brief_models.WorkBrief,
 ) -> work_brief_models.WorkBriefFailure | None:
-    if definition.checkout_policy == work_models.CheckoutPolicy.LEGACY_UNRECORDED:
-        return _invalid("Current work briefs require a current definition with explicit checkout policy.")
     expected_ids = tuple(value.obligation_id for value in definition.obligations)
     observed_ids = tuple(work_models.ObligationId(value.obligation_id) for value in brief.obligation_correspondence)
     if len(observed_ids) != len(set(observed_ids)) or set(observed_ids) != set(expected_ids):
@@ -154,6 +152,7 @@ def _validate_current_definition(
     definition = selected.definition
     if (
         definition is None
+        or not isinstance(definition.definition, work_models.WorkItemDefinition)
         or definition.revision != brief.accepted_scope.revision
         or definition.digest != brief.accepted_scope.digest
     ):

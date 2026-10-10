@@ -53,7 +53,6 @@ class CheckoutPolicy(Enum):
     MAIN = "main"
     ISOLATED = "isolated"
     COORDINATOR_SELECTED = "coordinator-selected"
-    LEGACY_UNRECORDED = "legacy-unrecorded"
 
 
 class CheckoutSelection(Enum):
@@ -368,6 +367,12 @@ class DefinitionAnchor:
     revision: int
     digest: str
     definition: WorkItemDefinition
+
+
+@dataclass(frozen=True, slots=True)
+class DefinitionDependencies:
+    work_item_id: WorkItemId
+    dependencies: tuple[WorkItemId, ...]
 
 
 @dataclass(frozen=True, slots=True)

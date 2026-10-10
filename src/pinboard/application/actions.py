@@ -150,7 +150,7 @@ def select_current_actions(
     """Read the minimum current facts and select an optional exact legal action."""
 
     if role == decision_models.Role.OBSERVER:
-        snapshot = LedgerSnapshot("", ())
+        snapshot = LedgerSnapshot("", (), dependency_facts=())
     elif action_id is not None:
         scope = action_identity_scope(action_id)
         if scope is None:
@@ -165,7 +165,7 @@ def select_current_actions(
     elif lease_id is not None and generation is not None:
         snapshot = reader.read_leased_action_snapshot(role, lease_id, generation, observed_at)
     else:
-        snapshot = LedgerSnapshot("", ())
+        snapshot = LedgerSnapshot("", (), dependency_facts=())
     discovered = discover_current_actions(snapshot, role, lease_id=lease_id, generation=generation)
     if isinstance(discovered, DecisionFailure) or action_id is None:
         return discovered

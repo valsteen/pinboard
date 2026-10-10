@@ -7,7 +7,7 @@ from typing import Annotated, Literal, assert_never
 
 import msgspec
 
-from pinboard.application import artifacts, released_v6_compatibility, stored_state
+from pinboard.application import artifacts, definition_compatibility, released_v6_compatibility, stored_state
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DescribedCode
 from pinboard.domain.identifiers import (
@@ -1319,8 +1319,9 @@ class WorkObligationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     deferral_policy: work_models.ObligationDeferralPolicy
 
 
-class WorkItemDefinitionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-work-item-definition/v2"]
+class WorkItemDefinitionView(
+    msgspec.Struct, tag="pinboard-work-item-definition/v2", tag_field="schema", frozen=True, forbid_unknown_fields=True
+):
     title: str
     objective: str
     hypothesis: str
@@ -1335,6 +1336,35 @@ class WorkItemDefinitionView(msgspec.Struct, frozen=True, forbid_unknown_fields=
     obligations: tuple[WorkObligationView, ...]
 
 
+type DefinitionView = WorkItemDefinitionView | definition_compatibility.HistoricalDefinitionV1
+
+
+def project_definition(definition: stored_state.StoredDefinition) -> DefinitionView:
+    if isinstance(definition, definition_compatibility.HistoricalDefinitionV1):
+        return definition
+    return WorkItemDefinitionView(
+        definition.title,
+        definition.objective,
+        definition.hypothesis,
+        definition.evidence,
+        definition.scope,
+        definition.non_scope,
+        definition.acceptance_criteria,
+        tuple(definition.dependencies),
+        definition.effect,
+        definition.unlock,
+        definition.checkout_policy,
+        tuple(
+            WorkObligationView(
+                obligation.obligation_id,
+                obligation.statement,
+                obligation.deferral_policy,
+            )
+            for obligation in definition.obligations
+        ),
+    )
+
+
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition/v1"]
     authority: Literal["sqlite-v7"]
@@ -1343,13 +1373,13 @@ class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_subject_revision: int
     definition_revision: int
     definition_digest: str
-    definition: WorkItemDefinitionView
+    definition: DefinitionView
 
 
 class ItemDefinitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     revision: int
     digest: str
-    definition: WorkItemDefinitionView
+    definition: DefinitionView
     reason: str
     source_task: str
     timestamp: str

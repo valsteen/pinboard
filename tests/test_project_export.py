@@ -20,7 +20,7 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import released_v6_compatibility, stored_state
+from pinboard.application import query_models, released_v6_compatibility, stored_state
 from pinboard.application.artifacts import ArtifactRef, NewArtifact
 from pinboard.application.project_export import (
     ContentEncoding,
@@ -140,6 +140,7 @@ class ProjectExportTest(unittest.TestCase):
             for value in state.lifecycle.definition_revisions
             if value.item_id == WorkItemId("work-a") and value.revision == 1
         )
+        assert isinstance(current_definition.definition, work_models.WorkItemDefinition)
         revised_definition = replace(current_definition.definition, objective="Export every accepted project fact.")
         revised_digest = work_item_definition_digest(revised_definition)
         assert isinstance(revised_digest, str)
@@ -407,6 +408,7 @@ class ProjectExportTest(unittest.TestCase):
         latest_definition = next(
             value for value in project_export.definition_revisions if value.item_id == "work-a" and value.revision == 2
         )
+        assert isinstance(latest_definition.definition, query_models.WorkItemDefinitionView)
         self.assertEqual("Clarified the export objective.", latest_definition.reason)
         self.assertEqual("definition-owner", latest_definition.source_task_id)
         self.assertEqual(

@@ -43,7 +43,7 @@ class ProjectExportDefinitionRevision(msgspec.Struct, frozen=True, forbid_unknow
     item_id: str
     revision: int
     digest: str
-    definition: query_models.WorkItemDefinitionView
+    definition: query_models.DefinitionView
     reason: str
     source_task_id: str
     before_digest: str | None
@@ -487,31 +487,6 @@ def project_artifact_reference(
     )
 
 
-def _project_definition(value: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
-    return query_models.WorkItemDefinitionView(
-        "pinboard-work-item-definition/v2",
-        value.title,
-        value.objective,
-        value.hypothesis,
-        value.evidence,
-        value.scope,
-        value.non_scope,
-        value.acceptance_criteria,
-        tuple(value.dependencies),
-        value.effect,
-        value.unlock,
-        value.checkout_policy,
-        tuple(
-            query_models.WorkObligationView(
-                obligation.obligation_id,
-                obligation.statement,
-                obligation.deferral_policy,
-            )
-            for obligation in value.obligations
-        ),
-    )
-
-
 def _project_proposal_relation(value: stored_state.StoredProposal) -> ProjectExportProposalRelation:
     proposal_id = str(value.proposal_id)
     match value.relation:
@@ -614,7 +589,7 @@ def project_export_from_state(
                 str(value.item_id),
                 value.revision,
                 value.digest,
-                _project_definition(value.definition),
+                query_models.project_definition(value.definition),
                 value.reason,
                 str(value.source_task_id),
                 value.before_digest,

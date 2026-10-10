@@ -43,6 +43,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             and value.capability.subject == WorkItemId("work-c")
         )
         assert isinstance(action, decision_models.ReviseWorkItemAction)
+        assert isinstance(current.definition, work_models.WorkItemDefinition)
         command = decision_models.ReviseWorkItemCommand(
             action,
             work_models.ReviseWorkItemDefinitionInput(

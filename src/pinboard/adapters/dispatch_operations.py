@@ -583,12 +583,6 @@ def _read_dispatch_brief(
     brief = decode_canonical_work_brief(accepted_brief_bytes)
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, brief.message, None)
-    if not isinstance(brief, work_brief_models.WorkBrief):
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_INVALID,
-            "Retained work brief v3 is readable but cannot authorize dispatch.",
-            None,
-        )
     if (
         failure := _validate_dispatch_identity(
             brief,
@@ -666,7 +660,7 @@ def _replacement_readiness_context(
             _fresh_review_details((FailureFact("selected_return_history_id", history_id),), ()),
         )
     brief = decode_canonical_work_brief(artifacts.read(selected.brief_reference))
-    if not isinstance(brief, work_brief_models.WorkBrief):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_INVALID, "Current canonical brief is unavailable.", None
         )
@@ -1028,7 +1022,7 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
         brief = decode_canonical_work_brief(artifacts.read(attempt.brief_reference))
     except ArtifactError as error:
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, str(error), None)
-    if not isinstance(brief, work_brief_models.WorkBrief):
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_INVALID, "Current canonical work brief is unavailable.", None
         )

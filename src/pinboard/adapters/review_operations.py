@@ -87,7 +87,7 @@ type ReviewRound = InitialReviewRound | CorrectionReviewRound
 @dataclass(frozen=True, slots=True)
 class PreparedReviewJob:
     candidate_evidence: candidate_snapshots.CandidateSnapshotEvidence
-    brief: work_brief_models.ReadableWorkBrief
+    brief: work_brief_models.WorkBrief
     brief_reference: BriefArtifactRef
     result_path: Path
     result_sha256: str
@@ -336,7 +336,7 @@ def read_current_candidate_review(
     store: ports.WorkStore,
     artifacts: dispatch_models.DispatchArtifactPort,
     *,
-    brief: work_brief_models.ReadableWorkBrief,
+    brief: work_brief_models.WorkBrief,
     candidate_revision: str,
     candidate_snapshot: stored_state.ArtifactReference,
     accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
@@ -368,7 +368,7 @@ def _current_candidate_review_from_reference(
     reference: stored_state.ArtifactReference | None,
     artifacts: dispatch_models.DispatchArtifactPort,
     *,
-    brief: work_brief_models.ReadableWorkBrief,
+    brief: work_brief_models.WorkBrief,
     candidate_revision: str,
     candidate_snapshot: stored_state.ArtifactReference,
     accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
@@ -431,7 +431,7 @@ def commissioned_review_failure(
     artifacts: dispatch_models.DispatchArtifactPort,
     *,
     attempt: query_models.NonterminalAttemptContextFacts,
-    brief: work_brief_models.ReadableWorkBrief,
+    brief: work_brief_models.WorkBrief,
     result_sha256: str,
     review_sha256: str,
     reviewer_task_id: str,

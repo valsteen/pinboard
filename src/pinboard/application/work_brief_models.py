@@ -406,7 +406,7 @@ type WorkBriefCheckpoint = LocalCheckpoint | CrossBoundaryCheckpoint
 
 def _validate_authorization(
     basis: AuthorizationBasis,
-    brief: WorkBrief,
+    brief: ReadableWorkBrief,
     authority_keys: frozenset[tuple[str, str]],
 ) -> None:
     match basis:
@@ -435,7 +435,7 @@ def _validate_architecture_impact(impact: ArchitectureImpact) -> None:
             assert_never(unreachable)
 
 
-def _validate_common_checkpoint(checkpoint: WorkBriefCheckpoint) -> tuple[frozenset[int], frozenset[str]]:
+def _validate_common_checkpoint(checkpoint: ReadableCheckpoint) -> tuple[frozenset[int], frozenset[str]]:
     _validate_architecture_impact(checkpoint.architecture_impact)
     criterion_numbers = tuple(value.number for value in checkpoint.acceptance_criteria)
     if len(set(criterion_numbers)) != len(criterion_numbers):
@@ -446,7 +446,7 @@ def _validate_common_checkpoint(checkpoint: WorkBriefCheckpoint) -> tuple[frozen
     return frozenset(criterion_numbers), frozenset(deferral_ids)
 
 
-def _reviewed_authority_keys(checkpoint: CrossBoundaryCheckpoint) -> frozenset[tuple[str, str]]:
+def _reviewed_authority_keys(checkpoint: ReadableCrossBoundaryCheckpoint) -> frozenset[tuple[str, str]]:
     authority_ids = tuple(value.authority_id for value in checkpoint.reviewed_authorities)
     if len(set(authority_ids)) != len(authority_ids):
         raise ValueError("Reviewed authority identities must be unique.")
@@ -469,7 +469,7 @@ def _reviewed_authority_keys(checkpoint: CrossBoundaryCheckpoint) -> frozenset[t
 
 
 def _validate_coverage(
-    checkpoint: CrossBoundaryCheckpoint,
+    checkpoint: ReadableCrossBoundaryCheckpoint,
     authority_keys: frozenset[tuple[str, str]],
     criteria: frozenset[int],
     deferrals: frozenset[str],
@@ -499,8 +499,8 @@ def _validate_coverage(
 
 
 def _validate_cross_boundary_checkpoint(
-    brief: WorkBrief,
-    checkpoint: CrossBoundaryCheckpoint,
+    brief: ReadableWorkBrief,
+    checkpoint: ReadableCrossBoundaryCheckpoint,
     criteria: frozenset[int],
     deferrals: frozenset[str],
 ) -> None:
@@ -524,28 +524,30 @@ def _validate_cross_boundary_checkpoint(
             assert_never(unreachable)
 
 
-def _validate_work_brief(brief: WorkBrief) -> None:  # noqa: PLR0912 - exhaustive closed correspondence validation
+def validate_work_brief_relations(
+    brief: ReadableWorkBrief,
+    cross_boundary: ReadableCrossBoundaryCheckpoint | None,
+    correspondence: tuple[ObligationCorrespondence, ...],
+) -> None:
+    """Validate shared original/current relations without constructing execution values."""
     checkpoint = brief.checkpoint
     criteria, deferrals = _validate_common_checkpoint(checkpoint)
-    match checkpoint:
-        case LocalCheckpoint():
-            for record in checkpoint.verification:
-                _validate_authorization(record.authorization_basis, brief, frozenset())
-        case CrossBoundaryCheckpoint():
-            _validate_cross_boundary_checkpoint(brief, checkpoint, criteria, deferrals)
-        case _ as unreachable:
-            assert_never(unreachable)
-    obligation_ids = tuple(row.obligation_id for row in brief.obligation_correspondence)
+    if cross_boundary is None:
+        for record in checkpoint.verification:
+            _validate_authorization(record.authorization_basis, brief, frozenset())
+    else:
+        _validate_cross_boundary_checkpoint(brief, cross_boundary, criteria, deferrals)
+    obligation_ids = tuple(row.obligation_id for row in correspondence)
     if len(obligation_ids) != len(set(obligation_ids)):
         raise ValueError("Obligation correspondence identities must be unique.")
     contracts = (
-        frozenset(record.invariant for record in checkpoint.contracts)
-        if isinstance(checkpoint, CrossBoundaryCheckpoint)
+        frozenset(record.invariant for record in cross_boundary.contracts)
+        if cross_boundary is not None
         else frozenset()
     )
     criteria = frozenset(record.number for record in checkpoint.acceptance_criteria)
     deferrals = frozenset(record.deferral_id for record in checkpoint.deferrals)
-    for row in brief.obligation_correspondence:
+    for row in correspondence:
         match row.target:
             case ContractObligationTarget(invariant=invariant):
                 if invariant not in contracts:
@@ -583,7 +585,11 @@ class WorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     obligation_correspondence: Annotated[tuple[ObligationCorrespondence, ...], msgspec.Meta(min_length=1)]
 
     def __post_init__(self) -> None:
-        _validate_work_brief(self)
+        validate_work_brief_relations(
+            self,
+            self.checkpoint if isinstance(self.checkpoint, CrossBoundaryCheckpoint) else None,
+            self.obligation_correspondence,
+        )
 
 
 class ReadableCheckpoint(Protocol):
@@ -607,6 +613,20 @@ class ReadableCheckpoint(Protocol):
 
     @property
     def deferrals(self) -> tuple[Deferral, ...]: ...
+
+
+class ReadableCrossBoundaryCheckpoint(ReadableCheckpoint, Protocol):
+    @property
+    def contracts(self) -> tuple[ContractRecord, ...]: ...
+
+    @property
+    def reviewed_authorities(self) -> tuple[ReviewedAuthority, ...]: ...
+
+    @property
+    def coverage(self) -> tuple[CoverageRecord, ...]: ...
+
+    @property
+    def lifecycle_partition(self) -> LifecyclePartition: ...
 
 
 class ReadableWorkBrief(Protocol):
@@ -724,7 +744,7 @@ class WorkBriefReviewNeedsCorrection(msgspec.Struct, frozen=True, forbid_unknown
 @dataclass(frozen=True, slots=True)
 class AcceptedWorkBrief:
     reference: stored_state.ArtifactReference
-    brief: ReadableWorkBrief
+    brief: WorkBrief
 
 
 @dataclass(frozen=True, slots=True)

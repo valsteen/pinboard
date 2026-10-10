@@ -106,8 +106,6 @@ from pinboard.mcp.contracts import (
     ReplacementReadinessReady,
     RequestBoundary,
     ResultBoundary,
-    RetainedV3BriefReviewNeedsCorrection,
-    RetainedV3BriefReviewNoEvidence,
     ReviewJobFailedAfterPublication,
     ReviewJobInfrastructureFailure,
     ReviewJobInvalid,
@@ -726,26 +724,16 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         else:
             msgspec.convert(content, type=ItemDefinitionRejected, strict=True)
     elif tool_name == "pinboard_brief_review":
-        brief = content.get("brief")
-        brief_schema = brief.get("schema") if isinstance(brief, dict) else None
         if status == "no-needs-correction-evidence":
-            result_type = (
-                RetainedV3BriefReviewNoEvidence if brief_schema == "pinboard-work-brief/v3" else BriefReviewNoEvidence
-            )
             msgspec.convert(
                 content,
-                type=result_type,
+                type=BriefReviewNoEvidence,
                 strict=True,
             )
         elif status == "needs-correction":
-            result_type = (
-                RetainedV3BriefReviewNeedsCorrection
-                if brief_schema == "pinboard-work-brief/v3"
-                else BriefReviewNeedsCorrection
-            )
             msgspec.convert(
                 content,
-                type=result_type,
+                type=BriefReviewNeedsCorrection,
                 strict=True,
             )
         elif status == "committed":

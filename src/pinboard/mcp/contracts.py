@@ -14,7 +14,6 @@ from pinboard.application import (
     pr_reviews,
     proposal_models,
     query_models,
-    work_brief_compatibility_models,
     work_brief_contract,
     work_brief_models,
 )
@@ -2483,21 +2482,9 @@ class BriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
     brief: work_brief_models.WorkBrief
 
 
-class RetainedV3BriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
-    status: Literal["no-needs-correction-evidence"]
-    brief: work_brief_compatibility_models.WorkBriefV3
-
-
 class BriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
     status: Literal["needs-correction"]
     brief: work_brief_models.WorkBrief
-    reference: ReviewEvidenceReference
-    review: work_brief_models.WorkBriefReviewNeedsCorrection
-
-
-class RetainedV3BriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
-    status: Literal["needs-correction"]
-    brief: work_brief_compatibility_models.WorkBriefV3
     reference: ReviewEvidenceReference
     review: work_brief_models.WorkBriefReviewNeedsCorrection
 
@@ -2894,9 +2881,7 @@ ITEM_DEFINITION_RESULT_TYPES = (
 )
 BRIEF_REVIEW_RESULT_TYPES = (
     BriefReviewNoEvidence,
-    RetainedV3BriefReviewNoEvidence,
     BriefReviewNeedsCorrection,
-    RetainedV3BriefReviewNeedsCorrection,
     BriefReviewCommitted,
     BriefReviewUnchanged,
     BriefReviewRejected,
@@ -3108,9 +3093,7 @@ type ResultBoundary = (
     | type[query_models.ItemDefinitionHistory]
     | type[ItemDefinitionRejected]
     | type[BriefReviewNoEvidence]
-    | type[RetainedV3BriefReviewNoEvidence]
     | type[BriefReviewNeedsCorrection]
-    | type[RetainedV3BriefReviewNeedsCorrection]
     | type[BriefReviewCommitted]
     | type[BriefReviewUnchanged]
     | type[BriefReviewRejected]

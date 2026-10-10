@@ -1315,7 +1315,7 @@ def _current_candidate_review(
     durable: DurableRoots,
     store: WorkStore,
     context: query_models.AttemptContextFacts,
-    brief: work_brief_models.ReadableWorkBrief | None,
+    brief: work_brief_models.WorkBrief | None,
     result: contracts.EvidenceReference,
     review: contracts.EvidenceReference,
 ) -> tuple[review_operations.CurrentCandidateReview | None, contracts.CandidateReviewReference]:
@@ -1667,7 +1667,7 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
     token.checkpoint()
     accepted_brief: contracts.AcceptedBriefIdentity | None = None
     owner_task_id: TaskId | None = None
-    decoded_brief: work_brief_models.ReadableWorkBrief | None = None
+    decoded_brief: work_brief_models.WorkBrief | None = None
     if isinstance(context, query_models.NonterminalAttemptContextFacts):
         reference = context.brief_reference
         try:

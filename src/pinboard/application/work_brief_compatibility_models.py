@@ -1,6 +1,6 @@
-"""Retained brief v3 and historical-only original brief v2 and ready-review facts."""
+"""Strict original brief and ready-review facts for historical consumers only."""
 
-from typing import Annotated, Literal, assert_never
+from typing import Annotated, Literal
 
 import msgspec
 
@@ -8,7 +8,7 @@ from pinboard.application import work_brief_models
 from pinboard.domain import work_models
 
 
-class LocalCheckpointV3(
+class HistoricalLocalCheckpoint(
     msgspec.Struct,
     frozen=True,
     forbid_unknown_fields=True,
@@ -24,7 +24,7 @@ class LocalCheckpointV3(
     deferrals: tuple[work_brief_models.Deferral, ...]
 
 
-class CrossBoundaryCheckpointV3(
+class HistoricalCrossBoundaryCheckpoint(
     msgspec.Struct,
     frozen=True,
     forbid_unknown_fields=True,
@@ -45,47 +45,10 @@ class CrossBoundaryCheckpointV3(
     deferrals: tuple[work_brief_models.Deferral, ...]
 
 
-type WorkBriefCheckpointV3 = LocalCheckpointV3 | CrossBoundaryCheckpointV3
+type HistoricalWorkBriefCheckpoint = HistoricalLocalCheckpoint | HistoricalCrossBoundaryCheckpoint
 
 
-def _current_checkpoint(
-    checkpoint: WorkBriefCheckpointV3,
-    remaining_work: str,
-) -> work_brief_models.WorkBriefCheckpoint:
-    disposition = work_brief_models.ContinueCheckpointDisposition(remaining_work)
-    match checkpoint:
-        case LocalCheckpointV3():
-            return work_brief_models.LocalCheckpoint(
-                checkpoint.checkpoint_id,
-                checkpoint.title,
-                checkpoint.architecture_impact,
-                checkpoint.outcome_description,
-                disposition,
-                checkpoint.acceptance_criteria,
-                checkpoint.verification,
-                checkpoint.deferrals,
-            )
-        case CrossBoundaryCheckpointV3():
-            return work_brief_models.CrossBoundaryCheckpoint(
-                checkpoint.checkpoint_id,
-                checkpoint.title,
-                checkpoint.architecture_impact,
-                checkpoint.outcome,
-                checkpoint.outcome_description,
-                disposition,
-                checkpoint.contracts,
-                checkpoint.acceptance_criteria,
-                checkpoint.reviewed_authorities,
-                checkpoint.coverage,
-                checkpoint.lifecycle_partition,
-                checkpoint.verification,
-                checkpoint.deferrals,
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-class _RetainedWorkBriefBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class _HistoricalWorkBriefBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     artifact_revision: work_brief_models.PositiveInt
     attempt_id: work_brief_models.KebabId
     item_id: work_brief_models.KebabId
@@ -102,11 +65,16 @@ class _RetainedWorkBriefBase(msgspec.Struct, frozen=True, forbid_unknown_fields=
     bootstrap: tuple[work_brief_models.NonEmptyText, ...]
     compatibility: tuple[work_brief_models.NonEmptyText, ...]
     non_goals: tuple[work_brief_models.NonEmptyText, ...]
-    checkpoint: WorkBriefCheckpointV3
+    checkpoint: HistoricalWorkBriefCheckpoint
     remaining_work: work_brief_models.NonEmptyText
 
 
-class WorkBriefV3(_RetainedWorkBriefBase, frozen=True):
+class HistoricalWorkBriefV3(_HistoricalWorkBriefBase, frozen=True):
+    """Exact original facts, never current execution, status or recovery authority.
+
+    Retain while supported archive, package or readable-history consumers require them.
+    """
+
     schema: Literal["pinboard-work-brief/v3"]
     checkout_selection: work_models.CheckoutSelection
     obligation_correspondence: Annotated[
@@ -114,31 +82,14 @@ class WorkBriefV3(_RetainedWorkBriefBase, frozen=True):
     ]
 
     def __post_init__(self) -> None:
-        work_brief_models.WorkBrief(
-            "pinboard-work-brief/v4",
-            self.artifact_revision,
-            self.attempt_id,
-            self.item_id,
-            self.branch,
-            self.base_revision,
-            self.owner_task_id,
-            self.accepted_scope,
-            self.title,
-            self.outcome,
-            self.supported_production_roots,
-            self.product_decision_and_provenance,
-            self.testing_strategy,
-            self.scope,
-            self.bootstrap,
-            self.compatibility,
-            self.non_goals,
-            _current_checkpoint(self.checkpoint, self.remaining_work),
-            self.checkout_selection,
+        work_brief_models.validate_work_brief_relations(
+            self,
+            self.checkpoint if isinstance(self.checkpoint, HistoricalCrossBoundaryCheckpoint) else None,
             self.obligation_correspondence,
         )
 
 
-class HistoricalWorkBriefV2(_RetainedWorkBriefBase, frozen=True):
+class HistoricalWorkBriefV2(_HistoricalWorkBriefBase, frozen=True):
     """Original full-field facts for archive and package closure, never execution.
 
     Retain while original brief bytes have supported historical consumers.

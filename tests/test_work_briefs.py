@@ -220,7 +220,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 historical_reader(invalid_bytes), work_brief_models.WorkBriefErrorCode.REVIEW_INVALID
             )
 
-    def test_retained_v3_brief_remains_exactly_readable_reviewable_and_renderable(self) -> None:
+    def test_original_v3_facts_preserve_exact_history_without_operational_identity(self) -> None:
         current = example_work_brief()
         payload = msgspec.to_builtins(current)
         assert isinstance(payload, dict)
@@ -232,8 +232,16 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         payload["remaining_work"] = disposition["remaining_work"]
         legacy_bytes = msgspec.json.encode(payload, order="sorted") + b"\n"
 
-        legacy = expect_work_brief_success(decode_canonical_work_brief(legacy_bytes))
+        expect_work_brief_failure(
+            decode_canonical_work_brief(legacy_bytes), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
+        )
+        expect_work_brief_failure(
+            decode_work_brief_identity(legacy_bytes), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
+        )
+        legacy = expect_work_brief_success(decode_canonical_historical_work_brief(legacy_bytes))
         current_review = msgspec.json.decode(ready_review(current), type=work_brief_models.WorkBriefReview)
+        self.assertIsInstance(legacy, work_brief_compatibility_models.HistoricalWorkBriefV3)
+        assert isinstance(legacy, work_brief_compatibility_models.HistoricalWorkBriefV3)
         review = replace(
             current_review,
             accepted_brief_sha256=hashlib.sha256(legacy_bytes).hexdigest(),
@@ -242,9 +250,158 @@ class WorkBriefBoundaryTest(unittest.TestCase):
 
         self.assertEqual("pinboard-work-brief/v3", legacy.schema)
         self.assertEqual(legacy_bytes, canonical_work_brief_bytes(legacy))
-        self.assertIn(b"authority: pinboard-work-brief/v3", render_work_brief_markdown(legacy))
-        self.assertIn(b"- Boundary: `cross-boundary`", render_work_brief_markdown(legacy))
+        self.assertIn(b"authority: pinboard-work-brief/v3", render_historical_work_brief_markdown(legacy))
+        self.assertIn(b"- Boundary: `cross-boundary`", render_historical_work_brief_markdown(legacy))
         self.assertIsNone(validate_work_brief_review(review, legacy))
+
+        original_payload = msgspec.to_builtins(legacy)
+        assert isinstance(original_payload, dict)
+        checkpoint = legacy.checkpoint
+        assert isinstance(checkpoint, work_brief_compatibility_models.HistoricalCrossBoundaryCheckpoint)
+        authority = checkpoint.reviewed_authorities[0]
+        contract = checkpoint.contracts[0]
+        coverage = checkpoint.coverage[0]
+        lifecycle = work_brief_models.LifecycleRecord(
+            "publish", "candidate", "application", "receipt", "accepted", "overwrite"
+        )
+        for name, changed in (
+            ("criteria", replace(checkpoint, acceptance_criteria=checkpoint.acceptance_criteria * 2)),
+            ("deferrals", replace(checkpoint, deferrals=checkpoint.deferrals * 2)),
+            (
+                "architecture-selector",
+                replace(
+                    checkpoint,
+                    architecture_impact=work_brief_models.UpdateRequiredArchitecture(
+                        "../outside.md", "Invalid selection."
+                    ),
+                ),
+            ),
+            ("authority-identities", replace(checkpoint, reviewed_authorities=checkpoint.reviewed_authorities * 2)),
+            (
+                "authority-families",
+                replace(checkpoint, reviewed_authorities=(replace(authority, families=authority.families * 2),)),
+            ),
+            (
+                "authority-selector",
+                replace(checkpoint, reviewed_authorities=(replace(authority, selector="../outside.md"),)),
+            ),
+            ("contracts", replace(checkpoint, contracts=checkpoint.contracts * 2)),
+            (
+                "scope-authorization",
+                replace(
+                    checkpoint,
+                    contracts=(
+                        replace(
+                            contract,
+                            authorization_basis=work_brief_models.AcceptedScopeAuthorization(legacy.item_id, 99),
+                        ),
+                    ),
+                ),
+            ),
+            (
+                "authority-authorization",
+                replace(
+                    checkpoint,
+                    verification=(
+                        replace(
+                            checkpoint.verification[0],
+                            authorization_basis=work_brief_models.AuthorityAuthorization("unknown", "unknown"),
+                        ),
+                    ),
+                ),
+            ),
+            ("coverage-identities", replace(checkpoint, coverage=checkpoint.coverage * 2)),
+            ("coverage-family", replace(checkpoint, coverage=(replace(coverage, family="unknown"),))),
+            (
+                "contract-owner",
+                replace(
+                    checkpoint, coverage=(replace(coverage, owner=work_brief_models.ContractCoverageOwner("Unknown.")),)
+                ),
+            ),
+            (
+                "criterion-owner",
+                replace(checkpoint, coverage=(replace(coverage, owner=work_brief_models.AcceptanceCoverageOwner(99)),)),
+            ),
+            (
+                "deferral-owner",
+                replace(
+                    checkpoint, coverage=(replace(coverage, owner=work_brief_models.DeferredCoverageOwner("unknown")),)
+                ),
+            ),
+            (
+                "lifecycle",
+                replace(
+                    checkpoint, lifecycle_partition=work_brief_models.RequiredLifecyclePartition((lifecycle, lifecycle))
+                ),
+            ),
+        ):
+            with self.subTest(relation=name):
+                expect_work_brief_failure(
+                    decode_canonical_historical_work_brief(
+                        msgspec.json.encode(
+                            {**original_payload, "checkpoint": msgspec.to_builtins(changed)}, order="sorted"
+                        )
+                        + b"\n"
+                    ),
+                    work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+                )
+        correspondence = legacy.obligation_correspondence[0]
+        for rows in (
+            legacy.obligation_correspondence * 2,
+            (replace(correspondence, target=work_brief_models.ContractObligationTarget("Unknown.")),),
+            (replace(correspondence, target=work_brief_models.CriterionObligationTarget(99)),),
+            (replace(correspondence, target=work_brief_models.DeferralObligationTarget("unknown")),),
+        ):
+            with self.subTest(correspondence=rows):
+                expect_work_brief_failure(
+                    decode_canonical_historical_work_brief(
+                        msgspec.json.encode(
+                            {**original_payload, "obligation_correspondence": msgspec.to_builtins(rows)}, order="sorted"
+                        )
+                        + b"\n"
+                    ),
+                    work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+                )
+
+        local = replace(
+            legacy,
+            checkpoint=work_brief_compatibility_models.HistoricalLocalCheckpoint(
+                checkpoint.checkpoint_id,
+                checkpoint.title,
+                checkpoint.architecture_impact,
+                checkpoint.outcome_description,
+                checkpoint.acceptance_criteria,
+                (
+                    replace(
+                        checkpoint.verification[0],
+                        authorization_basis=work_brief_models.AcceptedScopeAuthorization(
+                            legacy.item_id, legacy.accepted_scope.revision
+                        ),
+                    ),
+                ),
+                checkpoint.deferrals,
+            ),
+            obligation_correspondence=(replace(correspondence, target=work_brief_models.CriterionObligationTarget(1)),),
+        )
+        self.assertEqual(
+            local, expect_work_brief_success(decode_canonical_historical_work_brief(canonical_work_brief_bytes(local)))
+        )
+        self.assertIn(b"- Boundary: `local`", render_historical_work_brief_markdown(local))
+        local_payload = msgspec.to_builtins(local)
+        assert isinstance(local_payload, dict)
+        for changed in (
+            replace(local.checkpoint, acceptance_criteria=checkpoint.acceptance_criteria * 2),
+            replace(local.checkpoint, verification=checkpoint.verification),
+        ):
+            expect_work_brief_failure(
+                decode_canonical_historical_work_brief(
+                    msgspec.json.encode({**local_payload, "checkpoint": msgspec.to_builtins(changed)}, order="sorted")
+                    + b"\n"
+                ),
+                work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+            )
+        for invalid in (legacy_bytes.rstrip(), legacy_bytes[:-2] + b',"unknown":true}\n'):
+            self.assertIsInstance(decode_canonical_historical_work_brief(invalid), work_brief_models.WorkBriefFailure)
 
     def test_definition_agreement_requires_complete_ids_and_permitted_checkout_and_deferral(self) -> None:
         brief = work_a_brief(Path(tempfile.mkdtemp()).resolve())
@@ -449,7 +606,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         )
 
         decoded = expect_work_brief_success(decode_work_brief_review(msgspec.json.encode(review)))
-        self.assertIsNone(validate_work_brief_review(decoded, value, reviewer_task_id=value.owner_task_id))
+        self.assertIsNone(validate_work_brief_review(decoded, value))
         payload = msgspec.json.decode(msgspec.json.encode(review))
         if not isinstance(payload, dict):
             self.fail("work brief review JSON must be an object")

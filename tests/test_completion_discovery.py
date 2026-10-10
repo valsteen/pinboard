@@ -16,15 +16,11 @@ from pinboard.application import actions, query_models, stored_state
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import contract_schemas
-from pinboard.mcp import execution as mcp_execution
-from pinboard.mcp import read_operations as mcp_reads
 from pinboard.mcp import server as mcp_server
 from pinboard.mcp.contracts import JsonValue
-from tests import test_dispatch
 from tests.checkpoint_support import CheckpointPackageSupport
-from tests.native_support import call_advertised_tool, call_native_tool
+from tests.native_support import call_advertised_tool
 from tests.support import JsonObject
-from tests.work_brief_support import ready_review
 
 
 class CompletionDiscoveryTest(CheckpointPackageSupport):
@@ -59,36 +55,6 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         self.assertEqual("review-subagent", review_operation["kind"])
         self.assertEqual(review.candidate_revision, review_operation["candidate_revision"])
 
-    def test_brief_review_status_contract_accepts_retained_v3(self) -> None:
-        fixture = self.checkpoint_fixture()
-        payload = msgspec.to_builtins(fixture.brief)
-        assert isinstance(payload, dict)
-        payload["schema"] = "pinboard-work-brief/v3"
-        checkpoint = payload["checkpoint"]
-        assert isinstance(checkpoint, dict)
-        disposition = checkpoint.pop("disposition")
-        assert isinstance(disposition, dict)
-        payload["remaining_work"] = disposition["remaining_work"]
-        context = fixture.store.read_attempt_context(AttemptId("work-a-1"))
-        assert isinstance(context, query_models.NonterminalAttemptContextFacts)
-        reference = fixture.store.read_artifact_reference_by_id(context.brief_artifact_ref_id)
-        assert reference is not None
-        self.replace_artifact_bytes(fixture, reference, msgspec.json.encode(payload, order="sorted") + b"\n")
-
-        result = mcp_reads._brief_review(
-            {
-                "request": {
-                    "project_root": str(fixture.project),
-                    "work_root": str(fixture.work),
-                    "operation": "status",
-                    "brief_artifact_ref_id": int(reference.artifact_ref_id),
-                }
-            },
-            mcp_execution.CancellationToken(),
-        )
-
-        self.assertEqual(result.content, contract_schemas.validate_result(mcp_server.BRIEF_REVIEW_TOOL, result.content))
-
     def test_active_terminal_completion_returns_candidate_recovery_with_or_without_history(self) -> None:
         fixtures = (
             ("zero-history", self.terminalize_brief(self.checkpoint_fixture())),
@@ -116,216 +82,67 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 self.assertFalse(rejected["state_changed"])
                 self.assertEqual(before, fixture.store.validated_snapshot())
 
-    def test_original_v2_rejects_native_status_inspection_and_submission_without_recovery(self) -> None:
-        fixture = self.checkpoint_fixture()
-        self.return_for_correction(fixture, "Check original brief rejection.", "v2-boundary")
-        context = fixture.store.read_attempt_context(AttemptId("work-a-1"))
-        assert isinstance(context, query_models.NonterminalAttemptContextFacts)
-        reference = fixture.store.read_artifact_reference_by_id(context.brief_artifact_ref_id)
-        assert reference is not None
-        roots: JsonObject = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
-        assert isinstance(roots, dict)
-        status_request: JsonObject = {
-            "request": {**roots, "operation": "status", "brief_artifact_ref_id": int(reference.artifact_ref_id)}
-        }
-        status = call_advertised_tool(mcp_server.BRIEF_REVIEW_TOOL, status_request)
-        payload = msgspec.to_builtins(fixture.brief)
-        assert isinstance(payload, dict)
-        payload["schema"] = "pinboard-work-brief/v2"
-        checkpoint = payload["checkpoint"]
-        assert isinstance(checkpoint, dict)
-        disposition = checkpoint.pop("disposition")
-        assert isinstance(disposition, dict)
-        payload["remaining_work"] = disposition["remaining_work"]
-        del payload["checkout_selection"]
-        del payload["obligation_correspondence"]
-        status["brief"] = payload
-        with self.assertRaises(msgspec.ValidationError):
-            contract_schemas.validate_result(mcp_server.BRIEF_REVIEW_TOOL, status)
-        self.replace_artifact_bytes(fixture, reference, msgspec.json.encode(payload, order="sorted") + b"\n")
-        lease = self.native_attempt_acquire(fixture, "original-v2-worker")
-        selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
-        before = fixture.store.validated_snapshot()
-        artifacts = {path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()}
-        requests: tuple[tuple[str, JsonObject], ...] = (
-            (mcp_server.BRIEF_REVIEW_TOOL, status_request),
-            (mcp_server.ATTEMPT_INSPECT_TOOL, {**roots, "attempt_id": "work-a-1", "reconciliation": None}),
-        )
-        for tool, arguments in requests:
-            with self.subTest(tool=tool):
-                rejected = call_advertised_tool(tool, arguments)
-                self.assertEqual("rejected", rejected["status"], rejected)
-                self.assertFalse(rejected["state_changed"])
-        candidate = read_working_tree_candidate(fixture.project).identity
-        rejected = self.transition_result(fixture, selected, {"candidate": candidate})
-        self.assertEqual("rejected", rejected["status"], rejected)
-        observations = {self.json_object(row)["field"] for row in self.json_array(rejected["observed"])}
-        self.assertNotIn("brief_binding_action_input", observations)
-        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
-        self.assertEqual(
-            artifacts, {path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()}
-        )
-
-    def test_retained_brief_review_submission_rejects_before_candidate_publication(self) -> None:  # noqa: PLR0915 - one complete retained-brief recovery journey
-        schema = "pinboard-work-brief/v3"
-        fixture = self.checkpoint_fixture()
-        payload = msgspec.to_builtins(fixture.brief)
-        assert isinstance(payload, dict)
-        payload["schema"] = schema
-        checkpoint = payload["checkpoint"]
-        assert isinstance(checkpoint, dict)
-        disposition = checkpoint.pop("disposition")
-        assert isinstance(disposition, dict)
-        payload["remaining_work"] = disposition["remaining_work"]
-        context = fixture.store.read_attempt_context(AttemptId("work-a-1"))
-        assert isinstance(context, query_models.NonterminalAttemptContextFacts)
-        reference = fixture.store.read_artifact_reference_by_id(context.brief_artifact_ref_id)
-        assert reference is not None
-        self.replace_artifact_bytes(
-            fixture,
-            reference,
-            msgspec.json.encode(payload, order="sorted") + b"\n",
-        )
-        completion = self.actions_result(
-            fixture,
-            {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}},
-        )
-        completion_observed = {
-            str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
-            for row in self.json_array(completion["observed"])
-        }
-        self.assertIn('"kind":"return-for-correction"', completion_observed["recovery_action_input"])
-        inspected_review = call_native_tool(
-            mcp_server.ATTEMPT_INSPECT_TOOL,
-            {
-                "project_root": str(fixture.project),
-                "work_root": str(fixture.work),
-                "attempt_id": "work-a-1",
-                "reconciliation": None,
-            },
-        )
-        review_operation = self.json_object(self.json_object(inspected_review["continuation"])["next_operation"])
-        self.assertEqual(
-            {"target": "attempt", "action_kind": "return-for-correction"},
-            review_operation["action"],
-        )
-        self.assertIn("Then publish and independently review", str(review_operation["condition"]))
-        self.assertIn("rebind the active attempt", str(review_operation["condition"]))
-        self.assertIn("dispatch, and submit a new candidate", str(review_operation["condition"]))
-        self.return_for_correction(fixture, "Bind a current brief before review.", schema.rsplit("/", 1)[-1])
-        (fixture.project / "tracked.txt").write_text(f"{schema}\n", encoding="utf-8")
-        candidate = read_working_tree_candidate(fixture.project).identity
-        lease = self.native_attempt_acquire(fixture, f"legacy-{schema.rsplit('/', 1)[-1]}-worker")
-        selected = self.native_actions(
-            fixture,
-            "submit-review",
-            "work-a-1",
-            role="worker",
-            lease=lease,
-        )
-        before = fixture.store.validated_snapshot()
-        artifact_paths = tuple(
-            sorted(path.relative_to(fixture.work) for path in (fixture.work / "artifacts").rglob("*") if path.is_file())
-        )
-
-        rejected = self.transition_result(fixture, selected, {"candidate": candidate})
-
-        self.assertEqual("rejected", rejected["status"])
-        self.assertIn("Retained work brief", str(rejected["message"]))
-        observations = {
-            str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
-            for row in self.json_array(rejected["observed"])
-        }
-        self.assertEqual("pinboard_brief_publish", observations["brief_publication_tool"])
-        self.assertIn("pinboard-work-brief/v4", observations["brief_publication_input"])
-        self.assertIn("independent", observations["brief_review_requirement"])
-        self.assertEqual("pinboard_actions", observations["brief_binding_action_tool"])
-        self.assertIn('"kind":"rebind-attempt"', observations["brief_binding_action_input"])
-        self.assertEqual(before, fixture.store.validated_snapshot())
-        self.assertEqual(
-            artifact_paths,
-            tuple(
-                sorted(
-                    path.relative_to(fixture.work) for path in (fixture.work / "artifacts").rglob("*") if path.is_file()
+    def test_original_briefs_reject_native_status_inspection_and_submission_without_recovery(self) -> None:
+        for schema in ("pinboard-work-brief/v2", "pinboard-work-brief/v3"):
+            with self.subTest(schema=schema):
+                fixture = self.checkpoint_fixture()
+                self.return_for_correction(fixture, "Check original brief rejection.", "v2-boundary")
+                context = fixture.store.read_attempt_context(AttemptId("work-a-1"))
+                assert isinstance(context, query_models.NonterminalAttemptContextFacts)
+                reference = fixture.store.read_artifact_reference_by_id(context.brief_artifact_ref_id)
+                assert reference is not None
+                roots: JsonObject = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+                assert isinstance(roots, dict)
+                status_request: JsonObject = {
+                    "request": {**roots, "operation": "status", "brief_artifact_ref_id": int(reference.artifact_ref_id)}
+                }
+                status = call_advertised_tool(mcp_server.BRIEF_REVIEW_TOOL, status_request)
+                payload = msgspec.to_builtins(fixture.brief)
+                assert isinstance(payload, dict)
+                payload["schema"] = schema
+                checkpoint = payload["checkpoint"]
+                assert isinstance(checkpoint, dict)
+                disposition = checkpoint.pop("disposition")
+                assert isinstance(disposition, dict)
+                payload["remaining_work"] = disposition["remaining_work"]
+                if schema == "pinboard-work-brief/v2":
+                    del payload["checkout_selection"]
+                    del payload["obligation_correspondence"]
+                status["brief"] = payload
+                with self.assertRaises(msgspec.ValidationError):
+                    contract_schemas.validate_result(mcp_server.BRIEF_REVIEW_TOOL, status)
+                self.replace_artifact_bytes(fixture, reference, msgspec.json.encode(payload, order="sorted") + b"\n")
+                lease = self.native_attempt_acquire(fixture, "original-v2-worker")
+                selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+                before = fixture.store.validated_snapshot()
+                artifacts = {
+                    path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()
+                }
+                requests: tuple[tuple[str, JsonObject], ...] = (
+                    (mcp_server.BRIEF_REVIEW_TOOL, status_request),
+                    (mcp_server.ATTEMPT_INSPECT_TOOL, {**roots, "attempt_id": "work-a-1", "reconciliation": None}),
                 )
-            ),
-        )
-
-        inspected = call_native_tool(
-            mcp_server.ATTEMPT_INSPECT_TOOL,
-            {
-                "project_root": str(fixture.project),
-                "work_root": str(fixture.work),
-                "attempt_id": "work-a-1",
-                "reconciliation": None,
-            },
-        )
-        operation = self.json_object(self.json_object(inspected["continuation"])["next_operation"])
-        self.assertEqual({"target": "attempt", "action_kind": "rebind-attempt"}, operation["action"])
-        self.assertIn("independently review", str(operation["condition"]))
-
-        current = msgspec.structs.replace(fixture.brief, artifact_revision=2)
-        publication = call_native_tool(
-            mcp_server.BRIEF_PUBLISH_TOOL,
-            {
-                "project_root": str(fixture.project),
-                "work_root": str(fixture.work),
-                "brief": msgspec.to_builtins(current),
-            },
-        )
-        self.assertEqual("committed", publication["status"], publication)
-        published_reference = self.json_object(publication["reference"])
-        rebound = self.transition_result(
-            fixture,
-            self.project_action(fixture, "rebind-attempt:work-a-1"),
-            {
-                "branch": current.branch,
-                "base_revision": current.base_revision,
-                "brief_artifact_ref_id": published_reference["artifact_ref_id"],
-            },
-        )
-        self.assertEqual("committed", rebound["status"], rebound)
-        dispatch_action = self.project_action(fixture, "dispatch:work-a-1")
-        environment = msgspec.structs.replace(
-            test_dispatch.DispatchTest().environment(fixture.project),
-            starting_revision=current.base_revision,
-        )
-        reviewed_dispatch = msgspec.to_builtins(
-            {
-                "kind": "reviewed",
-                "receipt": {
-                    "action_id": {"kind": "dispatch", "subject": "work-a-1"},
-                    "subject_revision": dispatch_action["subject_revision"],
-                },
-                "checkpoint_id": current.checkpoint.checkpoint_id,
-                "environment": environment,
-                "prompt": None,
-                "brief_review": msgspec.json.decode(ready_review(current)),
-                "review_id": f"independent-{schema.rsplit('/', 1)[-1]}-review",
-            },
-            enc_hook=test_dispatch.dispatch_environment_enc_hook,
-        )
-        assert isinstance(reviewed_dispatch, dict)
-        dispatched = call_native_tool(
-            mcp_server.DISPATCH_TOOL,
-            {
-                "project_root": str(fixture.project),
-                "work_root": str(fixture.work),
-                "dispatch": reviewed_dispatch,
-            },
-        )
-        self.assertEqual("ready", dispatched["status"], dispatched)
-        self.assertEqual("committed", dispatched["effect"])
-        current_lease = self.native_attempt_acquire(fixture, f"current-{schema.rsplit('/', 1)[-1]}-worker")
-        current_submission = self.native_actions(
-            fixture,
-            "submit-review",
-            "work-a-1",
-            role="worker",
-            lease=current_lease,
-        )
-        submitted = self.transition_result(fixture, current_submission, {"candidate": candidate})
-        self.assertEqual("committed", submitted["status"], submitted)
+                for tool, arguments in requests:
+                    with self.subTest(tool=tool):
+                        rejected = call_advertised_tool(tool, arguments)
+                        self.assertEqual("rejected", rejected["status"], rejected)
+                        self.assertFalse(rejected["state_changed"])
+                completion = self.actions_result(
+                    fixture, {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}}
+                )
+                self.assertEqual("rejected", completion["status"], completion)
+                self.assertEqual("ACTION_NOT_AVAILABLE", completion["code"])
+                self.assertFalse(completion["state_changed"])
+                candidate = read_working_tree_candidate(fixture.project).identity
+                rejected = self.transition_result(fixture, selected, {"candidate": candidate})
+                self.assertEqual("rejected", rejected["status"], rejected)
+                observations = {self.json_object(row)["field"] for row in self.json_array(rejected["observed"])}
+                self.assertNotIn("brief_binding_action_input", observations)
+                self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+                self.assertEqual(
+                    artifacts,
+                    {path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()},
+                )
 
     def test_direct_and_covered_discovery_select_exact_input_without_mutation(self) -> None:
         for covered in (False, True):

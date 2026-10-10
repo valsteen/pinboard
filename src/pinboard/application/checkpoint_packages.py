@@ -148,14 +148,14 @@ def _review_basis(
 ) -> work_brief_models.WorkBriefFailure | None:
     match brief.checkpoint, package.review_basis:
         case (
-            work_brief_models.LocalCheckpoint() | work_brief_compatibility_models.LocalCheckpointV3(),
+            work_brief_models.LocalCheckpoint() | work_brief_compatibility_models.HistoricalLocalCheckpoint(),
             work_brief_models.LocalReviewBasis(),
         ):
             return None
         case (
             (
                 work_brief_models.CrossBoundaryCheckpoint(reviewed_authorities=authorities)
-                | work_brief_compatibility_models.CrossBoundaryCheckpointV3(reviewed_authorities=authorities)
+                | work_brief_compatibility_models.HistoricalCrossBoundaryCheckpoint(reviewed_authorities=authorities)
             ) as checkpoint,
             work_brief_models.CrossBoundaryReviewBasis(
                 brief_review=review_identity,

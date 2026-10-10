@@ -70,7 +70,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         retained = work_briefs.decode_canonical_historical_work_brief(brief_bytes)
         assert not isinstance(retained, work_brief_models.WorkBriefFailure)
         retained_checkpoint = retained.checkpoint
-        assert isinstance(retained_checkpoint, work_brief_compatibility_models.CrossBoundaryCheckpointV3)
+        assert isinstance(retained_checkpoint, work_brief_compatibility_models.HistoricalCrossBoundaryCheckpoint)
         checkpoint_sha256 = hashlib.sha256(work_briefs.canonical_checkpoint_bytes(retained_checkpoint)).hexdigest()
         authority_sha256 = hashlib.sha256(
             work_briefs.canonical_reviewed_authority_set_bytes(retained_checkpoint.reviewed_authorities)

@@ -12,6 +12,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import msgspec
+from msgspec.structs import replace as replace_struct
+
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.database import OpenMode, open_database
@@ -26,7 +29,7 @@ from pinboard.domain import work_models
 from pinboard.domain.identifiers import WorkItemId
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
-from tests.native_support import call_advertised_tool
+from tests.native_support import call_advertised_tool, call_native_tool
 from tests.support import SQLITE_NOW, JsonObject
 
 FIXED_DATE = "2026-01-02T03:04:05+00:00"
@@ -180,6 +183,29 @@ class ItemIntegrationTest(CheckpointPackageSupport):
                     presence="content-present",
                 )
 
+    def test_protected_commit_candidate_reports_content_presence_across_integration_shapes(self) -> None:
+        for shape in ("fast-forward", "merge", "rebase-merge"):
+            with self.subTest(shape=shape):
+                fixture = self.checkpoint_fixture(candidate_form="current-head")
+                branch = self.integrated_branch(fixture, shape, fixture.brief.base_revision, fixture.candidate_revision)
+                resolved = self.git_text(fixture, "rev-parse", f"{branch}^{{commit}}").strip()
+
+                result = self.integration(fixture, "work-a", branch)
+
+                self.assert_integration(
+                    result,
+                    fixture,
+                    target=branch,
+                    target_revision=resolved,
+                    source={
+                        "kind": "protected-review",
+                        "attempt_id": "work-a-1",
+                        "candidate_revision": fixture.candidate_revision,
+                        "compared_from_revision": fixture.brief.base_revision,
+                    },
+                    presence="content-present",
+                )
+
     def test_protected_review_reports_absent_content(self) -> None:
         fixture = self.checkpoint_fixture()
         base, candidate = self.commit_candidate(fixture)
@@ -238,8 +264,119 @@ class ItemIntegrationTest(CheckpointPackageSupport):
     def test_accepted_checkpoint_selects_the_checkpoint_candidate(self) -> None:
         fixture = self.accepted_package_fixture()
         base, candidate = self.commit_candidate(fixture)
+        branch = self.integrated_branch(fixture, "squash", base, candidate)
+        resolved = self.git_text(fixture, "rev-parse", f"{branch}^{{commit}}").strip()
+        source: JsonObject = {
+            "kind": "accepted-checkpoint",
+            "attempt_id": "work-a-1",
+            "candidate_revision": fixture.candidate_revision,
+            "compared_from_revision": base,
+            "checkpoint": fixture.brief.checkpoint.checkpoint_id,
+        }
+
+        paused = self.integration(fixture, "work-a", branch)
+
+        self.assert_integration(
+            paused,
+            fixture,
+            target=branch,
+            target_revision=resolved,
+            source=source,
+            presence="content-present",
+        )
+        closed, stdout, stderr = self.run_cli(
+            *fixture.common,
+            "close",
+            "work-c",
+            "--outcome",
+            "done",
+            "--reason",
+            "The prerequisite is satisfied.",
+            "--task-id",
+            "review-owner",
+            "--host-id",
+            "local",
+        )
+        self.assertEqual(0, closed, f"{stdout}\n{stderr}")
+        resumed = self.transition_result(fixture, self.project_action(fixture, "resume:work-a"), {})
+        self.assertEqual("committed", resumed["status"], resumed)
+
+        result = self.integration(fixture, "work-a", branch)
+
+        self.assert_integration(
+            result,
+            fixture,
+            target=branch,
+            target_revision=resolved,
+            source=source,
+            presence="content-present",
+        )
+
+    def test_returned_for_correction_leaves_no_integration_candidate(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_correction(fixture, "The review found a gap.", "integration")
+
+        result = self.integration(fixture, "work-a", "unused-target")
+
+        self.assert_rejection(
+            result,
+            "INTEGRATION_CANDIDATE_UNAVAILABLE",
+            retry="correct-input",
+            observed={
+                "item_id": "work-a",
+                "item_state": "active",
+                "reason": "no-protected-or-checkpoint",
+            },
+        )
+
+    def test_accepted_and_continued_candidate_is_not_an_integration_source(self) -> None:
+        fixture = self.checkpoint_fixture()
+        continued = self.transition_result(
+            fixture,
+            self.project_action(fixture, "accept-review-and-continue:work-a-1"),
+            {"candidate": fixture.candidate_revision, "evidence": "The review is favorable; continue."},
+        )
+        self.assertEqual("committed", continued["status"], continued)
+
+        result = self.integration(fixture, "work-a", "unused-target")
+
+        self.assert_rejection(
+            result,
+            "INTEGRATION_CANDIDATE_UNAVAILABLE",
+            retry="correct-input",
+            observed={
+                "item_id": "work-a",
+                "item_state": "active",
+                "reason": "no-protected-or-checkpoint",
+            },
+        )
+
+    def test_rebind_keeps_the_accepted_checkpoint_candidate(self) -> None:
+        fixture = self.accepted_package_fixture()
+        base, candidate = self.commit_candidate(fixture)
         branch = self.integrated_branch(fixture, "fast-forward", base, candidate)
         resolved = self.git_text(fixture, "rev-parse", f"{branch}^{{commit}}").strip()
+        brief = replace_struct(fixture.brief, artifact_revision=fixture.brief.artifact_revision + 1)
+        published = call_native_tool(
+            mcp_server.BRIEF_PUBLISH_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "brief": self.json_object(msgspec.json.decode(msgspec.json.encode(brief))),
+            },
+        )
+        self.assertEqual("committed", published["status"], published)
+        reference = self.json_object(published["reference"])
+        rebound = self.transition_result(
+            fixture,
+            self.project_action(fixture, "rebind-attempt:work-a-1"),
+            {
+                "branch": brief.branch,
+                "base_revision": brief.base_revision,
+                "brief_artifact_ref_id": reference["artifact_ref_id"],
+            },
+        )
+        self.assertEqual("committed", rebound["status"], rebound)
 
         result = self.integration(fixture, "work-a", branch)
 
@@ -423,6 +560,43 @@ class ItemIntegrationTest(CheckpointPackageSupport):
             observed={"target": "no-such-ref", "project_root": str(fixture.project)},
         )
         self.assertIn("fetch", str(result["recovery"]), result)
+
+    def test_option_like_targets_are_rejected_before_any_read(self) -> None:
+        fixture = self.checkpoint_fixture()
+
+        result = self.integration(fixture, "work-a", "-HEAD")
+
+        self.assert_rejection(result, "ITEM_STATUS_INVALID", retry="correct-input", observed={})
+        self.assertNotIn("recovery", result)
+
+    def test_a_project_root_outside_any_git_checkout_is_a_correctable_rejection(self) -> None:
+        fixture = self.checkpoint_fixture()
+        with tempfile.TemporaryDirectory() as outside:
+            result = call_advertised_tool(
+                mcp_server.ITEM_STATUS_TOOL,
+                {
+                    "request": {
+                        "project_root": outside,
+                        "work_root": str(fixture.work),
+                        "operation": "integration",
+                        "item_id": "work-a",
+                        "target": "unused-target",
+                    }
+                },
+            )
+
+        self.assertEqual("pinboard-mcp-item-status-result/v3", result["schema"], result)
+        self.assertEqual("rejected", result["status"], result)
+        self.assertEqual("PROJECT_GIT_ROOT_UNAVAILABLE", result["code"], result)
+        self.assertEqual("unchanged", result["effect"], result)
+        self.assertEqual("correct-input", result["retry"], result)
+        facts = {
+            self.json_object(value)["field"]: self.json_object(value)["value"]
+            for value in self.json_array(result["observed"])
+        }
+        self.assertEqual(outside, facts["project_root"], result)
+        self.assertTrue(facts["diagnostic"], result)
+        self.assertIn("checkout", str(result["recovery"]), result)
 
     def test_unavailable_candidates_are_named_by_reason(self) -> None:
         with self.subTest(reason="no-protected-or-checkpoint"):

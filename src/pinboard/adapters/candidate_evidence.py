@@ -246,13 +246,17 @@ def _checkpoint_snapshot_reference(
 
 
 def observe_item_integration(
-    source_checkout: Path,
+    project_root: Path,
     work_root: Path,
     store: ports.WorkStore,
     selection: query_models.IntegrationCandidateSelection,
     target: str,
 ) -> query_models.IntegrationObservation:
-    """Verify the selected candidate's recorded bytes and observe their content presence in the target tree."""
+    """Verify the selected candidate's recorded bytes and observe their content presence in the target tree.
+
+    The source checkout is resolved only once a non-empty recorded diff requires a Git observation;
+    an empty diff answers no-change without calling Git.
+    """
 
     if isinstance(selection, query_models.AcceptedCheckpointCandidateSelection):
         selected = _checkpoint_snapshot_reference(work_root, store, selection)
@@ -289,6 +293,7 @@ def observe_item_integration(
             selection, compared_from, None, query_models.IntegrationPresence.NO_CHANGE
         )
     try:
+        source_checkout = root.resolve_source_checkout_root(project_root)
         observed = root.observe_target_content_presence(source_checkout, target, snapshot.diff)
     except RootError as error:
         return query_models.IntegrationCheckoutUnavailable(error.code.value, str(error))

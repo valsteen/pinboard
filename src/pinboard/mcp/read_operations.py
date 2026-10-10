@@ -231,12 +231,8 @@ def _read_item_integration(
             RetryDisposition.CORRECT_INPUT,
             "Read the item with operation item to inspect its current candidate and checkpoint state.",
         )
-    try:
-        source_checkout = resolve_source_checkout_root(Path(request.project_root))
-    except RootError as error:
-        return _integration_checkout_failure(request.project_root, error.code.value, str(error))
     observation = candidate_evidence.observe_item_integration(
-        source_checkout, durable.work_root, store, selection, request.target
+        Path(request.project_root), durable.work_root, store, selection, request.target
     )
     match observation:
         case query_models.IntegrationObserved():
@@ -300,9 +296,16 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.ItemStatusEnvelope, strict=True).request
-        durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    try:
+        durable = common._resolve_durable(request.project_root, request.work_root)
+    except (ValueError, OSError) as error:
+        return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    except RootError as error:
+        if not isinstance(request, contracts.ItemStatusIntegrationRequest):
+            raise
+        return _integration_checkout_failure(request.project_root, error.code.value, str(error))
     token.checkpoint()
     store = common.compose_store(durable)
     match request:

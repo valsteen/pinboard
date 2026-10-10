@@ -365,7 +365,7 @@ class ContributorTraceTest(unittest.TestCase):
             )
             self.assertIn("reread failed", str(failed_reread.exception))
 
-    def test_normal_cli_and_mcp_capture_exact_values_only_when_on(self) -> None:
+    def test_normal_cli_and_mcp_capture_exact_values_only_when_on(self) -> None:  # noqa: PLR0915 - one process fixture exercises capture configuration end to end
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))
             args = ("--project-root", str(primary), "root")
@@ -388,8 +388,9 @@ class ContributorTraceTest(unittest.TestCase):
                             "request": {
                                 "project_root": str(worktree),
                                 "work_root": str(primary / ".pinboard"),
-                                "operation": "item",
+                                "operation": "integration",
                                 "item_id": "missing",
+                                "target": "HEAD",
                             }
                         },
                     )
@@ -430,6 +431,16 @@ class ContributorTraceTest(unittest.TestCase):
             asyncio.run(mcp_call())
             self.assertEqual((cli_trace,), tuple(traces.glob("pinboard-auto-cli-*.json")))
             self.assertEqual((mcp_trace,), tuple(traces.glob("pinboard-auto-mcp-*.json")))
+            self.settings(primary, "off", {"missing": "on"})
+            asyncio.run(mcp_call())
+            integration_traces = tuple(traces.glob("pinboard-auto-mcp-*.json"))
+            self.assertEqual(2, len(integration_traces))
+            self.assertTrue(
+                all(
+                    json.loads(path.read_bytes())["request"]["request"]["operation"] == "integration"
+                    for path in integration_traces
+                )
+            )
 
     def test_prepared_cli_capture_retains_traces_with_explicit_work_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

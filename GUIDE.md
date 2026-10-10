@@ -76,6 +76,8 @@ That request authorizes the displayed safe batch. The agent checks it again befo
 
 The agent compares the repository result with the goal you agreed on, the saved change, and its review. It checks whether review, your repository decision, or cleanup is still missing and continues the same work where possible. A merge or closed pull request alone does not prove the work is complete. If work was saved but never started, you can instead decide to close it as completed or dropped; the agent records that choice without inventing an implementation review.
 
+When the candidate has been reviewed, the agent can check its recorded change against a target you name, such as `main` or `origin/main`. This content check recognizes rebase and squash merges even when the reviewed commit is not an ancestor of the target. It reads the target as it is stored locally and does not fetch. A later overlapping edit or a merge conflict resolution can make the content check say `content-not-present`, which does not prove that the change was never integrated. The agent uses `content-present` as evidence for its own repository reconciliation before cleanup or completion.
+
 An honest reply might be: “The change is in `main`, but no review covered it. I'd have a separate reviewer check the commit as it landed before the work is closed.” If the work was never started, your decision to mark it completed or dropped takes the shorter close route.
 
 ## Review a pull request owned by a person

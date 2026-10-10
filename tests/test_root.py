@@ -14,9 +14,12 @@ from unittest.mock import patch
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
+    IntegrationContentObservation,
+    IntegrationTargetUnresolved,
     classify_checkout,
     ensure_default_git_exclude,
     observe_checkout_identity,
+    observe_integration_content,
     read_current_head_candidate,
     resolve_shared_repository_root,
     resolve_source_checkout_root,
@@ -28,13 +31,14 @@ from tests.native_support import call_native_tool
 
 
 class RootResolutionTest(unittest.TestCase):
-    def run_git(self, cwd: Path, *args: str) -> str:
+    def run_git(self, cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
         return subprocess.run(
             ["git", *args],
             cwd=cwd,
             check=True,
             text=True,
             capture_output=True,
+            env=env,
         ).stdout
 
     def run_cli(self, *arguments: str) -> tuple[int, str, str]:
@@ -141,6 +145,118 @@ class RootResolutionTest(unittest.TestCase):
         self.assertEqual(candidate_revision, observed.identity)
         self.assertIn(b"-base\n+candidate", observed.diff)
         self.assertEqual(original_index, index.read_bytes())
+
+    def test_integration_content_observation_reverse_applies_without_writing_git_metadata(self) -> None:  # noqa: PLR0915 - one end-to-end repository fixture proves the complete read-only contract
+        repository = Path(tempfile.mkdtemp()).resolve()
+        self.run_git(repository, "init", "-b", "main")
+        tracked = repository / "tracked.txt"
+        tracked.write_text("base\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        fixed_date = "2001-02-03T04:05:06+00:00"
+        git_env = {**os.environ, "GIT_AUTHOR_DATE": fixed_date, "GIT_COMMITTER_DATE": fixed_date}
+        self.run_git(
+            repository,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "base",
+            env=git_env,
+        )
+        base = self.run_git(repository, "rev-parse", "HEAD").strip()
+        tracked.write_text("candidate\n", encoding="utf-8")
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD"], cwd=repository, check=True, capture_output=True
+        ).stdout
+        absent = observe_integration_content(repository, base, diff)
+        self.assertEqual(IntegrationContentObservation(base, False), absent)
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(
+            repository,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "integrated",
+            env=git_env,
+        )
+        target = self.run_git(repository, "rev-parse", "HEAD").strip()
+        self.run_git(repository, "config", "core.splitIndex", "true")
+        self.run_git(repository, "config", "apply.whitespace", "error")
+        whitespace = repository / "whitespace.txt"
+        whitespace.write_text("base\n", encoding="utf-8")
+        self.run_git(repository, "add", "whitespace.txt")
+        self.run_git(
+            repository,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "whitespace base",
+            env=git_env,
+        )
+        whitespace_base = self.run_git(repository, "rev-parse", "HEAD").strip()
+        whitespace.write_text("reviewed trailing space \n", encoding="utf-8")
+        whitespace_diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD"], cwd=repository, check=True, capture_output=True
+        ).stdout
+        self.run_git(repository, "add", "whitespace.txt")
+        self.run_git(
+            repository,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "whitespace candidate",
+            env=git_env,
+        )
+        target = self.run_git(repository, "rev-parse", "HEAD").strip()
+        self.assertNotEqual(whitespace_base, target)
+        self.assertEqual(
+            IntegrationContentObservation(target, True),
+            observe_integration_content(repository, target, whitespace_diff),
+        )
+        metadata = repository / ".git"
+        before = {path.relative_to(metadata): path.read_bytes() for path in metadata.rglob("*") if path.is_file()}
+        files = tuple(path for path in metadata.rglob("*") if path.is_file())
+        directories = tuple(path for path in metadata.rglob("*") if path.is_dir())
+        for path in files:
+            path.chmod(0o444)
+        for path in directories:
+            path.chmod(0o555)
+        metadata.chmod(0o555)
+        temporary = Path(tempfile.gettempdir())
+        temporary_before = {path for path in temporary.iterdir() if path.name.startswith("pinboard-integration-")}
+        try:
+            self.assertEqual(
+                IntegrationContentObservation(target, True), observe_integration_content(repository, target, diff)
+            )
+        finally:
+            metadata.chmod(0o755)
+            for path in directories:
+                path.chmod(0o755)
+            for path in files:
+                path.chmod(0o644)
+        after = {path.relative_to(metadata): path.read_bytes() for path in metadata.rglob("*") if path.is_file()}
+        self.assertEqual(before, after)
+        self.assertEqual(
+            temporary_before, {path for path in temporary.iterdir() if path.name.startswith("pinboard-integration-")}
+        )
+        self.assertEqual(
+            IntegrationTargetUnresolved("missing-target"),
+            observe_integration_content(repository, "missing-target", diff),
+        )
+        self.assertEqual(
+            IntegrationContentObservation(target, False), observe_integration_content(repository, target, b"")
+        )
 
     def test_returning_initialization_reads_an_existing_exclusion_without_write_access(self) -> None:
         repository = Path(tempfile.mkdtemp()).resolve()

@@ -634,6 +634,47 @@ class CandidateSnapshotContextFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class CheckpointCandidateContextFacts:
+    attempt_id: AttemptId
+    work_item_id: WorkItemId
+    checkpoint_id: str
+    receipt: stored_state.StoredTransitionReceipt
+    package_reference: stored_state.ArtifactReference | None
+    candidate_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateFacts:
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    current_attempt_state: work_models.AttemptState | None
+    current_candidate: CandidateSnapshotContextFacts | None
+    latest_checkpoint: CheckpointCandidateContextFacts | None
+    completion_candidate: CandidateSnapshotContextFacts | None
+    completion_action: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewIntegrationChoice:
+    context: CandidateSnapshotContextFacts
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointIntegrationChoice:
+    context: CheckpointCandidateContextFacts
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionIntegrationChoice:
+    context: CandidateSnapshotContextFacts
+
+
+type IntegrationCandidateChoice = (
+    ProtectedReviewIntegrationChoice | AcceptedCheckpointIntegrationChoice | CompletionIntegrationChoice
+)
+
+
+@dataclass(frozen=True, slots=True)
 class CompletionCheckpointFacts:
     receipt: stored_state.StoredTransitionReceipt
     package_reference: stored_state.ArtifactReference | None
@@ -918,6 +959,51 @@ class ItemStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     review_verdict: ReviewVerdict
     closure: ItemClosure | None
     preparation: PreparationStatusView | None
+
+
+class IntegrationPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+class ProtectedReviewIntegrationSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class AcceptedCheckpointIntegrationSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    checkpoint_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class CompletionIntegrationSource(
+    msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type IntegrationSource = (
+    ProtectedReviewIntegrationSource | AcceptedCheckpointIntegrationSource | CompletionIntegrationSource
+)
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-item-integration/v1"]
+    item_id: str
+    target: str
+    resolved_target_revision: str
+    source: IntegrationSource
+    presence: IntegrationPresence
 
 
 @dataclass(frozen=True, slots=True)

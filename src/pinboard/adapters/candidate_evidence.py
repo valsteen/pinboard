@@ -4,13 +4,22 @@ Restoration can change the source checkout, never the ledger or authority.
 Post-mutation verification failures retain that actual effect and forbid replay.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
 from pinboard.adapters.files import candidate_compatibility, root
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, RootError
-from pinboard.application import candidate_snapshot_compatibility_models, candidate_snapshots, ports, query_models
+from pinboard.application import (
+    candidate_snapshot_compatibility_models,
+    candidate_snapshots,
+    checkpoint_packages,
+    ports,
+    query_models,
+    stored_state,
+    work_brief_models,
+)
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -23,6 +32,33 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 from pinboard.domain.identifiers import AttemptId
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateEvidence:
+    snapshot: candidate_snapshots.CandidateSnapshot
+    reference: stored_state.ArtifactReference
+
+
+def matches_portable_candidate_snapshot(
+    identity: work_brief_models.PortableArtifactIdentity,
+    reference: stored_state.ArtifactReference,
+) -> bool:
+    return (
+        identity.kind,
+        identity.key,
+        identity.revision,
+        identity.selector,
+        identity.content_sha256,
+        identity.size_bytes,
+    ) == (
+        reference.kind.value,
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+    )
 
 
 def read_candidate_evidence(
@@ -51,6 +87,63 @@ def read_candidate_evidence_from_context(
         return candidate_snapshots.verify_candidate_snapshot_context(context, candidate, encoded)
     except (ArtifactError, ValueError) as error:
         return DecisionFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
+
+
+def read_integration_candidate_evidence(
+    work_root: Path,
+    choice: query_models.IntegrationCandidateChoice,
+) -> DecisionResult[IntegrationCandidateEvidence]:
+    """Verify snapshot bytes selected for one integration source."""
+
+    match choice:
+        case query_models.ProtectedReviewIntegrationChoice(context) | query_models.CompletionIntegrationChoice(context):
+            evidence = read_candidate_evidence_from_context(work_root, context, context.candidate_revision)
+            if isinstance(evidence, DecisionFailure):
+                return evidence
+            return IntegrationCandidateEvidence(evidence.snapshot, evidence.reference)
+        case query_models.AcceptedCheckpointIntegrationChoice(context):
+            package_reference = context.package_reference
+            candidate_reference = context.candidate_reference
+            if package_reference is None or candidate_reference is None:
+                return DecisionFailure(
+                    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                    "The accepted checkpoint has no candidate snapshot reference.",
+                    None,
+                )
+            try:
+                package_bytes = read_reference(work_root, package_reference)
+                package = checkpoint_packages.validate_selected_checkpoint_review_package(
+                    context.receipt,
+                    package_reference,
+                    package_bytes,
+                    attempt_id=str(context.attempt_id),
+                    item_id=str(context.work_item_id),
+                )
+                if isinstance(package, work_brief_models.WorkBriefFailure):
+                    raise ValueError(package.message)
+                if not isinstance(package, work_brief_models.CheckpointReviewPackageV3):
+                    raise ValueError("The accepted checkpoint package does not name a v3 candidate snapshot.")
+                candidate_bytes = read_reference(work_root, candidate_reference)
+                identity = package.candidate_snapshot
+                if not matches_portable_candidate_snapshot(identity, candidate_reference):
+                    raise ValueError("The accepted checkpoint candidate identity does not match its reference.")
+                if (
+                    candidate_reference.key != f"{context.attempt_id}-{context.checkpoint_id}-candidate"
+                    or candidate_reference.revision != 1
+                ):
+                    raise ValueError("The accepted checkpoint candidate reference is not canonical.")
+                snapshot = candidate_snapshots.decode_candidate_snapshot(candidate_bytes)
+                if (
+                    snapshot.attempt_id != str(context.attempt_id)
+                    or snapshot.item_id != str(context.work_item_id)
+                    or snapshot.candidate != package.candidate
+                ):
+                    raise ValueError("The accepted checkpoint candidate bytes do not match their package.")
+                return IntegrationCandidateEvidence(snapshot, candidate_reference)
+            except (ArtifactError, ValueError) as error:
+                return DecisionFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def observe_candidate_lineage(

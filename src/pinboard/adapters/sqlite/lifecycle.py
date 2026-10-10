@@ -291,7 +291,7 @@ def _read_review_event(
     return None
 
 
-def _read_item_closure(
+def read_item_closure(
     connection: sqlite3.Connection,
     item_id: WorkItemId,
     subject_revision: int,
@@ -633,7 +633,7 @@ def read_item_status(
             ),
         )
     closure = (
-        _read_item_closure(connection, item.work_item_id, item.subject_revision)
+        read_item_closure(connection, item.work_item_id, item.subject_revision)
         if stored_state.live_work_state(item.state) is None
         else None
     )

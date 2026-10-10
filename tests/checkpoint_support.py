@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import subprocess
 import tempfile
@@ -92,6 +93,7 @@ class CheckpointPackageSupport(unittest.TestCase):
 
     def commit_all(self, project: Path, message: str) -> str:
         subprocess.run(["git", "add", "--all"], cwd=project, check=True, capture_output=True)
+        fixed_date = "2001-02-03T04:05:06+00:00"
         subprocess.run(
             [
                 "git",
@@ -106,6 +108,7 @@ class CheckpointPackageSupport(unittest.TestCase):
             cwd=project,
             check=True,
             capture_output=True,
+            env={**os.environ, "GIT_AUTHOR_DATE": fixed_date, "GIT_COMMITTER_DATE": fixed_date},
         )
         return subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True, text=True
@@ -422,6 +425,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         candidate_form: Literal["working-tree", "current-head"] = "working-tree",
         accepted_base: str | None = None,
         committed_context: bool = False,
+        empty_diff: bool = False,
         review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready",
     ) -> CheckpointFixture:
         state = complete_sqlite_state()
@@ -468,7 +472,8 @@ class CheckpointPackageSupport(unittest.TestCase):
         if committed_context:
             (project / "context.txt").write_text("committed surrounding state\n", encoding="utf-8")
             preimage_revision = self.commit_all(project, "context")
-        tracked.write_text("candidate\n", encoding="utf-8")
+        if not empty_diff:
+            tracked.write_text("candidate\n", encoding="utf-8")
         if candidate_form == "current-head":
             candidate_revision = self.commit_all(project, "candidate")
             candidate_diff = subprocess.run(

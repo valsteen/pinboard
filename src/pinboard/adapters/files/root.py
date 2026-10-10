@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -39,6 +41,20 @@ type CommittedCandidateObservation = CurrentHeadCandidate | DifferentHeadCandida
 
 
 @dataclass(frozen=True, slots=True)
+class IntegrationContentObservation:
+    target_revision: str
+    content_present: bool
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationTargetUnresolved:
+    target: str
+
+
+type IntegrationObservation = IntegrationContentObservation | IntegrationTargetUnresolved
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateRestoreSuccess:
     changed: bool
     candidate: str
@@ -56,6 +72,66 @@ type CandidateRestoreResult = CandidateRestoreSuccess | CandidateRestoreRejectio
 
 class CandidateRestoreAfterMutationError(RootError):
     """The checkout changed before exact restoration verification failed."""
+
+
+def observe_integration_content(cwd: Path, target: str, diff: bytes) -> IntegrationObservation:
+    """Check whether a recorded candidate diff reverse-applies to a local target tree."""
+
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--end-of-options", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if resolved.returncode != 0:
+        return IntegrationTargetUnresolved(target)
+    revision = resolved.stdout.strip()
+    if not revision:
+        raise RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "Git resolved an empty target revision.")
+    if not diff:
+        return IntegrationContentObservation(revision, False)
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
+        index = Path(directory) / "index"
+        read_tree = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", revision],
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+            env={**os.environ, "GIT_INDEX_FILE": str(index)},
+        )
+        if read_tree.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                read_tree.stderr.decode(errors="replace").strip() or "Cannot read the target tree.",
+            )
+        checked = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "apply.whitespace=nowarn",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "--unidiff-zero",
+            ],
+            cwd=cwd,
+            input=diff,
+            capture_output=True,
+            check=False,
+            env={**os.environ, "GIT_INDEX_FILE": str(index)},
+        )
+        if checked.returncode == 0:
+            return IntegrationContentObservation(revision, True)
+        if checked.returncode == 1:
+            return IntegrationContentObservation(revision, False)
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            checked.stderr.decode(errors="replace").strip() or "Git could not check the candidate diff.",
+        )
 
 
 def _resolve_git_path(cwd: Path, selector: str, unavailable_message: str) -> Path:

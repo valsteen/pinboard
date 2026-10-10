@@ -1182,6 +1182,51 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
     )
 
 
+def select_integration_candidate(
+    facts: query_models.IntegrationCandidateFacts,
+) -> DecisionResult[query_models.IntegrationCandidateChoice]:
+    """Select the one candidate source supported by the item's current lifecycle."""
+
+    if facts.state == stored_state.StoredWorkItemState.REVIEW and facts.current_candidate is not None:
+        return query_models.ProtectedReviewIntegrationChoice(facts.current_candidate)
+    if facts.current_attempt_state is not None:
+        checkpoint = facts.latest_checkpoint
+        if (
+            checkpoint is not None
+            and checkpoint.package_reference is not None
+            and checkpoint.candidate_reference is not None
+        ):
+            return query_models.AcceptedCheckpointIntegrationChoice(checkpoint)
+    if facts.state == stored_state.StoredWorkItemState.DONE:
+        if facts.completion_action == decision_models.ActionKind.COMPLETE and facts.completion_candidate is not None:
+            return query_models.CompletionIntegrationChoice(facts.completion_candidate)
+        reason = "the item closed directly or has no retained completion candidate snapshot"
+    elif facts.current_attempt_state is None:
+        reason = "there is no current protected candidate or checkpoint acceptance"
+    elif facts.latest_checkpoint is not None and (
+        facts.latest_checkpoint.package_reference is None or facts.latest_checkpoint.candidate_reference is None
+    ):
+        reason = "the latest checkpoint package has no accepted candidate snapshot reference"
+    else:
+        reason = "the current attempt has no protected candidate or accepted checkpoint"
+    return DecisionFailure(
+        DecisionFailureCode.INTEGRATION_CANDIDATE_UNAVAILABLE,
+        f"No reviewed candidate is available for integration comparison: {reason}.",
+        FailureDetails(
+            observed=(
+                FailureFact("item_id", str(facts.work_item_id)),
+                FailureFact("item_state", facts.state.value),
+                FailureFact("reason", reason),
+            ),
+            mismatches=(),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
     return query_models.WorkItemDefinitionView(
         "pinboard-work-item-definition/v2",

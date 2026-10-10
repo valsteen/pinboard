@@ -1182,6 +1182,96 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
     )
 
 
+def _integration_inconsistent(
+    item: query_models.IntegrationItemFacts,
+    mismatch_field: str,
+    expected: str,
+    observed: str,
+    attempt: query_models.IntegrationAttemptFacts | query_models.IntegrationClosingAttemptFacts | None,
+) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.ITEM_STATUS_INCONSISTENT,
+        f"Item '{item.work_item_id}' state '{item.state.value}' conflicts with its recorded lifecycle facts.",
+        FailureDetails(
+            observed=(
+                FailureFact("item_id", str(item.work_item_id)),
+                FailureFact("item_state", item.state.value),
+                FailureFact("attempt_id", None if attempt is None else str(attempt.attempt_id)),
+            ),
+            mismatches=(FailureMismatch(mismatch_field, expected, observed),),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def select_integration_source(
+    facts: query_models.ItemIntegrationFacts,
+    work_item_id: WorkItemId,
+) -> DecisionResult[query_models.IntegrationSourceSelection]:
+    """Select the recorded candidate whose content an integration observation checks, without reading Git."""
+
+    if facts.work_item is None:
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' was not found.", None)
+    item = facts.work_item
+    if stored_state.live_work_state(item.state) is not None:
+        attempt = facts.current_attempt
+        attempt_state = None if attempt is None else attempt.state
+        allowed_attempt_states = stored_state.allowed_current_attempt_states(item.state)
+        if attempt_state not in allowed_attempt_states:
+            expected = " or ".join("none" if value is None else value.value for value in allowed_attempt_states)
+            observed = "none" if attempt_state is None else attempt_state.value
+            return _integration_inconsistent(item, "current_attempt_state", expected, observed, attempt)
+        if (
+            attempt is not None
+            and attempt.state == work_models.AttemptState.REVIEW
+            and attempt.candidate_revision is not None
+        ):
+            if attempt.candidate_recorded_at is None:
+                return _integration_inconsistent(item, "candidate_recorded_at", "recorded", "none", attempt)
+            return query_models.ProtectedReviewCandidateSelection(
+                attempt.attempt_id, attempt.candidate_revision, attempt.candidate_recorded_at
+            )
+        checkpoint = facts.latest_checkpoint
+        if attempt is not None and checkpoint is not None:
+            receipt = checkpoint.receipt
+            try:
+                outcome = msgspec.json.decode(
+                    bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True
+                )
+            except msgspec.DecodeError as error:
+                return query_models.DamagedTransitionReceipt(
+                    attempt.attempt_id,
+                    receipt.history_id,
+                    receipt.committed_at,
+                    decision_models.ActionKind.ACCEPT_CHECKPOINT,
+                    f"The outcome does not decode as checkpoint-acceptance/v2: {error}",
+                )
+            return query_models.AcceptedCheckpointCandidateSelection(
+                attempt.attempt_id,
+                outcome.checkpoint,
+                outcome.candidate,
+                receipt,
+                checkpoint.package_reference,
+            )
+        return query_models.IntegrationCandidateUnavailable(
+            query_models.IntegrationUnavailableReason.NO_PROTECTED_OR_CHECKPOINT
+        )
+    closure = facts.closure
+    if closure is not None and closure.action_kind == decision_models.ActionKind.COMPLETE:
+        closing = closure.closing_attempt
+        if closing is None or closing.candidate_revision is None:
+            return _integration_inconsistent(item, "closing_candidate", "retained candidate", "none", closing)
+        if closing.candidate_recorded_at is None:
+            return _integration_inconsistent(item, "candidate_recorded_at", "recorded", "none", closing)
+        return query_models.CompletionCandidateSelection(
+            closing.attempt_id, closing.candidate_revision, closing.candidate_recorded_at
+        )
+    return query_models.IntegrationCandidateUnavailable(query_models.IntegrationUnavailableReason.DIRECT_CLOSE)
+
+
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
     return query_models.WorkItemDefinitionView(
         "pinboard-work-item-definition/v2",

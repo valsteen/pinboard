@@ -116,6 +116,8 @@ class WorkStore(Protocol):
 
     def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None: ...
 
+    def read_item_integration(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationFacts: ...
+
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
 
     def read_parallel_preview(
@@ -163,6 +165,12 @@ class ItemDefinitionReader(Protocol):
 
 class ItemStatusReader(Protocol):
     def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None: ...
+
+
+class ItemIntegrationReader(Protocol):
+    """Read one item's exact integration-source facts; work_item is None when the item does not exist."""
+
+    def read_item_integration(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationFacts: ...
 
 
 class ReadyCandidateReviewReader(Protocol):

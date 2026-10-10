@@ -10,7 +10,17 @@ from typing import assert_never
 from pinboard.adapters.files import candidate_compatibility, root
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, RootError
-from pinboard.application import candidate_snapshot_compatibility_models, candidate_snapshots, ports, query_models
+from pinboard.application import (
+    candidate_snapshot_compatibility_models,
+    candidate_snapshots,
+    checkpoint_compatibility_models,
+    ports,
+    query_models,
+    stored_state,
+    work_brief_models,
+    work_briefs,
+)
+from pinboard.domain import work_models
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -179,3 +189,125 @@ def restore_candidate(
             ),
         )
     return restored
+
+
+def _checkpoint_snapshot_reference(
+    work_root: Path,
+    store: ports.WorkStore,
+    selection: query_models.AcceptedCheckpointCandidateSelection,
+) -> (
+    stored_state.ArtifactReference
+    | query_models.IntegrationCandidateUnavailable
+    | query_models.IntegrationCandidateEvidenceInvalid
+):
+    package_reference = selection.package_reference
+    if package_reference is None:
+        return query_models.IntegrationCandidateUnavailable(
+            query_models.IntegrationUnavailableReason.PACKAGE_WITHOUT_SNAPSHOT
+        )
+    try:
+        package_bytes = read_reference(work_root, package_reference)
+    except ArtifactError as error:
+        return query_models.IntegrationCandidateEvidenceInvalid(selection.attempt_id, package_reference, str(error))
+    package = work_briefs.decode_canonical_checkpoint_review_package(package_bytes)
+    if isinstance(package, work_brief_models.WorkBriefFailure):
+        return query_models.IntegrationCandidateEvidenceInvalid(
+            selection.attempt_id, package_reference, package.message
+        )
+    if package.attempt_id != str(selection.attempt_id) or package.candidate != selection.candidate_revision:
+        return query_models.IntegrationCandidateEvidenceInvalid(
+            selection.attempt_id,
+            package_reference,
+            "The checkpoint package does not match the accepted checkpoint receipt.",
+        )
+    if isinstance(package, checkpoint_compatibility_models.CheckpointReviewPackage):
+        return query_models.IntegrationCandidateUnavailable(
+            query_models.IntegrationUnavailableReason.PACKAGE_WITHOUT_SNAPSHOT
+        )
+    identity = package.candidate_snapshot
+    reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, identity.key, identity.revision)
+    if reference is None:
+        return query_models.IntegrationCandidateEvidenceInvalid(
+            selection.attempt_id,
+            package_reference,
+            "The checkpoint package names a candidate snapshot artifact that is not accepted.",
+        )
+    if (
+        reference.selector != identity.selector
+        or reference.content_sha256 != identity.content_sha256
+        or reference.size_bytes != identity.size_bytes
+    ):
+        return query_models.IntegrationCandidateEvidenceInvalid(
+            selection.attempt_id,
+            reference,
+            "The checkpoint package's candidate snapshot identity differs from the accepted artifact reference.",
+        )
+    return reference
+
+
+def observe_item_integration(
+    source_checkout: Path,
+    work_root: Path,
+    store: ports.WorkStore,
+    selection: query_models.IntegrationCandidateSelection,
+    target: str,
+) -> query_models.IntegrationObservation:
+    """Verify the selected candidate's recorded bytes and observe their content presence in the target tree."""
+
+    if isinstance(selection, query_models.AcceptedCheckpointCandidateSelection):
+        selected = _checkpoint_snapshot_reference(work_root, store, selection)
+    else:
+        selected = store.read_latest_artifact_reference(
+            work_models.ArtifactKind.EVIDENCE,
+            candidate_snapshots.candidate_snapshot_artifact_key(
+                str(selection.attempt_id),
+                selection.candidate_revision,
+                selection.candidate_recorded_at.isoformat(),
+            ),
+        )
+        if selected is None:
+            return query_models.IntegrationCandidateUnavailable(
+                query_models.IntegrationUnavailableReason.PRE_SNAPSHOT_CANDIDATE
+            )
+    if not isinstance(selected, stored_state.ArtifactReference):
+        return selected
+    reference = selected
+    try:
+        encoded = read_reference(work_root, reference)
+        snapshot = candidate_snapshots.decode_candidate_snapshot(encoded)
+        if snapshot.attempt_id != str(selection.attempt_id) or snapshot.candidate != selection.candidate_revision:
+            raise ValueError("The candidate snapshot does not match the selected candidate.")
+    except (ArtifactError, ValueError) as error:
+        return query_models.IntegrationCandidateEvidenceInvalid(selection.attempt_id, reference, str(error))
+    compared_from = (
+        snapshot.accepted_base_revision
+        if candidate_snapshots.candidate_kind(snapshot) == "commit"
+        else snapshot.preimage_revision
+    )
+    if not snapshot.diff:
+        return query_models.IntegrationObserved(
+            selection, compared_from, None, query_models.IntegrationPresence.NO_CHANGE
+        )
+    try:
+        observed = root.observe_target_content_presence(source_checkout, target, snapshot.diff)
+    except RootError as error:
+        return query_models.IntegrationCheckoutUnavailable(error.code.value, str(error))
+    match observed:
+        case root.UnresolvedTarget():
+            return query_models.IntegrationTargetUnresolved(observed.target)
+        case root.TargetContentPresent():
+            return query_models.IntegrationObserved(
+                selection,
+                compared_from,
+                observed.resolved_revision,
+                query_models.IntegrationPresence.CONTENT_PRESENT,
+            )
+        case root.TargetContentNotPresent():
+            return query_models.IntegrationObserved(
+                selection,
+                compared_from,
+                observed.resolved_revision,
+                query_models.IntegrationPresence.CONTENT_NOT_PRESENT,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)

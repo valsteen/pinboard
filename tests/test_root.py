@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -14,9 +15,13 @@ from unittest.mock import patch
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
+    TargetContentNotPresent,
+    TargetContentPresent,
+    UnresolvedTarget,
     classify_checkout,
     ensure_default_git_exclude,
     observe_checkout_identity,
+    observe_target_content_presence,
     read_current_head_candidate,
     resolve_shared_repository_root,
     resolve_source_checkout_root,
@@ -224,6 +229,175 @@ class RootResolutionTest(unittest.TestCase):
         )
         self.assertEqual("pinboard-brief-source-plan/v1", source_result["schema"])
         self.assertFalse(unused_work_root.exists())
+
+
+class TargetContentPresenceTest(unittest.TestCase):
+    FIXED_DATE = "2026-01-02T03:04:05+00:00"
+
+    def run_git(self, cwd: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout
+
+    def git_bytes(self, cwd: Path, *args: str) -> bytes:
+        return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True).stdout
+
+    def commit(self, repository: Path, message: str) -> str:
+        environment = {
+            **os.environ,
+            "GIT_AUTHOR_DATE": self.FIXED_DATE,
+            "GIT_COMMITTER_DATE": self.FIXED_DATE,
+        }
+        subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", message],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            env=environment,
+        )
+        return self.run_git(repository, "rev-parse", "HEAD").strip()
+
+    def make_repository(self) -> tuple[Path, str, str, bytes]:
+        """Return (repository, base revision, integrated revision, base-to-candidate diff bytes)."""
+
+        repository = Path(tempfile.mkdtemp()).resolve()
+        self.run_git(repository, "init", "-b", "main")
+        tracked = repository / "tracked.txt"
+        tracked.write_text("base\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        base_revision = self.commit(repository, "base")
+        tracked.write_text("candidate\n", encoding="utf-8")
+        diff = self.git_bytes(repository, "diff", "--binary", "HEAD", "--")
+        tracked.write_text("base\n", encoding="utf-8")
+        self.run_git(repository, "switch", "-c", "integrated")
+        tracked.write_text("candidate\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        integrated_revision = self.commit(repository, "candidate")
+        self.run_git(repository, "switch", "main")
+        return repository, base_revision, integrated_revision, diff
+
+    def test_reports_present_content_without_touching_the_checkout(self) -> None:
+        repository, base_revision, integrated_revision, diff = self.make_repository()
+        index = repository / ".git" / "index"
+        original_index = index.read_bytes()
+
+        observed = observe_target_content_presence(repository, "integrated", diff)
+
+        self.assertEqual(TargetContentPresent(integrated_revision), observed)
+        self.assertEqual(original_index, index.read_bytes())
+        self.assertEqual(base_revision, self.run_git(repository, "rev-parse", "HEAD").strip())
+        self.assertEqual("base\n", (repository / "tracked.txt").read_text(encoding="utf-8"))
+
+    def test_reports_absent_content_at_the_recorded_base(self) -> None:
+        repository, base_revision, _integrated_revision, diff = self.make_repository()
+
+        self.assertEqual(
+            TargetContentNotPresent(base_revision), observe_target_content_presence(repository, "main", diff)
+        )
+        self.assertEqual(
+            TargetContentNotPresent(base_revision), observe_target_content_presence(repository, base_revision, diff)
+        )
+
+    def test_reports_an_unresolved_target_without_checking_content(self) -> None:
+        repository, _base_revision, _integrated_revision, diff = self.make_repository()
+
+        self.assertEqual(
+            UnresolvedTarget("no-such-target"), observe_target_content_presence(repository, "no-such-target", diff)
+        )
+
+    def test_rejects_a_non_git_directory(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+
+        with self.assertRaisesRegex(RootError, "PROJECT_GIT_CHECKOUT_UNAVAILABLE"):
+            observe_target_content_presence(directory, "main", b"")
+
+    def test_observation_ignores_the_repository_whitespace_policy(self) -> None:
+        repository = Path(tempfile.mkdtemp()).resolve()
+        self.run_git(repository, "init", "-b", "main")
+        tracked = repository / "tracked.txt"
+        tracked.write_bytes(b"base  \n")
+        self.run_git(repository, "add", "tracked.txt")
+        self.commit(repository, "base")
+        tracked.write_bytes(b"clean\n")
+        diff = self.git_bytes(repository, "diff", "--binary", "HEAD", "--")
+        self.run_git(repository, "add", "tracked.txt")
+        integrated_revision = self.commit(repository, "candidate")
+        self.run_git(repository, "config", "apply.whitespace", "error")
+
+        observed = observe_target_content_presence(repository, "main", diff)
+
+        self.assertEqual(TargetContentPresent(integrated_revision), observed)
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = {**os.environ, "GIT_INDEX_FILE": str(Path(temporary) / "index")}
+            subprocess.run(
+                ["git", "read-tree", integrated_revision],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+                env=environment,
+            )
+            control = subprocess.run(
+                ["git", "-c", "apply.whitespace=error", "apply", "--cached", "--check", "--reverse", "--binary", "-"],
+                cwd=repository,
+                input=diff,
+                capture_output=True,
+                env=environment,
+            )
+        self.assertNotEqual(0, control.returncode)
+
+    def test_observation_leaves_a_read_only_repository_untouched(self) -> None:
+        repository, _base_revision, integrated_revision, diff = self.make_repository()
+        self.run_git(repository, "config", "index.splitIndex", "true")
+        git_directory = repository / ".git"
+
+        def fingerprint() -> dict[str, str]:
+            return {
+                str(path.relative_to(git_directory)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(git_directory.rglob("*"))
+                if path.is_file()
+            }
+
+        def loose_object_count() -> str:
+            listing = self.run_git(repository, "count-objects", "-v")
+            return next(line for line in listing.splitlines() if line.startswith("count:"))
+
+        before = fingerprint()
+        object_count = loose_object_count()
+        temporary_parent = Path(tempfile.gettempdir())
+        leftover = set(temporary_parent.glob("pinboard-integration-*"))
+
+        def part_count(path: Path) -> int:
+            return len(path.parts)
+
+        directories = sorted(
+            (path for path in git_directory.rglob("*") if path.is_dir()),
+            key=part_count,
+            reverse=True,
+        )
+        for path in directories:
+            path.chmod(0o500)
+        git_directory.chmod(0o500)
+        for path in git_directory.rglob("*"):
+            if path.is_file():
+                path.chmod(0o400)
+        try:
+            observed = observe_target_content_presence(repository, "integrated", diff)
+        finally:
+            git_directory.chmod(0o700)
+            for path in directories:
+                path.chmod(0o700)
+            for path in git_directory.rglob("*"):
+                if path.is_file():
+                    path.chmod(0o600)
+
+        self.assertEqual(TargetContentPresent(integrated_revision), observed)
+        self.assertEqual(before, fingerprint())
+        self.assertEqual(object_count, loose_object_count())
+        self.assertEqual(leftover, set(temporary_parent.glob("pinboard-integration-*")))
 
 
 if __name__ == "__main__":

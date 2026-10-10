@@ -720,6 +720,14 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
+    def read_item_integration(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationFacts:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return sqlite_state.read_item_integration(connection, work_item_id)
+        finally:
+            connection.close()
+
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:

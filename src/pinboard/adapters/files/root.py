@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -52,6 +54,24 @@ class CandidateRestoreRejection:
 
 
 type CandidateRestoreResult = CandidateRestoreSuccess | CandidateRestoreRejection
+
+
+@dataclass(frozen=True, slots=True)
+class TargetContentPresent:
+    resolved_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class TargetContentNotPresent:
+    resolved_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedTarget:
+    target: str
+
+
+type TargetContentObservation = TargetContentPresent | TargetContentNotPresent | UnresolvedTarget
 
 
 class CandidateRestoreAfterMutationError(RootError):
@@ -262,6 +282,60 @@ def _has_unexcluded_changes(status: bytes, excluded_untracked_paths: tuple[str, 
 
     allowed = {b"?? " + path.encode() for path in excluded_untracked_paths}
     return any(record not in allowed for record in status.split(b"\0") if record)
+
+
+def observe_target_content_presence(cwd: Path, target: str, diff: bytes) -> TargetContentObservation:
+    """Check whether recorded change bytes reverse-apply cleanly to one target tree.
+
+    The target resolves to a full commit whose tree is read into a private temporary
+    index, where the reverse application is checked. The working tree, real index,
+    refs, and object database stay untouched, and the temporary directory is removed
+    before returning.
+    """
+
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    resolved_revision = resolved.stdout.strip()
+    if resolved.returncode != 0 or not resolved_revision:
+        diagnostic = resolved.stderr.strip()
+        if diagnostic:
+            raise RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, diagnostic)
+        return UnresolvedTarget(target)
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as temporary:
+        environment = {**os.environ, "GIT_INDEX_FILE": str(Path(temporary) / "index")}
+        read_tree = subprocess.run(
+            ["git", "-c", "index.splitIndex=false", "read-tree", resolved_revision],
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        if read_tree.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                read_tree.stderr.decode(errors="replace").strip() or f"Cannot read the target tree at '{cwd}'.",
+            )
+        applied = subprocess.run(
+            ["git", "-c", "apply.whitespace=nowarn", "apply", "--cached", "--check", "--reverse", "--binary", "-"],
+            cwd=cwd,
+            input=diff,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        if applied.returncode == 0:
+            return TargetContentPresent(resolved_revision)
+        if applied.returncode == 1:
+            return TargetContentNotPresent(resolved_revision)
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            applied.stderr.decode(errors="replace").strip() or f"Cannot check the recorded change at '{cwd}'.",
+        )
 
 
 def restore_working_tree_candidate(

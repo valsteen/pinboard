@@ -949,6 +949,185 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
 
 
+class IntegrationPresence(Enum):
+    """Whether the recorded candidate content reverse-applies cleanly to the named target tree."""
+
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+class IntegrationSourceProtectedReview(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class IntegrationSourceAcceptedCheckpoint(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+    checkpoint: str
+
+
+class IntegrationSourceCompletion(
+    msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type IntegrationSource = (
+    IntegrationSourceProtectedReview | IntegrationSourceAcceptedCheckpoint | IntegrationSourceCompletion
+)
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Whether one recorded candidate's exact content is present in one named target tree."""
+
+    schema: Literal["pinboard-item-integration/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    target_revision: str | None
+    """The resolved full target commit; null exactly when an empty recorded diff decided no-change without Git."""
+    source: IntegrationSource
+    presence: IntegrationPresence
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationItemFacts:
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationAttemptFacts:
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    branch: str
+    base_revision: str
+    candidate_revision: str | None
+    candidate_recorded_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationClosingAttemptFacts:
+    attempt_id: AttemptId
+    candidate_revision: str | None
+    candidate_recorded_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationClosureFacts:
+    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind
+    closing_attempt: IntegrationClosingAttemptFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCheckpointFacts:
+    receipt: stored_state.StoredTransitionReceipt
+    package_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationFacts:
+    project_revision: int
+    work_item: IntegrationItemFacts | None
+    current_attempt: IntegrationAttemptFacts | None
+    closure: IntegrationClosureFacts | None
+    latest_checkpoint: IntegrationCheckpointFacts | None
+
+
+class IntegrationUnavailableReason(Enum):
+    NO_PROTECTED_OR_CHECKPOINT = "no-protected-or-checkpoint"
+    DIRECT_CLOSE = "direct-close"
+    PACKAGE_WITHOUT_SNAPSHOT = "package-without-snapshot"
+    PRE_SNAPSHOT_CANDIDATE = "pre-snapshot-candidate"
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateUnavailable:
+    reason: IntegrationUnavailableReason
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewCandidateSelection:
+    attempt_id: AttemptId
+    candidate_revision: str
+    candidate_recorded_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointCandidateSelection:
+    attempt_id: AttemptId
+    checkpoint: str
+    candidate_revision: str
+    receipt: stored_state.StoredTransitionReceipt
+    package_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionCandidateSelection:
+    attempt_id: AttemptId
+    candidate_revision: str
+    candidate_recorded_at: datetime
+
+
+type IntegrationCandidateSelection = (
+    ProtectedReviewCandidateSelection | AcceptedCheckpointCandidateSelection | CompletionCandidateSelection
+)
+
+
+type IntegrationSourceSelection = (
+    IntegrationCandidateSelection | IntegrationCandidateUnavailable | DamagedTransitionReceipt
+)
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationObserved:
+    source: IntegrationCandidateSelection
+    compared_from_revision: str
+    resolved_revision: str | None
+    presence: IntegrationPresence
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationTargetUnresolved:
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateEvidenceInvalid:
+    attempt_id: AttemptId
+    reference: stored_state.ArtifactReference
+    defect: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCheckoutUnavailable:
+    """A Git failure outside the typed unresolved-target observation, named by its root-error code value."""
+
+    code: str
+    diagnostic: str
+
+
+type IntegrationObservation = (
+    IntegrationObserved
+    | IntegrationTargetUnresolved
+    | IntegrationCandidateUnavailable
+    | IntegrationCandidateEvidenceInvalid
+    | IntegrationCheckoutUnavailable
+)
+
+
 class ParallelSelection(Enum):
     ALL_SAFE = "all-safe"
     SELECTED = "selected"

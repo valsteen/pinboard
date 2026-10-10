@@ -101,7 +101,7 @@ class _AttemptReviewEvidence:
 def _branch_owner_not_found(branch: str, work_root: Path) -> execution.OperationResult:
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v2",
+            "schema": "pinboard-mcp-item-status-result/v3",
             "status": "rejected",
             "code": "BRANCH_OWNER_NOT_FOUND",
             "message": f"No retained attempt in work root {work_root} records branch '{branch}'.",
@@ -127,6 +127,175 @@ def _branch_owner_not_found(branch: str, work_root: Path) -> execution.Operation
     )
 
 
+def _integration_failure(
+    code: str,
+    message: str,
+    observed: tuple[FailureFact, ...],
+    retry: RetryDisposition,
+    recovery: str,
+) -> execution.OperationResult:
+    return execution.OperationResult(
+        {
+            "schema": "pinboard-mcp-item-status-result/v3",
+            "status": "rejected",
+            "code": code,
+            "message": message,
+            "state_changed": False,
+            **common._details_json(
+                FailureDetails(
+                    observed=observed,
+                    mismatches=(),
+                    retry=retry,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                )
+            ),
+            "recovery": recovery,
+        },
+        "rejected",
+        None,
+    )
+
+
+def _integration_unavailable_why(reason: query_models.IntegrationUnavailableReason) -> str:
+    match reason:
+        case query_models.IntegrationUnavailableReason.NO_PROTECTED_OR_CHECKPOINT:
+            return "the current attempt has no protected candidate and no checkpoint acceptance"
+        case query_models.IntegrationUnavailableReason.DIRECT_CLOSE:
+            return "the item closed without a completion candidate"
+        case query_models.IntegrationUnavailableReason.PACKAGE_WITHOUT_SNAPSHOT:
+            return "the accepted checkpoint package carries no candidate snapshot reference"
+        case query_models.IntegrationUnavailableReason.PRE_SNAPSHOT_CANDIDATE:
+            return "the retained candidate predates snapshot recording"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _integration_checkout_failure(project_root: str, code: str, diagnostic: str) -> execution.OperationResult:
+    return _integration_failure(
+        code,
+        diagnostic,
+        (FailureFact("project_root", project_root), FailureFact("diagnostic", diagnostic)),
+        RetryDisposition.CORRECT_INPUT,
+        "Correct the source checkout so Git can read it, then repeat the read.",
+    )
+
+
+def _integration_source_view(
+    source: query_models.IntegrationCandidateSelection,
+    compared_from_revision: str,
+) -> query_models.IntegrationSource:
+    match source:
+        case query_models.ProtectedReviewCandidateSelection():
+            return query_models.IntegrationSourceProtectedReview(
+                str(source.attempt_id), source.candidate_revision, compared_from_revision
+            )
+        case query_models.AcceptedCheckpointCandidateSelection():
+            return query_models.IntegrationSourceAcceptedCheckpoint(
+                str(source.attempt_id), source.candidate_revision, compared_from_revision, source.checkpoint
+            )
+        case query_models.CompletionCandidateSelection():
+            return query_models.IntegrationSourceCompletion(
+                str(source.attempt_id), source.candidate_revision, compared_from_revision
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _read_item_integration(
+    durable: DurableRoots,
+    store: WorkStore,
+    request: contracts.ItemStatusIntegrationRequest,
+) -> query_models.ItemIntegration | execution.OperationResult:
+    """Compose one item's integration observation; every failure is a typed v3 rejection."""
+
+    facts = store.read_item_integration(WorkItemId(request.item_id))
+    selection = queries.select_integration_source(facts, WorkItemId(request.item_id))
+    if isinstance(selection, DecisionFailure):
+        return common._item_status_failure(selection.code.value, selection.message, selection.details)
+    if isinstance(selection, query_models.DamagedTransitionReceipt):
+        return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", selection)
+    if isinstance(selection, query_models.IntegrationCandidateUnavailable):
+        item = facts.work_item
+        item_state = "unknown" if item is None else item.state.value
+        why = _integration_unavailable_why(selection.reason)
+        return _integration_failure(
+            "INTEGRATION_CANDIDATE_UNAVAILABLE",
+            f"Item '{request.item_id}' has no candidate available for an integration observation: {why}.",
+            (
+                FailureFact("item_id", request.item_id),
+                FailureFact("item_state", item_state),
+                FailureFact("reason", selection.reason.value),
+            ),
+            RetryDisposition.CORRECT_INPUT,
+            "Read the item with operation item to inspect its current candidate and checkpoint state.",
+        )
+    try:
+        source_checkout = resolve_source_checkout_root(Path(request.project_root))
+    except RootError as error:
+        return _integration_checkout_failure(request.project_root, error.code.value, str(error))
+    observation = candidate_evidence.observe_item_integration(
+        source_checkout, durable.work_root, store, selection, request.target
+    )
+    match observation:
+        case query_models.IntegrationObserved():
+            return query_models.ItemIntegration(
+                "pinboard-item-integration/v1",
+                "sqlite-v7",
+                str(facts.project_revision),
+                request.item_id,
+                request.target,
+                observation.resolved_revision,
+                _integration_source_view(observation.source, observation.compared_from_revision),
+                observation.presence,
+            )
+        case query_models.IntegrationTargetUnresolved():
+            return _integration_failure(
+                "INTEGRATION_TARGET_UNRESOLVED",
+                f"Target '{request.target}' does not resolve to a commit in the repository at "
+                f"'{request.project_root}'.",
+                (FailureFact("target", request.target), FailureFact("project_root", request.project_root)),
+                RetryDisposition.CORRECT_INPUT,
+                "Name an existing local branch, remote-tracking ref, tag, or full commit. When freshness matters, "
+                "fetch from the remote outside Pinboard first; Pinboard never fetches.",
+            )
+        case query_models.IntegrationCandidateUnavailable():
+            item = facts.work_item
+            item_state = "unknown" if item is None else item.state.value
+            why = _integration_unavailable_why(observation.reason)
+            return _integration_failure(
+                "INTEGRATION_CANDIDATE_UNAVAILABLE",
+                f"Item '{request.item_id}' has no candidate available for an integration observation: {why}.",
+                (
+                    FailureFact("item_id", request.item_id),
+                    FailureFact("item_state", item_state),
+                    FailureFact("reason", observation.reason.value),
+                ),
+                RetryDisposition.CORRECT_INPUT,
+                "Read the item with operation item to inspect its current candidate and checkpoint state.",
+            )
+        case query_models.IntegrationCandidateEvidenceInvalid():
+            reference = observation.reference
+            return _integration_failure(
+                "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",
+                f"Accepted candidate evidence for attempt '{observation.attempt_id}' could not be verified: "
+                f"{observation.defect}",
+                (
+                    FailureFact("attempt_id", str(observation.attempt_id)),
+                    FailureFact("artifact_ref_id", int(reference.artifact_ref_id)),
+                    FailureFact("selector", reference.selector),
+                ),
+                RetryDisposition.DO_NOT_RETRY,
+                "Run the diagnosis-only 'pinboard validate' against the work root; do not retry this read until "
+                "the recorded evidence is repaired.",
+            )
+        case query_models.IntegrationCheckoutUnavailable():
+            return _integration_checkout_failure(request.project_root, observation.code, observation.diagnostic)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _read_item_status(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     token.checkpoint()
     try:
@@ -144,13 +313,18 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
             if isinstance(projected, DecisionFailure):
                 return common._item_status_failure(projected.code.value, projected.message, projected.details)
             if isinstance(projected, query_models.DamagedTransitionReceipt):
-                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v2", projected)
-            selected: query_models.ItemStatus | query_models.BranchOwners = projected
+                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", projected)
+            selected: query_models.ItemStatus | query_models.BranchOwners | query_models.ItemIntegration = projected
         case contracts.ItemStatusBranchRequest():
             owners = queries.project_branch_owners(store, request.branch)
             if owners is None:
                 return _branch_owner_not_found(request.branch, durable.work_root)
             selected = owners
+        case contracts.ItemStatusIntegrationRequest():
+            integration = _read_item_integration(durable, store, request)
+            if isinstance(integration, execution.OperationResult):
+                return integration
+            selected = integration
         case _ as unreachable:
             assert_never(unreachable)
     token.checkpoint()

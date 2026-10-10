@@ -16,7 +16,6 @@ import msgspec
 from mcp.server.mcpserver.exceptions import ToolError
 from msgspec.structs import replace as replace_struct
 
-from pinboard.adapters.files.errors import RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
 from pinboard.adapters.sqlite import database as sqlite_database
@@ -262,12 +261,28 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
 
     def test_integration_leaf_maps_git_read_failures_to_typed_rejection(self) -> None:
         fixture = self.checkpoint_fixture()
-        with patch(
-            "pinboard.mcp.read_operations.git_root.observe_integration_content",
-            side_effect=RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "target tree read failed"),
-        ):
+        original_run = subprocess.run
+        commands: list[list[str]] = []
+
+        def fail_read_tree(
+            command: list[str],
+            *,
+            cwd: Path,
+            capture_output: bool,
+            check: bool,
+            text: bool = False,
+            env: dict[str, str] | None = None,
+        ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+            commands.append(command)
+            if "read-tree" in command:
+                return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=b"target tree read failed")
+            return original_run(command, cwd=cwd, capture_output=capture_output, check=check, text=text, env=env)
+
+        with patch("pinboard.adapters.files.root.subprocess.run", side_effect=fail_read_tree):
             result = self.integration_leaf(fixture, "HEAD")
 
+        self.assertTrue(any(command[:3] == ["git", "rev-parse", "--verify"] for command in commands), commands)
+        self.assertTrue(any("read-tree" in command for command in commands), commands)
         self.assert_integration_rejection(
             result,
             "PROJECT_GIT_CHECKOUT_UNAVAILABLE",

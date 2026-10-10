@@ -40,6 +40,21 @@ class IntegrationCandidateEvidence:
     reference: stored_state.ArtifactReference
 
 
+def _integration_evidence_failure(message: str, reference: stored_state.ArtifactReference) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+        message,
+        FailureDetails(
+            observed=(FailureFact("artifact_reference", int(reference.artifact_ref_id)),),
+            mismatches=(FailureMismatch("candidate_snapshot", "accepted canonical bytes", message),),
+            retry=RetryDisposition.DO_NOT_RETRY,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
 def matches_portable_candidate_snapshot(
     identity: work_brief_models.PortableArtifactIdentity,
     reference: stored_state.ArtifactReference,
@@ -99,7 +114,7 @@ def read_integration_candidate_evidence(
         case query_models.ProtectedReviewIntegrationChoice(context) | query_models.CompletionIntegrationChoice(context):
             evidence = read_candidate_evidence_from_context(work_root, context, context.candidate_revision)
             if isinstance(evidence, DecisionFailure):
-                return evidence
+                return _integration_evidence_failure(evidence.message, context.reference)
             return IntegrationCandidateEvidence(evidence.snapshot, evidence.reference)
         case query_models.AcceptedCheckpointIntegrationChoice(context):
             package_reference = context.package_reference
@@ -110,6 +125,7 @@ def read_integration_candidate_evidence(
                     "The accepted checkpoint has no candidate snapshot reference.",
                     None,
                 )
+            failed_reference = package_reference
             try:
                 package_bytes = read_reference(work_root, package_reference)
                 package = checkpoint_packages.validate_selected_checkpoint_review_package(
@@ -123,6 +139,7 @@ def read_integration_candidate_evidence(
                     raise ValueError(package.message)
                 if not isinstance(package, work_brief_models.CheckpointReviewPackageV3):
                     raise ValueError("The accepted checkpoint package does not name a v3 candidate snapshot.")
+                failed_reference = candidate_reference
                 candidate_bytes = read_reference(work_root, candidate_reference)
                 identity = package.candidate_snapshot
                 if not matches_portable_candidate_snapshot(identity, candidate_reference):
@@ -141,7 +158,7 @@ def read_integration_candidate_evidence(
                     raise ValueError("The accepted checkpoint candidate bytes do not match their package.")
                 return IntegrationCandidateEvidence(snapshot, candidate_reference)
             except (ArtifactError, ValueError) as error:
-                return DecisionFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
+                return _integration_evidence_failure(str(error), failed_reference)
         case _ as unreachable:
             assert_never(unreachable)
 

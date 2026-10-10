@@ -36,6 +36,34 @@ COMPLETED_AT = datetime(2030, 1, 3, 4, 5, 6, tzinfo=UTC)
 
 
 class ItemStatusFactsTest(CheckpointPackageSupport):
+    def assert_integration_rejection(
+        self,
+        result: JsonObject,
+        code: str,
+        expected_observed: dict[str, str | int],
+        retry: str,
+        next_step_fragment: str,
+    ) -> None:
+        self.assertEqual("pinboard-mcp-item-status-result/v3", result["schema"])
+        self.assertEqual("rejected", result["status"])
+        self.assertEqual(code, result["code"])
+        self.assertEqual("unchanged", result["effect"])
+        self.assertEqual(retry, result["retry"])
+        observed = {
+            self.json_object(value)["field"]: self.json_object(value)["value"]
+            for value in self.json_array(result["observed"])
+        }
+        for field, expected in expected_observed.items():
+            if isinstance(expected, str):
+                actual = observed[field]
+                self.assertIsInstance(actual, str)
+                self.assertIn(expected, actual)
+            else:
+                self.assertEqual(expected, observed[field], result)
+        next_step = result.get("next_step")
+        self.assertIsInstance(next_step, str)
+        self.assertIn(next_step_fragment, next_step)
+
     def roots(self, fixture: CheckpointFixture) -> JsonObject:
         return {"project_root": str(fixture.project), "work_root": str(fixture.work)}
 
@@ -102,6 +130,20 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         (fixture.project / "tracked.txt").write_text("overlapping replacement\n", encoding="utf-8")
         self.fixed_commit(fixture.project, "later overlapping edit")
         self.assertEqual("content-not-present", self.integration_leaf(fixture)["presence"])
+
+    def test_integration_leaf_preserves_work_root_and_ledger(self) -> None:
+        fixture = self.checkpoint_fixture()
+        before = {
+            path.relative_to(fixture.work): path.read_bytes() for path in fixture.work.rglob("*") if path.is_file()
+        }
+
+        result = self.integration_leaf(fixture)
+
+        self.assertEqual("pinboard-item-integration/v1", result["schema"])
+        after = {
+            path.relative_to(fixture.work): path.read_bytes() for path in fixture.work.rglob("*") if path.is_file()
+        }
+        self.assertEqual(before, after)
 
     def test_integration_leaf_recognizes_fast_forward_merge_rebase_and_squash_trees(self) -> None:
         for integration in ("fast-forward", "merge-commit", "rebase-merge", "squash"):
@@ -244,27 +286,38 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.assertTrue(any("checkpoint_history_by_subject" in plan for plan in plans), plans)
         self.assertFalse(any("SCAN transition_history" in plan for plan in plans), plans)
 
-    def test_integration_leaf_rejections_name_target_item_and_damaged_candidate(self) -> None:  # noqa: PLR0915 - one native outcome sequence covers the named rejection contracts
+    def test_integration_leaf_rejections_name_target_item_and_damaged_candidate(self) -> None:
         fixture = self.checkpoint_fixture()
         ready_without_candidate = self.integration_leaf(fixture, "HEAD", "work-c")
-        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", ready_without_candidate["code"])
-        self.assertEqual("unchanged", ready_without_candidate["effect"])
-        self.assertEqual("correct-input", ready_without_candidate["retry"])
-        unavailable_step = ready_without_candidate["next_step"]
-        self.assertIsInstance(unavailable_step, str)
-        self.assertIn("operation item", unavailable_step)
+        self.assert_integration_rejection(
+            ready_without_candidate,
+            "INTEGRATION_CANDIDATE_UNAVAILABLE",
+            {"item_id": "work-c", "item_state": "ready", "reason": "no current protected candidate"},
+            "correct-input",
+            "operation item",
+        )
         self.close_prerequisite(fixture)
         directly_closed = self.integration_leaf(fixture, "HEAD", "work-c")
-        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", directly_closed["code"])
+        self.assert_integration_rejection(
+            directly_closed,
+            "INTEGRATION_CANDIDATE_UNAVAILABLE",
+            {"item_id": "work-c", "item_state": "done", "reason": "directly"},
+            "correct-input",
+            "operation item",
+        )
         direct_close_message = directly_closed["message"]
         self.assertIsInstance(direct_close_message, str)
         self.assertIn("directly", direct_close_message)
         active = self.checkpoint_fixture()
         self.return_for_review(active, "No protected candidate remains for this active attempt.")
         no_current_candidate = self.integration_leaf(active)
-        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", no_current_candidate["code"])
-        self.assertEqual("unchanged", no_current_candidate["effect"])
-        self.assertEqual("correct-input", no_current_candidate["retry"])
+        self.assert_integration_rejection(
+            no_current_candidate,
+            "INTEGRATION_CANDIDATE_UNAVAILABLE",
+            {"item_id": "work-a", "item_state": "active", "reason": "no protected candidate"},
+            "correct-input",
+            "operation item",
+        )
         invalid_target = call_native_tool(
             mcp_server.ITEM_STATUS_TOOL,
             {"request": {**self.roots(fixture), "operation": "integration", "item_id": "work-a", "target": "-bad"}},
@@ -284,20 +337,25 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                 },
             )
         self.assertEqual("PROJECT_GIT_ROOT_UNAVAILABLE", non_git["code"])
+        self.assertEqual("unchanged", non_git["effect"])
         self.assertEqual("correct-input", non_git["retry"])
         observed = self.json_array(non_git["observed"])
         self.assertIn("git_diagnostic", [self.json_object(fact)["field"] for fact in observed])
+        non_git_next_step = non_git["next_step"]
+        self.assertIsInstance(non_git_next_step, str)
+        self.assertIn("Correct the local Git checkout", non_git_next_step)
         missing_target = self.integration_leaf(fixture, "missing-target")
-        self.assertEqual("pinboard-mcp-item-status-result/v3", missing_target["schema"])
-        self.assertEqual("INTEGRATION_TARGET_UNRESOLVED", missing_target["code"])
-        self.assertEqual("unchanged", missing_target["effect"])
-        self.assertEqual("correct-input", missing_target["retry"])
-        self.assertEqual("missing-target", self.json_object(self.json_array(missing_target["observed"])[0])["value"])
-        next_step = missing_target["next_step"]
-        self.assertIsInstance(next_step, str)
-        self.assertIn("fetch outside Pinboard", next_step)
+        self.assert_integration_rejection(
+            missing_target,
+            "INTEGRATION_TARGET_UNRESOLVED",
+            {"target": "missing-target"},
+            "correct-input",
+            "fetch outside Pinboard",
+        )
         missing_item = self.integration_leaf(fixture, "HEAD", "missing-item")
         self.assertEqual("ITEM_NOT_FOUND", missing_item["code"])
+        self.assertEqual("unchanged", missing_item["effect"])
+        self.assertEqual("correct-input", missing_item["retry"])
         context = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
         self.assertIsNotNone(context)
         assert context is not None
@@ -305,11 +363,35 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         accepted_bytes = artifact_path.read_bytes()
         artifact_path.write_bytes(accepted_bytes + b"damaged")
         damaged = self.integration_leaf(fixture)
-        self.assertEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", damaged["code"])
-        self.assertEqual("do-not-retry", damaged["retry"])
-        next_step = damaged["next_step"]
-        self.assertIsInstance(next_step, str)
-        self.assertIn("pinboard validate", next_step)
+        self.assert_integration_rejection(
+            damaged,
+            "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",
+            {"attempt_id": "work-a-1", "artifact_reference": int(context.reference.artifact_ref_id)},
+            "do-not-retry",
+            "pinboard validate",
+        )
+
+    def test_integration_leaf_names_the_checkpoint_artifact_that_failed(self) -> None:
+        fixture = self.accepted_package_fixture()
+        facts = fixture.store.read_integration_candidate_facts(WorkItemId("work-a"))
+        self.assertIsNotNone(facts)
+        assert facts is not None and facts.latest_checkpoint is not None
+        checkpoint = facts.latest_checkpoint
+        package_reference = checkpoint.package_reference
+        self.assertIsNotNone(package_reference)
+        assert package_reference is not None
+        package_path = fixture.work / package_reference.selector
+        package_path.write_bytes(package_path.read_bytes() + b"damaged")
+
+        result = self.integration_leaf(fixture)
+
+        self.assert_integration_rejection(
+            result,
+            "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",
+            {"attempt_id": "work-a-1", "artifact_reference": int(package_reference.artifact_ref_id)},
+            "do-not-retry",
+            "pinboard validate",
+        )
 
     def test_integration_leaf_names_a_damaged_checkpoint_acceptance_receipt(self) -> None:
         fixture = self.accepted_package_fixture()

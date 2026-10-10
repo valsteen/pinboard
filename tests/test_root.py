@@ -235,6 +235,11 @@ class RootResolutionTest(unittest.TestCase):
         metadata.chmod(0o555)
         temporary = Path(tempfile.gettempdir())
         temporary_before = {path for path in temporary.iterdir() if path.name.startswith("pinboard-integration-")}
+        working_tree_before = {
+            path.relative_to(repository): path.read_bytes()
+            for path in repository.rglob("*")
+            if path.is_file() and metadata not in path.parents
+        }
         try:
             self.assertEqual(
                 IntegrationContentObservation(target, True), observe_integration_content(repository, target, diff)
@@ -247,6 +252,12 @@ class RootResolutionTest(unittest.TestCase):
                 path.chmod(0o644)
         after = {path.relative_to(metadata): path.read_bytes() for path in metadata.rglob("*") if path.is_file()}
         self.assertEqual(before, after)
+        working_tree_after = {
+            path.relative_to(repository): path.read_bytes()
+            for path in repository.rglob("*")
+            if path.is_file() and metadata not in path.parents
+        }
+        self.assertEqual(working_tree_before, working_tree_after)
         self.assertEqual(
             temporary_before, {path for path in temporary.iterdir() if path.name.startswith("pinboard-integration-")}
         )

@@ -199,19 +199,13 @@ def _read_item_status(  # noqa: C901, PLR0912 - exhaustively composes the three 
             evidence = candidate_evidence.read_integration_candidate_evidence(durable.work_root, choice)
             if isinstance(evidence, DecisionFailure):
                 context = _integration_choice_context(choice)
-                reference_id = (
-                    context.reference.artifact_ref_id
-                    if isinstance(context, query_models.CandidateSnapshotContextFacts)
-                    else None
-                    if context.candidate_reference is None
-                    else context.candidate_reference.artifact_ref_id
-                )
+                reference_id = _integration_failure_artifact_reference(choice, evidence)
                 return _integration_rejection(
                     "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",
                     evidence.message,
                     (
                         FailureFact("attempt_id", str(context.attempt_id)),
-                        FailureFact("artifact_reference", "missing" if reference_id is None else int(reference_id)),
+                        FailureFact("artifact_reference", "missing" if reference_id is None else reference_id),
                     ),
                     (FailureMismatch("candidate_snapshot", "accepted canonical bytes", evidence.message),),
                     RetryDisposition.DO_NOT_RETRY,
@@ -294,6 +288,26 @@ def _integration_choice_context(
             return context
         case query_models.AcceptedCheckpointIntegrationChoice(context):
             return context
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _integration_failure_artifact_reference(
+    choice: query_models.IntegrationCandidateChoice, failure: DecisionFailure
+) -> int | None:
+    reference_id = None
+    if failure.details is not None:
+        for fact in failure.details.observed:
+            if fact.field == "artifact_reference" and isinstance(fact.value, int):
+                reference_id = fact.value
+    if reference_id is not None:
+        return reference_id
+    context = _integration_choice_context(choice)
+    match context:
+        case query_models.CandidateSnapshotContextFacts(reference=reference):
+            return int(reference.artifact_ref_id)
+        case query_models.CheckpointCandidateContextFacts(candidate_reference=reference):
+            return None if reference is None else int(reference.artifact_ref_id)
         case _ as unreachable:
             assert_never(unreachable)
 

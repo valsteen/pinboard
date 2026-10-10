@@ -366,6 +366,71 @@ def _read_attempt_context_facts(
     return selected
 
 
+def _read_latest_checkpoint_candidate_context_facts(
+    connection: sqlite3.Connection,
+    attempt: _IntegrationAttemptRow,
+    work_item_id: WorkItemId,
+) -> tuple[query_models.CheckpointCandidateContextFacts | None, query_models.DamagedTransitionReceipt | None]:
+    """Decode the indexed latest acceptance receipt or preserve its damage for status."""
+
+    checkpoint_row = connection.execute(
+        """SELECT history_id FROM transition_history INDEXED BY checkpoint_history_by_subject
+           WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+           ORDER BY history_id DESC LIMIT 1""",
+        (attempt.attempt_id,),
+    ).fetchone()
+    if checkpoint_row is None:
+        return None, None
+    receipt = sqlite_state.read_history_receipt(connection, decode_row(checkpoint_row, HistoryIdRow).history_id)
+    if receipt is None:
+        return None, None
+    defect = "The checkpoint acceptance receipt is not canonical."
+    try:
+        outcome = msgspec.json.decode(
+            bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True
+        )
+    except msgspec.DecodeError as error:
+        outcome = None
+        defect = f"The checkpoint acceptance outcome does not decode as checkpoint-acceptance/v2: {error}"
+    if outcome is not None:
+        canonical = msgspec.json.encode(outcome, order="sorted")
+        if (
+            receipt.action_kind == decision_models.ActionKind.ACCEPT_CHECKPOINT
+            and receipt.outcome_schema == "checkpoint-acceptance/v2"
+            and canonical == bytes(receipt.outcome_payload)
+        ):
+            return (
+                query_models.CheckpointCandidateContextFacts(
+                    attempt.attempt_id,
+                    work_item_id,
+                    outcome.checkpoint,
+                    receipt,
+                    read_latest_artifact_reference(
+                        connection,
+                        work_models.ArtifactKind.EVIDENCE,
+                        f"{attempt.attempt_id}-{outcome.checkpoint}-review-package",
+                    ),
+                    read_latest_artifact_reference(
+                        connection,
+                        work_models.ArtifactKind.EVIDENCE,
+                        f"{attempt.attempt_id}-{outcome.checkpoint}-candidate",
+                    ),
+                ),
+                None,
+            )
+        defect = "The checkpoint acceptance outcome is not canonical or does not match its receipt."
+    return (
+        None,
+        query_models.DamagedTransitionReceipt(
+            attempt.attempt_id,
+            receipt.history_id,
+            receipt.committed_at,
+            decision_models.ActionKind.ACCEPT_CHECKPOINT,
+            defect,
+        ),
+    )
+
+
 def _read_candidate_snapshot_context_facts(
     connection: sqlite3.Connection,
     attempt_id: AttemptId,
@@ -769,50 +834,11 @@ class SQLiteWorkStore:
                     if current is None or current.state != work_models.AttemptState.REVIEW
                     else _read_candidate_snapshot_context_facts(connection, current.attempt_id)
                 )
-                latest_checkpoint = None
-                if current is not None and current.state != work_models.AttemptState.REVIEW:
-                    checkpoint_row = connection.execute(
-                        """SELECT history_id FROM transition_history INDEXED BY checkpoint_history_by_subject
-                           WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
-                           ORDER BY history_id DESC LIMIT 1""",
-                        (current.attempt_id,),
-                    ).fetchone()
-                    if checkpoint_row is not None:
-                        receipt = sqlite_state.read_history_receipt(
-                            connection, decode_row(checkpoint_row, HistoryIdRow).history_id
-                        )
-                        if receipt is not None:
-                            try:
-                                outcome = msgspec.json.decode(
-                                    bytes(receipt.outcome_payload),
-                                    type=history.CheckpointAcceptanceOutcome,
-                                    strict=True,
-                                )
-                            except msgspec.DecodeError:
-                                outcome = None
-                            if outcome is not None:
-                                canonical = msgspec.json.encode(outcome, order="sorted")
-                                if (
-                                    receipt.action_kind == decision_models.ActionKind.ACCEPT_CHECKPOINT
-                                    and receipt.outcome_schema == "checkpoint-acceptance/v2"
-                                    and canonical == bytes(receipt.outcome_payload)
-                                ):
-                                    latest_checkpoint = query_models.CheckpointCandidateContextFacts(
-                                        current.attempt_id,
-                                        work_item_id,
-                                        outcome.checkpoint,
-                                        receipt,
-                                        read_latest_artifact_reference(
-                                            connection,
-                                            work_models.ArtifactKind.EVIDENCE,
-                                            f"{current.attempt_id}-{outcome.checkpoint}-review-package",
-                                        ),
-                                        read_latest_artifact_reference(
-                                            connection,
-                                            work_models.ArtifactKind.EVIDENCE,
-                                            f"{current.attempt_id}-{outcome.checkpoint}-candidate",
-                                        ),
-                                    )
+                latest_checkpoint, damaged_checkpoint_receipt = (
+                    (None, None)
+                    if current is None or current.state == work_models.AttemptState.REVIEW
+                    else _read_latest_checkpoint_candidate_context_facts(connection, current, work_item_id)
+                )
                 completion_candidate = None
                 completion_action = None
                 if item.state in (
@@ -836,6 +862,7 @@ class SQLiteWorkStore:
                     None if current is None else current.state,
                     current_candidate,
                     latest_checkpoint,
+                    damaged_checkpoint_receipt,
                     completion_candidate,
                     completion_action,
                 )

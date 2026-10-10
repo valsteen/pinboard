@@ -311,6 +311,33 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         self.assertIsInstance(next_step, str)
         self.assertIn("pinboard validate", next_step)
 
+    def test_integration_leaf_names_a_damaged_checkpoint_acceptance_receipt(self) -> None:
+        fixture = self.accepted_package_fixture()
+        history_id = self.latest_history_id(fixture)
+        self.update_receipt(fixture, history_id, outcome_json='{"unexpected":true}')
+
+        result = self.integration_leaf(fixture)
+
+        self.assertEqual("pinboard-mcp-item-status-result/v3", result["schema"])
+        self.assertEqual("TRANSITION_RECEIPT_DAMAGED", result["code"])
+        self.assertEqual("unchanged", result["effect"])
+        self.assertEqual("do-not-retry", result["retry"])
+        observed = {
+            self.json_object(value)["field"]: self.json_object(value)["value"]
+            for value in self.json_array(result["observed"])
+        }
+        self.assertEqual("work-a-1", observed["attempt_id"])
+        self.assertEqual(history_id, observed["history_id"])
+        self.assertEqual("accept-checkpoint", observed["action_kind"])
+        mismatches = self.json_array(result["mismatches"])
+        self.assertEqual("receipt", self.json_object(mismatches[0])["field"])
+        defect = self.json_object(mismatches[0])["observed"]
+        self.assertIsInstance(defect, str)
+        self.assertIn("does not decode", defect)
+        recovery = result["recovery"]
+        self.assertIsInstance(recovery, str)
+        self.assertIn("do not retry", recovery)
+
     def inspection(self, fixture: CheckpointFixture) -> JsonObject:
         return call_advertised_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL, {**self.roots(fixture), "attempt_id": "work-a-1", "reconciliation": None}

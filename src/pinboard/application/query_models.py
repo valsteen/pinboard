@@ -650,6 +650,7 @@ class IntegrationCandidateFacts:
     current_attempt_state: work_models.AttemptState | None
     current_candidate: CandidateSnapshotContextFacts | None
     latest_checkpoint: CheckpointCandidateContextFacts | None
+    damaged_checkpoint_receipt: DamagedTransitionReceipt | None
     completion_candidate: CandidateSnapshotContextFacts | None
     completion_action: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind | None
 

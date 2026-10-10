@@ -172,6 +172,10 @@ def _read_item_status(  # noqa: C901, PLR0912 - exhaustively composes the three 
             facts = store.read_integration_candidate_facts(WorkItemId(request.item_id))
             if facts is None:
                 return common._item_status_failure("ITEM_NOT_FOUND", f"Item '{request.item_id}' does not exist.", None)
+            if facts.damaged_checkpoint_receipt is not None:
+                return common._damaged_receipt_failure(
+                    "pinboard-mcp-item-status-result/v3", facts.damaged_checkpoint_receipt
+                )
             choice = queries.select_integration_candidate(facts)
             if isinstance(choice, DecisionFailure):
                 details = choice.details

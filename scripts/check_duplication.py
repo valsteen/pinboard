@@ -2,7 +2,7 @@
 
 Certification binds occurrence bytes and semantic-review records, not the truth of
 the reviewer's judgment. Native jscpd owns baseline classification and statistics:
-https://github.com/kucherenko/jscpd/blob/6b25b3a6b84fe59740956594134f7b379a78d30c/rust/crates/cpd-finder/src/statistics.rs
+https://jscpd.dev/project/changelog
 """
 
 import argparse
@@ -52,6 +52,7 @@ class NativePair(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     isNew: bool
     lines: Positive
     tokens: Positive
+    kind: Literal["exact"]
 
 
 class Statistics(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -106,7 +107,7 @@ class ExceptionRecord(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class Exceptions(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-duplication-exceptions/v1"]
-    detector_version: Literal["5.1.2"]
+    detector_version: Literal["5.4.1"]
     records: tuple[ExceptionRecord, ...]
 
 
@@ -213,7 +214,7 @@ def evaluate(report: NativeReport, exceptions: Exceptions, source_root: Path) ->
         reviewed_occurrences.update(
             _stable_occurrence(value) for value in (current_pair.firstFile, current_pair.secondFile)
         )
-    raw_lines = sum(pair.firstFile.end - pair.firstFile.start for pair in report.duplicates)
+    raw_lines = sum(pair.lines for pair in report.duplicates)
     if (len(report.duplicates), raw_lines) != (report.statistics.total.clones, report.statistics.total.duplicatedLines):
         errors.append("Native raw statistics disagree with pinned pair contributions.")
     nonexempt = tuple(pair for pair in report.duplicates if native_pair_identity(pair) not in exempt)
@@ -222,10 +223,9 @@ def evaluate(report: NativeReport, exceptions: Exceptions, source_root: Path) ->
         for pair in nonexempt
         if pair.isNew or native_pair_identity(pair)[0] & reviewed_occurrences
     )
-    # Native 5.1.2 sums the first endpoint's end-minus-start for every pair;
-    # JSON pair.lines includes one additional endpoint line. Never union spans:
-    # an overlapping nonexempt pair still contributes its entire native count.
-    nonexempt_lines = sum(pair.firstFile.end - pair.firstFile.start for pair in nonexempt)
+    # Native statistics sum inclusive pair.lines; overlapping pairs contribute
+    # their entire count, so unioning spans would hide nonexempt duplication.
+    nonexempt_lines = sum(pair.lines for pair in nonexempt)
     source_lines = report.statistics.total.lines
     if nonexempt_lines * 1000 > source_lines * 3:
         errors.append("Nonexempt duplication exceeds the existing 0.3 percent ceiling.")
@@ -244,8 +244,8 @@ def run_detector(
 ) -> NativeReport:
     binary = detector_root / "node_modules/.bin/jscpd"
     version = subprocess.check_output([str(binary), "--version"], text=True).strip()
-    if version != "jscpd 5.1.2":
-        raise ValueError("Duplication certification requires pinned native jscpd 5.1.2")
+    if version != "jscpd 5.4.1":
+        raise ValueError("Duplication certification requires pinned native jscpd 5.4.1")
     subprocess.run(
         [
             str(binary),

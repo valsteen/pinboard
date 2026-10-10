@@ -9,6 +9,6 @@
     "duplication:ci": "uv run --locked python scripts/check_duplication.py"
   },
   "devDependencies": {
-    "jscpd": "5.1.2"
+    "jscpd": "5.4.1"
   }
 }

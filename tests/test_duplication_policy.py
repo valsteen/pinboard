@@ -16,11 +16,13 @@ def occurrence(name: str, start: int, end: int, position: int) -> policy.Occurre
 
 
 def pair(first: policy.Occurrence, second: policy.Occurrence, is_new: bool) -> policy.NativePair:
-    return policy.NativePair(first, second, "python", "raw detector evidence", is_new, first.end - first.start + 1, 70)
+    return policy.NativePair(
+        first, second, "python", "raw detector evidence", is_new, first.end - first.start + 1, 70, "exact"
+    )
 
 
 def report(pairs: tuple[policy.NativePair, ...], source_lines: int) -> policy.NativeReport:
-    lines = sum(p.firstFile.end - p.firstFile.start for p in pairs)
+    lines = sum(p.firstFile.end - p.firstFile.start + 1 for p in pairs)
     statistics = policy.Statistics(len(pairs), lines, 70 * len(pairs), source_lines, 0, 0, 0.0, 0.0, 3, 200)
     return policy.NativeReport(pairs, policy.ReportStatistics("fixed-time", {"python": statistics}, statistics))
 
@@ -63,7 +65,7 @@ class DuplicationPolicyTests(unittest.TestCase):
             (root / "second.py").write_bytes(b"old\n" + matched)
             original = pair(endpoint("first.py", 4), endpoint("second.py", 4), False)
             exceptions = policy.Exceptions(
-                "pinboard-duplication-exceptions/v1", "5.1.2", (certified_pair(original, root),)
+                "pinboard-duplication-exceptions/v1", "5.4.1", (certified_pair(original, root),)
             )
 
             prefix = b"longer\nprefix\n"
@@ -80,7 +82,7 @@ class DuplicationPolicyTests(unittest.TestCase):
             (root / "second.py").write_bytes(b"abcdefgh" * 4)
             original = pair(occurrence("first.py", 1, 9, 0), occurrence("second.py", 1, 9, 0), False)
             accepted = certified_pair(original, root)
-            exceptions = policy.Exceptions("pinboard-duplication-exceptions/v1", "5.1.2", (accepted,))
+            exceptions = policy.Exceptions("pinboard-duplication-exceptions/v1", "5.4.1", (accepted,))
             self.assertFalse(policy.evaluate(report((original,), 10000), exceptions, root).errors)
             cases = (
                 (msgspec.structs.replace(accepted, certification=None), (original,)),
@@ -111,9 +113,9 @@ class DuplicationPolicyTests(unittest.TestCase):
             root = Path(directory)
             (root / "source.py").write_bytes(b"abcdefgh" * 10)
             original = pair(occurrence("source.py", 1, 11, 0), occurrence("source.py", 20, 30, 8), False)
-            overlap = pair(occurrence("source.py", 5, 14, 16), occurrence("source.py", 40, 49, 24), False)
+            overlap = pair(occurrence("source.py", 5, 13, 16), occurrence("source.py", 40, 48, 24), False)
             record = certified_pair(original, root)
-            exceptions = policy.Exceptions("pinboard-duplication-exceptions/v1", "5.1.2", (record,))
+            exceptions = policy.Exceptions("pinboard-duplication-exceptions/v1", "5.4.1", (record,))
             for denominator, fails in ((3000, False), (3001, False), (2999, True)):
                 with self.subTest(source_lines=denominator):
                     result = policy.evaluate(report((original, overlap), denominator), exceptions, root)
@@ -124,7 +126,7 @@ class DuplicationPolicyTests(unittest.TestCase):
 
     def test_strict_records_reject_unknown_and_invalid_certification_shapes(self) -> None:
         for raw in (
-            b'{"schema":"pinboard-duplication-exceptions/v1","detector_version":"5.1.2","records":[],"extra":true}',
+            b'{"schema":"pinboard-duplication-exceptions/v1","detector_version":"5.4.1","records":[],"extra":true}',
             b'{"schema":"pinboard-duplication-exceptions/v1","detector_version":"changed","records":[]}',
         ):
             with self.assertRaises(msgspec.ValidationError):
@@ -138,6 +140,26 @@ class DuplicationPolicyTests(unittest.TestCase):
             raw_certificate[field] = value
             with self.subTest(field=field), self.assertRaises(msgspec.ValidationError):
                 msgspec.json.decode(msgspec.json.encode(raw_certificate), type=policy.Certification)
+
+    def test_exact_report_rejects_other_kinds_unknown_fields_and_inconsistent_totals(self) -> None:
+        native = pair(occurrence("source.py", 1, 9, 0), occurrence("source.py", 12, 20, 8), False)
+        raw = msgspec.json.encode(native)
+        for changed in (
+            raw.replace(b'"kind":"exact"', b'"kind":"renamed"'),
+            raw[:-1] + b',"unexpected":true}',
+        ):
+            with self.subTest(raw=changed), self.assertRaises(msgspec.ValidationError):
+                msgspec.json.decode(changed, type=policy.NativePair)
+        original = report((native,), 10000)
+        inconsistent = msgspec.structs.replace(
+            original,
+            statistics=msgspec.structs.replace(
+                original.statistics,
+                total=msgspec.structs.replace(original.statistics.total, duplicatedLines=8),
+            ),
+        )
+        exceptions = policy.Exceptions("pinboard-duplication-exceptions/v1", "5.4.1", ())
+        self.assertTrue(policy.evaluate(inconsistent, exceptions, Path.cwd()).errors)
 
     def test_real_pinned_native_baseline_third_copy_and_raw_statistics(self) -> None:
         detector_root = Path(__file__).resolve().parents[1]
@@ -174,14 +196,14 @@ class DuplicationPolicyTests(unittest.TestCase):
             self.assertTrue(initial.duplicates)
             exceptions = policy.Exceptions(
                 "pinboard-duplication-exceptions/v1",
-                "5.1.2",
+                "5.4.1",
                 tuple(certified_pair(p, source_root) for p in initial.duplicates),
             )
             clean = policy.evaluate(initial, exceptions, source_root)
             self.assertFalse(clean.errors)
             self.assertEqual(
                 initial.statistics.total.duplicatedLines,
-                sum(p.firstFile.end - p.firstFile.start for p in initial.duplicates),
+                sum(p.firstFile.end - p.firstFile.start + 1 for p in initial.duplicates),
             )
             self.assertAlmostEqual(
                 initial.statistics.total.percentage,

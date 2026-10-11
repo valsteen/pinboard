@@ -55,6 +55,31 @@ class UnresolvedIntegrationTarget:
 type IntegrationPresenceObservation = ResolvedIntegrationPresence | UnresolvedIntegrationTarget
 
 
+def resolve_integration_target(cwd: Path, target: str) -> IntegrationPresenceObservation:
+    """Resolve a caller-named integration target to its full commit revision."""
+
+    if not _valid_integration_target(target):
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            f"Integration target {target!r} is not a valid Git revision name.",
+        )
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if resolved.returncode != 0:
+        if resolved.returncode == 1:
+            return UnresolvedIntegrationTarget(target)
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            resolved.stderr.strip() or f"Cannot resolve integration target '{target}'.",
+        )
+    return ResolvedIntegrationPresence(resolved.stdout.strip(), True)
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateRestoreSuccess:
     changed: bool
@@ -284,21 +309,10 @@ def read_integration_presence(
             RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
             f"Integration target {target!r} is not a valid Git revision name.",
         )
-    resolved = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if resolved.returncode != 0:
-        if resolved.returncode == 1:
-            return UnresolvedIntegrationTarget(target)
-        raise RootError(
-            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
-            resolved.stderr.strip() or f"Cannot resolve integration target '{target}'.",
-        )
-    target_revision = resolved.stdout.strip()
+    resolved = resolve_integration_target(cwd, target)
+    if isinstance(resolved, UnresolvedIntegrationTarget):
+        return resolved
+    target_revision = resolved.target_revision
     temporary = Path(tempfile.mkdtemp(prefix="pinboard-integration-"))
     try:
         index = temporary / "index"

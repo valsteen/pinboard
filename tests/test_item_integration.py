@@ -133,8 +133,8 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         source = self.json_object(result["source"])
         self.assertEqual("protected-review", source["kind"])
         self.assertEqual("work-a-1", source["attempt_id"])
-        self.assertTrue(source["candidate_revision"])
-        self.assertTrue(source["compared_from_revision"])
+        self.assertTrue(str(source["candidate_revision"]))
+        self.assertTrue(str(source["compared_from_revision"]))
         self.assertEqual("content-present", result["presence"], result)
 
     def test_protected_commit_candidate_fast_forward_reports_content_present(self) -> None:
@@ -183,7 +183,7 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         target_revision = result["target_revision"]
         self.assertNotEqual(fixture.candidate_revision, target_revision, result)
         ancestor = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", fixture.candidate_revision, target_revision],
+            ["git", "merge-base", "--is-ancestor", fixture.candidate_revision, str(target_revision)],
             cwd=repo,
             capture_output=True,
             check=False,
@@ -260,7 +260,10 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         evidence = candidate_evidence.read_integration_presence(fixture.project, fixture.work, store, selection, "HEAD")
         self.assertIsInstance(evidence, candidate_evidence.IntegrationPresenceEvidence)
         assert isinstance(evidence, candidate_evidence.IntegrationPresenceEvidence)
-        self.assertIn(evidence.presence, ("no-change", "content-present", "content-not-present"))
+        self.assertTrue(
+            evidence.presence in ("no-change", "content-present", "content-not-present"),
+            evidence.presence,
+        )
 
     def test_target_at_accepted_base_reports_content_not_present(self) -> None:
         fixture = self.checkpoint_fixture(candidate_form="working-tree")
@@ -308,10 +311,13 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.assertEqual("unchanged", result["effect"])
         self.assertEqual("correct-input", result["retry"])
         self.assertFalse(result["state_changed"])
-        observed = {entry["field"]: entry["value"] for entry in result["observed"]}
+        observed_entries = self.json_array(result["observed"])
+        observed = {
+            str(self.json_object(entry)["field"]): self.json_object(entry)["value"] for entry in observed_entries
+        }
         self.assertEqual("nosuchref", observed["target"])
         self.assertIn("project_root", observed)
-        self.assertIn("fetch", result["recovery"].lower())
+        self.assertIn("fetch", str(result["recovery"]).lower())
 
     def test_candidate_unavailable_for_active_item_without_checkpoint(self) -> None:
         fixture = self.checkpoint_fixture()
@@ -322,10 +328,13 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.assertEqual("pinboard-mcp-item-status-result/v3", result["schema"], result)
         self.assertEqual("unchanged", result["effect"])
         self.assertEqual("correct-input", result["retry"])
-        observed = {entry["field"]: entry["value"] for entry in result["observed"]}
+        observed_entries = self.json_array(result["observed"])
+        observed = {
+            str(self.json_object(entry)["field"]): self.json_object(entry)["value"] for entry in observed_entries
+        }
         self.assertEqual("work-a", observed["item_id"])
-        self.assertIn("no protected candidate", observed["reason"])
-        self.assertIn("item leaf", result["recovery"].lower())
+        self.assertTrue("no protected candidate" in str(observed["reason"]), observed["reason"])
+        self.assertIn("item leaf", str(result["recovery"]).lower())
 
     def test_candidate_unavailable_for_direct_close(self) -> None:
         fixture = self.checkpoint_fixture()
@@ -356,7 +365,10 @@ class ItemIntegrationTest(CheckpointPackageSupport):
             },
         )
         self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", result["code"], result)
-        observed = {entry["field"]: entry["value"] for entry in result["observed"]}
+        observed_entries = self.json_array(result["observed"])
+        observed = {
+            str(self.json_object(entry)["field"]): self.json_object(entry)["value"] for entry in observed_entries
+        }
         self.assertEqual("a direct close", observed["reason"])
 
     def test_candidate_evidence_invalid_for_altered_snapshot(self) -> None:
@@ -372,7 +384,7 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.assertEqual("rejected", result["status"], result)
         self.assertEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", result["code"], result)
         self.assertEqual("do-not-retry", result["retry"])
-        self.assertIn("validate", result["recovery"].lower())
+        self.assertIn("validate", str(result["recovery"]).lower())
 
     def test_unknown_item_rejection(self) -> None:
         fixture = self.checkpoint_fixture()
@@ -398,7 +410,7 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.assertEqual("rejected", result["status"], result)
         self.assertEqual("pinboard-mcp-item-status-result/v3", result["schema"], result)
         self.assertIn(
-            result["code"],
+            str(result["code"]),
             {
                 "PROJECT_GIT_ROOT_UNAVAILABLE",
                 "PROJECT_GIT_CHECKOUT_UNAVAILABLE",
@@ -412,7 +424,11 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         fixture = self.checkpoint_fixture()
         result = self.integration_leaf(fixture, "-not-a-ref")
         self.assertEqual("rejected", result["status"], result)
-        self.assertIn(result["code"], {"ITEM_STATUS_INVALID", "PROJECT_GIT_CHECKOUT_UNAVAILABLE"}, result)
+        code_value = str(result["code"])
+        self.assertTrue(
+            code_value in ("ITEM_STATUS_INVALID", "PROJECT_GIT_CHECKOUT_UNAVAILABLE"),
+            result,
+        )
 
     def test_item_and_branch_leaves_still_use_v3_rejections(self) -> None:
         fixture = self.checkpoint_fixture()

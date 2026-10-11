@@ -224,7 +224,27 @@ def read_integration_presence(
     )
     source = _source_record(selection, compared_from)
     if not diff:
-        return IntegrationPresenceEvidence("no-change", "", compared_from, source)
+        try:
+            resolved = root.resolve_integration_target(source_checkout, target)
+        except RootError as error:
+            return IntegrationGitFailure(error.code, str(error))
+        if isinstance(resolved, root.UnresolvedIntegrationTarget):
+            return DecisionFailure(
+                DecisionFailureCode.INTEGRATION_TARGET_UNRESOLVED,
+                f"Integration target '{resolved.target}' does not resolve to a commit in {source_checkout}.",
+                FailureDetails(
+                    observed=(
+                        FailureFact("target", resolved.target),
+                        FailureFact("project_root", str(source_checkout)),
+                    ),
+                    mismatches=(),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
+        return IntegrationPresenceEvidence("no-change", resolved.target_revision, compared_from, source)
     try:
         observation = root.read_integration_presence(source_checkout, target, diff)
     except RootError as error:

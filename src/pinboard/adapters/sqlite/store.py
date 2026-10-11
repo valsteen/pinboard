@@ -729,7 +729,9 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
-    def read_item_integration_source(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationSourceFacts | None:
+    def read_item_integration_source(
+        self, work_item_id: WorkItemId
+    ) -> query_models.ItemIntegrationSourceFacts | query_models.DamagedTransitionReceipt | None:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):

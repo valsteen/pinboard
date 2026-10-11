@@ -8,7 +8,7 @@ reads the filesystem, or obtains time. Expected stale CAS writes return a
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from itertools import pairwise
 from typing import NoReturn, assert_never
 
@@ -667,7 +667,7 @@ class _IntegrationClosureRow(msgspec.Struct, frozen=True, forbid_unknown_fields=
 
 def read_item_integration_source(
     connection: sqlite3.Connection, item_id: WorkItemId
-) -> query_models.ItemIntegrationSourceFacts | None:
+) -> query_models.ItemIntegrationSourceFacts | query_models.DamagedTransitionReceipt | None:
     """Read only the named item, its selected attempt, its closing receipt, and one checkpoint acceptance."""
 
     project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
@@ -734,6 +734,8 @@ def read_item_integration_source(
     ).fetchone()
     if checkpoint_row is not None:
         checkpoint = _read_integration_checkpoint(connection, checkpoint_row, attempt.attempt_id)
+        if isinstance(checkpoint, query_models.DamagedTransitionReceipt):
+            return checkpoint
     return query_models.ItemIntegrationSourceFacts(
         project_revision,
         item.work_item_id,
@@ -748,24 +750,59 @@ def read_item_integration_source(
     )
 
 
+def _integration_damaged_receipt(
+    connection: sqlite3.Connection,
+    attempt_id: AttemptId,
+    history_id: int,
+    defect: str,
+) -> query_models.DamagedTransitionReceipt:
+    committed_row = connection.execute(
+        "SELECT committed_at FROM transition_history WHERE history_id = ?",
+        (history_id,),
+    ).fetchone()
+    committed_at = committed_row[0] if committed_row is not None else datetime.now(UTC)
+    return query_models.DamagedTransitionReceipt(
+        attempt_id,
+        HistoryId(history_id),
+        committed_at,
+        decision_models.ActionKind.ACCEPT_CHECKPOINT,
+        defect,
+    )
+
+
 def _read_integration_checkpoint(
     connection: sqlite3.Connection,
     checkpoint_row: sqlite3.Row | tuple[int | None, int | None, str | bytes],
     attempt_id: AttemptId,
-) -> query_models.IntegrationCheckpointFacts | None:
-    _history_id, artifact_ref_id, outcome_json = checkpoint_row
+) -> query_models.IntegrationCheckpointFacts | query_models.DamagedTransitionReceipt | None:
+    history_id_raw, artifact_ref_id, outcome_json = checkpoint_row
+    assert history_id_raw is not None
+    history_id = int(history_id_raw)
     try:
         outcome = msgspec.json.decode(
             outcome_json.encode() if isinstance(outcome_json, str) else bytes(outcome_json),
         )
-    except ValueError, msgspec.DecodeError:
-        return None
+    except (ValueError, msgspec.DecodeError) as error:
+        committed_row = connection.execute(
+            "SELECT committed_at FROM transition_history WHERE history_id = ?",
+            (history_id,),
+        ).fetchone()
+        committed_at = committed_row[0] if committed_row is not None else datetime.now(UTC)
+        return query_models.DamagedTransitionReceipt(
+            attempt_id,
+            HistoryId(history_id),
+            committed_at,
+            decision_models.ActionKind.ACCEPT_CHECKPOINT,
+            f"checkpoint outcome does not decode: {error}",
+        )
     if not isinstance(outcome, dict):
-        return None
+        return _integration_damaged_receipt(connection, attempt_id, history_id, "checkpoint outcome is not an object")
     checkpoint_id = outcome.get("checkpoint")
     candidate = outcome.get("candidate")
     if not isinstance(checkpoint_id, str) or not isinstance(candidate, str):
-        return None
+        return _integration_damaged_receipt(
+            connection, attempt_id, history_id, "checkpoint outcome does not name a checkpoint and candidate"
+        )
     snapshot_reference = read_artifact_reference(
         connection,
         work_models.ArtifactKind.EVIDENCE,

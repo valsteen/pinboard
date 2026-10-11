@@ -143,14 +143,14 @@ def _integration_git_failure(
             "schema": "pinboard-mcp-item-status-result/v3",
             "status": "rejected",
             "code": error.code.value,
-            "message": str(error.diagnostic),
+            "message": error.diagnostic,
             "state_changed": False,
             "effect": "unchanged",
             "retry": "correct-input",
             "changed_surfaces": [],
             "observed": [
                 {"field": "project_root", "value": project_root},
-                {"field": "git_diagnostic", "value": str(error.diagnostic)},
+                {"field": "git_diagnostic", "value": error.diagnostic},
             ],
             "mismatches": [],
             "recovery": "Correct the checkout at the project root, then retry.",
@@ -169,6 +169,8 @@ def _read_integration_status(
     facts = store.read_item_integration_source(WorkItemId(request.item_id))
     if facts is None:
         return common._item_status_failure("ITEM_NOT_FOUND", f"Item '{request.item_id}' was not found.", None)
+    if isinstance(facts, query_models.DamagedTransitionReceipt):
+        return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", facts)
     selection = queries.select_integration_source(facts)
     if isinstance(selection, DecisionFailure):
         recovery = {

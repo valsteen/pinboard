@@ -348,6 +348,10 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         """Build an attempt whose consumed receipt of the named kind is its latest receipt."""
 
         match receipt:
+            case decision_models.ActionKind.COMPLETE:
+                fixture = self.checkpoint_fixture()
+                self.complete(fixture, "Completed for receipt diagnosis.")
+                return fixture
             case decision_models.ActionKind.ACCEPT_CHECKPOINT:
                 return self.accepted_package_fixture()
             case decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE:
@@ -418,7 +422,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                     self.update_receipt(fixture, damaged_history, **columns)
 
                     status = self.item_leaf(fixture)
-                    self.assertEqual("pinboard-mcp-item-status-result/v2", status["schema"])
+                    self.assertEqual("pinboard-mcp-item-status-result/v3", status["schema"])
                     named = self.named_receipt(status, receipt)
                     self.assertEqual((AttemptId("work-a-1"), damaged_history), (named.attempt_id, named.history_id))
                     self.assertEqual(diagnosis, queries.damaged_receipt_diagnosis(receipt))

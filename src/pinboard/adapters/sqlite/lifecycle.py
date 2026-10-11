@@ -130,7 +130,7 @@ class TransitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     committed_at: datetime
 
 
-_CONSUMED_RECEIPT_COLUMNS = """history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+CONSUMED_RECEIPT_COLUMNS = """history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
        authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
        input_json, outcome_schema, outcome_json, committed_at"""
 
@@ -144,7 +144,7 @@ def decode_history_action_kind(
         raise StorageError(StorageErrorCode.INVALID_STATE, "Stored history has an unknown action kind.") from error
 
 
-def _consumed_receipt(row: sqlite3.Row) -> query_models.ConsumedTransitionReceipt:
+def decode_consumed_receipt(row: sqlite3.Row) -> query_models.ConsumedTransitionReceipt:
     """Decode receipt columns while leaving stored JSON text for the consuming read to diagnose."""
 
     value = decode_row(row, TransitionHistoryRow)
@@ -207,10 +207,10 @@ def read_recorded_pause_reasons(
     reasons: dict[AttemptId, query_models.RecordedPauseReason] = {}
     for row in select_by_ids(
         connection,
-        f"SELECT {_CONSUMED_RECEIPT_COLUMNS} FROM transition_history WHERE project_revision IN ({{ids}})",
+        f"SELECT {CONSUMED_RECEIPT_COLUMNS} FROM transition_history WHERE project_revision IN ({{ids}})",
         paused,
     ):
-        receipt = _consumed_receipt(row)
+        receipt = decode_consumed_receipt(row)
         attempt_id = paused[receipt.project_revision]
         reasons[attempt_id] = queries.decode_recorded_pause_reason(
             attempt_id,
@@ -261,7 +261,7 @@ def _read_review_event(
     rebound = False
     cursor = connection.execute(
         f"""
-        SELECT {_CONSUMED_RECEIPT_COLUMNS}
+        SELECT {CONSUMED_RECEIPT_COLUMNS}
         FROM transition_history
         WHERE project_revision <= ?
           AND ((subject_id = ? AND action_kind IN (
@@ -273,7 +273,7 @@ def _read_review_event(
         (subject_revision, attempt_id, item_id),
     )
     for row in cursor:
-        receipt = _consumed_receipt(row)
+        receipt = decode_consumed_receipt(row)
         match receipt.action_kind:
             case decision_models.ActionKind.REBIND_ATTEMPT:
                 rebound = True

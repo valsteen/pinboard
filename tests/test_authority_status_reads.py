@@ -1229,7 +1229,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
             self.assertEqual("rejected", stdout["status"])
 
             rejection = stdout
-            self.assertEqual("pinboard-mcp-item-status-result/v2", rejection["schema"])
+            self.assertEqual("pinboard-mcp-item-status-result/v3", rejection["schema"])
             self.assertEqual("ITEM_STATUS_INCONSISTENT", rejection["code"])
             self.assertFalse(rejection["state_changed"])
             self.assertEqual([], rejection["changed_surfaces"])

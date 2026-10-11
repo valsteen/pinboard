@@ -13,6 +13,7 @@ from typing import assert_never
 
 import msgspec
 
+from pinboard.adapters.sqlite import integration as integration_reads
 from pinboard.adapters.sqlite import pr_review
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
@@ -72,7 +73,7 @@ from pinboard.adapters.sqlite.persistence import accept_artifact_reference as pe
 from pinboard.adapters.sqlite.proposals import (
     read_proposals_by_ids,
 )
-from pinboard.application import candidate_snapshots, queries, query_models, stored_state, work_briefs
+from pinboard.application import candidate_snapshots, integration, queries, query_models, stored_state, work_briefs
 from pinboard.application.artifacts import ArtifactRef, BriefArtifactRef
 from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.application.project_export import ProjectExportState
@@ -696,6 +697,14 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return select_item_definition(connection, work_item_id)
+        finally:
+            connection.close()
+
+    def read_integration_facts(self, work_item_id: WorkItemId) -> integration.Facts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return integration_reads.read_integration_facts(connection, work_item_id)
         finally:
             connection.close()
 

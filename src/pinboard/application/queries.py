@@ -133,6 +133,7 @@ def damaged_receipt_diagnosis(
             decision_models.ActionKind.RETURN_FOR_CORRECTION
             | decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
             | decision_models.ActionKind.ACCEPT_CHECKPOINT
+            | decision_models.ActionKind.COMPLETE
         ):
             return query_models.DamagedReceiptDiagnosis.HUMAN
         case _ as unreachable:

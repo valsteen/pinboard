@@ -27,6 +27,7 @@ from pinboard.application import (
     ports,
     project_export,
     queries,
+    query_models,
     stored_state,
     work_brief_compatibility_models,
     work_brief_models,
@@ -41,7 +42,7 @@ from pinboard.cli.errors import (
     InitializationAfterCommittedEffects,
 )
 from pinboard.cli.work_state_models import Diagnostic, Severity, ValidationDiagnosticCode, ValidationReport
-from pinboard.cli.work_views import archive_attempt_views
+from pinboard.cli.work_views import ComposedBoardReader, archive_attempt_views
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId
 
@@ -86,7 +87,9 @@ def initialize_work_state(
                 if git_exclude_path is None and database_path is None
                 else InitializationAfterCommittedEffects(git_exclude_path, database_path, archived_briefs)
             )
-        rebuild_result = rebuild_facts(projection_facts, roots.work_root, archived_briefs, store, operation_time)
+        rebuild_result = rebuild_facts(
+            projection_facts, roots.work_root, archived_briefs, ComposedBoardReader(roots, store), operation_time
+        )
         if rebuild_result.warning is not None:
             raise FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, rebuild_result.warning.message)
     except (StorageError, ArtifactError, FileIOError) as error:
@@ -518,10 +521,11 @@ def validate_loaded_work_state(
     work_root: Path,
     state: stored_state.StoredWorkState,
     attempt_briefs: Mapping[AttemptId, bytes],
+    board_history: query_models.BoardHistoryFacts,
     *,
     now: datetime,
 ) -> ValidationReport:
-    """Verify accepted bytes, then classify replaceable generated-view drift."""
+    """Verify accepted bytes, then classify replaceable generated-view drift against the decoded board facts."""
 
     diagnostics: list[Diagnostic] = []
     verified_artifacts: dict[ArtifactRefId, bytes] = {}
@@ -575,7 +579,7 @@ def validate_loaded_work_state(
         and (message := _close_decision_failure(receipt)) is not None
     )
     view_root = work_root / "views"
-    expected_views = derive_expected_view_bytes(state, all_attempt_briefs, now=now)
+    expected_views = derive_expected_view_bytes(state, all_attempt_briefs, board_history, now=now)
     diagnostics.extend(
         _error_diagnostic(
             ValidationDiagnosticCode.TRANSITION_RECEIPT_DAMAGED.value,

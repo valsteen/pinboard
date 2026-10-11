@@ -138,7 +138,13 @@ def read_validation_report(
             )
         else:
             attempt_briefs = brief_result
-    validation_report = validate_loaded_work_state(work_root, current_state, attempt_briefs, now=now)
+    validation_report = validate_loaded_work_state(
+        work_root,
+        current_state,
+        attempt_briefs,
+        work_views.read_loaded_board_history(durable, current_state),
+        now=now,
+    )
     if brief_diagnostic is not None:
         validation_report = ValidationReport(
             (

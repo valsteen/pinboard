@@ -6,7 +6,6 @@ import base64
 import hashlib
 import shlex
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -67,38 +66,6 @@ from pinboard.mcp import common, contracts, execution, tool_names
 from pinboard.mcp.contracts import JsonValue
 
 type IntegerBoundaryValue = bool | int | float | str | None
-
-
-@dataclass(frozen=True, slots=True)
-class _AttemptReviewEvidence:
-    """Read a record-ready candidate review from accepted artifacts and the attempt's current evidence files."""
-
-    durable: DurableRoots
-    store: WorkStore
-
-    def read_ready_candidate_review(self, attempt_id: AttemptId) -> query_models.ReadyCandidateReview | None:
-        context = self.store.read_attempt_context(attempt_id)
-        if not (
-            isinstance(context, query_models.NonterminalAttemptContextFacts)
-            and context.state == work_models.AttemptState.REVIEW
-            and context.candidate_revision is not None
-        ):
-            return None
-        attempt_root = self.durable.work_root / "attempts" / str(attempt_id)
-        try:
-            brief = work_briefs.decode_canonical_work_brief(
-                read_reference(self.durable.work_root, context.brief_reference)
-            )
-            if isinstance(brief, work_brief_models.WorkBriefFailure):
-                return None
-            result = _evidence_reference(attempt_root / "result.md")
-            review = _evidence_reference(attempt_root / "review.md")
-            current, _reference = _current_candidate_review(self.durable, self.store, context, brief, result, review)
-        except ArtifactError, OSError:
-            return None
-        if current is None:
-            return None
-        return query_models.ReadyCandidateReview(context.candidate_revision, current.reference)
 
 
 _ITEM_STATUS_RESULT_SCHEMA = "pinboard-mcp-item-status-result/v3"
@@ -295,7 +262,7 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
         case contracts.ItemStatusItemRequest():
             projected = queries.project_item_status(
                 store,
-                _AttemptReviewEvidence(durable, store),
+                review_operations.AttemptReadyRecordReader(durable, store),
                 WorkItemId(request.item_id),
                 datetime.now(UTC),
                 views.board_pages(durable.work_root),
@@ -1192,17 +1159,15 @@ def _current_candidate_review(
     ):
         return None, contracts.CandidateReviewAbsent()
     snapshot = store.read_candidate_snapshot_context(AttemptId(context.attempt_id))
-    if snapshot is None:
-        return None, contracts.CandidateReviewAbsent()
-    current = review_operations.read_current_candidate_review(
-        store,
-        ArtifactRepository(durable),
-        brief=brief,
-        candidate_revision=context.candidate_revision,
-        candidate_snapshot=snapshot.reference,
-        accepted_brief=context.brief_reference,
-        result_sha256=result.sha256,
-        review_sha256=review.sha256,
+    subject = review_operations.ready_record_subject(
+        brief,
+        context.candidate_revision,
+        None if snapshot is None else snapshot.reference,
+        context.brief_reference,
+        review_operations.AttemptEvidenceDigests(result.sha256, review.sha256),
+    )
+    current = (
+        None if subject is None else review_operations.read_ready_record(store, ArtifactRepository(durable), subject)
     )
     if current is None:
         return None, contracts.CandidateReviewAbsent()

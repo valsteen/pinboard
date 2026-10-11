@@ -1,23 +1,67 @@
 """Read accepted brief content and refresh replaceable generated views.
 
 An ordinary refresh reads only facts and accepted brief bytes named by the
-committed effect, plus the live portfolio for the two board projections. Explicit
-rebuild reads the complete declared projection and reconciles its generated files.
-SQLite and accepted artifacts remain authoritative.
+committed effect, plus the composed board read for the two board projections.
+Explicit rebuild reads the complete declared projection and reconciles its
+generated files. SQLite and accepted artifacts remain authoritative.
 """
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 
+from pinboard.adapters import review_operations
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
 from pinboard.adapters.files.views import rebuild_facts as rebuild_file_views
 from pinboard.adapters.files.views import refresh_facts as refresh_file_views
-from pinboard.application import history_archives, ports, query_models, stored_state, work_brief_models
+from pinboard.application import history_archives, ports, queries, query_models, stored_state, work_brief_models
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.work_briefs import build_attempt_brief_views, build_selected_attempt_brief_views
+from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId
+
+
+@dataclass(frozen=True, slots=True)
+class ComposedBoardReader:
+    """Compose the board read under the board lock: SQLite records, then outer file reads and keyed ready reviews."""
+
+    durable: DurableRoots
+    store: ports.BoardStore
+
+    def read_board(self, now: datetime) -> query_models.BoardPortfolio:
+        live = self.store.read_board_records(now)
+        history = review_operations.read_board_history(self.durable, self.store, live.records)
+        return queries.project_live_portfolio(live.portfolio, history, now)
+
+
+@dataclass(frozen=True, slots=True)
+class _LoadedReviewReferences:
+    """Look up accepted candidate-review references in one loaded SQLite snapshot."""
+
+    references: Mapping[str, stored_state.ArtifactReference]
+
+    def read_candidate_review_references(self, keys: tuple[str, ...]) -> Mapping[str, stored_state.ArtifactReference]:
+        return {key: reference for key in keys if (reference := self.references.get(key)) is not None}
+
+
+def read_loaded_board_history(
+    durable: DurableRoots, state: stored_state.StoredWorkState
+) -> query_models.BoardHistoryFacts:
+    """Decode the board facts of a loaded snapshot with the same file reads and ready-review decision as a refresh."""
+
+    return review_operations.read_board_history(
+        durable,
+        _LoadedReviewReferences(
+            {
+                reference.key: reference
+                for reference in state.artifact_references
+                if reference.kind == work_models.ArtifactKind.EVIDENCE and reference.revision == 1
+            }
+        ),
+        queries.select_board_records(state),
+    )
 
 
 def read_attempt_brief_views(
@@ -50,7 +94,7 @@ def refresh(
             facts.project_revision,
             ViewWarning(archives.message, "Resolve the historical archive mismatch and run 'pinboard views rebuild'."),
         )
-    return refresh_file_views(facts, durable.work_root, archives, store, now)
+    return refresh_file_views(facts, durable.work_root, archives, ComposedBoardReader(durable, store), now)
 
 
 def refresh_effect(
@@ -100,4 +144,4 @@ def rebuild(durable: DurableRoots, store: ports.GeneratedViewSetReader, now: dat
             facts.project_revision,
             ViewWarning(archives.message, "Resolve the historical archive mismatch and run 'pinboard views rebuild'."),
         )
-    return rebuild_file_views(facts, durable.work_root, archives, store, now)
+    return rebuild_file_views(facts, durable.work_root, archives, ComposedBoardReader(durable, store), now)

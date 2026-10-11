@@ -2,7 +2,7 @@ import hashlib
 from collections.abc import Mapping
 from datetime import datetime
 from types import MappingProxyType
-from typing import assert_never
+from typing import Protocol, assert_never
 
 import msgspec
 
@@ -978,11 +978,38 @@ def read_selected_work_brief_identity(
     return identity
 
 
-def _render_attempt_brief_view(
-    attempt: stored_state.StoredAttempt,
+class AttemptBriefIdentity(Protocol):
+    """The stored attempt identity an accepted brief must match before any of its facts is used."""
+
+    @property
+    def attempt_id(self) -> AttemptId: ...
+
+    @property
+    def item_id(self) -> WorkItemId: ...
+
+    @property
+    def branch(self) -> str: ...
+
+    @property
+    def base_revision(self) -> str: ...
+
+    @property
+    def accepted_scope_revision(self) -> int: ...
+
+    @property
+    def accepted_scope_digest(self) -> str: ...
+
+
+def decode_attempt_brief(
+    attempt: AttemptBriefIdentity,
     reference: stored_state.ArtifactReference | BriefArtifactRef | None,
     artifacts: ArtifactReader,
-) -> work_brief_models.WorkBriefResult[bytes]:
+) -> work_brief_models.WorkBriefResult[work_brief_models.WorkBrief]:
+    """Decode a live attempt's current accepted brief and require its identity to match the stored attempt.
+
+    Reading the verified bytes may raise the artifact reader's exception; every other defect is a returned failure.
+    """
+
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
         return _invalid(f"Live attempt '{attempt.attempt_id}' has no accepted brief reference.")
     if not reference.selector.endswith(".json"):
@@ -1008,6 +1035,17 @@ def _render_attempt_brief_view(
     )
     if observed != expected:
         return _invalid(f"Live attempt '{attempt.attempt_id}' brief identity does not match SQLite.")
+    return brief
+
+
+def _render_attempt_brief_view(
+    attempt: stored_state.StoredAttempt,
+    reference: stored_state.ArtifactReference | BriefArtifactRef | None,
+    artifacts: ArtifactReader,
+) -> work_brief_models.WorkBriefResult[bytes]:
+    brief = decode_attempt_brief(attempt, reference, artifacts)
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
+        return brief
     return render_work_brief_markdown(brief)
 
 

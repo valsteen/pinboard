@@ -2719,6 +2719,8 @@ class CandidateReviewRecorded(_VariableStateChangedResult, msgspec.Struct, froze
     effect: Literal["unchanged", "committed"]
     retry: Literal["safe-to-repeat", "do-not-retry"]
     changed_surfaces: tuple[JobPublicationSurface, ...]
+    warning: WarningResult | None
+    """The ordinary view warning when the committed record left generated views needing repair."""
 
     def __post_init__(self) -> None:
         surfaces = self.changed_surfaces
@@ -2730,6 +2732,8 @@ class CandidateReviewRecorded(_VariableStateChangedResult, msgspec.Struct, froze
             raise ValueError("Candidate review publication must expose exact immutable/reference/ledger surfaces.")
         changed = bool(surfaces)
         _require_state_changed(self.state_changed, changed)
+        if self.warning is not None and not changed:
+            raise ValueError("Only a committed candidate review refreshes views and can carry a view warning.")
         if self.effect != ("committed" if changed else "unchanged") or self.retry != (
             "do-not-retry" if changed else "safe-to-repeat"
         ):

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import msgspec
@@ -8,11 +9,19 @@ import msgspec
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models, released_v6_compatibility, stored_state
+from pinboard.application import (
+    definition_compatibility,
+    query_models,
+    released_v6_compatibility,
+    stored_state,
+    work_brief_models,
+)
 from pinboard.application.actions import discover_current_actions
 from pinboard.application.queries import (
     project_current_overview,
     project_item_status,
+    project_live_portfolio,
+    select_board_records,
     select_item_definition,
     select_item_definition_history,
     select_parallel_preview,
@@ -21,7 +30,10 @@ from pinboard.application.queries import (
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import (
+    ActionId,
     AttemptId,
+    HistoryId,
+    HistorySubjectId,
     LeaseId,
     TaskId,
     WorkItemId,
@@ -799,6 +811,442 @@ class SQLiteQueriesTest(unittest.TestCase):
                 actions=actions,
             ),
             query_models.ReviewContinuation,
+        )
+
+
+RECEIPT_AT = SQLITE_NOW + timedelta(hours=1)
+READY_AT = SQLITE_NOW + timedelta(hours=2)
+
+
+def _receipt(
+    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind,
+    input_schema: str,
+    input_json: str,
+    outcome_schema: str,
+    outcome_json: str,
+) -> query_models.ConsumedTransitionReceipt:
+    return query_models.ConsumedTransitionReceipt(
+        HistoryId(41),
+        41,
+        ActionId(f"{action_kind.value}:work-a-1"),
+        action_kind,
+        HistorySubjectId("work-a-1"),
+        None,
+        decision_models.AuthorizationKind.PROJECT,
+        None,
+        None,
+        input_schema,
+        input_json,
+        outcome_schema,
+        outcome_json,
+        RECEIPT_AT,
+    )
+
+
+def _outcome(**fields: str | None) -> str:
+    return msgspec.json.encode(fields, order="sorted").decode()
+
+
+class BoardProjectionQueriesTest(unittest.TestCase):
+    def _live(self) -> tuple[SQLiteWorkStore, query_models.LiveBoardRecords]:
+        project = Path(tempfile.mkdtemp()).resolve()
+        roots = resolve_durable_roots(project)
+        initialize_database(roots, SQLITE_NOW)
+        store = SQLiteWorkStore(roots.database_path)
+        initialize_store(store, complete_sqlite_state())
+        return store, store.read_board_records(SQLITE_NOW)
+
+    def _project(
+        self,
+        live: query_models.LiveBoardRecords,
+        records: query_models.BoardAttemptRecords,
+        ready: query_models.ReadyRecordAcceptance | None,
+        histories: tuple[query_models.BoardDefinitionHistory, ...] | None = None,
+    ) -> query_models.BoardItem:
+        history = query_models.BoardHistoryFacts(
+            (
+                query_models.BoardAttemptFacts(
+                    records,
+                    work_brief_models.WorkBriefFailure(work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, "opaque"),
+                    ready,
+                ),
+            ),
+            live.records.definition_histories if histories is None else histories,
+        )
+        board = project_live_portfolio(live.portfolio, history, SQLITE_NOW)
+        return next(item for item in board.items if item.overview.item_id == "work-a")
+
+    def test_every_latest_receipt_shape_projects_its_recorded_condition(self) -> None:
+        _store, live = self._live()
+        (attempt,) = live.records.attempts
+        kinds = decision_models.ActionKind
+        transition = "transition-receipt/v1"
+        returned = _outcome(candidate="c", evidence="Rework it.", outcome="return-for-correction")
+        cases: tuple[
+            tuple[
+                str,
+                query_models.ConsumedTransitionReceipt | None,
+                query_models.NonterminalAttemptState,
+                query_models.ReadyRecordAcceptance | None,
+                query_models.BoardCondition | type[query_models.UnreadableCondition],
+            ],
+            ...,
+        ] = (
+            (
+                "activate",
+                _receipt(kinds.ACTIVATE, "decision/v1", "{}", transition, _outcome(evidence=None, outcome="activate")),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.ActivatedCondition(RECEIPT_AT),
+            ),
+            (
+                "resume",
+                _receipt(kinds.RESUME, "decision/v1", "{}", transition, "{}"),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.ResumedCondition(RECEIPT_AT),
+            ),
+            (
+                "block",
+                _receipt(kinds.BLOCK, "decision/v1", "{}", transition, "{}"),
+                work_models.AttemptState.BLOCKED,
+                None,
+                query_models.BlockedCondition(RECEIPT_AT),
+            ),
+            (
+                "pause",
+                _receipt(kinds.PAUSE, "decision/v1", "{}", transition, _outcome(evidence="Wait.", outcome="pause")),
+                work_models.AttemptState.PAUSED,
+                None,
+                query_models.PausedCondition(RECEIPT_AT, "Wait."),
+            ),
+            (
+                "pause without reason",
+                _receipt(kinds.PAUSE, "decision/v1", "{}", transition, _outcome(evidence=None, outcome="pause")),
+                work_models.AttemptState.PAUSED,
+                None,
+                query_models.PausedCondition(RECEIPT_AT, None),
+            ),
+            (
+                "damaged pause",
+                _receipt(kinds.PAUSE, "decision/v1", "{}", transition, '{"unexpected":1}'),
+                work_models.AttemptState.PAUSED,
+                None,
+                query_models.UnreadableCondition,
+            ),
+            (
+                "paused rebind",
+                _receipt(
+                    kinds.REBIND_ATTEMPT,
+                    "decision/v1",
+                    "{}",
+                    transition,
+                    _outcome(evidence="Carried.", outcome="rebind-attempt"),
+                ),
+                work_models.AttemptState.PAUSED,
+                None,
+                query_models.ReboundCondition(RECEIPT_AT, work_models.AttemptState.PAUSED, "Carried."),
+            ),
+            (
+                "active rebind",
+                _receipt(kinds.REBIND_ATTEMPT, "decision/v1", "{}", transition, "{}"),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.ReboundCondition(RECEIPT_AT, work_models.AttemptState.ACTIVE, None),
+            ),
+            (
+                "damaged rebind",
+                _receipt(kinds.REBIND_ATTEMPT, "decision/v1", "{}", "other/v1", "{}"),
+                work_models.AttemptState.PAUSED,
+                None,
+                query_models.UnreadableCondition,
+            ),
+            (
+                "submission",
+                _receipt(kinds.SUBMIT_REVIEW, "pinboard-candidate-snapshot/v3", "{}", transition, "{}"),
+                work_models.AttemptState.REVIEW,
+                None,
+                query_models.SubmittedForReviewCondition(RECEIPT_AT),
+            ),
+            (
+                "pre-snapshot submission",
+                _receipt(kinds.SUBMIT_REVIEW, "decision/v1", "{}", transition, "{}"),
+                work_models.AttemptState.REVIEW,
+                None,
+                query_models.SubmittedForReviewCondition(RECEIPT_AT),
+            ),
+            (
+                "reviewed submission",
+                _receipt(kinds.SUBMIT_REVIEW, "pinboard-candidate-snapshot/v3", "{}", transition, "{}"),
+                work_models.AttemptState.REVIEW,
+                query_models.ReadyRecordAcceptance(READY_AT),
+                query_models.ReviewedReadyCondition(RECEIPT_AT, READY_AT),
+            ),
+            (
+                "return",
+                _receipt(
+                    kinds.RETURN_FOR_CORRECTION,
+                    "return-for-correction/v1",
+                    '{"reason":"Rework it."}',
+                    transition,
+                    returned,
+                ),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.ReturnedCondition(RECEIPT_AT, "Rework it."),
+            ),
+            (
+                "return without JSON",
+                _receipt(
+                    kinds.RETURN_FOR_CORRECTION,
+                    "return-for-correction/v1",
+                    '{"reason":"Rework it."}',
+                    transition,
+                    "not json",
+                ),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.UnreadableCondition,
+            ),
+            (
+                "noncanonical return",
+                _receipt(
+                    kinds.RETURN_FOR_CORRECTION, "return-for-correction/v1", '{"reason":"Other."}', transition, returned
+                ),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.UnreadableCondition,
+            ),
+            (
+                "retained return",
+                _receipt(
+                    kinds.RETURN_FOR_CORRECTION,
+                    "decision/v1",
+                    "{}",
+                    transition,
+                    _outcome(evidence="Old reason.", outcome="return-for-correction"),
+                ),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.RetainedReturnedCondition(RECEIPT_AT, "Old reason."),
+            ),
+            (
+                "retained return without outcome",
+                _receipt(kinds.RETURN_FOR_CORRECTION, "decision/v1", "{}", "decision/v1", "{}"),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.RetainedReturnedCondition(RECEIPT_AT, None),
+            ),
+            (
+                "unsupported return",
+                _receipt(kinds.RETURN_FOR_CORRECTION, "other/v1", "{}", transition, returned),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.UnreadableCondition,
+            ),
+            (
+                "continuation",
+                _receipt(
+                    kinds.ACCEPT_REVIEW_AND_CONTINUE,
+                    "decision/v1",
+                    "{}",
+                    transition,
+                    _outcome(candidate="c", evidence="Go on.", outcome="accept-review-and-continue"),
+                ),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.ContinuedCondition(RECEIPT_AT, "Go on."),
+            ),
+            (
+                "misrecorded continuation",
+                _receipt(
+                    kinds.ACCEPT_REVIEW_AND_CONTINUE,
+                    "decision/v1",
+                    "{}",
+                    transition,
+                    _outcome(evidence="Go on.", outcome="pause"),
+                ),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.UnreadableCondition,
+            ),
+            (
+                "continuation schema",
+                _receipt(kinds.ACCEPT_REVIEW_AND_CONTINUE, "decision/v1", "{}", "other/v1", "{}"),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.UnreadableCondition,
+            ),
+            (
+                "undecodable continuation",
+                _receipt(kinds.ACCEPT_REVIEW_AND_CONTINUE, "decision/v1", "{}", transition, '{"x":1}'),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.UnreadableCondition,
+            ),
+            (
+                "checkpoint",
+                _receipt(
+                    kinds.ACCEPT_CHECKPOINT,
+                    "decision/v1",
+                    "{}",
+                    "checkpoint-acceptance/v2",
+                    _outcome(candidate="c", checkpoint="first-step", evidence="Done.", outcome="accept-checkpoint"),
+                ),
+                work_models.AttemptState.PAUSED,
+                None,
+                query_models.CheckpointAcceptedCondition(RECEIPT_AT, "first-step", "Done."),
+            ),
+            (
+                "undecodable checkpoint",
+                _receipt(kinds.ACCEPT_CHECKPOINT, "decision/v1", "{}", "checkpoint-acceptance/v2", "{}"),
+                work_models.AttemptState.PAUSED,
+                None,
+                query_models.UnreadableCondition,
+            ),
+            (
+                "retained checkpoint",
+                _receipt(
+                    kinds.ACCEPT_CHECKPOINT,
+                    "decision/v1",
+                    "{}",
+                    transition,
+                    _outcome(checkpoint="first-step", evidence="Done.", outcome="accept-checkpoint"),
+                ),
+                work_models.AttemptState.PAUSED,
+                None,
+                query_models.RetainedCheckpointAcceptedCondition(RECEIPT_AT, "first-step", "Done."),
+            ),
+            (
+                "retained checkpoint without outcome",
+                _receipt(kinds.ACCEPT_CHECKPOINT, "decision/v1", "{}", transition, "{}"),
+                work_models.AttemptState.PAUSED,
+                None,
+                query_models.RetainedCheckpointAcceptedCondition(RECEIPT_AT, None, None),
+            ),
+            (
+                "unsupported checkpoint",
+                _receipt(kinds.ACCEPT_CHECKPOINT, "decision/v1", "{}", "other/v1", "{}"),
+                work_models.AttemptState.PAUSED,
+                None,
+                query_models.UnreadableCondition,
+            ),
+            (
+                "released v6 action",
+                _receipt(
+                    released_v6_compatibility.HistoricalActionKind.MARK_READY, "decision/v1", "{}", transition, "{}"
+                ),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.RecordedActionCondition(
+                    RECEIPT_AT, released_v6_compatibility.HistoricalActionKind.MARK_READY
+                ),
+            ),
+            (
+                "other action",
+                _receipt(kinds.DISPATCH, "decision/v1", "{}", transition, "{}"),
+                work_models.AttemptState.ACTIVE,
+                None,
+                query_models.RecordedActionCondition(RECEIPT_AT, kinds.DISPATCH),
+            ),
+            ("no receipt", None, work_models.AttemptState.ACTIVE, None, query_models.NoReceiptCondition()),
+        )
+        for label, receipt, state, ready, expected in cases:
+            with self.subTest(label):
+                item = self._project(live, replace(attempt, latest_receipt=receipt, state=state), ready)
+                assert item.attempt is not None
+                condition = item.attempt.condition
+                if isinstance(expected, type):
+                    self.assertIsInstance(condition, expected)
+                    assert isinstance(condition, query_models.UnreadableCondition)
+                    self.assertEqual((HistoryId(41), RECEIPT_AT), (condition.history_id, condition.at))
+                else:
+                    self.assertEqual(expected, condition)
+                self.assertEqual(query_models.UnreadableBrief(AttemptId("work-a-1"), "opaque"), item.attempt.checkpoint)
+
+    def test_items_without_an_open_attempt_carry_no_attempt_facts(self) -> None:
+        _store, live = self._live()
+        board = project_live_portfolio(
+            live.portfolio, query_models.BoardHistoryFacts((), live.records.definition_histories), SQLITE_NOW
+        )
+        self.assertEqual(
+            {"intake-work", "work-a", "work-c", "zz-proposal-a"}, {item.overview.item_id for item in board.items}
+        )
+        self.assertTrue(all(item.attempt is None for item in board.items))
+        self.assertTrue(
+            all(isinstance(item.scope_revisions[0].changes, query_models.OriginalScope) for item in board.items)
+        )
+
+    def test_scope_changes_project_a_retained_v1_revision_and_its_v2_successor_mechanically(self) -> None:
+        _store, live = self._live()
+        (attempt,) = live.records.attempts
+        current = next(value for value in live.records.definition_histories if value.item_id == WorkItemId("work-a"))
+        (revision,) = current.revisions
+        definition = revision.definition
+        assert isinstance(definition, work_models.WorkItemDefinition)
+        retained = definition_compatibility.HistoricalDefinitionV1(
+            definition.acceptance_criteria,
+            tuple(str(value) for value in definition.dependencies),
+            definition.effect,
+            definition.evidence,
+            definition.hypothesis,
+            ("Retained boundary.",),
+            "Retained objective.",
+            definition.scope,
+            definition.title,
+            definition.unlock,
+        )
+        histories = tuple(
+            replace(
+                value,
+                revisions=(
+                    replace(revision, definition=retained, reason="Original intake."),
+                    replace(revision, revision=2, reason="Adopt the current schema.", accepted_at=READY_AT),
+                ),
+            )
+            if value.item_id == WorkItemId("work-a")
+            else value
+            for value in live.records.definition_histories
+        )
+
+        item = self._project(live, attempt, None, histories)
+
+        original, adopted = item.scope_revisions
+        self.assertEqual(
+            (1, "Original intake.", query_models.OriginalScope()),
+            (original.revision, original.reason, original.changes),
+        )
+        self.assertEqual((2, READY_AT), (adopted.revision, adopted.accepted_at))
+        self.assertEqual(
+            query_models.ScopeRevisionChanges(
+                (
+                    query_models.TextFieldChange(
+                        query_models.DefinitionTextField.OBJECTIVE, "Retained objective.", definition.objective
+                    ),
+                    query_models.TextFieldChange(
+                        query_models.DefinitionTextField.CHECKOUT_POLICY, None, definition.checkout_policy.value
+                    ),
+                ),
+                (
+                    query_models.ListFieldChange(
+                        query_models.DefinitionListField.NON_SCOPE, definition.non_scope, ("Retained boundary.",)
+                    ),
+                ),
+                definition.obligations,
+                (),
+                (),
+            ),
+            adopted.changes,
+        )
+        self.assertEqual(definition.title, item.definition.title)
+
+    def test_complete_state_selection_matches_the_live_board_read(self) -> None:
+        store, live = self._live()
+        selected = select_board_records(store.validated_snapshot())
+        self.assertEqual(live.records.attempts, selected.attempts)
+        self.assertEqual(
+            {value.item_id: value.revisions for value in live.records.definition_histories},
+            {value.item_id: value.revisions for value in selected.definition_histories},
         )
 
 

@@ -160,20 +160,27 @@ def read_history_receipts_by_ids(
 
 
 def read_checkpoint_receipts(
-    connection: sqlite3.Connection, attempt_id: AttemptId
-) -> tuple[stored_state.StoredTransitionReceipt, ...]:
-    return tuple(
-        _stored_receipt(decode_row(row, TransitionHistoryRow))
-        for row in connection.execute(
-            """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
-                      authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
-                      input_json, outcome_schema, outcome_json, committed_at
-               FROM transition_history
-               WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
-               ORDER BY history_id""",
-            (attempt_id,),
-        ).fetchall()
-    )
+    connection: sqlite3.Connection, attempt_ids: tuple[AttemptId, ...]
+) -> dict[AttemptId, tuple[stored_state.StoredTransitionReceipt, ...]]:
+    """Read every checkpoint-acceptance/v2 receipt of the selected attempts, oldest first per attempt.
+
+    The selection uses the checkpoint partial index in fixed-size batches and returns no other subject's receipts.
+    """
+
+    grouped: dict[AttemptId, list[stored_state.StoredTransitionReceipt]] = {}
+    for row in select_by_ids(
+        connection,
+        """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+                  authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
+                  input_json, outcome_schema, outcome_json, committed_at
+           FROM transition_history
+           WHERE subject_id IN ({ids}) AND outcome_schema = 'checkpoint-acceptance/v2'
+           ORDER BY subject_id, history_id""",
+        attempt_ids,
+    ):
+        receipt = _stored_receipt(decode_row(row, TransitionHistoryRow))
+        grouped.setdefault(AttemptId(str(receipt.subject_id)), []).append(receipt)
+    return {attempt_id: tuple(receipts) for attempt_id, receipts in grouped.items()}
 
 
 def read_review_history_for_items(

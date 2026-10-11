@@ -19,7 +19,7 @@ from pinboard.application.work_briefs import (
 )
 from pinboard.domain import work_models
 from tests.artifact_support import write_revision
-from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
+from tests.support import SQLITE_NOW, board_reader, complete_sqlite_state, initialize_store, loaded_board_history
 from tests.work_brief_support import work_a_brief
 
 
@@ -43,7 +43,7 @@ class GeneratedViewsTest(unittest.TestCase):
         state = store.validated_snapshot()
         facts = store.read_all_generated_view_facts(SQLITE_NOW)
 
-        result = rebuild_facts(facts, work_root, {}, store, SQLITE_NOW)
+        result = rebuild_facts(facts, work_root, {}, board_reader(work_root, store), SQLITE_NOW)
 
         self.assertIsNone(result.warning)
         for selector in (
@@ -78,12 +78,12 @@ class GeneratedViewsTest(unittest.TestCase):
             lifecycle=replace(state.lifecycle, project=replace(state.lifecycle.project, revision=13)),
         )
         self.assertEqual(
-            derive_expected_view_bytes(state, {}, now=SQLITE_NOW).views,
-            derive_expected_view_bytes(advanced, {}, now=SQLITE_NOW).views,
+            derive_expected_view_bytes(state, {}, loaded_board_history(work_root, state), now=SQLITE_NOW).views,
+            derive_expected_view_bytes(advanced, {}, loaded_board_history(work_root, advanced), now=SQLITE_NOW).views,
         )
 
     def test_item_view_labels_allowed_deferral(self) -> None:
-        _, store = self._state()
+        work_root, store = self._state()
         state = store.validated_snapshot()
         revisions = state.lifecycle.definition_revisions
         revision = next(value for value in revisions if value.item_id == work_models.WorkItemId("work-a"))
@@ -108,7 +108,11 @@ class GeneratedViewsTest(unittest.TestCase):
             ),
         )
 
-        item = derive_expected_view_bytes(state, {}, now=SQLITE_NOW).views["items/work-a.md"].decode()
+        item = (
+            derive_expected_view_bytes(state, {}, loaded_board_history(work_root, state), now=SQLITE_NOW)
+            .views["items/work-a.md"]
+            .decode()
+        )
         self.assertIn("- next-decision (deferral allowed): The next decision can run.", item)
 
     def test_post_commit_refresh_failure_is_a_repairable_warning(self) -> None:
@@ -122,7 +126,7 @@ class GeneratedViewsTest(unittest.TestCase):
                 store.read_generated_view_facts((), (), (receipt.history_id,), SQLITE_NOW),
                 work_root,
                 {},
-                store,
+                board_reader(work_root, store),
                 SQLITE_NOW,
             )
 
@@ -136,13 +140,17 @@ class GeneratedViewsTest(unittest.TestCase):
         work_root, store = self._state()
         view_root = work_root / "views"
 
-        first = rebuild_facts(store.read_all_generated_view_facts(SQLITE_NOW), work_root, {}, store, SQLITE_NOW)
+        first = rebuild_facts(
+            store.read_all_generated_view_facts(SQLITE_NOW), work_root, {}, board_reader(work_root, store), SQLITE_NOW
+        )
 
         self.assertIsNone(first.warning)
         paths = tuple(path for path in view_root.rglob("*.md") if path.is_file())
         before = {path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns) for path in paths}
 
-        second = rebuild_facts(store.read_all_generated_view_facts(SQLITE_NOW), work_root, {}, store, SQLITE_NOW)
+        second = rebuild_facts(
+            store.read_all_generated_view_facts(SQLITE_NOW), work_root, {}, board_reader(work_root, store), SQLITE_NOW
+        )
 
         self.assertIsNone(second.warning)
         self.assertEqual(
@@ -177,7 +185,7 @@ class GeneratedViewsTest(unittest.TestCase):
             build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(roots))
         )
 
-        result = rebuild_facts(facts, roots.work_root, attempt_briefs, store, SQLITE_NOW)
+        result = rebuild_facts(facts, roots.work_root, attempt_briefs, board_reader(roots.work_root, store), SQLITE_NOW)
 
         self.assertIsNone(result.warning)
         path = roots.work_root / "views" / "attempts" / "work-a-1.md"
@@ -190,7 +198,7 @@ class GeneratedViewsTest(unittest.TestCase):
             facts,
             roots.work_root,
             expect_work_brief_success(build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(roots))),
-            store,
+            board_reader(roots.work_root, store),
             SQLITE_NOW,
         )
         self.assertEqual(text, path.read_text(encoding="utf-8"))

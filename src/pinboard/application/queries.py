@@ -6,6 +6,7 @@ snapshot. These functions never read files, mutate state, or present output.
 """
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
 from typing import assert_never
@@ -13,7 +14,9 @@ from typing import assert_never
 import msgspec
 
 from pinboard.application import (
+    candidate_snapshots,
     checkpoint_packages,
+    definition_compatibility,
     ports,
     query_models,
     released_v6_compatibility,
@@ -828,25 +831,383 @@ def project_current_overview(
     )
 
 
+def open_attempt_state(state: work_models.AttemptState) -> query_models.NonterminalAttemptState | None:
+    match state:
+        case (
+            work_models.AttemptState.ACTIVE
+            | work_models.AttemptState.PAUSED
+            | work_models.AttemptState.BLOCKED
+            | work_models.AttemptState.REVIEW
+        ) as open_state:
+            return open_state
+        case work_models.AttemptState.DONE:
+            return None
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _consumed_receipt(receipt: stored_state.StoredTransitionReceipt) -> query_models.ConsumedTransitionReceipt:
+    """Present a loaded receipt in the shape the live read selects, with its stored JSON columns as text."""
+
+    return query_models.ConsumedTransitionReceipt(
+        receipt.history_id,
+        receipt.project_revision,
+        receipt.action_id,
+        receipt.action_kind,
+        receipt.subject_id,
+        receipt.artifact_ref_id,
+        receipt.authorization,
+        receipt.actor_task_id,
+        receipt.actor_host_id,
+        receipt.input_schema,
+        bytes(receipt.input_payload).decode("utf-8"),
+        receipt.outcome_schema,
+        bytes(receipt.outcome_payload).decode("utf-8"),
+        receipt.committed_at,
+    )
+
+
+def _receipt_history_key(value: stored_state.StoredTransitionReceipt) -> int:
+    return int(value.history_id)
+
+
+def _definition_revision_key(value: stored_state.ItemDefinitionRevision) -> int:
+    return value.revision
+
+
+def select_board_records(state: stored_state.StoredWorkState) -> query_models.BoardRecords:
+    """Select from complete state exactly the board records the live board read selects from SQLite."""
+
+    references = {value.artifact_ref_id: value for value in state.artifact_references}
+    latest_snapshots: dict[str, stored_state.ArtifactReference] = {}
+    for reference in state.artifact_references:
+        if reference.kind == work_models.ArtifactKind.EVIDENCE and (
+            (current := latest_snapshots.get(reference.key)) is None or current.revision < reference.revision
+        ):
+            latest_snapshots[reference.key] = reference
+    receipts_by_revision = {receipt.project_revision: receipt for receipt in state.transition_receipts}
+    acceptances: dict[str, list[stored_state.StoredTransitionReceipt]] = {}
+    for receipt in sorted(state.transition_receipts, key=_receipt_history_key, reverse=True):
+        if receipt.outcome_schema == "checkpoint-acceptance/v2":
+            acceptances.setdefault(str(receipt.subject_id), []).append(receipt)
+    attempts: list[query_models.BoardAttemptRecords] = []
+    for attempt in state.lifecycle.attempts:
+        open_state = open_attempt_state(attempt.state)
+        if open_state is None:
+            continue
+        latest = receipts_by_revision.get(attempt.subject_revision)
+        snapshot = (
+            latest_snapshots.get(
+                candidate_snapshots.candidate_snapshot_artifact_key(
+                    str(attempt.attempt_id), attempt.candidate_revision, attempt.candidate_recorded_at.isoformat()
+                )
+            )
+            if open_state == work_models.AttemptState.REVIEW
+            and attempt.candidate_revision is not None
+            and attempt.candidate_recorded_at is not None
+            else None
+        )
+        attempts.append(
+            query_models.BoardAttemptRecords(
+                attempt.attempt_id,
+                attempt.item_id,
+                open_state,
+                attempt.branch,
+                attempt.base_revision,
+                attempt.accepted_scope_revision,
+                attempt.accepted_scope_digest,
+                attempt.candidate_revision,
+                references[attempt.brief_artifact_ref_id],
+                None if latest is None else _consumed_receipt(latest),
+                tuple(acceptances.get(str(attempt.attempt_id), ())),
+                snapshot,
+            )
+        )
+    live_ids = frozenset(item.item_id for item, _live_state in _select_live_items(state))
+    revisions: dict[WorkItemId, list[stored_state.ItemDefinitionRevision]] = {}
+    for definition in sorted(state.lifecycle.definition_revisions, key=_definition_revision_key):
+        if definition.item_id in live_ids:
+            revisions.setdefault(definition.item_id, []).append(definition)
+    return query_models.BoardRecords(
+        tuple(attempts),
+        tuple(query_models.BoardDefinitionHistory(item_id, tuple(values)) for item_id, values in revisions.items()),
+    )
+
+
+def _unreadable_condition(damaged: query_models.DamagedTransitionReceipt) -> query_models.UnreadableCondition:
+    return query_models.UnreadableCondition(damaged.history_id, damaged.committed_at, damaged.defect)
+
+
+def _board_condition(facts: query_models.BoardAttemptFacts) -> query_models.BoardCondition:  # noqa: C901, PLR0912 - closed receipt family
+    """Name an open attempt's recorded condition from its latest receipt, never from a walk of earlier receipts.
+
+    Only a review-state attempt consults the ready-review decision its composition supplied. Every decoder here is
+    the one item status uses for the same stored shape.
+    """
+
+    records = facts.records
+    receipt = records.latest_receipt
+    if receipt is None:
+        return query_models.NoReceiptCondition()
+    attempt_id = records.attempt_id
+    at = receipt.committed_at
+    match receipt.action_kind:
+        case decision_models.ActionKind.ACTIVATE:
+            return query_models.ActivatedCondition(at)
+        case decision_models.ActionKind.RESUME:
+            return query_models.ResumedCondition(at)
+        case decision_models.ActionKind.BLOCK:
+            return query_models.BlockedCondition(at)
+        case decision_models.ActionKind.PAUSE:
+            reason = decode_recorded_pause_reason(
+                attempt_id,
+                records.state,
+                receipt.history_id,
+                at,
+                receipt.action_kind,
+                receipt.outcome_schema,
+                receipt.outcome_json.encode("utf-8"),
+            )
+            if isinstance(reason, query_models.DamagedTransitionReceipt):
+                return _unreadable_condition(reason)
+            return query_models.PausedCondition(at, reason)
+        case decision_models.ActionKind.REBIND_ATTEMPT:
+            carried = decode_recorded_pause_reason(
+                attempt_id,
+                records.state,
+                receipt.history_id,
+                at,
+                receipt.action_kind,
+                receipt.outcome_schema,
+                receipt.outcome_json.encode("utf-8"),
+            )
+            if isinstance(carried, query_models.DamagedTransitionReceipt):
+                return _unreadable_condition(carried)
+            return query_models.ReboundCondition(at, records.state, carried)
+        case decision_models.ActionKind.SUBMIT_REVIEW:
+            ready = facts.ready_record
+            if records.state == work_models.AttemptState.REVIEW and ready is not None:
+                return query_models.ReviewedReadyCondition(at, ready.accepted_at)
+            return query_models.SubmittedForReviewCondition(at)
+        case decision_models.ActionKind.RETURN_FOR_CORRECTION:
+            returned = _decode_return(attempt_id, receipt)
+            return (
+                _unreadable_condition(returned)
+                if isinstance(returned, query_models.DamagedTransitionReceipt)
+                else returned
+            )
+        case decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE:
+            continued = _decode_continuation(attempt_id, receipt)
+            return (
+                _unreadable_condition(continued)
+                if isinstance(continued, query_models.DamagedTransitionReceipt)
+                else continued
+            )
+        case decision_models.ActionKind.ACCEPT_CHECKPOINT:
+            accepted = _decode_checkpoint_acceptance(attempt_id, receipt)
+            return (
+                _unreadable_condition(accepted)
+                if isinstance(accepted, query_models.DamagedTransitionReceipt)
+                else accepted
+            )
+        case (
+            decision_models.ActionKind.START_PR_REVIEW
+            | decision_models.ActionKind.REVIEW_PR_BRIEF
+            | decision_models.ActionKind.OBSERVE_PR_HEAD
+            | decision_models.ActionKind.RECORD_PR_ROUND
+            | decision_models.ActionKind.CLOSE_PR_REVIEW
+            | decision_models.ActionKind.BLOCK_ITEM
+            | decision_models.ActionKind.COMPLETE
+            | decision_models.ActionKind.CLOSE
+            | decision_models.ActionKind.CONTINUE
+            | decision_models.ActionKind.DEFER
+            | decision_models.ActionKind.DISPATCH
+            | decision_models.ActionKind.INSPECT
+            | decision_models.ActionKind.MERGE_PROPOSAL
+            | decision_models.ActionKind.REJECT_PROPOSAL
+            | decision_models.ActionKind.REOPEN
+            | decision_models.ActionKind.RECORD_REPLACEMENT
+            | decision_models.ActionKind.REPORT_BLOCKER
+            | decision_models.ActionKind.RETAIN_TEMPORARILY
+            | decision_models.ActionKind.REVISE_ITEM
+            | released_v6_compatibility.HistoricalActionKind.ACCEPT_PROPOSAL
+            | released_v6_compatibility.HistoricalActionKind.MARK_READY
+            | released_v6_compatibility.HistoricalActionKind.RETURN_PROPOSAL
+        ) as recorded:
+            return query_models.RecordedActionCondition(at, recorded)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _board_checkpoint(
+    facts: query_models.BoardAttemptFacts,
+) -> query_models.BoardCheckpoint | query_models.UnreadableBrief:
+    brief = facts.brief
+    records = facts.records
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
+        return query_models.UnreadableBrief(records.attempt_id, brief.message)
+    checkpoint = brief.checkpoint
+    remaining: query_models.RecordedRemainingWork | query_models.FinalCheckpoint
+    match checkpoint.disposition:
+        case work_brief_models.ContinueCheckpointDisposition(remaining_work=text):
+            remaining = query_models.RecordedRemainingWork(text)
+        case work_brief_models.TerminalCheckpointDisposition():
+            remaining = query_models.FinalCheckpoint()
+        case _ as unreachable:
+            assert_never(unreachable)
+    reference = records.brief_reference
+    return query_models.BoardCheckpoint(
+        checkpoint.checkpoint_id, checkpoint.title, reference.revision, reference.created_at, remaining
+    )
+
+
+def _board_milestones(
+    records: query_models.BoardAttemptRecords,
+) -> tuple[query_models.BoardMilestone | query_models.UnreadableMilestone, ...]:
+    milestones: list[query_models.BoardMilestone | query_models.UnreadableMilestone] = []
+    for receipt in records.checkpoint_acceptances:
+        outcome = _decode_checkpoint_acceptance_outcome(bytes(receipt.outcome_payload))
+        milestones.append(
+            query_models.UnreadableMilestone(receipt.history_id, receipt.committed_at, outcome)
+            if isinstance(outcome, str)
+            else query_models.BoardMilestone(
+                receipt.history_id, receipt.committed_at, outcome.checkpoint, outcome.evidence
+            )
+        )
+    return tuple(milestones)
+
+
+@dataclass(frozen=True, slots=True)
+class _DefinitionFields:
+    """One stored definition's comparable fields; a field its schema lacks is None or empty."""
+
+    texts: tuple[tuple[query_models.DefinitionTextField, str | None], ...]
+    lists: tuple[tuple[query_models.DefinitionListField, tuple[str, ...]], ...]
+    obligations: tuple[work_models.WorkObligation, ...]
+
+
+def _definition_fields(definition: stored_state.StoredDefinition) -> _DefinitionFields:
+    match definition:
+        case work_models.WorkItemDefinition():
+            checkout_policy: str | None = definition.checkout_policy.value
+            obligations = definition.obligations
+        case definition_compatibility.HistoricalDefinitionV1():
+            checkout_policy = None
+            obligations = ()
+        case _ as unreachable:
+            assert_never(unreachable)
+    return _DefinitionFields(
+        (
+            (query_models.DefinitionTextField.TITLE, definition.title),
+            (query_models.DefinitionTextField.OBJECTIVE, definition.objective),
+            (query_models.DefinitionTextField.HYPOTHESIS, definition.hypothesis),
+            (query_models.DefinitionTextField.EFFECT, definition.effect),
+            (query_models.DefinitionTextField.UNLOCK, definition.unlock),
+            (query_models.DefinitionTextField.CHECKOUT_POLICY, checkout_policy),
+        ),
+        (
+            (query_models.DefinitionListField.SCOPE, definition.scope),
+            (query_models.DefinitionListField.NON_SCOPE, definition.non_scope),
+            (query_models.DefinitionListField.ACCEPTANCE_CRITERIA, definition.acceptance_criteria),
+            (query_models.DefinitionListField.EVIDENCE, definition.evidence),
+            (query_models.DefinitionListField.DEPENDENCIES, tuple(str(value) for value in definition.dependencies)),
+        ),
+        tuple(obligations),
+    )
+
+
+def _scope_changes(
+    before: stored_state.StoredDefinition, after: stored_state.StoredDefinition
+) -> query_models.ScopeRevisionChanges:
+    """Compare consecutive stored definitions field by field, never pairing entries by meaning."""
+
+    old = _definition_fields(before)
+    new = _definition_fields(after)
+    lists: list[query_models.ListFieldChange] = []
+    for (field, old_values), (_field, new_values) in zip(old.lists, new.lists, strict=True):
+        old_set, new_set = frozenset(old_values), frozenset(new_values)
+        added = tuple(value for value in new_values if value not in old_set)
+        removed = tuple(value for value in old_values if value not in new_set)
+        if added or removed:
+            lists.append(query_models.ListFieldChange(field, added, removed))
+    old_obligations = {value.obligation_id: value for value in old.obligations}
+    new_obligations = {value.obligation_id: value for value in new.obligations}
+    return query_models.ScopeRevisionChanges(
+        tuple(
+            query_models.TextFieldChange(field, old_value, new_value)
+            for (field, old_value), (_field, new_value) in zip(old.texts, new.texts, strict=True)
+            if old_value != new_value
+        ),
+        tuple(lists),
+        tuple(value for value in new.obligations if value.obligation_id not in old_obligations),
+        tuple(value for value in old.obligations if value.obligation_id not in new_obligations),
+        tuple(
+            query_models.ObligationChange(previous, value)
+            for value in new.obligations
+            if (previous := old_obligations.get(value.obligation_id)) is not None and previous != value
+        ),
+    )
+
+
+def _scope_revisions(
+    revisions: tuple[stored_state.ItemDefinitionRevision, ...],
+) -> tuple[query_models.BoardScopeRevision, ...]:
+    return tuple(
+        query_models.BoardScopeRevision(
+            value.revision,
+            value.accepted_at,
+            value.reason,
+            query_models.OriginalScope()
+            if index == 0
+            else _scope_changes(revisions[index - 1].definition, value.definition),
+        )
+        for index, value in enumerate(revisions)
+    )
+
+
 def _board_items(
-    items: tuple[query_models.OverviewItem, ...], updated_at: Mapping[str, datetime]
+    items: tuple[query_models.OverviewItem, ...],
+    updated_at: Mapping[str, datetime],
+    history: query_models.BoardHistoryFacts,
 ) -> tuple[query_models.BoardItem, ...]:
-    return tuple(query_models.BoardItem(item, updated_at[item.item_id]) for item in items)
+    """Attach each live item's selected history through the one projection both board derivations share."""
+
+    attempts = {
+        str(facts.records.item_id): query_models.BoardAttemptProgress(
+            _board_checkpoint(facts), _board_condition(facts), _board_milestones(facts.records)
+        )
+        for facts in history.attempts
+    }
+    definitions = {str(value.item_id): value.revisions for value in history.definition_histories}
+    return tuple(
+        query_models.BoardItem(
+            item,
+            updated_at[item.item_id],
+            attempts.get(item.item_id),
+            _scope_revisions(definitions[item.item_id]),
+            query_models.project_definition(definitions[item.item_id][-1].definition),
+        )
+        for item in items
+    )
 
 
-def project_board_portfolio(state: stored_state.StoredWorkState, now: datetime) -> query_models.BoardPortfolio:
-    """Project the board from complete state: every live item with its stored change time."""
+def project_board_portfolio(
+    state: stored_state.StoredWorkState, history: query_models.BoardHistoryFacts, now: datetime
+) -> query_models.BoardPortfolio:
+    """Project the board from complete state: every live item with its stored change time and selected history."""
 
     updated_at = {str(item.item_id): item.updated_at for item in state.lifecycle.work_items}
-    return query_models.BoardPortfolio(_board_items(project_portfolio(state, now), updated_at))
+    return query_models.BoardPortfolio(_board_items(project_portfolio(state, now), updated_at, history))
 
 
-def project_live_portfolio(facts: query_models.LivePortfolioFacts, now: datetime) -> query_models.BoardPortfolio:
+def project_live_portfolio(
+    facts: query_models.LivePortfolioFacts, history: query_models.BoardHistoryFacts, now: datetime
+) -> query_models.BoardPortfolio:
     """Project the board from the live read, which never carries preparation authority."""
 
     updated_at = {str(item_id): value for item_id, value in facts.item_updated_at}
     items = _project_current_items(query_models.ProjectOverviewFacts(facts.snapshot, facts.proposals, ()), now)
-    return query_models.BoardPortfolio(_board_items(items, updated_at))
+    return query_models.BoardPortfolio(_board_items(items, updated_at, history))
 
 
 def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) -> query_models.OverviewItem:
@@ -922,10 +1283,11 @@ def _historical_receipt_outcome(
         return None
 
 
-def _returned_verdict(
-    attempt_id: AttemptId, event: query_models.ReviewEventFacts
-) -> query_models.ReturnedForCorrectionVerdict | query_models.DamagedTransitionReceipt:
-    receipt = event.receipt
+def _decode_return(
+    attempt_id: AttemptId, receipt: query_models.ConsumedTransitionReceipt
+) -> query_models.ReturnedCondition | query_models.RetainedReturnedCondition | query_models.DamagedTransitionReceipt:
+    """Decode a return-for-correction receipt with the canonical return decoder or the retained decision/v1 reader."""
+
     returned = decision_models.ActionKind.RETURN_FOR_CORRECTION
     match receipt.input_schema:
         case "return-for-correction/v1":
@@ -935,18 +1297,21 @@ def _returned_verdict(
             outcome = checkpoint_packages.decode_correction_outcome(stored, str(attempt_id))
             if isinstance(outcome, DecisionFailure):
                 return _damaged(attempt_id, receipt, returned, outcome.message)
-            reason = outcome.evidence
+            if outcome.evidence is None:
+                return _damaged(attempt_id, receipt, returned, "The return outcome records no reason.")
+            return query_models.ReturnedCondition(receipt.committed_at, outcome.evidence)
         case "decision/v1":
             historical = _historical_receipt_outcome(receipt)
-            reason = None if historical is None else historical.evidence
+            return query_models.RetainedReturnedCondition(
+                receipt.committed_at, None if historical is None else historical.evidence
+            )
         case _:
             return _damaged(attempt_id, receipt, returned, f"Unsupported return input schema {receipt.input_schema!r}.")
-    return query_models.ReturnedForCorrectionVerdict(int(receipt.history_id), reason, event.rebound_since)
 
 
-def _continued_verdict(
+def _decode_continuation(
     attempt_id: AttemptId, receipt: query_models.ConsumedTransitionReceipt
-) -> query_models.AcceptedAndContinuedVerdict | query_models.DamagedTransitionReceipt:
+) -> query_models.ContinuedCondition | query_models.DamagedTransitionReceipt:
     continued = decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
     if receipt.outcome_schema != "transition-receipt/v1":
         return _damaged(attempt_id, receipt, continued, f"Unsupported outcome schema {receipt.outcome_schema!r}.")
@@ -962,27 +1327,39 @@ def _continued_verdict(
         return _damaged(
             attempt_id, receipt, continued, "The outcome does not record review acceptance and continuation."
         )
-    return query_models.AcceptedAndContinuedVerdict(outcome.evidence)
+    return query_models.ContinuedCondition(receipt.committed_at, outcome.evidence)
 
 
-def _checkpoint_verdict(
+def _decode_checkpoint_acceptance_outcome(payload: bytes) -> history.CheckpointAcceptanceOutcome | str:
+    """Decode one checkpoint-acceptance/v2 outcome, or name why it does not decode."""
+
+    try:
+        return msgspec.json.decode(payload, type=history.CheckpointAcceptanceOutcome, strict=True)
+    except msgspec.DecodeError as error:
+        return f"The outcome does not decode as checkpoint-acceptance/v2: {error}"
+
+
+def _decode_checkpoint_acceptance(
     attempt_id: AttemptId, receipt: query_models.ConsumedTransitionReceipt
-) -> query_models.CheckpointAcceptedVerdict | query_models.DamagedTransitionReceipt:
+) -> (
+    query_models.CheckpointAcceptedCondition
+    | query_models.RetainedCheckpointAcceptedCondition
+    | query_models.DamagedTransitionReceipt
+):
     accepted = decision_models.ActionKind.ACCEPT_CHECKPOINT
     match receipt.outcome_schema:
         case "checkpoint-acceptance/v2":
-            try:
-                outcome = msgspec.json.decode(
-                    receipt.outcome_json.encode("utf-8"), type=history.CheckpointAcceptanceOutcome, strict=True
-                )
-            except msgspec.DecodeError as error:
-                return _damaged(
-                    attempt_id, receipt, accepted, f"The outcome does not decode as checkpoint-acceptance/v2: {error}"
-                )
-            return query_models.CheckpointAcceptedVerdict(outcome.checkpoint)
+            outcome = _decode_checkpoint_acceptance_outcome(receipt.outcome_json.encode("utf-8"))
+            if isinstance(outcome, str):
+                return _damaged(attempt_id, receipt, accepted, outcome)
+            return query_models.CheckpointAcceptedCondition(receipt.committed_at, outcome.checkpoint, outcome.evidence)
         case "transition-receipt/v1":
             historical = _historical_receipt_outcome(receipt)
-            return query_models.CheckpointAcceptedVerdict(None if historical is None else historical.checkpoint)
+            return query_models.RetainedCheckpointAcceptedCondition(
+                receipt.committed_at,
+                None if historical is None else historical.checkpoint,
+                None if historical is None else historical.evidence,
+            )
         case _:
             return _damaged(attempt_id, receipt, accepted, f"Unsupported outcome schema {receipt.outcome_schema!r}.")
 
@@ -1015,11 +1392,22 @@ def _review_verdict(
                 ),
             )
         case decision_models.ActionKind.RETURN_FOR_CORRECTION:
-            return _returned_verdict(attempt.attempt_id, event)
+            returned = _decode_return(attempt.attempt_id, event.receipt)
+            if isinstance(returned, query_models.DamagedTransitionReceipt):
+                return returned
+            return query_models.ReturnedForCorrectionVerdict(
+                int(event.receipt.history_id), returned.reason, event.rebound_since
+            )
         case decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE:
-            return _continued_verdict(attempt.attempt_id, event.receipt)
+            continued = _decode_continuation(attempt.attempt_id, event.receipt)
+            if isinstance(continued, query_models.DamagedTransitionReceipt):
+                return continued
+            return query_models.AcceptedAndContinuedVerdict(continued.evidence)
         case decision_models.ActionKind.ACCEPT_CHECKPOINT:
-            return _checkpoint_verdict(attempt.attempt_id, event.receipt)
+            checkpoint = _decode_checkpoint_acceptance(attempt.attempt_id, event.receipt)
+            if isinstance(checkpoint, query_models.DamagedTransitionReceipt):
+                return checkpoint
+            return query_models.CheckpointAcceptedVerdict(checkpoint.checkpoint)
         case _ as unreachable:
             assert_never(unreachable)
 

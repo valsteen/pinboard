@@ -16,7 +16,7 @@ from pinboard.domain import work_models
 from pinboard.domain.identifiers import WorkItemId
 from tests import test_mcp as mcp_support
 from tests.native_support import call_advertised_tool
-from tests.support import SQLITE_NOW, JsonObject, with_definition_dependencies
+from tests.support import SQLITE_NOW, JsonObject, board_reader, with_definition_dependencies
 
 
 class HistoricalDefinitionTest(unittest.TestCase):
@@ -139,7 +139,11 @@ class HistoricalDefinitionTest(unittest.TestCase):
         row = next(value for value in decoded.definition_revisions if value.item_id == "work-b")
         self.assertEqual(terminal, msgspec.json.encode(row.definition, order="sorted") + b"\n")
         refreshed = rebuild_facts(
-            reopened.read_all_generated_view_facts(SQLITE_NOW), self.roots.work_root, {}, reopened, SQLITE_NOW
+            reopened.read_all_generated_view_facts(SQLITE_NOW),
+            self.roots.work_root,
+            {},
+            board_reader(self.roots.work_root, reopened),
+            SQLITE_NOW,
         )
         self.assertIsNone(refreshed.warning)
         view = (self.roots.work_root / "views" / "items" / "work-b.md").read_text()

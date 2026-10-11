@@ -1,4 +1,4 @@
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
@@ -140,7 +140,11 @@ class WorkStore(Protocol):
 
     def read_project_overview(self, now: datetime) -> query_models.ProjectOverviewFacts: ...
 
-    def read_live_portfolio(self, now: datetime) -> query_models.LivePortfolioFacts: ...
+    def read_board_records(self, now: datetime) -> query_models.LiveBoardRecords: ...
+
+    def read_candidate_review_references(
+        self, keys: tuple[str, ...]
+    ) -> Mapping[str, stored_state.ArtifactReference]: ...
 
     def read_generated_view_facts(
         self,
@@ -212,13 +216,37 @@ class ParallelPreviewReader(Protocol):
     ) -> query_models.ParallelPreviewFacts | None: ...
 
 
-class LivePortfolioReader(Protocol):
-    """Current live-portfolio facts without retained history, terminal bodies, or artifacts."""
+class BoardRecordReader(Protocol):
+    """Read the live portfolio and the selected records its board cards show, in one SQLite read transaction.
 
-    def read_live_portfolio(self, now: datetime) -> query_models.LivePortfolioFacts: ...
+    Beyond live items and their direct dependency reasons, the read selects, for open attempts only, the current
+    brief references, the receipts at their subject revisions, their checkpoint acceptances and, for review-state
+    attempts, their candidate snapshot references, plus every accepted definition revision of each live item. It
+    reads no artifact bytes or files and no other retained history.
+    """
+
+    def read_board_records(self, now: datetime) -> query_models.LiveBoardRecords: ...
 
 
-class GeneratedViewReader(LivePortfolioReader, Protocol):
+class CandidateReviewReferenceReader(Protocol):
+    """Read accepted candidate-review references by exact key; absent keys are omitted from the result."""
+
+    def read_candidate_review_references(
+        self, keys: tuple[str, ...]
+    ) -> Mapping[str, stored_state.ArtifactReference]: ...
+
+
+class BoardStore(BoardRecordReader, CandidateReviewReferenceReader, Protocol):
+    """The SQLite reads a composed board refresh needs: its selected records, then keyed ready-review references."""
+
+
+class BoardReader(Protocol):
+    """Read the composed board for one refresh; called under the board lock."""
+
+    def read_board(self, now: datetime) -> query_models.BoardPortfolio: ...
+
+
+class GeneratedViewReader(BoardStore, Protocol):
     def read_generated_view_facts(
         self,
         work_item_ids: tuple[WorkItemId, ...],
@@ -228,7 +256,7 @@ class GeneratedViewReader(LivePortfolioReader, Protocol):
     ) -> query_models.GeneratedViewFacts: ...
 
 
-class GeneratedViewSetReader(LivePortfolioReader, Protocol):
+class GeneratedViewSetReader(BoardStore, Protocol):
     """Project-wide generated-view facts without unrelated stored state."""
 
     def read_all_generated_view_facts(self, now: datetime) -> query_models.GeneratedViewFacts: ...

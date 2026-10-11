@@ -752,6 +752,65 @@ def project_overview(state: stored_state.StoredWorkState, now: datetime) -> quer
     )
 
 
+def select_integration_source(
+    facts: query_models.ItemIntegrationSourceFacts,
+) -> DecisionResult[query_models.IntegrationSourceSelection]:
+    """Select one closed reviewed-candidate source variant from focused item facts."""
+
+    def unavailable(reason: str) -> DecisionFailure:
+        return DecisionFailure(
+            DecisionFailureCode.INTEGRATION_CANDIDATE_UNAVAILABLE,
+            f"Item '{facts.work_item_id}' state '{facts.item_state.value}' has no reviewed candidate with accepted "
+            f"snapshot bytes: {reason}.",
+            FailureDetails(
+                observed=(
+                    FailureFact("item_id", str(facts.work_item_id)),
+                    FailureFact("item_state", facts.item_state.value),
+                    FailureFact("reason", reason),
+                ),
+                mismatches=(),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+
+    if facts.closing_action == query_models.ItemClosureAction.CLOSE:
+        return unavailable("a direct close")
+    if facts.attempt_id is None:
+        return unavailable("no protected candidate and no checkpoint acceptance on the current attempt")
+    if facts.closing_action == query_models.ItemClosureAction.COMPLETE:
+        if facts.candidate_revision is None:
+            return unavailable("no protected candidate and no checkpoint acceptance on the current attempt")
+        return query_models.IntegrationSourceSelection(
+            "completion",
+            str(facts.attempt_id),
+            facts.candidate_revision,
+            None,
+            None,
+        )
+    if facts.attempt_state == work_models.AttemptState.REVIEW and facts.candidate_revision is not None:
+        return query_models.IntegrationSourceSelection(
+            "protected-review",
+            str(facts.attempt_id),
+            facts.candidate_revision,
+            None,
+            None,
+        )
+    if facts.checkpoint is not None:
+        if facts.checkpoint.snapshot_reference is None:
+            return unavailable("a checkpoint package without a candidate snapshot reference")
+        return query_models.IntegrationSourceSelection(
+            "accepted-checkpoint",
+            str(facts.attempt_id),
+            facts.checkpoint.candidate,
+            facts.checkpoint.checkpoint_id,
+            facts.checkpoint.snapshot_reference,
+        )
+    return unavailable("no protected candidate and no checkpoint acceptance on the current attempt")
+
+
 def _project_overview_item(
     item: work_models.WorkItem,
     definition: work_models.WorkItemDefinition,
@@ -1018,6 +1077,12 @@ def _review_verdict(
             return _checkpoint_verdict(attempt.attempt_id, event.receipt)
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def closure_action_from_kind(
+    kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind,
+) -> query_models.ItemClosureAction | None:
+    return _closure_action(kind)
 
 
 def _closure_action(

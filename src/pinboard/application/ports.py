@@ -175,6 +175,14 @@ class BranchOwnerReader(Protocol):
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
 
 
+class IntegrationSourceReader(Protocol):
+    """Read focused item facts for one integration source selection."""
+
+    def read_item_integration_source(
+        self, work_item_id: WorkItemId
+    ) -> query_models.ItemIntegrationSourceFacts | None: ...
+
+
 class AttemptContextReader(Protocol):
     def read_attempt_context(self, attempt_id: AttemptId) -> query_models.AttemptContextFacts | None: ...
 

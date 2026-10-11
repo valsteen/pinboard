@@ -14,6 +14,7 @@ from typing import NoReturn, assert_never
 
 import msgspec
 
+from pinboard.adapters.sqlite.artifacts import read_artifact_reference, read_artifact_reference_by_id
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import queries, query_models, released_v6_compatibility, stored_state
@@ -643,6 +644,142 @@ def read_item_status(
         None if definition is None else definition.definition.title,
         attempts,
         closure,
+    )
+
+
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+    candidate_recorded_at: datetime | None
+
+
+class _IntegrationClosureRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    action_kind: str
+    subject_id: HistorySubjectId
+
+
+def read_item_integration_source(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> query_models.ItemIntegrationSourceFacts | None:
+    """Read only the named item, its selected attempt, its closing receipt, and one checkpoint acceptance."""
+
+    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_revision_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    project_revision = decode_row(project_revision_row, _ProjectRevisionRow).revision
+    item_row = connection.execute(
+        "SELECT item_id AS work_item_id, state, subject_revision FROM work_items WHERE item_id = ?",
+        (item_id,),
+    ).fetchone()
+    if item_row is None:
+        return None
+    item = decode_row(item_row, _IntegrationItemRow)
+    closing_action: query_models.ItemClosureAction | None = None
+    attempt_row = None
+    if stored_state.live_work_state(item.state) is None:
+        receipt_row = connection.execute(
+            "SELECT action_kind, subject_id FROM transition_history WHERE project_revision = ?",
+            (item.subject_revision,),
+        ).fetchone()
+        if receipt_row is not None:
+            closure = decode_row(receipt_row, _IntegrationClosureRow)
+            closing_action = queries.closure_action_from_kind(decode_history_action_kind(closure.action_kind))
+            attempt_row = connection.execute(
+                """
+                SELECT attempt_id, state, candidate_revision, candidate_recorded_at
+                FROM attempts WHERE attempt_id = ? AND item_id = ?
+                """,
+                (closure.subject_id, item_id),
+            ).fetchone()
+    else:
+        attempt_row = connection.execute(
+            """
+            SELECT attempt_id, state, candidate_revision, candidate_recorded_at
+            FROM attempts INDEXED BY one_live_attempt_per_item
+            WHERE item_id = ? AND state != 'done'
+            """,
+            (item_id,),
+        ).fetchone()
+    if attempt_row is None:
+        return query_models.ItemIntegrationSourceFacts(
+            project_revision,
+            item.work_item_id,
+            item.state,
+            item.subject_revision,
+            None,
+            None,
+            None,
+            None,
+            closing_action,
+            None,
+        )
+    attempt = decode_row(attempt_row, _IntegrationAttemptRow)
+    checkpoint = None
+    checkpoint_row = connection.execute(
+        """
+        SELECT history_id, artifact_ref_id, outcome_json
+        FROM transition_history INDEXED BY checkpoint_history_by_subject
+        WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+        ORDER BY history_id DESC
+        LIMIT 1
+        """,
+        (attempt.attempt_id,),
+    ).fetchone()
+    if checkpoint_row is not None:
+        checkpoint = _read_integration_checkpoint(connection, checkpoint_row, attempt.attempt_id)
+    return query_models.ItemIntegrationSourceFacts(
+        project_revision,
+        item.work_item_id,
+        item.state,
+        item.subject_revision,
+        attempt.attempt_id,
+        attempt.state,
+        attempt.candidate_revision,
+        attempt.candidate_recorded_at,
+        closing_action,
+        checkpoint,
+    )
+
+
+def _read_integration_checkpoint(
+    connection: sqlite3.Connection,
+    checkpoint_row: sqlite3.Row | tuple[int | None, int | None, str | bytes],
+    attempt_id: AttemptId,
+) -> query_models.IntegrationCheckpointFacts | None:
+    _history_id, artifact_ref_id, outcome_json = checkpoint_row
+    try:
+        outcome = msgspec.json.decode(
+            outcome_json.encode() if isinstance(outcome_json, str) else bytes(outcome_json),
+        )
+    except ValueError, msgspec.DecodeError:
+        return None
+    if not isinstance(outcome, dict):
+        return None
+    checkpoint_id = outcome.get("checkpoint")
+    candidate = outcome.get("candidate")
+    if not isinstance(checkpoint_id, str) or not isinstance(candidate, str):
+        return None
+    snapshot_reference = read_artifact_reference(
+        connection,
+        work_models.ArtifactKind.EVIDENCE,
+        f"{attempt_id}-{checkpoint_id}-candidate",
+        1,
+    )
+    package_reference = (
+        None if artifact_ref_id is None else read_artifact_reference_by_id(connection, ArtifactRefId(artifact_ref_id))
+    )
+    return query_models.IntegrationCheckpointFacts(
+        checkpoint_id,
+        candidate,
+        snapshot_reference,
+        package_reference,
     )
 
 

@@ -949,6 +949,75 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
 
 
+class ProtectedReviewSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class AcceptedCheckpointSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+    checkpoint_id: str
+
+
+class CompletionSource(msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type ItemIntegrationSource = ProtectedReviewSource | AcceptedCheckpointSource | CompletionSource
+
+type ItemIntegrationPresence = Literal["content-present", "content-not-present", "no-change"]
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-item-integration/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    target_revision: str
+    source: ItemIntegrationSource
+    presence: ItemIntegrationPresence
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCheckpointFacts:
+    checkpoint_id: str
+    candidate: str
+    snapshot_reference: stored_state.ArtifactReference | None
+    package_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationSourceFacts:
+    project_revision: int
+    work_item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+    subject_revision: int
+    attempt_id: AttemptId | None
+    attempt_state: work_models.AttemptState | None
+    candidate_revision: str | None
+    candidate_recorded_at: datetime | None
+    closing_action: ItemClosureAction | None
+    checkpoint: IntegrationCheckpointFacts | None
+
+
+class IntegrationSourceSelection(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    variant: Literal["protected-review", "accepted-checkpoint", "completion"]
+    attempt_id: str
+    candidate_revision: str
+    checkpoint_id: str | None
+    snapshot_reference: stored_state.ArtifactReference | None
+
+
 class ParallelSelection(Enum):
     ALL_SAFE = "all-safe"
     SELECTED = "selected"

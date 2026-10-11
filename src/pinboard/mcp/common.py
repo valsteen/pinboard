@@ -41,20 +41,20 @@ def _item_status_failure(
     code: str,
     message: str,
     details: FailureDetails | None,
+    recovery: str | None = None,
 ) -> execution.OperationResult:
     rendered = _details_json(details)
-    return execution.OperationResult(
-        {
-            "schema": "pinboard-mcp-item-status-result/v2",
-            "status": "rejected",
-            "code": code,
-            "message": message,
-            "state_changed": False,
-            **rendered,
-        },
-        "rejected",
-        None,
-    )
+    payload: dict[str, JsonValue] = {
+        "schema": "pinboard-mcp-item-status-result/v3",
+        "status": "rejected",
+        "code": code,
+        "message": message,
+        "state_changed": False,
+        **rendered,
+    }
+    if recovery is not None:
+        payload["recovery"] = recovery
+    return execution.OperationResult(payload, "rejected", None)
 
 
 def _damaged_receipt_failure(schema: str, damaged: query_models.DamagedTransitionReceipt) -> execution.OperationResult:

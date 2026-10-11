@@ -101,7 +101,7 @@ class _AttemptReviewEvidence:
 def _branch_owner_not_found(branch: str, work_root: Path) -> execution.OperationResult:
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v2",
+            "schema": "pinboard-mcp-item-status-result/v3",
             "status": "rejected",
             "code": "BRANCH_OWNER_NOT_FOUND",
             "message": f"No retained attempt in work root {work_root} records branch '{branch}'.",
@@ -127,13 +127,104 @@ def _branch_owner_not_found(branch: str, work_root: Path) -> execution.Operation
     )
 
 
+def _integration_failure(
+    failure: DecisionFailure,
+    *,
+    recovery: str | None = None,
+) -> execution.OperationResult:
+    return common._item_status_failure(failure.code.value, failure.message, failure.details, recovery)
+
+
+def _integration_git_failure(
+    error: candidate_evidence.IntegrationGitFailure, project_root: str
+) -> execution.OperationResult:
+    return execution.OperationResult(
+        {
+            "schema": "pinboard-mcp-item-status-result/v3",
+            "status": "rejected",
+            "code": error.code.value,
+            "message": str(error.diagnostic),
+            "state_changed": False,
+            "effect": "unchanged",
+            "retry": "correct-input",
+            "changed_surfaces": [],
+            "observed": [
+                {"field": "project_root", "value": project_root},
+                {"field": "git_diagnostic", "value": str(error.diagnostic)},
+            ],
+            "mismatches": [],
+            "recovery": "Correct the checkout at the project root, then retry.",
+        },
+        "rejected",
+        None,
+    )
+
+
+def _read_integration_status(
+    request: contracts.ItemStatusIntegrationRequest,
+    durable: common.DurableRoots,
+    token: execution.CancellationToken,
+) -> execution.OperationResult:
+    store = common.compose_store(durable)
+    facts = store.read_item_integration_source(WorkItemId(request.item_id))
+    if facts is None:
+        return common._item_status_failure("ITEM_NOT_FOUND", f"Item '{request.item_id}' was not found.", None)
+    selection = queries.select_integration_source(facts)
+    if isinstance(selection, DecisionFailure):
+        recovery = {
+            "INTEGRATION_CANDIDATE_UNAVAILABLE": "Read the item leaf.",
+            "INTEGRATION_CANDIDATE_EVIDENCE_INVALID": "Run pinboard validate.",
+        }.get(selection.code.value)
+        return _integration_failure(selection, recovery=recovery)
+    source_checkout = resolve_source_checkout_root(Path(request.project_root))
+    evidence = candidate_evidence.read_integration_presence(
+        source_checkout, durable.work_root, store, selection, request.target
+    )
+    if isinstance(evidence, DecisionFailure):
+        recovery = {
+            "INTEGRATION_TARGET_UNRESOLVED": (
+                "Name an existing local branch, remote-tracking ref, tag, or full commit, and fetch it outside "
+                "Pinboard first when remote freshness matters."
+            ),
+            "INTEGRATION_CANDIDATE_UNAVAILABLE": "Read the item leaf.",
+            "INTEGRATION_CANDIDATE_EVIDENCE_INVALID": "Run pinboard validate.",
+        }.get(evidence.code.value)
+        return _integration_failure(evidence, recovery=recovery)
+    if isinstance(evidence, candidate_evidence.IntegrationGitFailure):
+        return _integration_git_failure(evidence, request.project_root)
+    token.checkpoint()
+    result = query_models.ItemIntegration(
+        "pinboard-item-integration/v1",
+        "sqlite-v7",
+        str(facts.project_revision),
+        request.item_id,
+        request.target,
+        evidence.target_revision,
+        evidence.source,
+        evidence.presence,
+    )
+    content = msgspec.to_builtins(result)
+    assert isinstance(content, dict)
+    return execution.OperationResult(content, "ok", str(facts.project_revision))
+
+
 def _read_item_status(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.ItemStatusEnvelope, strict=True).request
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    project_root = request.project_root
+    try:
         durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return common._item_status_failure("ITEM_STATUS_INVALID", f"Cannot read item status: {error}", None)
+    except RootError as error:
+        if isinstance(request, contracts.ItemStatusIntegrationRequest):
+            return _integration_git_failure(
+                candidate_evidence.IntegrationGitFailure(error.code, str(error)), project_root
+            )
+        raise
     token.checkpoint()
     store = common.compose_store(durable)
     match request:
@@ -144,13 +235,15 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
             if isinstance(projected, DecisionFailure):
                 return common._item_status_failure(projected.code.value, projected.message, projected.details)
             if isinstance(projected, query_models.DamagedTransitionReceipt):
-                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v2", projected)
+                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", projected)
             selected: query_models.ItemStatus | query_models.BranchOwners = projected
         case contracts.ItemStatusBranchRequest():
             owners = queries.project_branch_owners(store, request.branch)
             if owners is None:
                 return _branch_owner_not_found(request.branch, durable.work_root)
             selected = owners
+        case contracts.ItemStatusIntegrationRequest():
+            return _read_integration_status(request, durable, token)
         case _ as unreachable:
             assert_never(unreachable)
     token.checkpoint()

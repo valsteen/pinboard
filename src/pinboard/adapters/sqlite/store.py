@@ -47,6 +47,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
+    read_item_integration_source,
     read_item_status,
     read_parallel_preview_lifecycle,
     read_recorded_pause_reasons,
@@ -725,6 +726,14 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return read_branch_owners(connection, branch)
+        finally:
+            connection.close()
+
+    def read_item_integration_source(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationSourceFacts | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_item_integration_source(connection, work_item_id)
         finally:
             connection.close()
 

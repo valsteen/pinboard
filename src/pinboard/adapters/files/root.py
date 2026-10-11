@@ -1,5 +1,8 @@
 import fcntl
+import os
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -36,6 +39,20 @@ class DirtyHeadCandidate:
 
 
 type CommittedCandidateObservation = CurrentHeadCandidate | DifferentHeadCandidate | DirtyHeadCandidate
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedIntegrationPresence:
+    target_revision: str
+    present: bool
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedIntegrationTarget:
+    target: str
+
+
+type IntegrationPresenceObservation = ResolvedIntegrationPresence | UnresolvedIntegrationTarget
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +260,93 @@ def read_current_head_candidate(
         unavailable_message=f"Cannot compare candidate '{candidate_revision}' with comparison revision '{comparison_revision}'.",
     )
     return CurrentHeadCandidate(candidate_revision, diff)
+
+
+def _valid_integration_target(target: str) -> bool:
+    return bool(target) and not target.startswith("-") and not any(ch in target for ch in "\r\n\0")
+
+
+def read_integration_presence(
+    cwd: Path,
+    target: str,
+    diff: bytes,
+) -> IntegrationPresenceObservation:
+    """Reverse-apply-check one reviewed binary diff against a temporary index of the target commit's tree.
+
+    Resolves the caller-named target through the adapter's existing rev-parse read, reads that
+    commit's tree into a private temporary index, and checks the reverse patch without writing
+    the repository's working tree, real index, refs, object database, other Git metadata, or the
+    work root. Fetches nothing. Removes the temporary directory before returning.
+    """
+
+    if not _valid_integration_target(target):
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            f"Integration target {target!r} is not a valid Git revision name.",
+        )
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if resolved.returncode != 0:
+        if resolved.returncode == 1:
+            return UnresolvedIntegrationTarget(target)
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            resolved.stderr.strip() or f"Cannot resolve integration target '{target}'.",
+        )
+    target_revision = resolved.stdout.strip()
+    temporary = Path(tempfile.mkdtemp(prefix="pinboard-integration-"))
+    try:
+        index = temporary / "index"
+        environment = {**os.environ, "GIT_INDEX_FILE": str(index)}
+        read_tree = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", target_revision],
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        if read_tree.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                read_tree.stderr.decode(errors="replace").strip()
+                or f"Cannot read the tree of integration target '{target}'.",
+            )
+        applied = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "apply.whitespace=nowarn",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "--binary",
+                "--whitespace=nowarn",
+            ],
+            cwd=cwd,
+            input=diff,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        if applied.returncode == 0:
+            return ResolvedIntegrationPresence(target_revision, True)
+        if applied.returncode == 1:
+            return ResolvedIntegrationPresence(target_revision, False)
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            applied.stderr.decode(errors="replace").strip()
+            or f"Cannot check reviewed content at integration target '{target}'.",
+        )
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
 
 
 def _working_tree_status(cwd: Path) -> bytes:

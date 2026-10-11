@@ -6,7 +6,10 @@ import hashlib
 import os
 import subprocess
 import tempfile
+import unittest.mock
 from pathlib import Path
+
+import msgspec
 
 from pinboard.adapters import candidate_evidence
 from pinboard.adapters.files.errors import RootError
@@ -16,7 +19,7 @@ from pinboard.adapters.files.root import (
     read_integration_presence,
 )
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models
+from pinboard.application import candidate_snapshots, query_models
 from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
@@ -257,13 +260,29 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         selection = query_models.IntegrationSourceSelection(
             "protected-review", "work-a-1", fixture.candidate_revision, None, None
         )
-        evidence = candidate_evidence.read_integration_presence(fixture.project, fixture.work, store, selection, "HEAD")
+        empty_snapshot = candidate_snapshots.CommitCandidateSnapshot(
+            schema="pinboard-candidate-snapshot/v1",
+            attempt_id="work-a-1",
+            item_id="work-a",
+            candidate=fixture.candidate_revision,
+            branch=fixture.brief.branch,
+            preimage_revision=fixture.brief.base_revision,
+            accepted_base_revision=fixture.brief.base_revision,
+            recorded_at="2020-01-01T00:00:00+00:00",
+            diff=b"",
+        )
+        with unittest.mock.patch.object(candidate_evidence, "_load_selected_snapshot", return_value=empty_snapshot):
+            evidence = candidate_evidence.read_integration_presence(
+                fixture.project, fixture.work, store, selection, fixture.brief.base_revision
+            )
         self.assertIsInstance(evidence, candidate_evidence.IntegrationPresenceEvidence)
         assert isinstance(evidence, candidate_evidence.IntegrationPresenceEvidence)
-        self.assertTrue(
-            evidence.presence in ("no-change", "content-present", "content-not-present"),
-            evidence.presence,
-        )
+        self.assertEqual("no-change", evidence.presence)
+        self.assertTrue(evidence.target_revision, "no-change must name the resolved target revision")
+        self.assertTrue(evidence.compared_from_revision)
+        source_dict = msgspec.to_builtins(evidence.source)
+        assert isinstance(source_dict, dict)
+        self.assertEqual("protected-review", source_dict["kind"])
 
     def test_target_at_accepted_base_reports_content_not_present(self) -> None:
         fixture = self.checkpoint_fixture(candidate_form="working-tree")
@@ -424,11 +443,10 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         fixture = self.checkpoint_fixture()
         result = self.integration_leaf(fixture, "-not-a-ref")
         self.assertEqual("rejected", result["status"], result)
-        code_value = str(result["code"])
-        self.assertTrue(
-            code_value in ("ITEM_STATUS_INVALID", "PROJECT_GIT_CHECKOUT_UNAVAILABLE"),
-            result,
-        )
+        self.assertEqual("PROJECT_GIT_CHECKOUT_UNAVAILABLE", str(result["code"]), result)
+        self.assertEqual("pinboard-mcp-item-status-result/v3", result["schema"], result)
+        self.assertEqual("unchanged", result["effect"], result)
+        self.assertEqual("correct-input", result["retry"], result)
 
     def test_item_and_branch_leaves_still_use_v3_rejections(self) -> None:
         fixture = self.checkpoint_fixture()

@@ -52,11 +52,16 @@ class UnresolvedIntegrationTarget:
     target: str
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedIntegrationTarget:
+    revision: str
+
+
 type IntegrationPresenceObservation = ResolvedIntegrationPresence | UnresolvedIntegrationTarget
 
 
-def resolve_integration_target(cwd: Path, target: str) -> IntegrationPresenceObservation:
-    """Resolve a caller-named integration target to its full commit revision."""
+def resolve_integration_target(cwd: Path, target: str) -> ResolvedIntegrationTarget | UnresolvedIntegrationTarget:
+    """Resolve a caller-named integration target to its full commit revision through rev-parse."""
 
     if not _valid_integration_target(target):
         raise RootError(
@@ -77,7 +82,7 @@ def resolve_integration_target(cwd: Path, target: str) -> IntegrationPresenceObs
             RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
             resolved.stderr.strip() or f"Cannot resolve integration target '{target}'.",
         )
-    return ResolvedIntegrationPresence(resolved.stdout.strip(), True)
+    return ResolvedIntegrationTarget(resolved.stdout.strip())
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,7 +303,7 @@ def read_integration_presence(
 ) -> IntegrationPresenceObservation:
     """Reverse-apply-check one reviewed binary diff against a temporary index of the target commit's tree.
 
-    Resolves the caller-named target through the adapter's existing rev-parse read, reads that
+    Resolves the caller-named target to a full commit through rev-parse, reads that
     commit's tree into a private temporary index, and checks the reverse patch without writing
     the repository's working tree, real index, refs, object database, other Git metadata, or the
     work root. Fetches nothing. Removes the temporary directory before returning.
@@ -312,7 +317,7 @@ def read_integration_presence(
     resolved = resolve_integration_target(cwd, target)
     if isinstance(resolved, UnresolvedIntegrationTarget):
         return resolved
-    target_revision = resolved.target_revision
+    target_revision = resolved.revision
     temporary = Path(tempfile.mkdtemp(prefix="pinboard-integration-"))
     try:
         index = temporary / "index"

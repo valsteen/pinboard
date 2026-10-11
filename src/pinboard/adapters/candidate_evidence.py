@@ -244,7 +244,7 @@ def read_integration_presence(
                     alternatives=(),
                 ),
             )
-        return IntegrationPresenceEvidence("no-change", resolved.target_revision, compared_from, source)
+        return IntegrationPresenceEvidence("no-change", resolved.revision, compared_from, source)
     try:
         observation = root.read_integration_presence(source_checkout, target, diff)
     except RootError as error:

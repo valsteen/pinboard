@@ -685,19 +685,6 @@ class CompletionCandidateRequired:
 @dataclass(frozen=True, slots=True)
 class CompletionRecoveryRequired:
     attempt_id: AttemptId
-    work_item_id: WorkItemId
-    route: Literal[
-        "accept-checkpoint",
-        "dispatch",
-        "record-replacement",
-        "rebind-attempt",
-        "retain-temporarily",
-        "return-for-correction",
-        "submit-review",
-    ]
-    route_subject: str
-    alternative_route: Literal["retain-temporarily"] | None
-    alternative_subject: str | None
     reason: str
 
 

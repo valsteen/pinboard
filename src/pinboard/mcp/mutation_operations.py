@@ -405,7 +405,7 @@ def _with_completion_reinspection(
 ) -> DecisionFailure:
     """Attach the read-only focused route after any rejected completion receipt.
 
-    A missing commissioned review keeps its own retry and gains the exact review route ahead of reinspection.
+    A missing commissioned review keeps its own retry and names one evidence inspection.
     """
     if identity.kind != decision_models.ActionKind.COMPLETE:
         return failure
@@ -418,23 +418,18 @@ def _with_completion_reinspection(
             "action_id": {"kind": "complete", "subject": identity.subject},
         }
     }
-    review_route: tuple[FailureFact, ...] = ()
     retry = RetryDisposition.REFRESH_ACTION
     if failure.code == DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED and details is not None:
         retry = details.retry
         inspection: dict[str, JsonValue] = {**roots, "attempt_id": identity.subject, "reconciliation": None}
-        review_route = (
-            FailureFact("review_round_tool", tool_names.ATTEMPT_INSPECT_TOOL),
-            FailureFact("review_round_input", msgspec.json.encode(inspection, order="sorted").decode()),
-            FailureFact("review_commission_tool", tool_names.REVIEW_JOB_TOOL),
-            FailureFact("review_launch", "Launch exactly the native_launch the review job returns."),
-            FailureFact("review_record_tool", tool_names.REVIEW_JOB_TOOL),
-            FailureFact(
-                "review_record_input",
-                "kind:'record-ready' with the returned prompt_reference.sha256 as reviewer_prompt_sha256 and the "
-                "launched reviewer's reviewer_task_id",
-            ),
-            FailureFact("completion_reviewer", "Complete with the same reviewer_task_id that record-ready recorded."),
+        continuation = (
+            FailureFact("completion_inspection_tool", tool_names.ATTEMPT_INSPECT_TOOL),
+            FailureFact("completion_inspection_input", msgspec.json.encode(inspection, order="sorted").decode()),
+        )
+    else:
+        continuation = (
+            FailureFact("completion_reinspection_tool", tool_names.ACTIONS_TOOL),
+            FailureFact("completion_reinspection_input", msgspec.json.encode(request, order="sorted").decode()),
         )
     return DecisionFailure(
         failure.code,
@@ -442,9 +437,7 @@ def _with_completion_reinspection(
         FailureDetails(
             observed=(
                 *(() if details is None else details.observed),
-                *review_route,
-                FailureFact("completion_reinspection_tool", tool_names.ACTIONS_TOOL),
-                FailureFact("completion_reinspection_input", msgspec.json.encode(request, order="sorted").decode()),
+                *continuation,
             ),
             mismatches=() if details is None else details.mismatches,
             retry=retry,

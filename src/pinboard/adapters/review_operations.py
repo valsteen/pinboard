@@ -413,8 +413,8 @@ def _candidate_review_required(
                 FailureFact("recorded_reviewer_task_id", recorded_reviewer_task_id),
                 FailureFact(
                     "missing_step",
-                    "Commission a reviewer for this exact candidate through the review job, launch it, record its "
-                    "ready verdict with the returned prompt digest, then complete naming that reviewer.",
+                    "A current commissioned ready review matching this candidate, snapshot, accepted brief, result, "
+                    "review evidence and named reviewer is required.",
                 ),
             ),
             mismatches=mismatches,

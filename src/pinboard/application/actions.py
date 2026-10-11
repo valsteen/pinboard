@@ -186,7 +186,7 @@ def select_current_actions(
 def completion_candidate_recovery(
     selected: query_models.CompletionContextFacts,
 ) -> query_models.CompletionCandidateRequired | None:
-    """Withhold terminal completion until the existing submission route protects a candidate."""
+    """Name missing current candidate evidence without starting delivery."""
     attempt = selected.attempt
     if (
         isinstance(attempt, query_models.NonterminalAttemptContextFacts)
@@ -236,16 +236,12 @@ def completion_input_contract(
                 alternatives=(),
             ),
         )
-    if not isinstance(brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition):
-        route = "accept-checkpoint" if attempt.state == work_models.AttemptState.REVIEW else "dispatch"
+    if isinstance(brief.checkpoint.disposition, work_brief_models.ContinueCheckpointDisposition):
+        pending = "\n".join(f"- {work}" for work in brief.checkpoint.disposition.remaining_work)
         return query_models.CompletionRecoveryRequired(
             attempt.attempt_id,
-            attempt.work_item_id,
-            route,
-            str(attempt.attempt_id),
-            None,
-            None,
-            "The accepted brief marks this checkpoint as continuing work, so it cannot authorize completion.",
+            "The accepted brief marks this checkpoint as continuing work, so it cannot authorize completion. "
+            f"Remaining work:\n{pending}",
         )
     if (recovery := completion_candidate_recovery(completion)) is not None:
         return recovery

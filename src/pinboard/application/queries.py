@@ -439,7 +439,7 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 return query_models.ActionContinuation(
                     decision_models.action_id(action),
                     action.kind,
-                    "Discover the focused completion action and follow its candidate-submission recovery.",
+                    "Completion lacks a protected current candidate. Inspect the accepted work and evidence before deciding what remains.",
                 )
     for action in actions:
         if isinstance(action, decision_models.AcceptCheckpointAction):

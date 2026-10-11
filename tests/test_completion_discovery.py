@@ -12,7 +12,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from pinboard.adapters.files.root import read_working_tree_candidate
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import actions, query_models, stored_state
+from pinboard.application import actions, query_models, stored_state, work_brief_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import contract_schemas
@@ -24,7 +24,25 @@ from tests.support import JsonObject
 
 
 class CompletionDiscoveryTest(CheckpointPackageSupport):
-    def test_terminal_attempt_inspection_routes_candidate_protection_then_independent_review(self) -> None:
+    def assert_bounded_completion_warning(self, result: JsonObject) -> JsonObject:
+        self.assertEqual("rejected", result["status"], result)
+        self.assertEqual(
+            (False, "unchanged", []), (result["state_changed"], result["effect"], result["changed_surfaces"])
+        )
+        observed = {
+            str(self.json_object(row)["field"]): self.json_object(row)["value"]
+            for row in self.json_array(result["observed"])
+        }
+        self.assertEqual({"attempt_id", "completion_inspection_tool", "completion_inspection_input"}, set(observed))
+        self.assertEqual(mcp_server.ATTEMPT_INSPECT_TOOL, observed["completion_inspection_tool"])
+        inspection = observed["completion_inspection_input"]
+        assert isinstance(inspection, str)
+        arguments = self.json_object(json.loads(inspection))
+        self.assertEqual("work-a-1", arguments["attempt_id"])
+        self.assertIsNone(arguments["reconciliation"])
+        return call_advertised_tool(mcp_server.ATTEMPT_INSPECT_TOOL, arguments)
+
+    def test_terminal_attempt_inspection_names_missing_candidate_then_independent_review(self) -> None:
         active = self.terminalize_brief(self.checkpoint_fixture())
         self.return_for_correction(active, "Protect the terminal candidate.", "terminal-routing")
 
@@ -40,6 +58,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         active_operation = self.json_object(self.json_object(active_result["continuation"])["next_operation"])
         self.assertEqual("action", active_operation["kind"])
         self.assertEqual({"target": "attempt", "action_kind": "complete"}, active_operation["action"])
+        self.assertNotIn("submission", str(active_operation["condition"]))
 
         review = self.terminalize_brief(self.checkpoint_fixture())
         review_result = call_advertised_tool(
@@ -55,14 +74,21 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         self.assertEqual("review-subagent", review_operation["kind"])
         self.assertEqual(review.candidate_revision, review_operation["candidate_revision"])
 
-    def test_active_terminal_completion_returns_candidate_recovery_with_or_without_history(self) -> None:
+    def test_active_terminal_completion_warns_without_relaunch_with_or_without_history(self) -> None:
         fixtures = (
             ("zero-history", self.terminalize_brief(self.checkpoint_fixture())),
             ("checkpointed", self.review_job_fixture(terminal=True)[0]),
         )
         for label, fixture in fixtures:
             with self.subTest(label=label):
-                self.return_for_correction(fixture, "Protect the final candidate again.", f"completion-{label}")
+                protected = fixture.store.read_attempt_context(AttemptId("work-a-1"))
+                assert isinstance(protected, query_models.NonterminalAttemptContextFacts)
+                continued = self.transition_result(
+                    fixture,
+                    self.project_action(fixture, "accept-review-and-continue:work-a-1"),
+                    {"candidate": protected.candidate_revision, "evidence": "Accepted implementation still continues."},
+                )
+                self.assertEqual("committed", continued["status"], continued)
                 before = fixture.store.validated_snapshot()
                 context = fixture.store.read_completion_context(AttemptId("work-a-1"))
                 assert context is not None
@@ -79,7 +105,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                     },
                 )
                 self.assertEqual("rejected", rejected["status"])
-                self.assertFalse(rejected["state_changed"])
+                self.assert_bounded_completion_warning(rejected)
                 self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_original_briefs_reject_native_status_inspection_and_submission_without_recovery(self) -> None:
@@ -202,33 +228,24 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         self.assertFalse(result["state_changed"])
         self.assertEqual("unchanged", result["effect"])
 
-    def test_nonterminal_completion_returns_checkpoint_or_dispatch_recovery(self) -> None:
-        fixture = self.checkpoint_fixture()
-        reviewed = self.actions_result(
-            fixture,
-            {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}},
-        )
-        reviewed_observed = {
-            str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
-            for row in self.json_array(reviewed["observed"])
-        }
-        self.assertIn('"kind":"accept-checkpoint"', reviewed_observed["recovery_action_input"])
+    def test_continuing_completion_reports_exact_remaining_work_without_relaunch(self) -> None:
+        for active in (False, True):
+            with self.subTest(active=active):
+                fixture = self.checkpoint_fixture()
+                if active:
+                    self.return_for_correction(fixture, "Continue the accepted work.", "nonterminal-warning")
+                before = fixture.store.validated_snapshot()
+                result = self.actions_result(
+                    fixture, {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}}
+                )
+                self.assert_bounded_completion_warning(result)
+                disposition = fixture.brief.checkpoint.disposition
+                assert isinstance(disposition, work_brief_models.ContinueCheckpointDisposition)
+                for pending in disposition.remaining_work:
+                    self.assertIn(pending, str(result["message"]))
+                self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
 
-        accepted, _, _ = self.review_job_fixture()
-        self.return_for_correction(accepted, "Continue the accepted work.", "nonterminal-recovery")
-        active = self.actions_result(
-            accepted,
-            {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}},
-        )
-        active_observed = {
-            str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
-            for row in self.json_array(active["observed"])
-        }
-        self.assertIn('"kind":"dispatch"', active_observed["recovery_action_input"])
-        self.assertIn('"kind":"revise-item"', active_observed["exceptional_revision_action_input"])
-        self.assertIn('"kind":"rebind-attempt"', active_observed["exceptional_rebind_action_input"])
-
-    def test_unresolved_replacement_completion_returns_both_exact_disposition_routes(self) -> None:
+    def test_unresolved_replacement_completion_reports_the_pending_decision(self) -> None:
         fixture = self.terminalize_brief(self.checkpoint_fixture())
         action = self.project_action(fixture, "record-replacement:work-a")
         recorded = self.transition_result(
@@ -245,20 +262,17 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         )
         self.assertEqual("committed", recorded["status"], recorded)
 
+        before = fixture.store.validated_snapshot()
         result = self.actions_result(
             fixture,
             {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}},
         )
         self.assertEqual("rejected", result["status"])
-        observations = {
-            str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
-            for row in self.json_array(result["observed"])
-        }
-        self.assertIn('"kind":"record-replacement"', observations["recovery_action_input"])
-        self.assertIn('"kind":"retain-temporarily"', observations["alternative_recovery_action_input"])
-        self.assertIn('"kind":"revise-item"', observations["exceptional_revision_action_input"])
+        self.assert_bounded_completion_warning(result)
+        self.assertIn("unresolved replacement", str(result["message"]))
+        self.assertEqual(before, fixture.store.validated_snapshot())
 
-    def test_stale_definition_review_completion_returns_correction_before_rebind(self) -> None:
+    def test_stale_definition_completion_reports_changed_acceptance_without_relaunch(self) -> None:
         fixture = self.terminalize_brief(self.checkpoint_fixture())
         snapshot = fixture.store.validated_snapshot()
         definitions = tuple(
@@ -285,21 +299,17 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         )
         self.assertEqual("committed", revised["status"], revised)
 
+        before = fixture.store.validated_snapshot()
         result = self.actions_result(
             fixture,
             {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}},
         )
         self.assertEqual("rejected", result["status"])
-        observations = {
-            str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
-            for row in self.json_array(result["observed"])
-        }
-        self.assertIn('"kind":"return-for-correction"', observations["recovery_action_input"])
-        self.assertIn('"kind":"revise-item"', observations["exceptional_revision_action_input"])
-        self.assertIn("First execute return-for-correction", observations["exceptional_recovery_human_decision"])
-        self.assertIn("submit a new candidate", observations["exceptional_recovery_after_revision"])
+        self.assert_bounded_completion_warning(result)
+        self.assertIn("stale accepted attempt binding", str(result["message"]))
+        self.assertEqual(before, fixture.store.validated_snapshot())
 
-    def test_native_discovery_executes_recovery_and_terminal_transition(self) -> None:  # noqa: PLR0915 - one recovery and terminal client journey
+    def test_native_warning_inspects_missing_evidence_and_explicit_delivery_can_complete(self) -> None:  # noqa: PLR0915 - one explicit delivery and terminal client journey
 
         fixture, _, _ = self.review_job_fixture(terminal=True)
         self.return_for_correction(fixture, "Protect the final candidate again.", "recovery")
@@ -323,66 +333,13 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         )
         self.assertFalse(rejected["state_changed"])
         self.assertEqual("unchanged", rejected["effect"])
-        observations = {
-            str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
-            for row in self.json_array(discovered["observed"])
-        }
+        inspection = self.assert_bounded_completion_warning(discovered)
+        self.assertEqual("active", self.json_object(inspection["continuation"])["state"])
+        lease = self.native_attempt_acquire(fixture, "explicit-delivery-worker")
+        selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
         candidate = fixture.candidate_revision
-        before_recovery = fixture.store.validated_snapshot()
-
-        async def recover() -> dict[str, JsonValue]:
-            parameters = StdioServerParameters(command=sys.executable, args=("-m", "pinboard.mcp"))
-            async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
-                await session.initialize()
-
-                focused = await session.call_tool(
-                    observations["completion_reinspection_tool"],
-                    self.json_object(json.loads(observations["completion_reinspection_input"])),
-                )
-                self.assertFalse(focused.is_error)
-                assert isinstance(focused.structured_content, dict)
-                self.assertEqual("rejected", focused.structured_content["status"])
-                self.assertFalse(focused.structured_content["state_changed"])
-                self.assertEqual(before_recovery, fixture.store.validated_snapshot())
-                recipe = {
-                    str(self.json_object(row)["field"]): str(self.json_object(row)["value"])
-                    for row in self.json_array(focused.structured_content["observed"])
-                }
-
-                async def call(prefix: str, replacements: dict[str, str]) -> dict[str, JsonValue]:
-                    encoded = recipe[prefix + "_input"]
-                    for old, new in replacements.items():
-                        encoded = encoded.replace(old, new)
-                    arguments = self.json_object(json.loads(encoded))
-                    result = await session.call_tool(
-                        recipe[prefix + "_tool"],
-                        arguments,
-                    )
-                    self.assertFalse(result.is_error)
-                    content = result.structured_content
-                    assert isinstance(content, dict)
-                    self.assertNotEqual("rejected", content["status"], content)
-                    return content
-
-                await call("authority_status", {})
-                lease = await call(
-                    "authority_acquisition", {"<worker-task-id>": "recovery-worker", "<host-id>": "local"}
-                )
-                replacements = {
-                    "<current-lease-id>": str(lease["lease_id"]),
-                    '"<current-generation>"': str(lease["generation"]),
-                }
-                selected = await call("candidate_submission_action", replacements)
-                actions = selected["actions"]
-                assert isinstance(actions, list) and isinstance(actions[0], dict)
-                replacements["<current-subject-revision>"] = str(actions[0]["subject_revision"])
-                replacements["<exact-candidate-revision>"] = candidate
-                await call("candidate_submission", replacements)
-                return await call("completion_reinspection", {})
-
-        reinspected = asyncio.run(recover())
-        contract = self.json_object(self.json_object(self.json_array(reinspected["actions"])[0])["input_contract"])
-        self.assertEqual(candidate, contract["candidate"])
+        submitted = self.transition_result(fixture, selected, {"candidate": candidate})
+        self.assertEqual("committed", submitted["status"], submitted)
         complete_action = self.project_action(fixture, "complete:work-a-1")
         invalid = self.transition_result(fixture, complete_action, {"unexpected": True})
         self.assertEqual("rejected", invalid["status"])

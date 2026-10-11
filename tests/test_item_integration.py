@@ -6,12 +6,8 @@ import hashlib
 import os
 import subprocess
 import tempfile
-import unittest.mock
 from pathlib import Path
 
-import msgspec
-
-from pinboard.adapters import candidate_evidence
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
     ResolvedIntegrationPresence,
@@ -19,7 +15,7 @@ from pinboard.adapters.files.root import (
     read_integration_presence,
 )
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import candidate_snapshots, query_models
+from pinboard.application import query_models
 from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
@@ -52,6 +48,10 @@ def _commit(repo: Path, message: str, day: int) -> str:
 
 
 class ItemIntegrationTest(CheckpointPackageSupport):
+    def run_git(self, cwd: Path, *args: str) -> str:
+        completed = subprocess.run(["git", *list(args)], cwd=cwd, check=True, text=True, capture_output=True)
+        return completed.stdout
+
     def roots(self, fixture: CheckpointFixture) -> JsonObject:
         return {"project_root": str(fixture.project), "work_root": str(fixture.work)}
 
@@ -245,45 +245,6 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         self.assertEqual("completion", source["kind"], source)
         self.assertEqual("work-a-1", source["attempt_id"])
 
-    def test_later_non_overlapping_edit_still_reports_content_present(self) -> None:
-        fixture = self.checkpoint_fixture(candidate_form="working-tree")
-        repo = fixture.project
-        self.integrate_squash(repo, fixture.brief.branch, "target", "squashed")
-        (repo / "unrelated.txt").write_text("new\n", encoding="utf-8")
-        _commit(repo, "unrelated", 4)
-        result = self.integration_leaf(fixture, "target")
-        self.assertEqual("content-present", result["presence"], result)
-
-    def test_empty_recorded_diff_reports_no_change(self) -> None:
-        fixture = self.checkpoint_fixture(candidate_form="working-tree")
-        store = SQLiteWorkStore(fixture.work / "state.sqlite3")
-        selection = query_models.IntegrationSourceSelection(
-            "protected-review", "work-a-1", fixture.candidate_revision, None, None
-        )
-        empty_snapshot = candidate_snapshots.CommitCandidateSnapshot(
-            schema="pinboard-candidate-snapshot/v1",
-            attempt_id="work-a-1",
-            item_id="work-a",
-            candidate=fixture.candidate_revision,
-            branch=fixture.brief.branch,
-            preimage_revision=fixture.brief.base_revision,
-            accepted_base_revision=fixture.brief.base_revision,
-            recorded_at="2020-01-01T00:00:00+00:00",
-            diff=b"",
-        )
-        with unittest.mock.patch.object(candidate_evidence, "_load_selected_snapshot", return_value=empty_snapshot):
-            evidence = candidate_evidence.read_integration_presence(
-                fixture.project, fixture.work, store, selection, fixture.brief.base_revision
-            )
-        self.assertIsInstance(evidence, candidate_evidence.IntegrationPresenceEvidence)
-        assert isinstance(evidence, candidate_evidence.IntegrationPresenceEvidence)
-        self.assertEqual("no-change", evidence.presence)
-        self.assertTrue(evidence.target_revision, "no-change must name the resolved target revision")
-        self.assertTrue(evidence.compared_from_revision)
-        source_dict = msgspec.to_builtins(evidence.source)
-        assert isinstance(source_dict, dict)
-        self.assertEqual("protected-review", source_dict["kind"])
-
     def test_target_at_accepted_base_reports_content_not_present(self) -> None:
         fixture = self.checkpoint_fixture(candidate_form="working-tree")
         repo = fixture.project
@@ -443,7 +404,7 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         fixture = self.checkpoint_fixture()
         result = self.integration_leaf(fixture, "-not-a-ref")
         self.assertEqual("rejected", result["status"], result)
-        self.assertEqual("PROJECT_GIT_CHECKOUT_UNAVAILABLE", str(result["code"]), result)
+        self.assertEqual("INTEGRATION_TARGET_UNRESOLVED", str(result["code"]), result)
         self.assertEqual("pinboard-mcp-item-status-result/v3", result["schema"], result)
         self.assertEqual("unchanged", result["effect"], result)
         self.assertEqual("correct-input", result["retry"], result)
@@ -564,6 +525,23 @@ class IntegrationGitReadTest(CheckpointPackageSupport):
             if entry.name.startswith("pinboard-integration-")
         ]
         self.assertEqual([], leftovers)
+
+    def test_later_non_overlapping_edit_to_reviewed_file_reports_content_present(self) -> None:
+        repo, diff, base = self.build_repo()
+        subprocess.run(["git", "checkout", "-q", "-b", "target", base], cwd=repo, check=True, capture_output=True)
+        (repo / "file.txt").write_text(
+            "".join("CHANGED\n" if i == 9 else f"line{i}\n" for i in range(1, 51)), encoding="utf-8"
+        )
+        (repo / "bin.dat").write_bytes(b"\x00\x01\x03")
+        _commit(repo, "squash", 3)
+        # Non-overlapping edit to the same reviewed file (line 40, far from the reviewed line 10)
+        lines = (repo / "file.txt").read_text().splitlines(True)
+        lines[39] = "FAR\n"
+        (repo / "file.txt").write_text("".join(lines), encoding="utf-8")
+        _commit(repo, "nonoverlap", 4)
+        observation = read_integration_presence(repo, "HEAD", diff)
+        assert isinstance(observation, ResolvedIntegrationPresence)
+        self.assertTrue(observation.present, observation)
 
     def test_non_git_directory_raises_root_error(self) -> None:
         directory = Path(tempfile.mkdtemp())

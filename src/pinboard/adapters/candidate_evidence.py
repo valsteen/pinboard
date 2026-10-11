@@ -227,6 +227,22 @@ def read_integration_presence(
         try:
             resolved = root.resolve_integration_target(source_checkout, target)
         except RootError as error:
+            if "not a valid Git revision" in str(error):
+                return DecisionFailure(
+                    DecisionFailureCode.INTEGRATION_TARGET_UNRESOLVED,
+                    f"Integration target '{target}' does not resolve to a commit in {source_checkout}.",
+                    FailureDetails(
+                        observed=(
+                            FailureFact("target", target),
+                            FailureFact("project_root", str(source_checkout)),
+                        ),
+                        mismatches=(),
+                        retry=RetryDisposition.CORRECT_INPUT,
+                        effect=EffectDisposition.UNCHANGED,
+                        changed_surfaces=(),
+                        alternatives=(),
+                    ),
+                )
             return IntegrationGitFailure(error.code, str(error))
         if isinstance(resolved, root.UnresolvedIntegrationTarget):
             return DecisionFailure(
@@ -248,6 +264,22 @@ def read_integration_presence(
     try:
         observation = root.read_integration_presence(source_checkout, target, diff)
     except RootError as error:
+        if "not a valid Git revision" in str(error):
+            return DecisionFailure(
+                DecisionFailureCode.INTEGRATION_TARGET_UNRESOLVED,
+                f"Integration target '{target}' does not resolve to a commit in {source_checkout}.",
+                FailureDetails(
+                    observed=(
+                        FailureFact("target", target),
+                        FailureFact("project_root", str(source_checkout)),
+                    ),
+                    mismatches=(),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
         return IntegrationGitFailure(error.code, str(error))
     if isinstance(observation, root.UnresolvedIntegrationTarget):
         return DecisionFailure(

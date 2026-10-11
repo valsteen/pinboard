@@ -156,7 +156,7 @@ def _portable_pattern(pattern: str) -> tuple[str, str | None]:
     if pattern in {
         r"\A(?!\.{1,2}\z)[^/\r\n\x00]+\z",
         r"\A[^\r\n]+\z",
-        r"\A[^\r\n-][^\r\n]*\z",
+        r"\A[^\r\n\x00-][^\r\n\x00]*\z",
     }:
         return projected, r"[\r\n]$"
     return projected, r"[\r\n\u2028\u2029]$"

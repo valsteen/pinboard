@@ -166,6 +166,34 @@ class ItemIntegrationTest(CheckpointPackageSupport):
                 self.git(fixture.project, "update-ref", "refs/remotes/origin/target", "HEAD")
                 self.assert_presence(fixture, "origin/target", "content-present")
 
+    def test_subdirectory_and_checkout_root_compare_the_same_candidate_content(self) -> None:
+        fixture = self.submitted("current-head")
+        nested = fixture.project / "nested"
+        nested.mkdir()
+        for target, presence in ((fixture.brief.base_revision, "content-not-present"), ("HEAD", "content-present")):
+            with self.subTest(target=target):
+                self.assert_presence(fixture, target, presence)
+                expected = self.leaf(fixture, target)
+                actual = call_advertised_tool(
+                    server.ITEM_STATUS_TOOL,
+                    {
+                        "request": {
+                            "project_root": str(nested),
+                            "work_root": str(fixture.work),
+                            "operation": "integration",
+                            "item_id": "work-a",
+                            "target": target,
+                        }
+                    },
+                )
+                self.assertEqual(expected, actual)
+
+    def test_target_with_nul_is_a_typed_unchanged_rejection(self) -> None:
+        fixture = self.submitted("current-head")
+        for target in ("\x00HEAD", "HEAD\x00suffix", "HEAD\x00"):
+            with self.subTest(target=target):
+                self.assert_rejection(self.leaf(fixture, target), "ITEM_STATUS_INVALID", "correct-input")
+
     def test_working_tree_squash_and_later_edits_use_recorded_preimage(self) -> None:
         fixture = self.submitted("working-tree", context=True)
         preimage = self.git(fixture.project, "rev-parse", "HEAD")

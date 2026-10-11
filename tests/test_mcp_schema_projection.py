@@ -85,6 +85,8 @@ class McpSchemaProjectionTest(unittest.TestCase):
             "a\r",
             "a\r\n",
             "a\x00",
+            "\x00HEAD",
+            "HEAD\x00suffix",
             "a|b",
             "0" * 40,
             "0" * 64,

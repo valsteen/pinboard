@@ -250,7 +250,7 @@ class ItemStatusIntegrationRequest(
     project_root: RootPath
     work_root: RootPath
     item_id: PathComponent
-    target: Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\r\n-][^\r\n]*\z")]
+    target: Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\r\n\x00-][^\r\n\x00]*\z")]
 
 
 class ItemStatusEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

@@ -180,7 +180,12 @@ def _read_integration(
     else:
         try:
             observed = candidate_evidence.observe_integration(
-                Path(request.project_root), durable.work_root, store, facts, selected, request.target
+                resolve_source_checkout_root(Path(request.project_root)),
+                durable.work_root,
+                store,
+                facts,
+                selected,
+                request.target,
             )
         except RootError as error:
             return _integration_git_failure(request.project_root, error)

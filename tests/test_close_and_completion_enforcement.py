@@ -327,10 +327,15 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         observed = self.observed(refused)
         self.assertEqual("work-a-1", observed["attempt_id"])
         self.assertEqual(recorded_reviewer, observed["recorded_reviewer_task_id"])
-        self.assertEqual(mcp_server.REVIEW_JOB_TOOL, observed["review_commission_tool"])
-        self.assertEqual(mcp_server.REVIEW_JOB_TOOL, observed["review_record_tool"])
-        self.assertEqual(mcp_server.ATTEMPT_INSPECT_TOOL, observed["review_round_tool"])
-        self.assertEqual(mcp_server.ACTIONS_TOOL, observed["completion_reinspection_tool"])
+        self.assertEqual(mcp_server.ATTEMPT_INSPECT_TOOL, observed["completion_inspection_tool"])
+        self.assertNotIn("review_commission_tool", observed)
+        self.assertNotIn("review_launch", observed)
+        self.assertNotIn("review_record_tool", observed)
+        self.assertNotIn("completion_reinspection_tool", observed)
+        encoded = observed["completion_inspection_input"]
+        assert isinstance(encoded, str)
+        inspection = call_advertised_tool(mcp_server.ATTEMPT_INSPECT_TOOL, self.json_object(json.loads(encoded)))
+        self.assertEqual("review", self.json_object(inspection["continuation"])["state"])
         self.assertEqual(before, fixture.store.validated_snapshot())
         return refused
 
@@ -368,6 +373,46 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         self.assertEqual("committed", committed["status"], committed)
         receipt = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot().transition_receipts[-1]
         self.assertEqual("pinboard-reviewed-completion/v2", receipt.input_schema)
+
+    def test_unchanged_reviewed_work_keeps_review_after_private_settlement_note_and_commit(self) -> None:
+        fixture = self.terminalize_brief(self.checkpoint_fixture())
+        candidate = fixture.candidate_revision
+        self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
+        before = fixture.store.validated_snapshot()
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        (attempt_root / "settlement.md").write_text(
+            "Investigation settles existing scope; retained as accepted.\n", encoding="utf-8"
+        )
+        self.commit_all(fixture.project, "Reviewed content unchanged")
+        inspection = call_advertised_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "reconciliation": None,
+            },
+        )
+        self.assertEqual("present", self.json_object(inspection["candidate_review"])["kind"])
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+        action = self.project_action(fixture, "complete:work-a-1")
+        payload: JsonObject = {
+            "schema": "pinboard-reviewed-completion/v2",
+            "candidate": candidate,
+            "evidence": "Read-only settlement confirms the accepted outcome.",
+            "reviewer_task_id": "commissioned-reviewer",
+            "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
+            "review_sha256": hashlib.sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+            "packages": [],
+        }
+        refused = self.transition_result(fixture, action, {**payload, "review_sha256": "0" * 64})
+        self.assertEqual("rejected", refused["status"], refused)
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        committed = self.transition_result(fixture, action, payload)
+        self.assertEqual("committed", committed["status"], committed)
+        terminal = SQLiteWorkStore(fixture.work / "state.sqlite3").read_item_status(WorkItemId("work-a"))
+        assert terminal is not None
+        self.assertEqual("done", terminal.work_item.state.value)
 
     def test_a_ready_review_without_a_published_reviewer_prompt_does_not_authorize_completion(self) -> None:
         fixture, candidate = self.review_fixture()

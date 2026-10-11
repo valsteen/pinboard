@@ -989,7 +989,9 @@ def _read_actions(
         ):
             recovery = _unavailable_completion_recovery(store, AttemptId(selected_action_id.subject))
             if recovery is not None:
-                failure = _completion_recovery_failure(recovery, request.project_root, request.work_root)
+                failure = _completion_warning(
+                    recovery.attempt_id, recovery.reason, request.project_root, request.work_root
+                )
                 return common._read_failure(
                     "pinboard-mcp-actions-result/v1", failure.code.value, failure.message, failure.details
                 )
@@ -1068,9 +1070,14 @@ def _mcp_action(
                 ),
             )
         if isinstance(completion, query_models.CompletionCandidateRequired):
-            return _completion_candidate_failure(completion, project_root, work_root)
+            return _completion_warning(
+                completion.attempt_id,
+                "Terminal completion lacks a protected current review candidate.",
+                project_root,
+                work_root,
+            )
         if isinstance(completion, query_models.CompletionRecoveryRequired):
-            return _completion_recovery_failure(completion, project_root, work_root)
+            return _completion_warning(completion.attempt_id, completion.reason, project_root, work_root)
         if isinstance(completion, DecisionFailure):
             return completion
         input_contract = completion
@@ -1100,158 +1107,28 @@ def _mcp_action(
     return content
 
 
-def _completion_candidate_failure(
-    required: query_models.CompletionCandidateRequired,
+def _completion_warning(
+    attempt_id: AttemptId,
+    reason: str,
     project_root: str,
     work_root: str,
 ) -> DecisionFailure:
-    """Present the complete conditional recovery using current MCP requests."""
-    attempt_id = required.attempt_id
-    roots: dict[str, JsonValue] = {"project_root": project_root, "work_root": work_root}
-    claim: dict[str, JsonValue] = {"lease_id": "<current-lease-id>", "generation": "<current-generation>"}
-    submit: dict[str, JsonValue] = {"kind": "submit-review", "subject": attempt_id}
-    recipes: tuple[tuple[str, str, dict[str, JsonValue]], ...] = (
-        ("authority_status", tool_names.ATTEMPT_AUTHORITY_TOOL, {"operation": "status", "attempt_id": attempt_id}),
-        (
-            "authority_acquisition",
-            tool_names.ATTEMPT_AUTHORITY_TOOL,
-            {
-                "operation": "acquire",
-                "attempt_id": attempt_id,
-                "task_id": "<worker-task-id>",
-                "host_id": "<host-id>",
-                "ttl_seconds": 3600,
-            },
-        ),
-        ("candidate_submission_action", tool_names.ACTIONS_TOOL, {"role": "worker", **claim, "action_id": submit}),
-        (
-            "candidate_submission",
-            tool_names.TRANSITION_TOOL,
-            {
-                "role": "worker",
-                **claim,
-                "receipt": {"action_id": submit, "subject_revision": "<current-subject-revision>"},
-                "payload": {"candidate": "<exact-candidate-revision>"},
-            },
-        ),
-        (
-            "completion_reinspection",
-            tool_names.ACTIONS_TOOL,
-            {
-                "role": "project",
-                "action_id": {"kind": "complete", "subject": attempt_id},
-            },
-        ),
-    )
-    observations = tuple(
-        fact
-        for prefix, tool, request in recipes
-        for fact in (
-            FailureFact(prefix + "_tool", tool),
-            FailureFact(
-                prefix + "_input", msgspec.json.encode({"request": {**roots, **request}}, order="sorted").decode()
-            ),
-        )
-    )
+    """Report pending closure evidence with one read-only inspection."""
+    inspection: dict[str, JsonValue] = {
+        "project_root": project_root,
+        "work_root": work_root,
+        "attempt_id": str(attempt_id),
+        "reconciliation": None,
+    }
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
-        "Terminal completion requires a protected review candidate. Inspect authority status; acquire only when status permits it, using the worker's trusted task and host identity. Otherwise use only your own current lease. Discover and submit the exact candidate with the fresh receipt, then repeat focused completion discovery. These instructions do not acquire, submit, review, or complete automatically.",
+        f"{reason} Inspect this attempt's accepted work and current evidence before deciding what remains.",
         FailureDetails(
-            observed=(*observations, FailureFact("candidate_payload", '{"candidate":"<exact-candidate-revision>"}')),
-            mismatches=(),
-            retry=RetryDisposition.REFRESH_ACTION,
-            effect=EffectDisposition.UNCHANGED,
-            changed_surfaces=(),
-            alternatives=(),
-        ),
-    )
-
-
-def _completion_recovery_failure(
-    required: query_models.CompletionRecoveryRequired,
-    project_root: str,
-    work_root: str,
-) -> DecisionFailure:
-    action: dict[str, JsonValue] = {"kind": required.route, "subject": required.route_subject}
-    request: dict[str, JsonValue] = {
-        "request": {
-            "project_root": project_root,
-            "work_root": work_root,
-            "role": "project",
-            "action_id": action,
-        }
-    }
-    roots: dict[str, JsonValue] = {"project_root": project_root, "work_root": work_root}
-    observations = [
-        FailureFact("recovery_action_tool", tool_names.ACTIONS_TOOL),
-        FailureFact("recovery_action_input", msgspec.json.encode(request, order="sorted").decode()),
-    ]
-    if required.alternative_route is not None and required.alternative_subject is not None:
-        alternative: dict[str, JsonValue] = {
-            "request": {
-                **roots,
-                "role": "project",
-                "action_id": {"kind": required.alternative_route, "subject": required.alternative_subject},
-            }
-        }
-        observations.extend(
-            (
-                FailureFact("alternative_recovery_action_tool", tool_names.ACTIONS_TOOL),
-                FailureFact(
-                    "alternative_recovery_action_input", msgspec.json.encode(alternative, order="sorted").decode()
-                ),
-            )
-        )
-    exceptional_action: dict[str, JsonValue] = {
-        "request": {
-            **roots,
-            "role": "project",
-            "action_id": {"kind": "revise-item", "subject": str(required.work_item_id)},
-        }
-    }
-    rebind_action: dict[str, JsonValue] = {
-        "request": {
-            **roots,
-            "role": "project",
-            "action_id": {"kind": "rebind-attempt", "subject": str(required.attempt_id)},
-        }
-    }
-    review_recovery = required.route == "return-for-correction"
-    observations.extend(
-        (
-            FailureFact(
-                "exceptional_recovery_human_decision",
-                (
-                    "First execute return-for-correction with the scope-supersession reason. Then ask the human to "
-                    "approve the exact definition and checkpoint-disposition change before revising the item."
-                    if review_recovery
-                    else "Ask the human to approve the exact definition and checkpoint-disposition change before "
-                    "revising the item."
-                ),
+            observed=(
+                FailureFact("attempt_id", str(attempt_id)),
+                FailureFact("completion_inspection_tool", tool_names.ATTEMPT_INSPECT_TOOL),
+                FailureFact("completion_inspection_input", msgspec.json.encode(inspection, order="sorted").decode()),
             ),
-            FailureFact("exceptional_revision_action_tool", tool_names.ACTIONS_TOOL),
-            FailureFact(
-                "exceptional_revision_action_input", msgspec.json.encode(exceptional_action, order="sorted").decode()
-            ),
-            FailureFact(
-                "exceptional_recovery_after_revision",
-                (
-                    "Publish a matching pinboard-work-brief/v4, obtain its independent brief review, rebind the now-active "
-                    "attempt, dispatch, and submit a new candidate."
-                    if review_recovery
-                    else "Publish a matching pinboard-work-brief/v4, obtain its independent brief review, then discover "
-                    "and execute the exact rebind-attempt action."
-                ),
-            ),
-            FailureFact("exceptional_rebind_action_tool", tool_names.ACTIONS_TOOL),
-            FailureFact("exceptional_rebind_action_input", msgspec.json.encode(rebind_action, order="sorted").decode()),
-        )
-    )
-    return DecisionFailure(
-        DecisionFailureCode.ACTION_NOT_AVAILABLE,
-        required.reason,
-        FailureDetails(
-            observed=tuple(observations),
             mismatches=(),
             retry=RetryDisposition.REFRESH_ACTION,
             effect=EffectDisposition.UNCHANGED,
@@ -1274,31 +1151,15 @@ def _unavailable_completion_recovery(
     if not item.replacement_resolved:
         return query_models.CompletionRecoveryRequired(
             attempt_id,
-            attempt.work_item_id,
-            "record-replacement",
-            str(attempt.work_item_id),
-            "retain-temporarily",
-            str(attempt.work_item_id),
             "Completion is withheld until the unresolved replacement is recorded or its temporary cost is explicitly retained.",
         )
     if (attempt.accepted_scope_revision, attempt.accepted_scope_digest) != (
         item.current_definition_revision,
         item.current_definition_digest,
     ):
-        route = "return-for-correction" if attempt.state == work_models.AttemptState.REVIEW else "rebind-attempt"
         return query_models.CompletionRecoveryRequired(
             attempt_id,
-            attempt.work_item_id,
-            route,
-            str(attempt_id),
-            None,
-            None,
-            (
-                "Completion is withheld because the reviewed candidate must be returned for correction before the "
-                "stale accepted attempt binding can be replaced."
-                if route == "return-for-correction"
-                else "Completion is withheld because the accepted attempt binding is stale against the current definition."
-            ),
+            "Completion is withheld because the stale accepted attempt binding differs from the current definition.",
         )
     return None
 

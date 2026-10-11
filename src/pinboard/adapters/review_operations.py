@@ -1,10 +1,14 @@
 """Compose selected review evidence and immutable reviewer prompt publication.
 
 Captures exact candidate, brief, result and caller-selected historical facts.
+Owns the one ready-record decision that item status, attempt inspection and
+every board derivation share, and the board-history composition that decodes
+selected board records with the files and keyed references they name.
 Does not validate the whole ledger, repair candidates, change lifecycle/authority,
 or launch a native reviewer; interfaces own verification presentation.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -14,8 +18,9 @@ from typing import Literal, assert_never
 import msgspec
 
 from pinboard.adapters import candidate_evidence
-from pinboard.adapters.files.artifacts import read_reference
+from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import (
     candidate_snapshots,
     checkpoint_packages,
@@ -390,6 +395,205 @@ def _current_candidate_review_from_reference(
         review_sha256=review_sha256,
     )
     return None if failure is not None else CurrentCandidateReview(reference, review)
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptEvidenceDigests:
+    """SHA-256 digests of an attempt's current result.md and review.md; None for an absent or unreadable file."""
+
+    result_sha256: str | None
+    review_sha256: str | None
+
+
+def _evidence_digest(path: Path) -> str | None:
+    try:
+        return sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def read_attempt_evidence_digests(work_root: Path, attempt_id: AttemptId) -> AttemptEvidenceDigests:
+    attempt_root = work_root / "attempts" / str(attempt_id)
+    return AttemptEvidenceDigests(
+        _evidence_digest(attempt_root / "result.md"), _evidence_digest(attempt_root / "review.md")
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ReadyRecordSubject:
+    """The exact current candidate, snapshot, accepted brief, result.md and review.md a ready record must bind."""
+
+    brief: work_brief_models.WorkBrief
+    candidate_revision: str
+    candidate_snapshot: stored_state.ArtifactReference
+    accepted_brief: stored_state.ArtifactReference | BriefArtifactRef
+    result_sha256: str
+    review_sha256: str
+
+    @property
+    def key(self) -> str:
+        return work_briefs.candidate_review_key(
+            self.brief.attempt_id,
+            self.candidate_revision,
+            self.candidate_snapshot.content_sha256,
+            self.accepted_brief.content_sha256,
+            self.result_sha256,
+            self.review_sha256,
+        )
+
+
+def ready_record_subject(
+    brief: work_brief_models.WorkBrief,
+    candidate_revision: str | None,
+    candidate_snapshot: stored_state.ArtifactReference | None,
+    accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
+    evidence: AttemptEvidenceDigests,
+) -> ReadyRecordSubject | None:
+    """Name the ready record a review-state attempt can have, or None when its candidate or evidence is absent."""
+
+    if (
+        candidate_revision is None
+        or candidate_snapshot is None
+        or evidence.result_sha256 is None
+        or evidence.review_sha256 is None
+    ):
+        return None
+    return ReadyRecordSubject(
+        brief, candidate_revision, candidate_snapshot, accepted_brief, evidence.result_sha256, evidence.review_sha256
+    )
+
+
+def verify_ready_record(
+    subject: ReadyRecordSubject,
+    reference: stored_state.ArtifactReference | None,
+    artifacts: dispatch_models.DispatchArtifactPort,
+) -> CurrentCandidateReview | None:
+    """Decide whether the keyed reference is a valid ready record for the subject; reading its bytes may raise."""
+
+    return _current_candidate_review_from_reference(
+        reference,
+        artifacts,
+        brief=subject.brief,
+        candidate_revision=subject.candidate_revision,
+        candidate_snapshot=subject.candidate_snapshot,
+        accepted_brief=subject.accepted_brief,
+        result_sha256=subject.result_sha256,
+        review_sha256=subject.review_sha256,
+    )
+
+
+def read_ready_record(
+    store: ports.WorkStore, artifacts: dispatch_models.DispatchArtifactPort, subject: ReadyRecordSubject
+) -> CurrentCandidateReview | None:
+    return verify_ready_record(
+        subject, store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, subject.key, 1), artifacts
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptReadyRecordReader:
+    """Read the ready record of one attempt's current candidate, brief, result.md and review.md for item status."""
+
+    durable: DurableRoots
+    store: ports.WorkStore
+
+    def read_ready_candidate_review(self, attempt_id: AttemptId) -> query_models.ReadyCandidateReview | None:
+        context = self.store.read_attempt_context(attempt_id)
+        if not (
+            isinstance(context, query_models.NonterminalAttemptContextFacts)
+            and context.state == work_models.AttemptState.REVIEW
+            and context.candidate_revision is not None
+        ):
+            return None
+        artifacts = ArtifactRepository(self.durable)
+        try:
+            brief = work_briefs.decode_canonical_work_brief(artifacts.read(context.brief_reference))
+            if isinstance(brief, work_brief_models.WorkBriefFailure):
+                return None
+            snapshot = self.store.read_candidate_snapshot_context(attempt_id)
+            subject = ready_record_subject(
+                brief,
+                context.candidate_revision,
+                None if snapshot is None else snapshot.reference,
+                context.brief_reference,
+                read_attempt_evidence_digests(self.durable.work_root, attempt_id),
+            )
+            current = None if subject is None else read_ready_record(self.store, artifacts, subject)
+        except ArtifactError:
+            return None
+        if current is None:
+            return None
+        return query_models.ReadyCandidateReview(context.candidate_revision, current.reference)
+
+
+def _board_brief(
+    attempt: query_models.BoardAttemptRecords, artifacts: ArtifactRepository
+) -> work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure:
+    try:
+        return work_briefs.decode_attempt_brief(attempt, attempt.brief_reference, artifacts)
+    except ArtifactError as error:
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+            f"Live attempt '{attempt.attempt_id}' accepted brief could not be read: {error}",
+        )
+
+
+def _board_ready_record(
+    subject: ReadyRecordSubject | None,
+    references: Mapping[str, stored_state.ArtifactReference],
+    artifacts: ArtifactRepository,
+) -> query_models.ReadyRecordAcceptance | None:
+    if subject is None:
+        return None
+    try:
+        current = verify_ready_record(subject, references.get(subject.key), artifacts)
+    except ArtifactError:
+        return None
+    return None if current is None else query_models.ReadyRecordAcceptance(current.reference.created_at)
+
+
+def read_board_history(
+    durable: DurableRoots,
+    references: ports.CandidateReviewReferenceReader,
+    records: query_models.BoardRecords,
+) -> query_models.BoardHistoryFacts:
+    """Decode the selected board records with the files and keyed references they name, in the board read order.
+
+    After the SQLite record read, and outside any transaction, this reads and verifies each open attempt's current
+    brief bytes and each review-state attempt's result.md and review.md digests. It then performs one keyed
+    candidate-review reference read per review-state attempt whose key those digests form, and verifies the record
+    bytes. A brief that cannot be read, decoded or matched is that card's typed failure; an absent, invalid or
+    unreadable ready record or evidence file leaves the attempt submitted for review.
+    """
+
+    artifacts = ArtifactRepository(durable)
+    briefs = {attempt.attempt_id: _board_brief(attempt, artifacts) for attempt in records.attempts}
+    subjects: dict[AttemptId, ReadyRecordSubject] = {}
+    for attempt in records.attempts:
+        brief = briefs[attempt.attempt_id]
+        if attempt.state != work_models.AttemptState.REVIEW or isinstance(brief, work_brief_models.WorkBriefFailure):
+            continue
+        subject = ready_record_subject(
+            brief,
+            attempt.candidate_revision,
+            attempt.candidate_snapshot,
+            attempt.brief_reference,
+            read_attempt_evidence_digests(durable.work_root, attempt.attempt_id),
+        )
+        if subject is not None:
+            subjects[attempt.attempt_id] = subject
+    keyed = references.read_candidate_review_references(tuple(subject.key for subject in subjects.values()))
+    return query_models.BoardHistoryFacts(
+        tuple(
+            query_models.BoardAttemptFacts(
+                attempt,
+                briefs[attempt.attempt_id],
+                _board_ready_record(subjects.get(attempt.attempt_id), keyed, artifacts),
+            )
+            for attempt in records.attempts
+        ),
+        records.definition_histories,
+    )
 
 
 def _candidate_review_required(

@@ -32,7 +32,9 @@ CLOSED_AT = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
 COMPLETED_AT = datetime(2030, 1, 3, 4, 5, 6, tzinfo=UTC)
 
 
-class ItemStatusFactsTest(CheckpointPackageSupport):
+class ItemLifecycleSupport(CheckpointPackageSupport):
+    """Drive one checkpoint fixture through native lifecycle transitions and read its status."""
+
     def roots(self, fixture: CheckpointFixture) -> JsonObject:
         return {"project_root": str(fixture.project), "work_root": str(fixture.work)}
 
@@ -216,6 +218,8 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         assert isinstance(value, int)
         return value
 
+
+class ItemStatusFactsTest(ItemLifecycleSupport):
     def test_returned_verdict_survives_pause_block_resume_and_rebind_until_resubmission(self) -> None:
         reason = "Criterion 2 lacks behavior evidence."
         for route in ("pause", "block", "rebind"):

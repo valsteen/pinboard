@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite import persistence as sqlite_persistence
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.database import APPLICATION, SCHEMA_VERSION
@@ -13,6 +14,7 @@ from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
 from pinboard.application.mutation_models import CheckpointMutationAllocation
+from pinboard.cli import work_views
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
@@ -29,6 +31,24 @@ from pinboard.domain.identifiers import (
 )
 from tests.decision_support import project_decision_snapshot
 from tests.sqlite_support import insert_initial_state
+
+
+def work_root_durable(work_root: Path) -> DurableRoots:
+    """Name the durable roots of an existing work root directory."""
+
+    return DurableRoots(work_root.parent, (work_root.name,))
+
+
+def board_reader(work_root: Path, store: SQLiteWorkStore) -> work_views.ComposedBoardReader:
+    """Compose the production board read for a test ledger."""
+
+    return work_views.ComposedBoardReader(work_root_durable(work_root), store)
+
+
+def loaded_board_history(work_root: Path, state: stored_state.StoredWorkState) -> query_models.BoardHistoryFacts:
+    """Decode a loaded snapshot's board facts with the production validation composition."""
+
+    return work_views.read_loaded_board_history(work_root_durable(work_root), state)
 
 
 class NoReadyCandidateReviews:

@@ -7,7 +7,13 @@ from typing import Annotated, Literal, assert_never
 
 import msgspec
 
-from pinboard.application import artifacts, definition_compatibility, released_v6_compatibility, stored_state
+from pinboard.application import (
+    artifacts,
+    definition_compatibility,
+    released_v6_compatibility,
+    stored_state,
+    work_brief_models,
+)
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import DescribedCode
 from pinboard.domain.identifiers import (
@@ -1211,11 +1217,341 @@ class OverviewItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 @dataclass(frozen=True, slots=True)
+class BoardAttemptRecords:
+    """One open attempt's records selected for its board card, still undecoded.
+
+    The brief reference names the attempt's current accepted brief. The latest receipt is the one committed at the
+    attempt's subject revision, or none when no receipt is recorded there. Checkpoint acceptances are this attempt's
+    checkpoint-acceptance/v2 receipts, newest first. The candidate snapshot reference is present only for a
+    review-state attempt whose protected candidate has an accepted snapshot.
+    """
+
+    attempt_id: AttemptId
+    item_id: WorkItemId
+    state: NonterminalAttemptState
+    branch: str
+    base_revision: str
+    accepted_scope_revision: int
+    accepted_scope_digest: str
+    candidate_revision: str | None
+    brief_reference: stored_state.ArtifactReference
+    latest_receipt: ConsumedTransitionReceipt | None
+    checkpoint_acceptances: tuple[stored_state.StoredTransitionReceipt, ...]
+    candidate_snapshot: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class BoardDefinitionHistory:
+    """Every accepted definition revision of one live item, contiguous from revision 1 in ascending order."""
+
+    item_id: WorkItemId
+    revisions: tuple[stored_state.ItemDefinitionRevision, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BoardRecords:
+    """Selected per-item records the board shows beyond the live portfolio."""
+
+    attempts: tuple[BoardAttemptRecords, ...]
+    definition_histories: tuple[BoardDefinitionHistory, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LiveBoardRecords:
+    """The live portfolio and its selected board records, read in one SQLite read transaction."""
+
+    portfolio: LivePortfolioFacts
+    records: BoardRecords
+
+
+@dataclass(frozen=True, slots=True)
+class ReadyRecordAcceptance:
+    """A valid ready review recorded for an attempt's current candidate and evidence, and when it was accepted."""
+
+    accepted_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class BoardAttemptFacts:
+    """One open attempt's records with its decoded, identity-checked current brief and ready-review decision."""
+
+    records: BoardAttemptRecords
+    brief: work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure
+    ready_record: ReadyRecordAcceptance | None
+
+
+@dataclass(frozen=True, slots=True)
+class BoardHistoryFacts:
+    """Decoded board facts that the live refresh and complete-state derivation project identically."""
+
+    attempts: tuple[BoardAttemptFacts, ...]
+    definition_histories: tuple[BoardDefinitionHistory, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ActivatedCondition:
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ResumedCondition:
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PausedCondition:
+    at: datetime
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class BlockedCondition:
+    """A block receipt; blocking records no reason."""
+
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ReboundCondition:
+    at: datetime
+    attempt_state: NonterminalAttemptState
+    pause_reason: str | None
+    """The pause reason a rebind carried forward; recorded only while the attempt stays paused."""
+
+
+@dataclass(frozen=True, slots=True)
+class SubmittedForReviewCondition:
+    """A review submission with no valid ready review recorded for the current candidate and evidence."""
+
+    at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedReadyCondition:
+    """A review submission whose current candidate and evidence have a valid recorded ready review."""
+
+    submitted_at: datetime
+    ready_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnedCondition:
+    """A return-for-correction/v1 receipt and its recorded reason."""
+
+    at: datetime
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedReturnedCondition:
+    """A retained decision/v1 return whose transition-receipt/v1 outcome may carry a reason."""
+
+    at: datetime
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuedCondition:
+    """Review accepted with the attempt continuing, and the recorded acceptance evidence."""
+
+    at: datetime
+    evidence: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointAcceptedCondition:
+    """A checkpoint-acceptance/v2 receipt."""
+
+    at: datetime
+    checkpoint: str
+    evidence: str
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedCheckpointAcceptedCondition:
+    """A retained transition-receipt/v1 checkpoint acceptance with whatever facts its outcome recorded."""
+
+    at: datetime
+    checkpoint: str | None
+    evidence: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedActionCondition:
+    """A receipt at the attempt's subject revision whose action carries no attempt condition, named as recorded."""
+
+    at: datetime
+    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind
+
+
+@dataclass(frozen=True, slots=True)
+class UnreadableCondition:
+    """A current-format latest receipt whose outcome or input does not decode."""
+
+    history_id: HistoryId
+    at: datetime
+    defect: str
+
+
+@dataclass(frozen=True, slots=True)
+class NoReceiptCondition:
+    """No receipt is recorded at the attempt's subject revision."""
+
+
+type BoardCondition = (
+    ActivatedCondition
+    | ResumedCondition
+    | PausedCondition
+    | BlockedCondition
+    | ReboundCondition
+    | SubmittedForReviewCondition
+    | ReviewedReadyCondition
+    | ReturnedCondition
+    | RetainedReturnedCondition
+    | ContinuedCondition
+    | CheckpointAcceptedCondition
+    | RetainedCheckpointAcceptedCondition
+    | RecordedActionCondition
+    | UnreadableCondition
+    | NoReceiptCondition
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedRemainingWork:
+    """The current brief's continue disposition text, exactly as recorded."""
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class FinalCheckpoint:
+    """The current brief's terminal disposition: no further checkpoint is recorded."""
+
+
+@dataclass(frozen=True, slots=True)
+class BoardCheckpoint:
+    """The current accepted brief's checkpoint and the acceptance of that brief artifact revision."""
+
+    checkpoint_id: str
+    title: str
+    brief_revision: int
+    brief_accepted_at: datetime
+    remaining_work: RecordedRemainingWork | FinalCheckpoint
+
+
+@dataclass(frozen=True, slots=True)
+class UnreadableBrief:
+    """The attempt's current brief could not be read, decoded or matched to the attempt."""
+
+    attempt_id: AttemptId
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class BoardMilestone:
+    """One recorded checkpoint acceptance; acceptance is not integration into a target branch."""
+
+    history_id: HistoryId
+    accepted_at: datetime
+    checkpoint_id: str
+    evidence: str
+
+
+@dataclass(frozen=True, slots=True)
+class UnreadableMilestone:
+    history_id: HistoryId
+    committed_at: datetime
+    defect: str
+
+
+@dataclass(frozen=True, slots=True)
+class BoardAttemptProgress:
+    """Where an open attempt stands, from its current brief, latest receipt and checkpoint acceptances."""
+
+    checkpoint: BoardCheckpoint | UnreadableBrief
+    condition: BoardCondition
+    milestones: tuple[BoardMilestone | UnreadableMilestone, ...]
+
+
+class DefinitionTextField(Enum):
+    TITLE = "title"
+    OBJECTIVE = "objective"
+    HYPOTHESIS = "hypothesis"
+    EFFECT = "effect"
+    UNLOCK = "unlock"
+    CHECKOUT_POLICY = "checkout_policy"
+
+
+class DefinitionListField(Enum):
+    SCOPE = "scope"
+    NON_SCOPE = "non_scope"
+    ACCEPTANCE_CRITERIA = "acceptance_criteria"
+    EVIDENCE = "evidence"
+    DEPENDENCIES = "dependencies"
+
+
+@dataclass(frozen=True, slots=True)
+class TextFieldChange:
+    """A text field whose stored value differs; None is a field the earlier or later schema does not have."""
+
+    field: DefinitionTextField
+    before: str | None
+    after: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ListFieldChange:
+    field: DefinitionListField
+    added: tuple[str, ...]
+    removed: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ObligationChange:
+    """One obligation identity whose statement or deferral policy differs between consecutive revisions."""
+
+    before: work_models.WorkObligation
+    after: work_models.WorkObligation
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeRevisionChanges:
+    """Mechanical differences from the previous stored definition; an edited list entry is a removal and an addition."""
+
+    texts: tuple[TextFieldChange, ...]
+    lists: tuple[ListFieldChange, ...]
+    obligations_added: tuple[work_models.WorkObligation, ...]
+    obligations_removed: tuple[work_models.WorkObligation, ...]
+    obligations_changed: tuple[ObligationChange, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OriginalScope:
+    """Definition revision 1, the scope accepted when the item was saved."""
+
+
+@dataclass(frozen=True, slots=True)
+class BoardScopeRevision:
+    revision: int
+    accepted_at: datetime
+    reason: str
+    changes: ScopeRevisionChanges | OriginalScope
+
+
+@dataclass(frozen=True, slots=True)
 class BoardItem:
-    """One live item with the time its stored record last changed."""
+    """One live item with the time its stored record last changed and its selected history.
+
+    ``attempt`` is absent when the item has no open attempt. Scope revisions run oldest first and end at
+    ``definition``, the current accepted definition.
+    """
 
     overview: OverviewItem
     updated_at: datetime
+    attempt: BoardAttemptProgress | None
+    scope_revisions: tuple[BoardScopeRevision, ...]
+    definition: DefinitionView
 
 
 @dataclass(frozen=True, slots=True)

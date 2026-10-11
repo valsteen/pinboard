@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from pinboard.adapters import review_operations
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
@@ -22,7 +24,7 @@ from pinboard.application import (
 )
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.mutation_models import CommittedEffect
-from pinboard.application.ports import GeneratedViewReader
+from pinboard.application.ports import BoardStore, GeneratedViewReader
 from pinboard.domain.errors import (
     ChangedSurface,
     EffectDisposition,
@@ -257,7 +259,20 @@ def _refresh_affected_views(
                 "Run 'pinboard views rebuild'.",
             ),
         )
-    return refresh_facts(facts, durable.work_root, briefs, store, now)
+    return refresh_facts(facts, durable.work_root, briefs, _ComposedBoardReader(durable, store), now)
+
+
+@dataclass(frozen=True, slots=True)
+class _ComposedBoardReader:
+    """Compose the board read under the board lock: SQLite records, then outer file reads and keyed ready reviews."""
+
+    durable: DurableRoots
+    store: BoardStore
+
+    def read_board(self, now: datetime) -> query_models.BoardPortfolio:
+        live = self.store.read_board_records(now)
+        history = review_operations.read_board_history(self.durable, self.store, live.records)
+        return queries.project_live_portfolio(live.portfolio, history, now)
 
 
 def _artifact_reference_json(reference: stored_state.ArtifactReference) -> dict[str, JsonValue]:

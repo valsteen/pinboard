@@ -21,6 +21,7 @@ from pinboard.adapters.files import root as git_root
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.file_io import DurableRoots
+from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.application import (
     actions,
@@ -243,6 +244,11 @@ def _record_ready_review(
         )
     reference = recorded.reference
     surfaces = _job_publication_surfaces(recorded.changed_surfaces)
+    warning = (
+        common._refresh_affected_views(durable, store, AffectedViews((), (), ()), datetime.now(UTC)).warning
+        if surfaces
+        else None
+    )
     content = msgspec.to_builtins(
         contracts.CandidateReviewRecorded(
             schema,
@@ -260,6 +266,7 @@ def _record_ready_review(
             "committed" if surfaces else "unchanged",
             "do-not-retry" if surfaces else "safe-to-repeat",
             surfaces,
+            None if warning is None else contracts.WarningResult(warning.message, warning.repair),
         )
     )
     assert isinstance(content, dict)

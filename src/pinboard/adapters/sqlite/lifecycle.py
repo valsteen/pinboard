@@ -186,16 +186,37 @@ class _BranchOwnerRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_state: stored_state.StoredWorkItemState
 
 
+def read_receipts_at_revisions(
+    connection: sqlite3.Connection, project_revisions: Iterable[int]
+) -> dict[int, query_models.ConsumedTransitionReceipt]:
+    """Read the receipts committed at exact project revisions through the unique revision index, in fixed batches.
+
+    An attempt's subject revision names the project revision of its latest receipt, so callers read each open
+    attempt's latest receipt without walking history. Stored JSON stays text for the consuming read to diagnose.
+    """
+
+    return {
+        receipt.project_revision: receipt
+        for receipt in (
+            _consumed_receipt(row)
+            for row in select_by_ids(
+                connection,
+                f"SELECT {_CONSUMED_RECEIPT_COLUMNS} FROM transition_history WHERE project_revision IN ({{ids}})",
+                project_revisions,
+            )
+        )
+    }
+
+
 def read_recorded_pause_reasons(
     connection: sqlite3.Connection,
     attempts: Iterable[tuple[AttemptId, work_models.AttemptState, int]],
 ) -> dict[AttemptId, query_models.RecordedPauseReason]:
     """Read each paused attempt's recorded pause reason from exactly its latest receipt.
 
-    An attempt's subject revision names the project revision of its latest
-    receipt, so each reason is one keyed history read rather than a history scan.
-    A receipt whose columns decode but whose outcome does not is returned as a
-    damaged receipt for status reads and view generation to name.
+    Each reason comes from the receipt at the attempt's subject revision in one batched keyed read rather than a
+    history scan. A receipt whose columns decode but whose outcome does not is returned as a damaged receipt for
+    status reads and view generation to name.
     """
 
     paused = {
@@ -204,12 +225,7 @@ def read_recorded_pause_reasons(
         if state == work_models.AttemptState.PAUSED
     }
     reasons: dict[AttemptId, query_models.RecordedPauseReason] = {}
-    for row in select_by_ids(
-        connection,
-        f"SELECT {_CONSUMED_RECEIPT_COLUMNS} FROM transition_history WHERE project_revision IN ({{ids}})",
-        paused,
-    ):
-        receipt = _consumed_receipt(row)
+    for receipt in read_receipts_at_revisions(connection, paused).values():
         attempt_id = paused[receipt.project_revision]
         reasons[attempt_id] = queries.decode_recorded_pause_reason(
             attempt_id,
@@ -524,6 +540,45 @@ def read_current_definitions(
         item_ids,
     )
     return {value.item_id: value for value in map(decode_definition_revision, rows)}
+
+
+def read_definition_histories(
+    connection: sqlite3.Connection, item_ids: tuple[WorkItemId, ...]
+) -> dict[WorkItemId, tuple[stored_state.ItemDefinitionRevision, ...]]:
+    """Read every accepted definition revision of the selected items by primary key, in fixed-size batches.
+
+    Each history must link contiguously from revision 1 by digest; a broken chain is invalid state rather than a
+    partial history. No other item's revisions are read.
+    """
+
+    grouped: dict[WorkItemId, list[stored_state.ItemDefinitionRevision]] = {}
+    for value in map(
+        decode_definition_revision,
+        select_by_ids(
+            connection,
+            """
+            SELECT item_id, definition_revision AS revision, definition_digest AS digest,
+                   definition_json, reason, source_task_id, before_digest, after_digest,
+                   accepted_project_revision, accepted_at
+            FROM work_item_definition_revisions
+            WHERE item_id IN ({ids})
+            ORDER BY item_id, definition_revision
+            """,
+            item_ids,
+        ),
+    ):
+        grouped.setdefault(value.item_id, []).append(value)
+    for revisions in grouped.values():
+        if (
+            revisions[0].revision != 1
+            or revisions[0].before_digest is not None
+            or any(
+                newer.revision != older.revision + 1 or newer.before_digest != older.digest
+                for older, newer in pairwise(revisions)
+            )
+        ):
+            raise StorageError(StorageErrorCode.INVALID_STATE, "Definition history digest links are not contiguous.")
+    return {item_id: tuple(revisions) for item_id, revisions in grouped.items()}
 
 
 def _current_definition_with_dependency_states(

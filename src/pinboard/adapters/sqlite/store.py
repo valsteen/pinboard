@@ -49,10 +49,12 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
+    read_definition_histories,
     read_item_closure,
     read_item_status,
     read_latest_checkpoint_acceptance,
     read_parallel_preview_lifecycle,
+    read_receipts_at_revisions,
     read_recorded_pause_reasons,
     reject_damaged_pause_receipt,
 )
@@ -114,6 +116,20 @@ class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
     candidate_revision: str | None
+
+
+class _BoardAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    item_id: WorkItemId
+    state: work_models.AttemptState
+    branch: str
+    base_revision: str
+    accepted_scope_revision: int
+    accepted_scope_digest: str
+    candidate_revision: str | None
+    candidate_recorded_at: datetime | None
+    brief_artifact_ref_id: ArtifactRefId
+    subject_revision: int
 
 
 class _SelectedAttemptLinkRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -394,6 +410,87 @@ def _read_live_portfolio_facts(
         snapshot,
         _read_overview_proposals(connection, snapshot),
         tuple((row.item_id, row.updated_at) for row in item_times),
+    )
+
+
+def _read_board_records(connection: sqlite3.Connection, snapshot: LedgerSnapshot) -> query_models.BoardRecords:
+    """Select the open attempts' and live items' board records with set queries over existing keys and indexes.
+
+    Open attempts come from the live-attempt partial index; their current brief references, latest receipts,
+    checkpoint acceptances and review-state snapshot references are each one batched keyed read. Definition
+    histories are read by primary key for the live items only.
+    """
+
+    attempts: list[tuple[_BoardAttemptRow, query_models.NonterminalAttemptState]] = []
+    for row in connection.execute(
+        """
+        SELECT attempt_id, item_id, state, branch, base_revision, accepted_scope_revision,
+               accepted_scope_digest, candidate_revision, candidate_recorded_at, brief_artifact_ref_id,
+               subject_revision
+        FROM attempts INDEXED BY one_live_attempt_per_item
+        WHERE state != 'done'
+        ORDER BY item_id
+        """
+    ).fetchall():
+        attempt = decode_row(row, _BoardAttemptRow)
+        open_state = queries.open_attempt_state(attempt.state)
+        if open_state is None:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "The live-attempt index selected a finished attempt.")
+        attempts.append((attempt, open_state))
+    attempt_ids = tuple(attempt.attempt_id for attempt, _state in attempts)
+    briefs = read_artifact_references_by_ids(
+        connection, tuple(attempt.brief_artifact_ref_id for attempt, _ in attempts)
+    )
+    receipts = read_receipts_at_revisions(connection, (attempt.subject_revision for attempt, _state in attempts))
+    acceptances = sqlite_state.read_checkpoint_receipts(connection, attempt_ids)
+    snapshot_keys = {
+        attempt.attempt_id: candidate_snapshots.candidate_snapshot_artifact_key(
+            str(attempt.attempt_id), attempt.candidate_revision, attempt.candidate_recorded_at.isoformat()
+        )
+        for attempt, open_state in attempts
+        if open_state == work_models.AttemptState.REVIEW
+        and attempt.candidate_revision is not None
+        and attempt.candidate_recorded_at is not None
+    }
+    snapshots: dict[str, stored_state.ArtifactReference] = {}
+    for reference in (
+        decode_row(row, stored_state.ArtifactReference)
+        for row in select_by_ids(
+            connection,
+            """SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+                      relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+               FROM artifact_refs WHERE kind = 'evidence' AND artifact_key IN ({ids})""",
+            snapshot_keys.values(),
+        )
+    ):
+        if (current := snapshots.get(reference.key)) is None or current.revision < reference.revision:
+            snapshots[reference.key] = reference
+    records: list[query_models.BoardAttemptRecords] = []
+    for attempt, open_state in attempts:
+        brief = briefs.get(attempt.brief_artifact_ref_id)
+        if brief is None or brief.kind != work_models.ArtifactKind.BRIEF:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "An open attempt has no accepted brief reference.")
+        snapshot_key = snapshot_keys.get(attempt.attempt_id)
+        records.append(
+            query_models.BoardAttemptRecords(
+                attempt.attempt_id,
+                attempt.item_id,
+                open_state,
+                attempt.branch,
+                attempt.base_revision,
+                attempt.accepted_scope_revision,
+                attempt.accepted_scope_digest,
+                attempt.candidate_revision,
+                brief,
+                receipts.get(attempt.subject_revision),
+                tuple(reversed(acceptances.get(attempt.attempt_id, ()))),
+                None if snapshot_key is None else snapshots.get(snapshot_key),
+            )
+        )
+    histories = read_definition_histories(connection, tuple(item.work_item_id for item in snapshot.items))
+    return query_models.BoardRecords(
+        tuple(records),
+        tuple(query_models.BoardDefinitionHistory(item_id, revisions) for item_id, revisions in histories.items()),
     )
 
 
@@ -829,8 +926,8 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
-    def read_live_portfolio(self, now: datetime) -> query_models.LivePortfolioFacts:
-        """Read live items, their direct dependencies and reasons, and open attempts for the board."""
+    def read_board_records(self, now: datetime) -> query_models.LiveBoardRecords:
+        """Read the live portfolio and its open attempts' and live items' selected board records in one transaction."""
 
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
@@ -842,7 +939,26 @@ class SQLiteWorkStore:
                     include_action_authorities=False,
                     include_pause_reasons=False,
                 )
-                return _read_live_portfolio_facts(connection, snapshot)
+                return query_models.LiveBoardRecords(
+                    _read_live_portfolio_facts(connection, snapshot), _read_board_records(connection, snapshot)
+                )
+        finally:
+            connection.close()
+
+    def read_candidate_review_references(self, keys: tuple[str, ...]) -> dict[str, stored_state.ArtifactReference]:
+        """Read each accepted candidate-review reference by its exact key: one keyed statement per key."""
+
+        if not keys:
+            return {}
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return {
+                    key: reference
+                    for key in keys
+                    if (reference := read_artifact_reference(connection, work_models.ArtifactKind.EVIDENCE, key, 1))
+                    is not None
+                }
         finally:
             connection.close()
 
@@ -1097,7 +1213,7 @@ class SQLiteWorkStore:
                 attempt = _read_attempt_context_facts(connection, attempt_id)
                 if attempt is None:
                     return None
-                receipts = sqlite_state.read_checkpoint_receipts(connection, attempt_id)
+                receipts = sqlite_state.read_checkpoint_receipts(connection, (attempt_id,)).get(attempt_id, ())
                 references = read_artifact_references_by_ids(
                     connection,
                     tuple(receipt.artifact_ref_id for receipt in receipts if receipt.artifact_ref_id is not None),

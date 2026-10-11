@@ -26,7 +26,14 @@ from pinboard.domain.identifiers import HostId, LeaseId, ProposalId, TaskId, Wor
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
 from tests.decision_support import BOARD, discover_actions, project_decision_snapshot, project_overview
 from tests.domain_support import expect_success
-from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation, reject_table_inserts
+from tests.support import (
+    SQLITE_NOW,
+    complete_sqlite_state,
+    initialize_store,
+    loaded_board_history,
+    mutation_allocation,
+    reject_table_inserts,
+)
 
 
 class PreparationAuthorityTest(unittest.TestCase):
@@ -536,8 +543,11 @@ class PreparationAuthorityTest(unittest.TestCase):
         assert not isinstance(at_parallel, query_models.ParallelSelectionInvalid)
         self.assertFalse(before_parallel.safe)
         self.assertTrue(at_parallel.safe)
-        before_views = derive_expected_view_bytes(reloaded, {}, now=expires_at - timedelta(microseconds=1)).views
-        at_views = derive_expected_view_bytes(reloaded, {}, now=expires_at).views
+        board_history = loaded_board_history(database_path.parent, reloaded)
+        before_views = derive_expected_view_bytes(
+            reloaded, {}, board_history, now=expires_at - timedelta(microseconds=1)
+        ).views
+        at_views = derive_expected_view_bytes(reloaded, {}, board_history, now=expires_at).views
         self.assertIn(b"- Preparation: active", before_views["items/work-c.md"])
         self.assertIn(b"- Preparation: expired", at_views["items/work-c.md"])
         self.assertNotEqual(before_views["items/work-c.md"], at_views["items/work-c.md"])

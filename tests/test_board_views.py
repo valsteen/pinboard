@@ -16,6 +16,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import msgspec
+from msgspec.structs import replace as replace_struct
+
 from pinboard.adapters.files import views as views_module
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
@@ -24,30 +27,42 @@ from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import ports, queries, query_models, stored_state
+from pinboard.application import (
+    definition_compatibility,
+    ports,
+    queries,
+    query_models,
+    stored_state,
+    work_brief_models,
+)
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.service import create_proposal
 from pinboard.cli import work_views
 from pinboard.cli.entrypoint import main
-from pinboard.domain import work_models
+from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.history import work_item_definition_digest
-from pinboard.domain.identifiers import AttemptId, HostId, ProposalId, TaskId, WorkItemId
+from pinboard.domain.identifiers import AttemptId, HistoryId, HostId, ProposalId, TaskId, WorkItemId
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import read_operations as mcp_reads
+from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
+from tests.checkpoint_support import CheckpointFixture
 from tests.decision_support import BOARD
 from tests.domain_support import expect_success
-from tests.native_support import call_advertised_tool
+from tests.native_support import call_advertised_tool, call_native_tool
 from tests.support import (
     SQLITE_NOW,
     JsonObject,
+    board_reader,
     complete_sqlite_state,
     initialize_store,
+    loaded_board_history,
     test_definition,
     with_definition_dependencies,
 )
+from tests.test_item_status_facts import ItemLifecycleSupport
 
 HOSTILE_TITLE = "</script><img src=x onerror=alert(1)> & <!-- -->"
 HOSTILE_INTAKE = "</SCRIPT>\u2028<b>next</b>\u2029&amp;"
@@ -301,20 +316,31 @@ def _file_identity(path: Path) -> tuple[bytes, int, int]:
     return path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns
 
 
-class _GatedPortfolio:
-    """Delegate live-portfolio reads while letting a test hold a refresh between its read and its writes."""
+class _GatedBoard:
+    """Delegate composed board reads while letting a test hold a refresh between its read and its writes."""
 
-    def __init__(self, store: SQLiteWorkStore, read: threading.Event, release: threading.Event) -> None:
-        self.store = store
+    def __init__(self, board: ports.BoardReader, read: threading.Event, release: threading.Event) -> None:
+        self.board = board
         self.read = read
         self.release = release
 
-    def read_live_portfolio(self, now: datetime) -> query_models.LivePortfolioFacts:
-        facts = self.store.read_live_portfolio(now)
+    def read_board(self, now: datetime) -> query_models.BoardPortfolio:
+        facts = self.board.read_board(now)
         self.read.set()
         if not self.release.wait(10):
             raise AssertionError("The held refresh was never released.")
         return facts
+
+
+class _FixedBoard:
+    """A board reader returning one already projected board, for presentation tests."""
+
+    def __init__(self, board: query_models.BoardPortfolio) -> None:
+        self.board = board
+
+    def read_board(self, now: datetime) -> query_models.BoardPortfolio:
+        del now
+        return self.board
 
 
 class BoardProjectionTest(unittest.TestCase):
@@ -330,7 +356,9 @@ class BoardProjectionTest(unittest.TestCase):
         return project, roots, store
 
     def _rebuild(self, roots: DurableRoots, store: SQLiteWorkStore, now: datetime = SQLITE_NOW) -> None:
-        result = rebuild_facts(store.read_all_generated_view_facts(now), roots.work_root, {}, store, now)
+        result = rebuild_facts(
+            store.read_all_generated_view_facts(now), roots.work_root, {}, board_reader(roots.work_root, store), now
+        )
         self.assertIsNone(result.warning)
 
     def _board(self, roots: DurableRoots) -> tuple[str, str]:
@@ -408,8 +436,18 @@ class BoardProjectionTest(unittest.TestCase):
         )
         state = store.validated_snapshot()
         self.assertEqual(
-            {name: derive_expected_view_bytes(state, {}, now=SQLITE_NOW).views[name] for name in BOARD_FILES},
-            {name: derive_expected_view_bytes(state, {}, now=LATER).views[name] for name in BOARD_FILES},
+            {
+                name: derive_expected_view_bytes(
+                    state, {}, loaded_board_history(roots.work_root, state), now=SQLITE_NOW
+                ).views[name]
+                for name in BOARD_FILES
+            },
+            {
+                name: derive_expected_view_bytes(
+                    state, {}, loaded_board_history(roots.work_root, state), now=LATER
+                ).views[name]
+                for name in BOARD_FILES
+            },
         )
 
     def test_both_projections_show_item_times_and_the_latest_live_item_time_as_the_board_time(self) -> None:
@@ -492,7 +530,9 @@ class BoardProjectionTest(unittest.TestCase):
 
         reloaded = store.validated_snapshot()
         self.assertEqual(LATER, reloaded.lifecycle.project.updated_at)
-        expected = derive_expected_view_bytes(reloaded, {}, now=LATER).views
+        expected = derive_expected_view_bytes(
+            reloaded, {}, loaded_board_history(roots.work_root, reloaded), now=LATER
+        ).views
         self.assertEqual(before, {name: expected[name] for name in BOARD_FILES})
         self.assertEqual(before, {name: (view_root / name).read_bytes() for name in BOARD_FILES})
         result, stdout, stderr = self._run_cli(*common, "validate")
@@ -551,7 +591,12 @@ class BoardProjectionTest(unittest.TestCase):
             time.tzset()
             self._rebuild(roots, store)
             outputs.append({name: (view_root / name).read_bytes() for name in BOARD_FILES})
-            expected = derive_expected_view_bytes(store.validated_snapshot(), {}, now=SQLITE_NOW).views
+            expected = derive_expected_view_bytes(
+                store.validated_snapshot(),
+                {},
+                loaded_board_history(roots.work_root, store.validated_snapshot()),
+                now=SQLITE_NOW,
+            ).views
             self.assertEqual(outputs[-1], {name: expected[name] for name in BOARD_FILES})
 
         self.assertEqual(outputs[0], outputs[1])
@@ -585,33 +630,6 @@ class BoardProjectionTest(unittest.TestCase):
         self.assertEqual(before, {str(value["item_id"]): value["updated_at"] for value in _page_items(html)})
         self.assertEqual(before_board, _page_data(html)["updated_at"])
 
-    def test_live_portfolio_read_excludes_history_and_artifact_relations(self) -> None:
-        _project, roots, store = self._ledger(_every_state())
-        tables: set[str] = set()
-        original_open = sqlite_store.open_database
-
-        def recording_open(path: Path, mode: OpenMode) -> sqlite3.Connection:
-            connection = original_open(path, mode)
-
-            def authorize(
-                action: int, argument: str | None, _second: str | None, _database: str | None, _trigger: str | None
-            ) -> int:
-                if action == sqlite3.SQLITE_READ and argument is not None:
-                    tables.add(argument)
-                return sqlite3.SQLITE_OK
-
-            connection.set_authorizer(authorize)
-            return connection
-
-        with patch.object(sqlite_store, "open_database", recording_open):
-            refreshed = refresh_facts(
-                query_models.GeneratedViewFacts(12, (), (), ()), roots.work_root, {}, store, SQLITE_NOW
-            )
-
-        self.assertIsNone(refreshed.warning)
-        self.assertTrue({"work_items", "item_dependencies", "attempts"} <= tables, tables)
-        self.assertFalse({"transition_history", "artifact_references", "preparation_leases"} & tables, tables)
-
     def test_refresh_rebuild_and_validate_derive_identical_board_bytes(self) -> None:
         _project, roots, store = self._ledger(_every_state())
         view_root = roots.work_root / "views"
@@ -621,12 +639,21 @@ class BoardProjectionTest(unittest.TestCase):
             (view_root / name).unlink()
 
         refreshed = refresh_facts(
-            store.read_generated_view_facts((), (), (), SQLITE_NOW), roots.work_root, {}, store, SQLITE_NOW
+            store.read_generated_view_facts((), (), (), SQLITE_NOW),
+            roots.work_root,
+            {},
+            board_reader(roots.work_root, store),
+            SQLITE_NOW,
         )
 
         self.assertIsNone(refreshed.warning)
         self.assertEqual(rebuilt, {name: (view_root / name).read_bytes() for name in BOARD_FILES})
-        expected = derive_expected_view_bytes(store.validated_snapshot(), {}, now=SQLITE_NOW).views
+        expected = derive_expected_view_bytes(
+            store.validated_snapshot(),
+            {},
+            loaded_board_history(roots.work_root, store.validated_snapshot()),
+            now=SQLITE_NOW,
+        ).views
         self.assertEqual(rebuilt, {name: expected[name] for name in BOARD_FILES})
 
     def test_unchanged_refresh_preserves_board_bytes_inode_and_modification_time(self) -> None:
@@ -635,7 +662,13 @@ class BoardProjectionTest(unittest.TestCase):
         paths = tuple(roots.work_root / "views" / name for name in BOARD_FILES)
         before = {path: _file_identity(path) for path in paths}
 
-        refreshed = refresh_facts(store.read_generated_view_facts((), (), (), LATER), roots.work_root, {}, store, LATER)
+        refreshed = refresh_facts(
+            store.read_generated_view_facts((), (), (), LATER),
+            roots.work_root,
+            {},
+            board_reader(roots.work_root, store),
+            LATER,
+        )
 
         self.assertIsNone(refreshed.warning)
         self.assertEqual(before, {path: _file_identity(path) for path in paths})
@@ -677,20 +710,33 @@ class BoardProjectionTest(unittest.TestCase):
 
         markdown, html = self._board(roots)
         data = _page_data(html)
+        self.assertEqual("pinboard-board-page/v2", data["schema"])
         states = data["states"]
         assert isinstance(states, list)
         self.assertEqual({state.value for state in work_models.WorkState}, set(states))
         items = {str(value["item_id"]): value for value in _page_items(html)}
+        attempts = {"work-a", "paused-work", "review-work"}
         for item_id, value in items.items():
             self.assertNotIn("prompt", value)
-            self.assertTrue(value["next_step"])
-            self.assertEqual(f"items/{item_id}.md", value["item_view"])
+            self.assertNotIn("attempt_id", value)
+            self.assertNotIn("item_view", value)
             self.assertTrue(value["effect"] and value["unlock"])
+            standing = value["standing"]
+            assert isinstance(standing, dict)
+            if item_id in attempts:
+                self.assertEqual("attempt", standing["kind"])
+                self.assertEqual("unreadable-brief", standing["checkpoint"]["kind"])
+                self.assertEqual(
+                    f"{item_id}-1" if item_id != "work-a" else "work-a-1", standing["checkpoint"]["attempt_id"]
+                )
+            else:
+                self.assertEqual("next-step", standing["kind"])
+                self.assertTrue(standing["text"])
         self.assertNotIn("prompt", markdown.lower())
         self.assertNotIn("<textarea", html)
         self.assertNotIn("clipboard", html.lower())
-        self.assertEqual("work-a-1", items["work-a"]["attempt_id"])
         self.assertEqual("continue", items["work-a"]["intake_next_action"])
+        self.assertEqual("Current work remains bounded.", items["work-a"]["intake_notes"])
         self.assertEqual(
             [
                 {
@@ -702,6 +748,137 @@ class BoardProjectionTest(unittest.TestCase):
             items["blocked-work"]["dependencies"],
         )
         self.assertIn("Original intake context", html)
+
+    def test_page_presents_every_condition_with_its_time_record_and_named_absence(self) -> None:
+        _project, roots, store = self._ledger(complete_sqlite_state())
+        board = board_reader(roots.work_root, store).read_board(SQLITE_NOW)
+        receipt_at = SQLITE_NOW + timedelta(hours=1)
+        ready_at = SQLITE_NOW + timedelta(hours=2)
+        kinds = decision_models.ActionKind
+        cases: tuple[tuple[query_models.BoardCondition, tuple[str, datetime | None, str | None, bool]], ...] = (
+            (query_models.ActivatedCondition(receipt_at), ("activated", receipt_at, None, False)),
+            (query_models.ResumedCondition(receipt_at), ("resumed", receipt_at, None, False)),
+            (query_models.PausedCondition(receipt_at, "Wait."), ("paused", receipt_at, "Wait.", False)),
+            (query_models.PausedCondition(receipt_at, None), ("paused", receipt_at, None, True)),
+            (query_models.BlockedCondition(receipt_at), ("blocked", receipt_at, None, True)),
+            (
+                query_models.ReboundCondition(receipt_at, work_models.AttemptState.PAUSED, None),
+                ("rebound", receipt_at, None, True),
+            ),
+            (
+                query_models.ReboundCondition(receipt_at, work_models.AttemptState.ACTIVE, None),
+                ("rebound", receipt_at, None, False),
+            ),
+            (query_models.SubmittedForReviewCondition(receipt_at), ("submitted", receipt_at, None, False)),
+            (query_models.ReviewedReadyCondition(receipt_at, ready_at), ("reviewed-ready", ready_at, None, False)),
+            (query_models.ReturnedCondition(receipt_at, "Rework."), ("returned", receipt_at, "Rework.", False)),
+            (query_models.RetainedReturnedCondition(receipt_at, None), ("returned", receipt_at, None, True)),
+            (query_models.ContinuedCondition(receipt_at, None), ("continued", receipt_at, None, True)),
+            (
+                query_models.CheckpointAcceptedCondition(receipt_at, "first-step", "Done."),
+                ("checkpoint-accepted", receipt_at, "Done.", False),
+            ),
+            (
+                query_models.RetainedCheckpointAcceptedCondition(receipt_at, None, None),
+                ("checkpoint-accepted", receipt_at, None, True),
+            ),
+            (
+                query_models.RecordedActionCondition(receipt_at, kinds.DISPATCH),
+                ("recorded-action", receipt_at, None, False),
+            ),
+            (
+                query_models.UnreadableCondition(HistoryId(7), receipt_at, "Bad outcome."),
+                ("unreadable", receipt_at, None, True),
+            ),
+            (query_models.NoReceiptCondition(), ("no-receipt", None, None, False)),
+        )
+        for condition, (kind, at, text, absent) in cases:
+            with self.subTest(kind=kind, condition=condition):
+                items = tuple(
+                    replace(
+                        value,
+                        attempt=query_models.BoardAttemptProgress(
+                            query_models.UnreadableBrief(AttemptId("work-a-1"), "opaque"), condition, ()
+                        ),
+                    )
+                    if value.overview.item_id == "work-a"
+                    else value
+                    for value in board.items
+                )
+                result = rebuild_facts(
+                    store.read_all_generated_view_facts(SQLITE_NOW),
+                    roots.work_root,
+                    {},
+                    _FixedBoard(query_models.BoardPortfolio(items)),
+                    SQLITE_NOW,
+                )
+                self.assertIsNone(result.warning)
+                work_a = next(value for value in _page_items(self._board(roots)[1]) if value["item_id"] == "work-a")
+                standing = work_a["standing"]
+                assert isinstance(standing, dict)
+                page = standing["condition"]
+                self.assertEqual(
+                    (kind, None if at is None else _utc_instant(at), text, absent),
+                    (page["kind"], page["at"], page["text"], page["absence"] is not None),
+                )
+                self.assertEqual(at is not None, page["time_source"] is not None)
+                self.assertTrue(page["label"])
+
+    def test_page_names_every_changed_definition_field_and_a_retained_definition_schema(self) -> None:
+        _project, roots, store = self._ledger(complete_sqlite_state())
+        board = board_reader(roots.work_root, store).read_board(SQLITE_NOW)
+        obligation = work_models.WorkObligation(
+            work_models.ObligationId("kept"), "Kept.", work_models.ObligationDeferralPolicy.FORBIDDEN
+        )
+        changes = query_models.ScopeRevisionChanges(
+            tuple(query_models.TextFieldChange(field, None, field.value) for field in query_models.DefinitionTextField),
+            tuple(
+                query_models.ListFieldChange(field, (field.value,), ()) for field in query_models.DefinitionListField
+            ),
+            (obligation,),
+            (obligation,),
+            (query_models.ObligationChange(obligation, replace(obligation, statement="Changed.")),),
+        )
+        work_a = next(value for value in board.items if value.overview.item_id == "work-a")
+        definition = work_a.definition
+        assert isinstance(definition, query_models.WorkItemDefinitionView)
+        retained = definition_compatibility.HistoricalDefinitionV1(
+            definition.acceptance_criteria,
+            definition.dependencies,
+            definition.effect,
+            definition.evidence,
+            definition.hypothesis,
+            definition.non_scope,
+            definition.objective,
+            definition.scope,
+            definition.title,
+            definition.unlock,
+        )
+        revisions = (*work_a.scope_revisions, query_models.BoardScopeRevision(2, LATER, "Every field.", changes))
+        items = tuple(
+            replace(value, scope_revisions=revisions, definition=retained) if value is work_a else value
+            for value in board.items
+        )
+
+        rebuild_facts(
+            store.read_all_generated_view_facts(SQLITE_NOW),
+            roots.work_root,
+            {},
+            _FixedBoard(query_models.BoardPortfolio(items)),
+            SQLITE_NOW,
+        )
+
+        page = next(value for value in _page_items(self._board(roots)[1]) if value["item_id"] == "work-a")
+        scope_revisions = page["scope_revisions"]
+        assert isinstance(scope_revisions, list)
+        latest = scope_revisions[-1]["changes"]
+        self.assertEqual(len(query_models.DefinitionTextField), len({value["field"] for value in latest["texts"]}))
+        self.assertEqual(len(query_models.DefinitionListField), len({value["field"] for value in latest["lists"]}))
+        self.assertEqual(1, len(latest["obligations_added"]))
+        self.assertEqual(1, len(latest["obligations_changed"]))
+        scope = page["scope"]
+        assert isinstance(scope, dict)
+        self.assertEqual((2, None, None), (scope["revision"], scope["obligations"], scope["checkout_policy"]))
 
     def test_mcp_committed_order_refreshes_the_board(self) -> None:
         project, roots, _store = self._ledger(complete_sqlite_state())
@@ -781,12 +958,20 @@ class BoardProjectionTest(unittest.TestCase):
             side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "disk full"),
         ):
             refreshed = refresh_facts(
-                store.read_generated_view_facts((), (), (), SQLITE_NOW), roots.work_root, {}, store, SQLITE_NOW
+                store.read_generated_view_facts((), (), (), SQLITE_NOW),
+                roots.work_root,
+                {},
+                board_reader(roots.work_root, store),
+                SQLITE_NOW,
             )
         self.assertIsNotNone(refreshed.warning)
         with patch.object(views_module.fcntl, "flock", side_effect=OSError("no locks available")):
             unlocked = rebuild_facts(
-                store.read_all_generated_view_facts(SQLITE_NOW), roots.work_root, {}, store, SQLITE_NOW
+                store.read_all_generated_view_facts(SQLITE_NOW),
+                roots.work_root,
+                {},
+                board_reader(roots.work_root, store),
+                SQLITE_NOW,
             )
         assert unlocked.warning is not None
         self.assertIn("Board lock could not be acquired", unlocked.warning.message)
@@ -871,7 +1056,7 @@ class BoardProjectionTest(unittest.TestCase):
         failures: list[BaseException] = []
         real_flock = fcntl.flock
 
-        def refresh(portfolio: ports.LivePortfolioReader) -> None:
+        def refresh(portfolio: ports.BoardReader) -> None:
             try:
                 result = refresh_facts(
                     store.read_generated_view_facts((), (), (), SQLITE_NOW), roots.work_root, {}, portfolio, SQLITE_NOW
@@ -884,8 +1069,10 @@ class BoardProjectionTest(unittest.TestCase):
                 if threading.current_thread() is later_thread:
                     later_progress.set()
 
-        earlier_thread = threading.Thread(target=refresh, args=(_GatedPortfolio(store, earlier_read, release_earlier),))
-        later_thread = threading.Thread(target=refresh, args=(store,))
+        earlier_thread = threading.Thread(
+            target=refresh, args=(_GatedBoard(board_reader(roots.work_root, store), earlier_read, release_earlier),)
+        )
+        later_thread = threading.Thread(target=refresh, args=(board_reader(roots.work_root, store),))
 
         def observed_flock(descriptor: int, operation: int) -> None:
             if threading.current_thread() is later_thread:
@@ -914,7 +1101,12 @@ class BoardProjectionTest(unittest.TestCase):
         markdown, html = self._board(roots)
         self.assertIn("required-before-work-c", markdown)
         self.assertIn("required-before-work-c", [value["item_id"] for value in _page_items(html)])
-        expected = derive_expected_view_bytes(store.validated_snapshot(), {}, now=SQLITE_NOW).views
+        expected = derive_expected_view_bytes(
+            store.validated_snapshot(),
+            {},
+            loaded_board_history(roots.work_root, store.validated_snapshot()),
+            now=SQLITE_NOW,
+        ).views
         self.assertEqual(expected["board.md"], markdown.encode())
 
     def test_lock_left_by_an_exited_refresher_does_not_block_a_later_refresh(self) -> None:
@@ -953,7 +1145,11 @@ class BoardProjectionTest(unittest.TestCase):
         if holder.stdin is not None:
             holder.stdin.close()
         refreshed = refresh_facts(
-            store.read_generated_view_facts((), (), (), SQLITE_NOW), roots.work_root, {}, store, SQLITE_NOW
+            store.read_generated_view_facts((), (), (), SQLITE_NOW),
+            roots.work_root,
+            {},
+            board_reader(roots.work_root, store),
+            SQLITE_NOW,
         )
 
         self.assertIsNone(refreshed.warning)
@@ -1021,6 +1217,542 @@ class BoardPagePathTest(unittest.TestCase):
                 self.assertNotEqual(project_root, work_root.parent)
                 self.assertFalse((work_root / "views" / "board.md").exists())
                 self.assertFalse((work_root / "views" / "board.html").exists())
+
+
+class BoardHistoryTest(ItemLifecycleSupport):
+    """The board shows where long-running work stands from records committed through the native workflow."""
+
+    def board_item(self, fixture: CheckpointFixture, item_id: str = "work-a") -> JsonObject:
+        html = (fixture.work / "views" / "board.html").read_text(encoding="utf-8")
+        match = re.search(r'<script id="board-data" type="application/json">(.*?)</script>', html, re.DOTALL)
+        assert match is not None
+        items = self.json_array(self.json_object(json.loads(match.group(1)))["items"])
+        return next(self.json_object(value) for value in items if self.json_object(value)["item_id"] == item_id)
+
+    def standing(self, fixture: CheckpointFixture) -> JsonObject:
+        standing = self.json_object(self.board_item(fixture)["standing"])
+        self.assertEqual("attempt", standing["kind"])
+        return standing
+
+    def condition(self, fixture: CheckpointFixture) -> JsonObject:
+        return self.json_object(self.standing(fixture)["condition"])
+
+    def committed_at(self, fixture: CheckpointFixture, history_id: int) -> str:
+        receipts = fixture.store.validated_snapshot().transition_receipts
+        return _utc_instant(next(value for value in receipts if int(value.history_id) == history_id).committed_at)
+
+    def rebuild(self, fixture: CheckpointFixture) -> None:
+        rebuilt, stdout, stderr = self.run_cli(*fixture.common, "views", "rebuild")
+        self.assertEqual(0, rebuilt, f"{stdout}\n{stderr}")
+
+    def assert_board_parity(self, fixture: CheckpointFixture) -> dict[str, bytes]:
+        """Require refresh, rebuild, validation and diagnosis to agree on the board bytes of this ledger."""
+
+        view_root = fixture.work / "views"
+        refreshed = {name: (view_root / name).read_bytes() for name in BOARD_FILES}
+        for command in ("validate", "diagnose"):
+            _status, stdout, stderr = self.run_cli(*fixture.common, command, "--json")
+            report = self.json_object(json.loads(stdout))
+            if command == "diagnose":
+                report = self.json_object(report["validation"])
+            drifted = [
+                diagnostic
+                for diagnostic in self.json_array(report["diagnostics"])
+                if self.json_object(diagnostic)["code"] == "VIEW_REFRESH_REQUIRED"
+                and str(self.json_object(diagnostic)["path"]).endswith(BOARD_FILES)
+            ]
+            self.assertEqual([], drifted, f"{command}: {stdout}\n{stderr}")
+        self.rebuild(fixture)
+        self.assertEqual(refreshed, {name: (view_root / name).read_bytes() for name in BOARD_FILES})
+        return refreshed
+
+    def publish_rebind(self, fixture: CheckpointFixture, brief: work_brief_models.WorkBrief) -> None:
+        published = call_native_tool(
+            mcp_server.BRIEF_PUBLISH_TOOL,
+            {**self.roots(fixture), "brief": self.json_object(msgspec.json.decode(msgspec.json.encode(brief)))},
+        )
+        self.assertEqual("committed", published["status"], published)
+        reference = self.json_object(published["reference"])
+        self.transition(
+            fixture,
+            "rebind-attempt:work-a-1",
+            {
+                "branch": brief.branch,
+                "base_revision": brief.base_revision,
+                "brief_artifact_ref_id": reference["artifact_ref_id"],
+            },
+        )
+
+    def traced_board_read(self, fixture: CheckpointFixture) -> tuple[query_models.BoardPortfolio, list[str], set[str]]:
+        """Compose one board read while recording every SQLite statement and table it touches."""
+
+        statements: list[str] = []
+        tables: set[str] = set()
+        original_open = sqlite_store.open_database
+
+        def recording_open(path: Path, mode: OpenMode) -> sqlite3.Connection:
+            connection = original_open(path, mode)
+
+            def authorize(
+                action: int, argument: str | None, _second: str | None, _database: str | None, _trigger: str | None
+            ) -> int:
+                if action == sqlite3.SQLITE_READ and argument is not None:
+                    tables.add(argument)
+                return sqlite3.SQLITE_OK
+
+            connection.set_authorizer(authorize)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with patch.object(sqlite_store, "open_database", recording_open):
+            board = board_reader(fixture.work, fixture.store).read_board(LATER)
+        return board, [value for value in statements if value.lstrip().upper().startswith("SELECT")], tables
+
+    def grow_unrelated_history(self, fixture: CheckpointFixture, count: int) -> None:
+        """Add retained receipts, acceptances and finished attempts that no live card shows."""
+
+        snapshot = fixture.store.validated_snapshot()
+        brief_id = next(
+            value.artifact_ref_id
+            for value in snapshot.artifact_references
+            if value.kind == work_models.ArtifactKind.BRIEF
+        )
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            revision = connection.execute("SELECT revision FROM project_meta").fetchone()[0]
+            for index in range(count):
+                subject = f"finished-{index}-1"
+                connection.execute(
+                    """
+                    INSERT INTO attempts (
+                        attempt_id, item_id, state, branch, base_revision, provenance, brief_artifact_ref_id,
+                        brief_artifact_kind, candidate_revision, candidate_recorded_at, accepted_scope_revision,
+                        accepted_scope_digest, subject_revision, recorded_at, updated_at
+                    ) VALUES (?, 'work-b', 'done', 'old', 'base', 'test', ?, 'brief', NULL, NULL, 1, ?, 1, ?, ?)
+                    """,
+                    (subject, brief_id, "0" * 64, SQLITE_NOW.isoformat(), SQLITE_NOW.isoformat()),
+                )
+                for schema in ("checkpoint-acceptance/v2", "transition-receipt/v1"):
+                    revision += 1
+                    connection.execute(
+                        """
+                        INSERT INTO transition_history (
+                            project_revision, action_id, action_kind, subject_id, authorization_kind, input_schema,
+                            input_json, outcome_schema, outcome_json, committed_at
+                        ) VALUES (?, 'accept-checkpoint:old', 'accept-checkpoint', ?, 'project', 'decision/v1', '{}',
+                                  ?, '{}', ?)
+                        """,
+                        (revision, subject, schema, SQLITE_NOW.isoformat()),
+                    )
+            connection.execute("UPDATE project_meta SET revision = ?", (revision,))
+
+    def test_board_read_stays_selected_and_bounded_as_unrelated_history_grows(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework.")
+        candidate = self.submit_candidate(fixture, "reviewed")
+        self.record_ready(fixture, candidate)
+        before, before_statements, tables = self.traced_board_read(fixture)
+
+        self.grow_unrelated_history(fixture, 30)
+        after, after_statements, _tables = self.traced_board_read(fixture)
+
+        self.assertEqual(before, after)
+        self.assertEqual(len(before_statements), len(after_statements))
+        keyed = [value for value in after_statements if "artifact_key = '" in value]
+        self.assertEqual(1, len(keyed), keyed)
+        self.assertTrue({"transition_history", "artifact_refs", "work_item_definition_revisions"} <= tables)
+        self.assertNotIn("preparation_leases", tables)
+        records = fixture.store.read_board_records(LATER).records
+        self.assertEqual(["work-a-1"], [str(value.attempt_id) for value in records.attempts])
+        self.assertTrue(
+            all(str(value.subject_id) == "work-a-1" for value in records.attempts[0].checkpoint_acceptances)
+        )
+        live = {value.overview.item_id for value in after.items}
+        self.assertEqual(live, {str(value.item_id) for value in records.definition_histories})
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+            plans = {
+                statement: " ".join(row[3] for row in connection.execute(f"EXPLAIN QUERY PLAN {statement}"))
+                for statement in after_statements
+            }
+        expected_indexes = {
+            "FROM attempts INDEXED BY one_live_attempt_per_item": "one_live_attempt_per_item",
+            "WHERE project_revision IN": "project_revision",
+            "outcome_schema = 'checkpoint-acceptance/v2'": "checkpoint_history_by_subject",
+            "FROM work_item_definition_revisions": "sqlite_autoindex_work_item_definition_revisions_1",
+            "artifact_ref_id IN": "INTEGER PRIMARY KEY",
+            "kind = 'evidence' AND artifact_key IN": "sqlite_autoindex_artifact_refs",
+        }
+        for marker, index in expected_indexes.items():
+            selected = [plan for statement, plan in plans.items() if marker in statement]
+            self.assertTrue(selected, marker)
+            self.assertTrue(all(index in plan for plan in selected), (marker, selected))
+
+    def test_where_it_stands_follows_the_current_brief_and_latest_receipt_through_the_workflow(self) -> None:
+        fixture = self.checkpoint_fixture()
+        reason = "Missing: `views` evidence for criterion 2."
+        returned = self.return_for_review(fixture, reason)
+
+        standing = self.standing(fixture)
+        checkpoint = self.json_object(standing["checkpoint"])
+        brief_reference = fixture.store.read_latest_artifact_reference(work_models.ArtifactKind.BRIEF, "work-a-1")
+        assert brief_reference is not None
+        self.assertEqual(
+            {
+                "kind": "checkpoint",
+                "checkpoint_id": fixture.brief.checkpoint.checkpoint_id,
+                "title": fixture.brief.checkpoint.title,
+                "brief_revision": brief_reference.revision,
+                "brief_accepted_at": _utc_instant(brief_reference.created_at),
+            },
+            {key: value for key, value in checkpoint.items() if key != "remaining_work"},
+        )
+        disposition = fixture.brief.checkpoint.disposition
+        assert isinstance(disposition, work_brief_models.ContinueCheckpointDisposition)
+        self.assertEqual({"kind": "recorded", "text": disposition.remaining_work}, checkpoint["remaining_work"])
+        condition = self.condition(fixture)
+        self.assertEqual(
+            ("returned", self.committed_at(fixture, returned), reason),
+            (condition["kind"], condition["at"], condition["text"]),
+        )
+        self.assertEqual([], standing["milestones"])
+        self.assert_board_parity(fixture)
+
+        self.close_prerequisite(fixture)
+        self.transition(fixture, "pause:work-a-1", {"reason": "Wait for the maintainer."})
+        paused = self.condition(fixture)
+        self.assertEqual(
+            ("paused", self.committed_at(fixture, self.latest_history_id(fixture)), "Wait for the maintainer."),
+            (paused["kind"], paused["at"], paused["text"]),
+        )
+        self.update_receipt(
+            fixture,
+            self.latest_history_id(fixture),
+            outcome_json=json.dumps({"evidence": None, "outcome": "pause"}, separators=(",", ":")),
+        )
+        self.rebuild(fixture)
+        unrecorded = self.condition(fixture)
+        self.assertEqual(("paused", None), (unrecorded["kind"], unrecorded["text"]))
+        self.assertIsNotNone(unrecorded["absence"])
+
+        self.transition(fixture, "resume:work-a", {})
+        self.assertEqual("resumed", self.condition(fixture)["kind"])
+        rebound = replace_struct(
+            fixture.brief,
+            artifact_revision=2,
+            checkpoint=replace_struct(
+                fixture.brief.checkpoint,
+                title="Second checkpoint title",
+                disposition=work_brief_models.TerminalCheckpointDisposition(),
+            ),
+        )
+        self.publish_rebind(fixture, rebound)
+        checkpoint = self.json_object(self.standing(fixture)["checkpoint"])
+        self.assertEqual(("Second checkpoint title", 2), (checkpoint["title"], checkpoint["brief_revision"]))
+        self.assertEqual({"kind": "final"}, checkpoint["remaining_work"])
+        self.assertEqual(("rebound", None), (self.condition(fixture)["kind"], self.condition(fixture)["text"]))
+
+        candidate = self.submit_candidate(fixture, "resubmitted")
+        submitted = self.condition(fixture)
+        self.assertEqual(
+            ("submitted", self.committed_at(fixture, self.latest_history_id(fixture))),
+            (submitted["kind"], submitted["at"]),
+        )
+        recorded = self.record_ready(fixture, candidate)
+        ready = self.condition(fixture)
+        ready_reference = next(
+            value
+            for value in fixture.store.validated_snapshot().artifact_references
+            if value.artifact_ref_id == self.json_object(recorded["candidate_review"])["artifact_ref_id"]
+        )
+        self.assertEqual(("reviewed-ready", _utc_instant(ready_reference.created_at)), (ready["kind"], ready["at"]))
+        self.assertIsNone(recorded["warning"])
+        self.assert_board_parity(fixture)
+        reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        self.assertEqual(
+            (fixture.work / "views" / "board.html").read_bytes(),
+            derive_expected_view_bytes(
+                reloaded, {}, loaded_board_history(fixture.work, reloaded), now=SQLITE_NOW
+            ).views["board.html"],
+        )
+
+        (fixture.work / "attempts" / "work-a-1" / "review.md").write_text("A later review.\n", encoding="utf-8")
+        _status, stdout, _stderr = self.run_cli(*fixture.common, "validate", "--json")
+        self.assertIn("board.html", stdout)
+        self.rebuild(fixture)
+        self.assertEqual("submitted", self.condition(fixture)["kind"])
+        self.assert_board_parity(fixture)
+
+    def test_ready_record_leaf_refresh_failure_is_a_view_warning_with_the_record_intact(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework.")
+        candidate = self.submit_candidate(fixture, "reviewed")
+        original_open = os.open
+
+        def refuse_board_lock(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+            if Path(path).name == "board.lock":
+                raise PermissionError("board lock denied")
+            return original_open(path, flags, mode)
+
+        with patch.object(views_module.os, "open", refuse_board_lock):
+            recorded = self.record_ready(fixture, candidate)
+
+        warning = self.json_object(recorded["warning"])
+        self.assertIn("views rebuild", str(warning["recovery"]))
+        self.assertEqual("submitted", self.condition(fixture)["kind"])
+        self.assertEqual("ready", self.verdict(fixture)["kind"])
+        self.rebuild(fixture)
+        self.assertEqual("reviewed-ready", self.condition(fixture)["kind"])
+
+    def test_absent_evidence_or_an_unreadable_ready_record_leaves_the_attempt_submitted_for_review(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework.")
+        candidate = self.submit_candidate(fixture, "reviewed")
+        recorded = self.record_ready(fixture, candidate)
+        self.assertEqual("reviewed-ready", self.condition(fixture)["kind"])
+        result = fixture.work / "attempts" / "work-a-1" / "result.md"
+        kept = result.read_bytes()
+        result.unlink()
+        _board, statements, _tables = self.traced_board_read(fixture)
+        self.assertEqual([], [value for value in statements if "artifact_key = '" in value])
+        self.rebuild(fixture)
+        self.assertEqual("submitted", self.condition(fixture)["kind"])
+        result.write_bytes(kept)
+        selector = str(self.json_object(recorded["candidate_review"])["selector"])
+        (fixture.work / selector).write_bytes(b"damaged\n")
+        self.rebuild(fixture)
+        self.assertEqual("submitted", self.condition(fixture)["kind"])
+
+    def test_milestones_list_only_the_open_attempts_acceptances_newest_first(self) -> None:
+        fixture = self.accepted_package_fixture()
+        accepted = self.latest_history_id(fixture)
+        condition = self.condition(fixture)
+        self.assertEqual(("checkpoint-accepted", "Accepted evidence."), (condition["kind"], condition["text"]))
+        self.assert_board_parity(fixture)
+        outcome = json.dumps(
+            {
+                "candidate": "c",
+                "checkpoint": "later-checkpoint",
+                "evidence": "Later evidence.",
+                "outcome": "accept-checkpoint",
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            revision = connection.execute("SELECT revision FROM project_meta").fetchone()[0]
+            for offset, subject in enumerate(("work-a-1", "other-attempt-1", "done-attempt-1", "work-a-1")):
+                connection.execute(
+                    """
+                    INSERT INTO transition_history (
+                        project_revision, action_id, action_kind, subject_id, authorization_kind, input_schema,
+                        input_json, outcome_schema, outcome_json, committed_at
+                    ) VALUES (?, ?, 'accept-checkpoint', ?, 'project', 'decision/v1', '{}',
+                              'checkpoint-acceptance/v2', ?, ?)
+                    """,
+                    (
+                        revision + 1 + offset,
+                        f"accept-checkpoint:{subject}",
+                        subject,
+                        outcome if offset < 3 else '{"not":"an acceptance"}',
+                        (LATER + timedelta(minutes=offset)).isoformat(),
+                    ),
+                )
+            connection.execute("UPDATE project_meta SET revision = ?", (revision + 4,))
+        self.rebuild(fixture)
+
+        milestones = [self.json_object(value) for value in self.json_array(self.standing(fixture)["milestones"])]
+        self.assertEqual(
+            [
+                ("unreadable", _utc_instant(LATER + timedelta(minutes=3))),
+                ("accepted", _utc_instant(LATER)),
+                ("accepted", self.committed_at(fixture, accepted)),
+            ],
+            [(value["kind"], value.get("accepted_at", value.get("committed_at"))) for value in milestones],
+        )
+        self.assertEqual(
+            [("later-checkpoint", "Later evidence."), (fixture.brief.checkpoint.checkpoint_id, "Accepted evidence.")],
+            [(value["checkpoint_id"], value["evidence"]) for value in milestones if value["kind"] == "accepted"],
+        )
+        context = fixture.store.read_completion_context(AttemptId("work-a-1"))
+        assert context is not None
+        self.assertEqual(
+            [value["history_id"] for value in reversed(milestones)],
+            [int(value.receipt.history_id) for value in context.checkpoints],
+        )
+
+    def test_scope_changes_list_each_revision_with_its_reason_and_mechanical_differences(self) -> None:
+        fixture = self.checkpoint_fixture()
+        current = call_native_tool(
+            mcp_server.ITEM_DEFINITION_TOOL,
+            {"request": {**self.roots(fixture), "operation": "current", "item_id": "work-a"}},
+        )
+        definition = self.json_object(current["definition"])
+        scope = [str(value) for value in self.json_array(definition["scope"])]
+        obligations = [self.json_object(value) for value in self.json_array(definition["obligations"])]
+        revised: JsonObject = {
+            **definition,
+            "title": "Revised title",
+            "scope": [scope[0] + " Edited.", *scope[1:]],
+            "obligations": [
+                {**obligations[0], "statement": "Changed statement."},
+                {"obligation_id": "added-obligation", "statement": "Added.", "deferral_policy": "allowed"},
+            ],
+        }
+        self.transition(
+            fixture,
+            "revise-item:work-a",
+            {
+                "schema": "pinboard-item-revision/v1",
+                "expected_revision": current["definition_revision"],
+                "expected_digest": current["definition_digest"],
+                "source_task": "review-owner",
+                "reason": "Narrow the scope.",
+                "definition": revised,
+            },
+        )
+
+        item = self.board_item(fixture)
+        revisions = [self.json_object(value) for value in self.json_array(item["scope_revisions"])]
+        history = fixture.store.read_item_definition_history(WorkItemId("work-a"), limit=10, before_revision=None)
+        self.assertEqual(
+            [(value.revision, _utc_instant(value.accepted_at), value.reason) for value in reversed(history.revisions)],
+            [(value["revision"], value["accepted_at"], value["reason"]) for value in revisions],
+        )
+        self.assertEqual({"kind": "original"}, revisions[0]["changes"])
+        changes = self.json_object(revisions[-1]["changes"])
+        self.assertEqual(
+            [{"field": "Title", "before": definition["title"], "after": "Revised title"}], changes["texts"]
+        )
+        self.assertEqual(
+            [{"field": "Scope", "added": [scope[0] + " Edited."], "removed": [scope[0]]}], changes["lists"]
+        )
+        self.assertEqual(["added-obligation (deferral allowed): Added."], changes["obligations_added"])
+        self.assertEqual([], changes["obligations_removed"])
+        changed = [self.json_object(value) for value in self.json_array(changes["obligations_changed"])]
+        self.assertEqual(
+            [obligations[0]["statement"], "Changed statement."],
+            [str(changed[0][key]).partition("): ")[2] for key in ("before", "after")],
+        )
+        scope_page = self.json_object(item["scope"])
+        self.assertEqual(revisions[-1]["revision"], scope_page["revision"])
+        self.assertEqual(revised["scope"], scope_page["scope"])
+        self.assertNotIn(
+            "work-c", [str(self.json_object(value)["reason"]) for value in self.json_array(item["scope_revisions"])]
+        )
+        self.assert_board_parity(fixture)
+
+    def test_record_text_round_trips_inert_and_multiline_remaining_work_stays_verbatim(self) -> None:
+        fixture = self.checkpoint_fixture()
+        hostile_reason = "Label: `</script>` & <b>bold</b> \u2028 next"
+        self.return_for_review(fixture, hostile_reason)
+        self.assertEqual(hostile_reason, self.condition(fixture)["text"])
+        remaining = "Lead </SCRIPT> line\n\n- Item with `code` & <i>tag</i>\n1. Numbered\u2029item\nReferences: a.md"
+        checkpoint = fixture.brief.checkpoint
+        self.publish_rebind(
+            fixture,
+            replace_struct(
+                fixture.brief,
+                artifact_revision=2,
+                checkpoint=replace_struct(
+                    checkpoint,
+                    title=HOSTILE_TITLE,
+                    disposition=work_brief_models.ContinueCheckpointDisposition(remaining),
+                ),
+            ),
+        )
+        definition = call_native_tool(
+            mcp_server.ITEM_DEFINITION_TOOL,
+            {"request": {**self.roots(fixture), "operation": "current", "item_id": "work-a"}},
+        )
+        self.transition(
+            fixture,
+            "revise-item:work-a",
+            {
+                "schema": "pinboard-item-revision/v1",
+                "expected_revision": definition["definition_revision"],
+                "expected_digest": definition["definition_digest"],
+                "source_task": "review-owner",
+                "reason": hostile_reason,
+                "definition": {**self.json_object(definition["definition"]), "unlock": HOSTILE_INTAKE},
+            },
+        )
+
+        html = (fixture.work / "views" / "board.html").read_text(encoding="utf-8")
+        for raw in ("</script><img", "<b>bold", "</SCRIPT>", "<i>tag", "\u2028", "\u2029", "&amp;"):
+            self.assertNotIn(raw, html)
+        self.assertEqual(2, html.lower().count("</script"))
+        checkpoint_page = self.json_object(self.standing(fixture)["checkpoint"])
+        self.assertEqual(HOSTILE_TITLE, checkpoint_page["title"])
+        self.assertEqual({"kind": "recorded", "text": remaining}, checkpoint_page["remaining_work"])
+        revision = self.json_object(self.json_array(self.board_item(fixture)["scope_revisions"])[-1])
+        self.assertEqual(hostile_reason, revision["reason"])
+        self.assertEqual(
+            [
+                {
+                    "field": "What this unlocks",
+                    "before": self.json_object(definition["definition"])["unlock"],
+                    "after": HOSTILE_INTAKE,
+                }
+            ],
+            self.json_object(revision["changes"])["texts"],
+        )
+        script = html.rpartition("<script>")[2]
+        self.assertNotIn("innerHTML", script)
+        self.assertNotIn("insertAdjacentHTML", script)
+        self.assert_board_parity(fixture)
+
+    def test_unreadable_brief_is_a_card_notice_while_the_board_refreshes_and_validation_agrees(self) -> None:
+        fixture = self.checkpoint_fixture()
+        self.return_for_review(fixture, "Rework.")
+        brief_reference = fixture.store.read_latest_artifact_reference(work_models.ArtifactKind.BRIEF, "work-a-1")
+        assert brief_reference is not None
+        (fixture.work / brief_reference.selector).write_bytes(b"{}\n")
+
+        self.close_prerequisite(fixture)
+
+        standing = self.standing(fixture)
+        notice = self.json_object(standing["checkpoint"])
+        self.assertEqual(("unreadable-brief", "work-a-1"), (notice["kind"], notice["attempt_id"]))
+        self.assertEqual("returned", self.json_object(standing["condition"])["kind"])
+        self.assertNotIn(
+            "work-c", [value["item_id"] for value in _page_items((fixture.work / "views" / "board.html").read_text())]
+        )
+        _status, stdout, _stderr = self.run_cli(*fixture.common, "validate", "--json")
+        report = self.json_object(json.loads(stdout))
+        codes = {str(self.json_object(value)["code"]) for value in self.json_array(report["diagnostics"])}
+        self.assertIn("STORAGE_INVARIANT_VIOLATION", codes)
+        board_drift = [
+            value
+            for value in self.json_array(report["diagnostics"])
+            if str(self.json_object(value)["path"]).endswith(BOARD_FILES)
+        ]
+        self.assertEqual([], board_drift)
+
+    def test_damaged_current_format_receipt_fails_only_its_card_and_retained_shapes_render_their_facts(self) -> None:
+        fixture = self.checkpoint_fixture()
+        returned = self.return_for_review(fixture, "Current reason.")
+        self.update_receipt(fixture, returned, outcome_json='{"evidence":"Current reason."}')
+        self.rebuild(fixture)
+        damaged = self.condition(fixture)
+        self.assertEqual("unreadable", damaged["kind"])
+        self.assertIn(str(returned), str(damaged["label"]))
+        self.assertTrue(
+            any(
+                value["item_id"] == "work-c"
+                for value in _page_items((fixture.work / "views" / "board.html").read_text())
+            )
+        )
+        self.assert_board_parity(fixture)
+        self.update_receipt(
+            fixture,
+            returned,
+            input_schema="decision/v1",
+            input_json="{}",
+            outcome_json='{"evidence":"Retained reason.","outcome":"return-for-correction"}',
+        )
+        self.rebuild(fixture)
+        retained = self.condition(fixture)
+        self.assertEqual(("returned", "Retained reason."), (retained["kind"], retained["text"]))
+        self.assert_board_parity(fixture)
 
 
 if __name__ == "__main__":

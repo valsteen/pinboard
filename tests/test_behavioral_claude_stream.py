@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import override
 from unittest import mock
 
-from evals.behavioral import claude_driver, oneshot, processes
+from evals.behavioral import claude_driver, cli, oneshot, processes
+from evals.behavioral.records import ClaudeEffort, ClaudeRunDetails
 
 type Json = str | int | float | bool | list[Json] | dict[str, Json] | None
 
@@ -100,7 +101,7 @@ class ClaudeTurnTest(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.plugin_root = self.root / "plugin"
-        self.session = claude_driver.ClaudeSession.start(self.plugin_root, "model", self.root, ("default",))
+        self.session = claude_driver.ClaudeSession.start(self.plugin_root, "model", None, self.root, ("default",))
 
     def run_turns(self, fake: FakeClaude, count: int) -> list[claude_driver.ClaudeTurn]:
         with mock.patch.object(claude_driver.processes, "run_tool", fake):
@@ -169,6 +170,78 @@ class ClaudeTurnTest(unittest.TestCase):
         self.assertIsNotNone(turn.problem)
 
 
+class ReasoningEffortTest(unittest.TestCase):
+    RUN = (
+        "run",
+        "claude",
+        "--export",
+        "export",
+        "--scenario-set",
+        "set.json",
+        "--variant",
+        "candidate",
+        "--runs",
+        "1",
+        "--model",
+        "model",
+        "--out",
+        "out",
+        "--worlds",
+        "worlds",
+        "--cap-usd",
+        "1",
+    )
+
+    def sent_efforts(self, effort: ClaudeEffort | None) -> tuple[list[list[str]], ClaudeRunDetails]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = claude_driver.ClaudeSession.start(root / "plugin", "model", effort, root, ("default",))
+            fake = FakeClaude(
+                streams=[
+                    [init_event(root / "plugin"), result_event(0.1, subtype="success", is_error=False)],
+                    [result_event(0.2, subtype="success", is_error=False)],
+                ],
+                exit_codes=[0, 0],
+                debug_log=PROVENANCE.format(user=0),
+                calls=[],
+            )
+            with mock.patch.object(claude_driver.processes, "run_tool", fake):
+                for index in (1, 2):
+                    session.turn(index, "question", None, root / f"turn-{index}.jsonl")
+            sent = [
+                call.arguments[call.arguments.index("--effort") : call.arguments.index("--effort") + 2]
+                if "--effort" in call.arguments
+                else []
+                for call in fake.calls
+            ]
+            return sent, session.details()
+
+    def test_a_requested_effort_reaches_every_turn_and_the_run_details(self) -> None:
+        command = cli.decode([*self.RUN, "--reasoning-effort", "high"])
+        assert isinstance(command, cli.RunClaude)
+        self.assertIs(ClaudeEffort.HIGH, command.reasoning_effort)
+        sent, details = self.sent_efforts(command.reasoning_effort)
+        self.assertEqual([["--effort", "high"], ["--effort", "high"]], sent)
+        self.assertIs(ClaudeEffort.HIGH, details.reasoning_effort)
+
+    def test_an_omitted_effort_sends_no_effort_argument_and_records_none(self) -> None:
+        command = cli.decode(list(self.RUN))
+        assert isinstance(command, cli.RunClaude)
+        self.assertIsNone(command.reasoning_effort)
+        sent, details = self.sent_efforts(command.reasoning_effort)
+        self.assertEqual([[], []], sent)
+        self.assertIsNone(details.reasoning_effort)
+
+    def test_an_unsupported_effort_is_rejected_by_decode_before_any_session(self) -> None:
+        with (
+            mock.patch.object(claude_driver.processes, "run_tool") as paid,
+            mock.patch("sys.stderr"),
+            self.assertRaises(SystemExit),
+        ):
+            cli.decode([*self.RUN, "--reasoning-effort", "minimal"])
+        paid.assert_not_called()
+
+
 class SkillProvenanceTest(unittest.TestCase):
     @override
     def setUp(self) -> None:
@@ -178,7 +251,7 @@ class SkillProvenanceTest(unittest.TestCase):
         self.plugin_root = self.root / "plugin"
 
     def session_after_first_turn(self, debug_log: str) -> claude_driver.ClaudeSession:
-        session = claude_driver.ClaudeSession.start(self.plugin_root, "model", self.root, ("default",))
+        session = claude_driver.ClaudeSession.start(self.plugin_root, "model", None, self.root, ("default",))
         fake = FakeClaude(
             streams=[[init_event(self.plugin_root), result_event(0.1, subtype="success", is_error=False)]],
             exit_codes=[0],
@@ -244,7 +317,7 @@ class CleanEnvironmentTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, host, clear=True):
             root = Path(temporary)
-            session = claude_driver.ClaudeSession.start(root / "plugin", "model", root, ("default",))
+            session = claude_driver.ClaudeSession.start(root / "plugin", "model", None, root, ("default",))
             fake = FakeClaude(
                 streams=[
                     [init_event(root / "plugin"), result_event(0.1, subtype="success", is_error=False)],

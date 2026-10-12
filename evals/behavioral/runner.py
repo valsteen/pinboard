@@ -26,6 +26,7 @@ from evals.behavioral.export import SeedFailure
 from evals.behavioral.layout import RUN_RECORD, SCENARIO_RECORD, SCORER_INPUT, Layout
 from evals.behavioral.processes import GitError
 from evals.behavioral.records import (
+    ClaudeEffort,
     Completed,
     ExportRecord,
     Failed,
@@ -101,7 +102,7 @@ class RunState:
         outcome: RunOutcome,
     ) -> RunRecord:
         record = RunRecord(
-            schema="pinboard-behavioral-run/v3",
+            schema="pinboard-behavioral-run/v4",
             registration=self.plan.scenarios.registration,
             scenario_sha256=hashlib.sha256(self.plan.scenarios.content(self.scenario)).hexdigest(),
             run=self.key,
@@ -158,12 +159,20 @@ def start(plan: RunPlan, scenario: Scenario, key: RunKey) -> RunState:
     return RunState(plan, scenario, key, directory, now(), [], [], [], [])
 
 
-def run_claude(plan: RunPlan, budget: Budget, jobs: int) -> list[str]:
+@dataclass(frozen=True)
+class ClaudePlan:
+    run: RunPlan
+    reasoning_effort: ClaudeEffort | None
+
+
+def run_claude(plan: ClaudePlan, budget: Budget, jobs: int) -> list[str]:
     """Run every planned Claude Code run; return the runs that did not start because the cap was reached.
 
     An isolation breach in any run stops every run that has not started yet and is raised once the running ones end.
     """
-    return execute(plan, budget, jobs, Category.CLAUDE_AGENT_RUN, lambda scenario, key: claude_run(plan, scenario, key))
+    return execute(
+        plan.run, budget, jobs, Category.CLAUDE_AGENT_RUN, lambda scenario, key: claude_run(plan, scenario, key)
+    )
 
 
 def execute(
@@ -199,10 +208,17 @@ def execute(
     return sorted(skipped)
 
 
-def claude_run(plan: RunPlan, scenario: Scenario, key: RunKey) -> RunRecord:
-    state = start(plan, scenario, key)
+def claude_run(plan: ClaudePlan, scenario: Scenario, key: RunKey) -> RunRecord:
+    run_plan = plan.run
+    state = start(run_plan, scenario, key)
     version = claude_driver.claude_version()
-    session = ClaudeSession.start(Path(plan.export.plugin_root), plan.model, state.world_root() / "tally", ("default",))
+    session = ClaudeSession.start(
+        Path(run_plan.export.plugin_root),
+        run_plan.model,
+        plan.reasoning_effort,
+        state.world_root() / "tally",
+        ("default",),
+    )
     outcome: RunOutcome = Completed()
     interruption: BaseException | None = None
     try:
@@ -210,9 +226,9 @@ def claude_run(plan: RunPlan, scenario: Scenario, key: RunKey) -> RunRecord:
             state.world_root(),
             scenario,
             Runtime.CLAUDE_CODE,
-            Path(plan.export.plugin_root),
+            Path(run_plan.export.plugin_root),
             str(uuid.uuid4()),
-            plan.window,
+            run_plan.window,
         )
         state.snapshot(built)
         outcome = claude_turns(state, built, session)

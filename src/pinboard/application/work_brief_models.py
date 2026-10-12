@@ -8,6 +8,7 @@ from pinboard.application import action_models, stored_state
 from pinboard.application.brief_source_models import BriefSourceFailure, parse_authority_selector
 from pinboard.domain import work_models
 from pinboard.domain.errors import DescribedCode
+from pinboard.domain.history import RecordText
 
 
 class WorkBriefErrorCode(DescribedCode):
@@ -891,7 +892,7 @@ class CheckpointReviewPackageV3(
     attempt_id: KebabId
     item_id: KebabId
     candidate: NonEmptyLine
-    acceptance_evidence: NonEmptyLine
+    acceptance_evidence: RecordText
     accepted_scope: AcceptedScope
     checkpoint: CheckpointIdentity
     candidate_snapshot: PortableArtifactIdentity

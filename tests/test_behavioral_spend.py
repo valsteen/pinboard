@@ -84,7 +84,9 @@ def record_run(layout: Layout, key: RunKey, costs: list[float]) -> None:
     state.finish(
         Runtime.CLAUDE_CODE,
         "test",
-        ClaudeRunDetails(permission_mode="bypassPermissions", cost_basis="claude total_cost_usd"),
+        ClaudeRunDetails(
+            permission_mode="bypassPermissions", cost_basis="claude total_cost_usd", reasoning_effort=None
+        ),
         [],
         [],
         Completed(),

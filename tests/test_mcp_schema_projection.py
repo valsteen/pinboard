@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 from mcp_types import Tool
 
+from pinboard.application import action_models
+from pinboard.domain import decision_models
 from pinboard.mcp import contract_schemas, execution, server
 from pinboard.mcp.contracts import JsonSchemaValue
 
@@ -45,7 +47,116 @@ def advertised_matches(field: dict[str, JsonSchemaValue], value: str) -> bool:
     return True
 
 
+RECORD_TEXT = "Lead sentence.\n\nProblem:\n- `views` drops a line.\n1. Indent it.\n\nReferences: review.md"
+RECORD_TEXT_VALUES = (RECORD_TEXT, "x", "  surrounding whitespace  ", "carriage\rreturn", "a\n")
+
+
+def advertised_tools() -> dict[str, Tool]:
+    executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+    try:
+        created = server.create_server(executor, execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256))
+        return {tool.name: tool for tool in asyncio.run(created.list_tools())}
+    finally:
+        executor.shutdown()
+
+
+def schema_field(schema: dict[str, JsonSchemaValue], definition: str, field: str) -> dict[str, JsonSchemaValue]:
+    definitions = schema["$defs"]
+    assert isinstance(definitions, dict)
+    record = definitions[definition]
+    assert isinstance(record, dict)
+    properties = record["properties"]
+    assert isinstance(properties, dict)
+    value = properties[field]
+    assert isinstance(value, dict)
+    return value
+
+
+def accepts_record_text(field: dict[str, JsonSchemaValue]) -> bool:
+    """Decide JSON Schema acceptance of every record-text value for a field without a pattern."""
+
+    minimum = field.get("minLength")
+    return (
+        set(field) == {"type", "minLength"}
+        and field["type"] == "string"
+        and isinstance(minimum, int)
+        and all(len(value) >= minimum for value in RECORD_TEXT_VALUES)
+        and minimum == 1
+    )
+
+
 class McpSchemaProjectionTest(unittest.TestCase):
+    def test_record_text_fields_advertise_line_breaks_and_other_fields_stay_single_line(self) -> None:
+        tools = advertised_tools()
+        transition = tools[server.TRANSITION_TOOL].input_schema
+        dispatch = tools[server.DISPATCH_TOOL].input_schema
+        close = tools[server.CLOSE_TOOL].input_schema
+        for schema, definition, field in (
+            (transition, "ReasonInputPayload", "reason"),
+            (transition, "AcceptCheckpointInputPayload", "evidence"),
+            (transition, "AcceptReviewAndContinueInputPayload", "evidence"),
+            (transition, "ReviseItemInputPayload", "reason"),
+            (dispatch, "ReasonInputPayload", "reason"),
+        ):
+            with self.subTest(definition=definition, field=field):
+                self.assertTrue(accepts_record_text(schema_field(schema, definition, field)))
+        for review in ("CorrectionSourceReview", "ReusedCoverageCorrectionReview", "LocalCorrectionSourceReview"):
+            with self.subTest(review=review):
+                self.assertEqual(
+                    {"$ref": "#/$defs/ReasonInputPayload"}, schema_field(dispatch, review, "correction_input")
+                )
+        for schema, definition, field in (
+            (transition, "RejectProposalInputPayload", "reason"),
+            (transition, "BlockInputPayload", "reason"),
+            (transition, "EvidenceInputPayload", "evidence"),
+            (transition, "DeferInputPayload", "reopen_condition"),
+            (transition, "AcceptCheckpointInputPayload", "candidate"),
+            (close, "CloseInputPayload", "reason"),
+            (close, "CloseInputPayload", "human_decision"),
+        ):
+            with self.subTest(definition=definition, field=field):
+                single_line = schema_field(schema, definition, field)
+                self.assertTrue(advertised_matches(single_line, "one line"))
+                self.assertFalse(advertised_matches(single_line, RECORD_TEXT))
+                self.assertFalse(advertised_matches(single_line, "a\n"))
+        for leaf, payload in (
+            ("pause", "ReasonInputPayload"),
+            ("return-for-correction", "ReasonInputPayload"),
+            ("reject-proposal", "RejectProposalInputPayload"),
+        ):
+            with self.subTest(leaf=leaf):
+                request = schema_field(
+                    transition, f"ProjectTransitionRequest_typing.Literal__{leaf}____{payload}_", "payload"
+                )
+                self.assertEqual({"$ref": f"#/$defs/{payload}"}, request)
+
+    def test_actions_payload_schemas_accept_record_text_only_for_record_fields(self) -> None:
+        for kind, field in (
+            (decision_models.ActionKind.PAUSE, "reason"),
+            (decision_models.ActionKind.RETURN_FOR_CORRECTION, "reason"),
+            (decision_models.ActionKind.ACCEPT_CHECKPOINT, "evidence"),
+            (decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE, "evidence"),
+            (decision_models.ActionKind.REVISE_ITEM, "reason"),
+        ):
+            with self.subTest(kind=kind):
+                schema = action_models.action_payload_schema(kind)
+                assert schema is not None
+                reference = schema["$ref"]
+                assert isinstance(reference, str)
+                self.assertTrue(accepts_record_text(schema_field(schema, reference.rpartition("/")[2], field)))
+        for kind, definition, field in (
+            (decision_models.ActionKind.REJECT_PROPOSAL, "RejectProposalInputPayload", "reason"),
+            (decision_models.ActionKind.BLOCK, "BlockInputPayload", "reason"),
+            (decision_models.ActionKind.DEFER, "DeferInputPayload", "reopen_condition"),
+        ):
+            with self.subTest(kind=kind):
+                schema = action_models.action_payload_schema(kind)
+                assert schema is not None
+                pattern = schema_field(schema, definition, field)["pattern"]
+                assert isinstance(pattern, str)
+                self.assertIsNotNone(re.search(pattern, "one line"))
+                self.assertIsNone(re.search(pattern, RECORD_TEXT))
+
     def test_all_registered_field_patterns_preserve_representative_values(self) -> None:
         executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)

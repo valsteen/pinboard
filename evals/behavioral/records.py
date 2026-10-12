@@ -34,6 +34,7 @@ class WorldExtra(Enum):
     SKIP_COMMENTS_EXPERIMENT = "skip-comments-experiment"
     REVIEWED_CHANGE = "reviewed-change"
     UNREVIEWED_CHANGE = "unreviewed-change"
+    CONTINUE_CHECKPOINT_REVIEW = "continue-checkpoint-review"
 
 
 class Hook(Enum):
@@ -151,9 +152,25 @@ class TurnEvidence(Record, frozen=True):
     permission_denials: list[PermissionDenial]
 
 
+class ClaudeEffort(Enum):
+    """The effort levels Claude Code's ``--effort`` option accepts for one session."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
+    MAX = "max"
+
+
 class ClaudeRunDetails(Record, frozen=True, tag="claude-code"):
+    """``reasoning_effort`` is the effort the harness requested on every turn, or ``None`` when it sent none.
+
+    The driver reads no applied level from the stream, so the record names only the requested effort.
+    """
+
     permission_mode: Literal["bypassPermissions"]
     cost_basis: Literal["claude total_cost_usd"]
+    reasoning_effort: ClaudeEffort | None
 
 
 class CodexRunDetails(Record, frozen=True, tag="codex"):
@@ -192,7 +209,7 @@ class SeededItem(Record, frozen=True):
 
 
 class RunRecord(Record, frozen=True):
-    schema: Literal["pinboard-behavioral-run/v3"]
+    schema: Literal["pinboard-behavioral-run/v4"]
     registration: ScenarioSet
     scenario_sha256: Sha256
 

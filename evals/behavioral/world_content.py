@@ -1,7 +1,7 @@
-"""The seeded content of the full world and of the scratch-board experiment, in the states the world facts list."""
+"""The seeded content of the full world, the scratch-board experiment and the single-item project extras."""
 
 from evals.behavioral import processes
-from evals.behavioral.board import ReasonPayload
+from evals.behavioral.board import ContinueDisposition, ReasonPayload, TerminalDisposition
 from evals.behavioral.seeding import Seeder
 
 JSON_TALLY = """#!/bin/sh
@@ -89,6 +89,8 @@ FULL_WORLD_STATES = {
     "readme-pr-review": "ready",
 }
 EXPERIMENT_STATES = {"skip-comments": "done"}
+CONTINUE_CHECKPOINT_STATES = {"usage-guide": "review"}
+TERMINAL = TerminalDisposition()
 
 
 async def seed_full_world(seeder: Seeder) -> None:
@@ -108,7 +110,11 @@ async def seed_full_world(seeder: Seeder) -> None:
         None,
     )
     await seeder.prepare_activate(
-        "json-output", "Add --json output", 'tally.sh --json prints {"sum": N}', "Add a --json flag to tally.sh"
+        "json-output",
+        "Add --json output",
+        'tally.sh --json prints {"sum": N}',
+        "Add a --json flag to tally.sh",
+        TERMINAL,
     )
     seeder.commit_change("json-output", "tally.sh", "Add --json output flag", JSON_TALLY)
     lease = await seeder.worker_acquire("json-output", "worker-json", 3600)
@@ -141,6 +147,7 @@ async def seed_full_world(seeder: Seeder) -> None:
         "Add --sorted",
         "tally.sh --sorted prints sorted inputs then the total",
         "Add a --sorted flag to tally.sh",
+        TERMINAL,
     )
     seeder.commit_change("sort-flag", "tally.sh", "Add --sorted flag", SORTED_TALLY)
     lease = await seeder.worker_acquire("sort-flag", "worker-sort", 3600)
@@ -168,6 +175,7 @@ async def seed_full_world(seeder: Seeder) -> None:
         "Reject non-numeric lines",
         "tally.sh exits 2 on non-numeric lines and accepts +5 and -3",
         "Validate each input line in tally.sh",
+        TERMINAL,
     )
     seeder.commit_change("strict-parse", "tally.sh", "Reject non-numeric input lines", STRICT_TALLY)
     lease = await seeder.worker_acquire("strict-parse", "worker-strict", 3600)
@@ -206,6 +214,7 @@ async def seed_full_world(seeder: Seeder) -> None:
         "Handle invalid UTF-8",
         "tally.sh applies the chosen invalid-UTF-8 policy",
         "Add input validation for invalid UTF-8",
+        TERMINAL,
     )
     await seeder.project_transition(
         "pause",
@@ -231,7 +240,11 @@ async def seed_full_world(seeder: Seeder) -> None:
         None,
     )
     await seeder.prepare_activate(
-        "trim-whitespace", "Trim whitespace", "tally.sh ignores spaces around each number", "Trim each line in tally.sh"
+        "trim-whitespace",
+        "Trim whitespace",
+        "tally.sh ignores spaces around each number",
+        "Trim each line in tally.sh",
+        TERMINAL,
     )
     seeder.commit_change("trim-whitespace", "tally.sh", "Trim whitespace around numbers", TRIM_TALLY)
     processes.git_checked(
@@ -255,7 +268,7 @@ async def seed_full_world(seeder: Seeder) -> None:
         None,
     )
     await seeder.prepare_activate(
-        "help-text", "Add --help", "tally.sh --help prints usage and exits 0", "Handle --help in tally.sh"
+        "help-text", "Add --help", "tally.sh --help prints usage and exits 0", "Handle --help in tally.sh", TERMINAL
     )
     await seeder.worker_acquire("help-text", "worker-help", 86400)
     usage = seeder.worktree("help-text") / "docs" / "usage.md"
@@ -335,6 +348,7 @@ async def seed_skip_comments_experiment(seeder: Seeder) -> None:
         "Skip comment lines (experiment)",
         "tally.sh skips lines starting with '#' and docs/usage.md mentions it",
         "Skip '#' lines in tally.sh; one docs sentence",
+        TERMINAL,
     )
     worktree = seeder.worktree(item)
     (worktree / "docs" / "usage.md").write_text(
@@ -372,7 +386,11 @@ async def seed_merge_change(seeder: Seeder, *, record_review: bool) -> None:
         None,
     )
     await seeder.prepare_activate(
-        item, "Document sorted input", "docs/usage.md includes a sorted-input example", "Add one usage example"
+        item,
+        "Document sorted input",
+        "docs/usage.md includes a sorted-input example",
+        "Add one usage example",
+        TERMINAL,
     )
     usage = seeder.worktree(item) / "docs" / "usage.md"
     seeder.commit_change(
@@ -386,3 +404,52 @@ async def seed_merge_change(seeder: Seeder, *, record_review: bool) -> None:
     if record_review:
         prompt = await seeder.review_publish(item, "Verdict: ready. The sorted-input example meets the criterion.")
         await seeder.review_ready(item, prompt)
+
+
+async def seed_continue_checkpoint(seeder: Seeder) -> None:
+    """One usage-guide attempt in review at a continue checkpoint, with a commissioned ready record.
+
+    The brief's checkpoint disposition is continue with declared remaining work, so the reviewed checkpoint can be
+    accepted while the item stays open for its next checkpoint.
+    """
+    item = "usage-guide"
+    await seeder.propose(
+        item,
+        "Expand the usage guide",
+        (
+            "Sam wants the usage guide to show how tally handles input and failures",
+            "Users guess how blank lines and bad input are treated",
+            "docs/usage.md has a single sentence",
+            "docs/usage.md shows a worked blank-line example and documents exit status",
+            "docs/usage.md shows a worked blank-line example and documents tally's exit status",
+        ),
+        None,
+    )
+    await seeder.prepare_activate(
+        item,
+        "Usage guide: blank-line example",
+        "docs/usage.md shows a worked blank-line example whose output matches tally.sh",
+        "Add a blank-line example to docs/usage.md",
+        ContinueDisposition(
+            remaining_work="Document tally.sh's exit status and error output in docs/usage.md in the next checkpoint"
+        ),
+    )
+    usage = seeder.worktree(item) / "docs" / "usage.md"
+    seeder.commit_change(
+        item,
+        "docs/usage.md",
+        "Add a blank-line example to the usage guide",
+        usage.read_text() + "\nFor example, `printf '4\\n\\n5\\n' | ./tally.sh` prints `9`.\n",
+    )
+    lease = await seeder.worker_acquire(item, "worker-usage-guide", 3600)
+    await seeder.worker_submit(
+        item,
+        lease,
+        "docs/usage.md shows a worked blank-line example; exit status documentation remains for the next checkpoint.",
+    )
+    prompt = await seeder.review_publish(
+        item,
+        "Verdict: ready. The blank-line example prints 9 as documented and meets this checkpoint's criterion; "
+        "exit status documentation is the declared remaining work.",
+    )
+    await seeder.review_ready(item, prompt)

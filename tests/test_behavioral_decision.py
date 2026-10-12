@@ -16,6 +16,7 @@ from evals.behavioral.export import SeedFailure
 from evals.behavioral.layout import SCORER_INPUT, Layout
 from evals.behavioral.records import (
     ChecklistItem,
+    ClaudeEffort,
     ClaudeRunDetails,
     CodexAccounting,
     CodexRunDetails,
@@ -119,7 +120,9 @@ def record_score(layout: Layout, label: str, run: RunKey, replies: list[set[str]
         state.finish(
             runner.Runtime.CLAUDE_CODE,
             "controlled-clean",
-            ClaudeRunDetails(permission_mode="bypassPermissions", cost_basis="claude total_cost_usd"),
+            ClaudeRunDetails(
+                permission_mode="bypassPermissions", cost_basis="claude total_cost_usd", reasoning_effort=None
+            ),
             [],
             [],
             Completed(),
@@ -437,7 +440,9 @@ class QualificationTest(unittest.TestCase):
                     ) as paid,
                     patch.object(Path, "write_text", partial(write, failure_at)),
                 ):
-                    failed = runner.claude_run(plan, selected.scenarios[0], RunKey("s1", "base", 99))
+                    failed = runner.claude_run(
+                        runner.ClaudePlan(plan, None), selected.scenarios[0], RunKey("s1", "base", 99)
+                    )
                 reloaded = Layout(layout.root).run_record(failed.run)
                 assert reloaded is not None
                 self.assertEqual(failed, reloaded)
@@ -670,6 +675,59 @@ class QualificationTest(unittest.TestCase):
                     self.assertNotIn(changed.model, prompt)
                     self.assertNotIn(changed.evaluated.commit, prompt)
                     self.assertAlmostEqual(0.26, spend.total(spend.items(Layout(layout.root))))
+
+    def test_claude_conditions_require_one_requested_effort_across_both_sides(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            layout = Layout(Path(directory))
+            registration = self.prepare(layout)
+
+            def request(effort_by_variant: dict[str, ClaudeEffort | None]) -> str:
+                for record in list(layout.run_records()):
+                    assert isinstance(record.details, ClaudeRunDetails)
+                    details = msgspec.structs.replace(
+                        record.details, reasoning_effort=effort_by_variant[record.run.variant]
+                    )
+                    changed = msgspec.structs.replace(record, details=details)
+                    (layout.run_directory(record.run) / "run.json").write_bytes(encode(changed))
+                return decision.compare(Layout(layout.root), registration, "base", "cand")
+
+            mixed = request({"base": None, "cand": ClaudeEffort.HIGH})
+            self.assertIn("decision: inconclusive", mixed)
+            self.assertIn("inconsistent runtime/model/reasoning", mixed)
+            differing = request({"base": ClaudeEffort.MEDIUM, "cand": ClaudeEffort.HIGH})
+            self.assertIn("inconsistent runtime/model/reasoning", differing)
+            self.assertIn("decision: no worse", request({"base": ClaudeEffort.HIGH, "cand": ClaudeEffort.HIGH}))
+
+    def test_v4_run_records_round_trip_with_and_without_effort_and_v3_is_rejected(self) -> None:
+        for effort in (None, ClaudeEffort.XHIGH):
+            with self.subTest(effort=effort), tempfile.TemporaryDirectory() as directory:
+                layout = Layout(Path(directory))
+                key = RunKey("s1", "base", 1)
+                record_score(layout, "T1", key, [set()], True)
+                written = layout.run_record(key)
+                assert written is not None
+                details = ClaudeRunDetails(
+                    permission_mode="bypassPermissions", cost_basis="claude total_cost_usd", reasoning_effort=effort
+                )
+                path = layout.run_directory(key) / "run.json"
+                path.unlink()
+                write_new(path, msgspec.structs.replace(written, details=details))
+                fresh = Layout(layout.root)
+                reloaded = fresh.run_record(key)
+                assert reloaded is not None
+                self.assertEqual("pinboard-behavioral-run/v4", reloaded.schema)
+                self.assertEqual(details, reloaded.details)
+                self.assertEqual([reloaded], list(fresh.run_records()))
+                self.assertEqual(
+                    None if effort is None else "xhigh", json.loads(path.read_text())["details"]["reasoning_effort"]
+                )
+                fields = json.loads(path.read_text())
+                fields["schema"] = "pinboard-behavioral-run/v3"
+                path.write_text(json.dumps(fields))
+                with self.assertRaises(msgspec.ValidationError):
+                    fresh.run_record(key)
+                with self.assertRaises(msgspec.ValidationError):
+                    list(fresh.run_records())
 
     def test_codex_conditions_require_common_effort_and_complete_reviewer_accounting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

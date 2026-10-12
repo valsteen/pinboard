@@ -53,6 +53,38 @@ The executable rejects stale definition identities, expired or replaced lease ho
 
 For an explicit terminal human decision about live work without an accepted attempt, discover the exact project `close` action through `pinboard_actions`, then call `pinboard_close` with ordinary top-level arguments—`project_root`, `work_root`, `receipt` holding only that action's `action_id` and `subject_revision`, `payload` with `outcome`, `reason` and `human_decision`, `actor_task_id` and `actor_host_id`—instead of manufacturing lifecycle states. `human_decision` is the human's explicit close decision in their own words on one line, such as their reply "yes, drop it, the parser rewrite covers it"; never write it yourself, and when you do not have it, ask the human and stop. Claude Code v2.1.199 or later asks the human to confirm every `pinboard_close` call, and Codex and earlier Claude Code versions may not ask; a denied call, including in a non-interactive run, means the human has not confirmed, so report that and seek no other route. `pinboard_transition` refuses a close receipt unchanged. The tool applies one direct atomic project transition and records the decision with the close. Do not add an overview preflight. Use `done` when the recorded decision or outcome is complete and may satisfy dependents. Use `dropped` only when the work is intentionally abandoned and has no live dependents. Never use `close` to bypass review for an accepted attempt, including after pause or block. Resume or rebind the same attempt and keep its normal evidence-backed review path; a genuine change to accepted semantics requires deliberate item revision, matching brief review, and rebind. The returned revision is the durable mutation receipt, so do not create a temporary payload file or replay the transition to prove that it committed. Still perform the fresh exact `pinboard_item_status` operation `item` read required by [workflow-ending replies](../SKILL.md#wrap-up-with-facts).
 
+## Write human-read records
+
+Humans read these records on the board without the transcript, and later agents act on them. This section owns their writing format: pause and `return-for-correction` reasons, `accept-checkpoint` and `accept-review-and-continue` evidence, `revise-item` reasons, and a `continue` checkpoint's `remaining_work`. These fields keep line breaks exactly as written; put them in the JSON string as `\n`. Every other text field stays one line and rejects a line break, including completion evidence, block, reject-proposal and close reasons, the close `human_decision`, defer and reopen conditions, definitions and identities.
+
+1. Open with one plain sentence a human can read alone: what happened or what is needed, in their terms.
+2. After a blank line, add only the short labelled lists that carry facts. A return uses `Problem:`, `Fix:`, `Keep:`, `Not authorized:` and `Fails:`. An acceptance uses `Verified:`, `Accepted limits:`, `Next:` and `Not claimed:`. Remaining work is a numbered list in the order the work must happen. A pause or scope-revision reason may need only its lead sentence and one more sentence.
+3. Keep identifiers, criterion numbers, checkpoint IDs and quoted requirements exact. Put digests and file references on one final `References:` line.
+
+```text
+A fallback capture failure can discard the original cancellation.
+
+Problem:
+- `deliverCapturedObservation` drops an exact `CancellationException` from the fallback capture.
+Fix:
+- Keep the primary and fallback failure facts separately.
+- Add a regression through the real controlled source.
+Keep: the earlier removal repair and every continuing obligation.
+Not authorized: new product decisions or a generic framework.
+Fails: brief 43, criterion 2, "Original facts and controls survive the recognizing boundary".
+
+References: review.md sha256 <digest>, finding 1.
+```
+
+```text
+Two pieces of work remain after this checkpoint; the guidance pass comes last.
+
+1. Rust startup and lifecycle: the awaited lifecycle and the startup warning.
+2. A full guidance pass for contradictions, ownership and repetition.
+```
+
+The format applies to new records only; never rewrite an existing record. A reply to the human quotes or paraphrases only the lead sentence, never the labelled lists or the `References:` line, and keeps Pinboard mechanics out as [the human's picture](../SKILL.md#keep-the-humans-picture-current) requires.
+
 ## Nested intake and concern revision
 
 Proposal creation persists immutable facts and a same-identity ready item. It appends at the back by default or uses an explicitly requested one-based position, and relation semantics may add a dependency or proposal origin. It creates no attempt, pauses no current work, and completes nothing. When intake is embedded in ongoing work, keep a compact continuation anchor in the current task context before invoking it:
@@ -69,7 +101,7 @@ Conditional follow-up language such as “if this is a production defect, follow
 
 Deliberate steering is distinct from intake. Insert a genuine prerequisite only at a safe boundary, pause or block the displaced objective through its legal transition, and name the ordinary `resume:<item>` action that restores it. Recovery is for interrupted or inconsistent state, not the normal route back to preserved work.
 
-When the concern belongs to an existing admitted item but its accepted semantics are incomplete, read the current definition and discover the project `revise-item` action and call `pinboard_transition` with one complete replacement, exact expected identity, source task, reason, receipt, and roots. A retained attempt then remains pinned and stale; use its legal review-correction path when a candidate is protected, publish a matching revised canonical brief, and rebind the active or paused attempt before continuation. When no admitted item owns the concern, use `$pinboard-intake` if the user has explicitly authorized preservation.
+When the concern belongs to an existing admitted item but its accepted semantics are incomplete, read the current definition and discover the project `revise-item` action and call `pinboard_transition` with one complete replacement, exact expected identity, source task, a reason written as a [human-read record](#write-human-read-records), receipt, and roots. A retained attempt then remains pinned and stale; use its legal review-correction path when a candidate is protected, publish a matching revised canonical brief, and rebind the active or paused attempt before continuation. When no admitted item owns the concern, use `$pinboard-intake` if the user has explicitly authorized preservation.
 
 When an active attempt discovers a prerequisite:
 

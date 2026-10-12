@@ -104,8 +104,15 @@ class ArchitectureImpact(Request, frozen=True):
     reason: str
 
 
-class Disposition(Request, frozen=True):
-    kind: Literal["terminal"]
+class TerminalDisposition(Request, frozen=True, tag="terminal", tag_field="kind"):
+    pass
+
+
+class ContinueDisposition(Request, frozen=True, tag="continue", tag_field="kind"):
+    remaining_work: str
+
+
+type Disposition = TerminalDisposition | ContinueDisposition
 
 
 class AuthorizationBasis(Request, frozen=True):

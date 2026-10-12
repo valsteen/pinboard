@@ -100,7 +100,9 @@ class Seeder:
         result = await self.board.call("pinboard_proposal_create", request, Status)
         require(result.status, ("committed", "committed-with-warning"), f"propose {item}")
 
-    async def prepare_activate(self, item: str, title: str, criterion: str, scope: str) -> None:
+    async def prepare_activate(
+        self, item: str, title: str, criterion: str, scope: str, disposition: Disposition
+    ) -> None:
         worktree = self.worktree(item)
         processes.git_checked(
             ["worktree", "add", "-q", str(worktree), "-b", f"pinboard/{item}"],
@@ -138,7 +140,7 @@ class Seeder:
             BriefPublish(
                 project_root=str(worktree),
                 work_root=str(self.work_root),
-                brief=local_brief(item, title, criterion, scope, base, self.owner, definition),
+                brief=local_brief(item, title, criterion, scope, disposition, base, self.owner, definition),
             ),
             Published,
         )
@@ -375,7 +377,14 @@ def first_revision(actions: Actions, what: str) -> str:
 
 
 def local_brief(
-    item: str, title: str, criterion: str, scope: str, base: str, owner: str, definition: Definition
+    item: str,
+    title: str,
+    criterion: str,
+    scope: str,
+    disposition: Disposition,
+    base: str,
+    owner: str,
+    definition: Definition,
 ) -> Brief:
     basis = AuthorizationBasis(item_id=item, kind="accepted-scope", scope_revision=definition.definition_revision)
     return Brief(
@@ -392,7 +401,7 @@ def local_brief(
             boundary="local",
             checkpoint_id="outcome",
             deferrals=[],
-            disposition=Disposition(kind="terminal"),
+            disposition=disposition,
             outcome_description=criterion,
             title=title,
             verification=[Verification(authorization_basis=basis, obligation="Run ./test.sh")],

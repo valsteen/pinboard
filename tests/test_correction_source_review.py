@@ -42,7 +42,7 @@ from pinboard.mcp import server
 from pinboard.mcp.contracts import JsonValue
 from tests import test_dispatch
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
-from tests.native_support import call_native_tool
+from tests.native_support import call_advertised_tool, call_native_tool
 from tests.support import SQLITE_NOW, JsonObject
 from tests.work_brief_support import ready_review, work_a_brief
 
@@ -62,7 +62,14 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.commit_all(fixture.project, "test baseline")
         return fixture
 
-    def submit_and_return(self, fixture: CheckpointFixture, label: str, *, committed: bool) -> tuple[int, JsonObject]:
+    def submit_and_return(
+        self,
+        fixture: CheckpointFixture,
+        label: str,
+        *,
+        committed: bool,
+        reason: str = "Repair the test-only candidate.",
+    ) -> tuple[int, JsonObject]:
         (fixture.project / "tests" / "test_only.py").write_text(f"assert {label!r}\n", encoding="utf-8")
         candidate = (
             self.commit_all(fixture.project, label)
@@ -77,13 +84,11 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         context = SQLiteWorkStore(fixture.work / "state.sqlite3").read_candidate_snapshot_context(AttemptId("work-a-1"))
         assert context is not None
         reference = context.reference
-        payload.write_text('{"reason":"Repair the test-only candidate."}', encoding="utf-8")
+        payload.write_text(json.dumps({"reason": reason}), encoding="utf-8")
         receipt = self.transition_json(fixture, self.project_action(fixture, "return-for-correction:work-a-1"), payload)
         history_id = receipt["history_id"]
         assert isinstance(history_id, int)
-        return history_id, self.correction_choice(
-            fixture, label, reference, history_id, "Repair the test-only candidate."
-        )
+        return history_id, self.correction_choice(fixture, label, reference, history_id, reason)
 
     def correction_choice(
         self,
@@ -238,6 +243,40 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                     {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
                 )
                 self.assertEqual("ready", dispatched["status"], dispatched)
+
+    def test_multiline_return_reason_reaches_correction_context_and_dispatch_unchanged(self) -> None:
+        self.fixed_native_time()
+        reason = (
+            "The test-only candidate drops one assertion.\n\n"
+            "Problem:\n- `tests/test_only.py` asserts a label.\nFix:\n1. Restore the assertion.\n\n"
+            "References: review.md finding 1."
+        )
+        for reuse in (False, True):
+            with self.subTest(reuse=reuse):
+                fixture = self.correction_fixture()
+                history_id, choice = self.submit_and_return(fixture, "multiline", committed=True, reason=reason)
+                if reuse:
+                    choice = self.reuse_choice(fixture, choice)
+                context = call_advertised_tool(
+                    server.CORRECTION_CONTEXT_TOOL,
+                    {
+                        "project_root": str(fixture.project),
+                        "work_root": str(fixture.work),
+                        "attempt_id": "work-a-1",
+                        "correction_history_id": history_id,
+                    },
+                )
+                self.assertEqual(reason, context["correction_reason"])
+                dispatched = call_advertised_tool(
+                    server.DISPATCH_TOOL,
+                    {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
+                )
+                self.assertEqual("ready", dispatched["status"], dispatched)
+                prompt_reference = self.json_object(dispatched["prompt_reference"])
+                prompt = (fixture.work / str(prompt_reference["selector"])).read_text(encoding="utf-8")
+                self.assertIn(
+                    f"- Canonical return reason (JSON string): {msgspec.json.encode(reason).decode()}\n", prompt
+                )
 
     def test_accepted_continuation_supersedes_paused_correction_return(self) -> None:
         self.fixed_native_time()

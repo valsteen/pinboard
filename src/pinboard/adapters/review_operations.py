@@ -337,66 +337,6 @@ def record_ready_candidate_review(
     return RecordedCandidateReview(publication.reference, review, surfaces)
 
 
-def read_current_candidate_review(
-    store: ports.WorkStore,
-    artifacts: dispatch_models.DispatchArtifactPort,
-    *,
-    brief: work_brief_models.WorkBrief,
-    candidate_revision: str,
-    candidate_snapshot: stored_state.ArtifactReference,
-    accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
-    result_sha256: str,
-    review_sha256: str,
-) -> CurrentCandidateReview | None:
-    key = work_briefs.candidate_review_key(
-        brief.attempt_id,
-        candidate_revision,
-        candidate_snapshot.content_sha256,
-        accepted_brief.content_sha256,
-        result_sha256,
-        review_sha256,
-    )
-    reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, key, 1)
-    return _current_candidate_review_from_reference(
-        reference,
-        artifacts,
-        brief=brief,
-        candidate_revision=candidate_revision,
-        candidate_snapshot=candidate_snapshot,
-        accepted_brief=accepted_brief,
-        result_sha256=result_sha256,
-        review_sha256=review_sha256,
-    )
-
-
-def _current_candidate_review_from_reference(
-    reference: stored_state.ArtifactReference | None,
-    artifacts: dispatch_models.DispatchArtifactPort,
-    *,
-    brief: work_brief_models.WorkBrief,
-    candidate_revision: str,
-    candidate_snapshot: stored_state.ArtifactReference,
-    accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
-    result_sha256: str,
-    review_sha256: str,
-) -> CurrentCandidateReview | None:
-    if reference is None:
-        return None
-    review = work_briefs.decode_canonical_candidate_review(artifacts.read(reference))
-    if isinstance(review, work_brief_models.WorkBriefFailure):
-        return None
-    failure = work_briefs.validate_candidate_review(
-        review,
-        brief=brief,
-        candidate=candidate_revision,
-        candidate_snapshot=candidate_snapshot,
-        accepted_brief=accepted_brief,
-        result_sha256=result_sha256,
-        review_sha256=review_sha256,
-    )
-    return None if failure is not None else CurrentCandidateReview(reference, review)
-
-
 @dataclass(frozen=True, slots=True)
 class AttemptEvidenceDigests:
     """SHA-256 digests of an attempt's current result.md and review.md; None for an absent or unreadable file."""
@@ -470,16 +410,21 @@ def verify_ready_record(
 ) -> CurrentCandidateReview | None:
     """Decide whether the keyed reference is a valid ready record for the subject; reading its bytes may raise."""
 
-    return _current_candidate_review_from_reference(
-        reference,
-        artifacts,
+    if reference is None:
+        return None
+    review = work_briefs.decode_canonical_candidate_review(artifacts.read(reference))
+    if isinstance(review, work_brief_models.WorkBriefFailure):
+        return None
+    failure = work_briefs.validate_candidate_review(
+        review,
         brief=subject.brief,
-        candidate_revision=subject.candidate_revision,
+        candidate=subject.candidate_revision,
         candidate_snapshot=subject.candidate_snapshot,
         accepted_brief=subject.accepted_brief,
         result_sha256=subject.result_sha256,
         review_sha256=subject.review_sha256,
     )
+    return None if failure is not None else CurrentCandidateReview(reference, review)
 
 
 def read_ready_record(
@@ -651,15 +596,12 @@ def commissioned_review_failure(
     current = (
         None
         if candidate is None or snapshot is None
-        else read_current_candidate_review(
+        else read_ready_record(
             store,
             artifacts,
-            brief=brief,
-            candidate_revision=candidate,
-            candidate_snapshot=snapshot.reference,
-            accepted_brief=attempt.brief_reference,
-            result_sha256=result_sha256,
-            review_sha256=review_sha256,
+            ReadyRecordSubject(
+                brief, candidate, snapshot.reference, attempt.brief_reference, result_sha256, review_sha256
+            ),
         )
     )
     if candidate is None or snapshot is None or current is None:
@@ -782,6 +724,18 @@ def _select_prior_checkpoint_package(
     return selection, prompt
 
 
+def _prompt_record_text(label: str, text: str) -> str:
+    """Name record text inside one prompt sentence.
+
+    Multi-line text becomes one JSON string, so none of its lines can read as a new prompt instruction; single-line
+    text stays as written.
+    """
+
+    if "\n" not in text:
+        return f"{label}: {text}"
+    return f"{label} (JSON string): {msgspec.json.encode(text).decode()}"
+
+
 def _select_review_round(
     work_root: Path,
     facts: query_models.ReviewJobContextFacts,
@@ -814,7 +768,8 @@ def _select_review_round(
     )
     prompt = (
         f"Correction receipt: history {int(correction_receipt.history_id)}, rejected candidate "
-        f"{correction_outcome.candidate}, reason: {correction_outcome.evidence}. Current prior-review bytes: "
+        f"{correction_outcome.candidate}, {_prompt_record_text('reason', correction_outcome.evidence)}. "
+        "Current prior-review bytes: "
         f"{rendered_review_path}, SHA-256 {review_digest}. Verify those bytes and stop without a verdict if they "
         "differ from that digest. Identify the candidate reported by that file. Compare the receipt candidate and "
         "the review-file candidate separately with the current candidate. Stop without a verdict if the review "
@@ -877,15 +832,12 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
         return candidate
     ready_review = (
         not isinstance(review_evidence, DecisionFailure)
-        and _current_candidate_review_from_reference(
+        and verify_ready_record(
+            ReadyRecordSubject(
+                brief, candidate_revision, facts.candidate_snapshot.reference, reference, digest, review_evidence[1]
+            ),
             facts.candidate_review_reference,
             artifacts,
-            brief=brief,
-            candidate_revision=candidate_revision,
-            candidate_snapshot=facts.candidate_snapshot.reference,
-            accepted_brief=reference,
-            result_sha256=digest,
-            review_sha256=review_evidence[1],
         )
         is not None
     )

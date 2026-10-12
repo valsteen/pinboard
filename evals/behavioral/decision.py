@@ -21,6 +21,7 @@ from evals.behavioral import scoring, spend
 from evals.behavioral.layout import SCORER_INPUT, Layout
 from evals.behavioral.records import (
     ChecklistItem,
+    ClaudeEffort,
     ClaudeRunDetails,
     CodexRunDetails,
     ItemVerdicts,
@@ -292,12 +293,15 @@ def compare(
     return "\n".join(lines) + "\n"
 
 
-def conditions(record: RunRecord) -> tuple[str, ...]:
-    """Declared consequential settings; per-run paths and settlement effects are not execution settings."""
+def conditions(record: RunRecord) -> tuple[str | ClaudeEffort | None, ...]:
+    """Declared consequential settings; per-run paths and settlement effects are not execution settings.
+
+    A Claude run's effort is ``None`` when none was sent, so absent and present effort never match.
+    """
     common = (record.runtime.value, record.cli_version, record.model)
     match record.details:
-        case ClaudeRunDetails(permission_mode=mode, cost_basis=basis):
-            return (*common, mode, basis)
+        case ClaudeRunDetails(permission_mode=mode, cost_basis=basis, reasoning_effort=effort):
+            return (*common, mode, basis, effort)
         case CodexRunDetails() as details:
             return (
                 *common,
@@ -330,7 +334,7 @@ def qualification(
         ):
             reasons.append(evidence.reason)
     exports: dict[str, set[tuple[str, str]]] = {variant: set() for variant in selected_variants}
-    settings: set[tuple[str, ...]] = set()
+    settings: set[tuple[str | ClaudeEffort | None, ...]] = set()
     for selected in selected_runs:
         key = selected.run
         if selected.scores != 1:

@@ -30,7 +30,7 @@ from pinboard.application.queries import (
     decode_recorded_pause_reason,
     project_board_portfolio,
 )
-from pinboard.domain import work_models
+from pinboard.domain import history, work_models
 from pinboard.domain.identifiers import AttemptId, WorkItemId
 
 NOTICE = "Generated projection; SQLite is authoritative."
@@ -129,7 +129,7 @@ def _render_item(
         + "## Current position\n\n"
         + f"- State: {overview_item.state.value if overview_item is not None else item.state.value}\n"
         + f"- Current attempt: {attempt or 'none'}\n"
-        + ("" if pause_reason is None else f"- Pause reason: {pause_reason}\n")
+        + ("" if pause_reason is None else f"- Pause reason: {history.nest_record_text(pause_reason, '  ')}\n")
         + f"- Dependency eligibility: {'yes' if overview_item is not None and overview_item.eligible else 'no'}\n\n"
         + next_step
         + "## Original intake context\n\n"

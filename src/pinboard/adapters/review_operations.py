@@ -38,7 +38,7 @@ from pinboard.application.artifact_publication import (
     publish_accepted_artifact,
 )
 from pinboard.application.artifacts import BriefArtifactRef, NewArtifact
-from pinboard.domain import work_models
+from pinboard.domain import history, work_models
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -727,11 +727,11 @@ def _select_prior_checkpoint_package(
 def _prompt_record_text(label: str, text: str) -> str:
     """Name record text inside one prompt sentence.
 
-    Multi-line text becomes one JSON string, so none of its lines can read as a new prompt instruction; single-line
-    text stays as written.
+    Text with a CRLF, CR or LF line break becomes one JSON string, so none of its lines can read as a new prompt
+    instruction; single-line text stays as written.
     """
 
-    if "\n" not in text:
+    if not history.record_text_is_multiline(text):
         return f"{label}: {text}"
     return f"{label} (JSON string): {msgspec.json.encode(text).decode()}"
 

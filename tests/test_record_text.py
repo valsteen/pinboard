@@ -45,6 +45,13 @@ PAUSE_REASON = (
     "Waiting for your choice of rendering.\n\n- `Indent` keeps the bullet.\n1. Then resume.\n\nReferences: board.html"
 )
 REVISE_REASON = "You chose to rename the item.\n\nThe outcome and criteria are unchanged."
+# Markdown also ends a line at a bare CR or CRLF; each variant tries to open a heading and a list item.
+CR_AND_CRLF_REASONS = tuple(
+    f"Waiting for the maintainer.{line_break}# Injected heading{line_break}- injected item{line_break}{line_break}"
+    f"References: board.html"
+    for line_break in ("\r", "\r\n")
+)
+MARKDOWN_LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
 
 class RecordTextSupport(ItemLifecycleSupport):
@@ -57,6 +64,14 @@ class RecordTextSupport(ItemLifecycleSupport):
         reference = self.json_object(published["reference"])["artifact_ref_id"]
         assert isinstance(reference, int)
         return reference
+
+    def assert_nested_inside_container(self, container: str, prefix: str, text: str) -> None:
+        """Every continuation line sits under the container, and removing that indent restores the text exactly."""
+
+        self.assertTrue(container.startswith(prefix), container)
+        nested = container.removeprefix(prefix)
+        self.assertEqual(text, re.sub(r"(\r\n|\r|\n)  ", r"\1", nested))
+        self.assertTrue(all(line == "" or line.startswith("  ") for line in MARKDOWN_LINE_BREAK.split(nested)[1:]))
 
 
 class RecordTextJourneyTest(RecordTextSupport):
@@ -286,6 +301,20 @@ class RecordTextJourneyTest(RecordTextSupport):
         self.assertTrue(bullet.startswith("- History "))
         self.assertTrue(bullet.endswith(history.nest_record_text(ACCEPT_EVIDENCE, "  ")))
         self.assertTrue(all(line == "" or line.startswith(("- History ", "  ")) for line in bullet.split("\n")))
+        for evidence in CR_AND_CRLF_REASONS:
+            with self.subTest(evidence=evidence):
+                rendered = history_archives.render_archive(
+                    replace_struct(
+                        archive,
+                        checkpoints=tuple(
+                            replace_struct(value, acceptance_evidence=evidence) for value in archive.checkpoints
+                        ),
+                    )
+                ).decode()
+                bullet = rendered.partition("## Original accepted checkpoints\n\n")[2].partition(
+                    "\n\n## Original completion"
+                )[0]
+                self.assert_nested_inside_container(bullet, bullet.partition(". Waiting")[0] + ". ", evidence)
 
     def outcome_type(
         self, schema: str
@@ -306,19 +335,34 @@ class RecordTextJourneyTest(RecordTextSupport):
 
 class RecordTextProjectionTest(RecordTextSupport):
     def test_reviewer_prompt_keeps_a_multiline_correction_reason_inside_its_sentence(self) -> None:
-        fixture = self.checkpoint_fixture()
-        returned = self.return_for_review(fixture, RETURN_REASON)
-        candidate = self.submit_candidate(fixture, "corrected")
-        job = self.review_result(
-            fixture, {"kind": "correction", "candidate_revision": candidate, "correction_history_id": returned}
-        )
-        self.assertEqual("ready", job["status"], job)
-        self.assertEqual(RETURN_REASON, self.json_object(job["review_round"])["reason"])
-        prompt = (fixture.work / str(self.json_object(job["prompt_reference"])["selector"])).read_text(encoding="utf-8")
-        self.assertIn(f"reason (JSON string): {msgspec.json.encode(RETURN_REASON).decode()}. ", prompt)
-        for line in filter(None, RETURN_REASON.split("\n")):
-            with self.subTest(line=line):
-                self.assertNotIn(f"\n{line}\n", prompt)
+        for reason in (RETURN_REASON, *CR_AND_CRLF_REASONS):
+            with self.subTest(reason=reason):
+                fixture = self.checkpoint_fixture()
+                returned = self.return_for_review(fixture, reason)
+                candidate = self.submit_candidate(fixture, "corrected")
+                job = self.review_result(
+                    fixture, {"kind": "correction", "candidate_revision": candidate, "correction_history_id": returned}
+                )
+                self.assertEqual("ready", job["status"], job)
+                self.assertEqual(reason, self.json_object(job["review_round"])["reason"])
+                selector = str(self.json_object(job["prompt_reference"])["selector"])
+                prompt = (fixture.work / selector).read_bytes().decode()
+                self.assertIn(f"reason (JSON string): {msgspec.json.encode(reason).decode()}. ", prompt)
+                self.assertNotIn("\r", prompt)
+                prompt_lines = set(MARKDOWN_LINE_BREAK.split(prompt))
+                self.assertFalse(prompt_lines.intersection(filter(None, MARKDOWN_LINE_BREAK.split(reason)[1:])))
+
+    def test_item_view_keeps_a_cr_or_crlf_pause_reason_inside_its_bullet(self) -> None:
+        for reason in CR_AND_CRLF_REASONS:
+            with self.subTest(reason=reason):
+                fixture = self.checkpoint_fixture()
+                self.return_for_review(fixture, "Rework the candidate.")
+                self.transition(fixture, "pause:work-a-1", {"reason": reason})
+                attempts = self.json_array(self.item_leaf(fixture)["attempts"])
+                self.assertEqual(reason, self.json_object(attempts[-1])["pause_reason"])
+                view = (fixture.work / "views" / "items" / "work-a.md").read_bytes().decode()
+                bullet = view.partition("\n- Pause reason: ")[2].partition("\n- Dependency eligibility:")[0]
+                self.assert_nested_inside_container(bullet, "", reason)
 
     def test_continuing_completion_refusal_carries_remaining_work_as_written(self) -> None:
         remaining = "Two pieces of work remain.\n\n1. Render the board.\n2. Update the guidance.\n\nReferences: a.md"

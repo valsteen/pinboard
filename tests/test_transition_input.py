@@ -453,3 +453,122 @@ class TransitionInputTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+RECORD_TEXT = (
+    "Two defects remain in how reasons render.\n\n"
+    "Problem:\n- `views` drops the second line.\n"
+    "Fix:\n1. Indent continuation lines.\n2. Add a regression.\n\n"
+    "References: review.md finding 1."
+)
+
+
+def _record_text(command: decision_models.TransitionCommand) -> str:
+    match command:
+        case decision_models.PauseCommand(value=value) | decision_models.ReturnForCorrectionCommand(value=value):
+            return value.reason
+        case (
+            decision_models.AcceptCheckpointCommand(value=value)
+            | decision_models.AcceptReviewAndContinueCommand(value=value)
+        ):
+            return value.evidence
+        case decision_models.ReviseWorkItemCommand(value=value):
+            return value.reason
+        case _:
+            raise AssertionError(f"{type(command).__name__} carries no record text")
+
+
+class RecordTextInputTest(unittest.TestCase):
+    def record_payloads(self, text: str) -> tuple[tuple[decision_models.Action, JsonObject], ...]:
+        return (
+            (action(decision_models.PauseAction, AttemptId("attempt-1")), {"reason": text}),
+            (action(decision_models.ReturnForCorrectionAction, AttemptId("attempt-1")), {"reason": text}),
+            (
+                action(decision_models.AcceptCheckpointAction, AttemptId("attempt-1")),
+                {"checkpoint": "checkpoint-a", "candidate": "candidate", "evidence": text},
+            ),
+            (
+                action(decision_models.AcceptReviewAndContinueAction, AttemptId("attempt-1")),
+                {"candidate": "candidate", "evidence": text},
+            ),
+            (
+                action(decision_models.ReviseWorkItemAction, WorkItemId("work-a")),
+                revise_item_payload() | {"reason": text},
+            ),
+        )
+
+    def test_record_fields_keep_line_breaks_and_every_value_accepted_before(self) -> None:
+        for text in (RECORD_TEXT, "x", "  surrounding whitespace  ", "carriage\rreturn", "\n\nleading lines\n"):
+            for selected_action, payload in self.record_payloads(text):
+                with self.subTest(kind=selected_action.kind, text=text):
+                    command = expect_transition_command(parse_transition_input(selected_action, json.dumps(payload)))
+                    self.assertEqual(text, _record_text(command))
+        for selected_action, payload in self.record_payloads(""):
+            with self.subTest(kind=selected_action.kind, text=""):
+                rejected = parse_transition_input(selected_action, json.dumps(payload))
+                assert isinstance(rejected, TransitionInputFailure)
+                self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected.code)
+
+    def test_every_other_text_field_still_rejects_a_line_break(self) -> None:
+        reviewed_complete: JsonObject = {
+            "schema": "pinboard-reviewed-completion/v2",
+            "candidate": "candidate",
+            "evidence": "complete",
+            "reviewer_task_id": "reviewer",
+            "result_sha256": "a" * 64,
+            "review_sha256": "b" * 64,
+            "packages": [],
+        }
+        definition = revise_item_payload()["definition"]
+        assert isinstance(definition, dict)
+        cases: tuple[tuple[decision_models.Action, JsonObject], ...] = (
+            (action(decision_models.RejectProposalAction, ProposalId("proposal-1")), {"reason": RECORD_TEXT}),
+            (
+                action(decision_models.BlockAttemptAction, AttemptId("attempt-1")),
+                {"reason": RECORD_TEXT, "depends_on": []},
+            ),
+            (
+                action(decision_models.CloseAction, WorkItemId("work-a")),
+                {"outcome": "done", "reason": RECORD_TEXT, "human_decision": "Close it."},
+            ),
+            (
+                action(decision_models.CloseAction, WorkItemId("work-a")),
+                {"outcome": "done", "reason": "complete", "human_decision": RECORD_TEXT},
+            ),
+            (action(decision_models.CompleteAction, AttemptId("attempt-1")), {"evidence": RECORD_TEXT}),
+            (
+                action(decision_models.CompleteAction, AttemptId("attempt-1")),
+                reviewed_complete | {"evidence": RECORD_TEXT},
+            ),
+            (
+                action(decision_models.DeferAction, WorkItemId("work-a")),
+                {"timing": "safe-to-defer", "reopen_condition": RECORD_TEXT},
+            ),
+            (action(decision_models.ReopenAction, WorkItemId("work-a")), {"evidence": RECORD_TEXT}),
+            (
+                action(decision_models.AcceptCheckpointAction, AttemptId("attempt-1")),
+                {"checkpoint": "checkpoint-a", "candidate": "candidate\nother", "evidence": "accepted"},
+            ),
+            (
+                action(decision_models.AcceptCheckpointAction, AttemptId("attempt-1")),
+                {"checkpoint": "checkpoint-a\nother", "candidate": "candidate", "evidence": "accepted"},
+            ),
+            (
+                action(decision_models.AcceptReviewAndContinueAction, AttemptId("attempt-1")),
+                {"candidate": "candidate\nother", "evidence": "accepted"},
+            ),
+            (
+                action(decision_models.ReviseWorkItemAction, WorkItemId("work-a")),
+                revise_item_payload() | {"source_task": "owner\ntask"},
+            ),
+            (
+                action(decision_models.ReviseWorkItemAction, WorkItemId("work-a")),
+                revise_item_payload() | {"definition": {**definition, "title": RECORD_TEXT}},
+            ),
+            (action(decision_models.SubmitReviewAction, AttemptId("attempt-1")), {"candidate": "candidate\nother"}),
+        )
+        for selected_action, payload in cases:
+            with self.subTest(kind=selected_action.kind, payload=payload):
+                rejected = parse_transition_input(selected_action, json.dumps(payload))
+                assert isinstance(rejected, TransitionInputFailure)
+                self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected.code)

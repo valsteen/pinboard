@@ -798,7 +798,7 @@ class ClaudeCompatibilityTest(unittest.TestCase):
                 patch.object(processes.os, "killpg"),
                 self.assertRaises(processes.ProcessIncomplete) as failure,
             ):
-                runner.run_claude(plan, budget, 1)
+                runner.run_claude(runner.ClaudePlan(plan, None), budget, 1)
             self.assertIs(cause, failure.exception.__cause__)
             launched.assert_called_once()
             records = list(Layout(layout.root).run_records())
@@ -854,7 +854,7 @@ class ClaudeCompatibilityTest(unittest.TestCase):
                 patch.object(Path, "write_text", raw_unwritable),
                 self.assertRaises(processes.ProcessIncomplete) as failure,
             ):
-                runner.run_claude(plan, budget, 1)
+                runner.run_claude(runner.ClaudePlan(plan, None), budget, 1)
             self.assertIs(secondary, failure.exception.__cause__)
             self.assertIs(cause, secondary.__cause__)
             self.assertEqual("paid partial", failure.exception.stdout)

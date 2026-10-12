@@ -14,6 +14,21 @@ from pinboard.domain.identifiers import WorkItemId
 
 type CanonicalLine = Annotated[str, msgspec.Meta(pattern=r"\A\S(?:[^\r\n]*\S)?\z")]
 type Identity = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
+# Human-read record text: pause and return reasons, checkpoint and review-continue acceptance evidence and
+# scope-revision reasons. It is any non-empty string, line breaks included, and is stored and projected exactly as
+# accepted, never trimmed or re-wrapped. Definitions and identities stay CanonicalLine.
+type RecordText = Annotated[str, msgspec.Meta(min_length=1)]
+
+
+def nest_record_text(text: str, indent: str) -> str:
+    """Keep record text inside the Markdown container whose first line holds it.
+
+    Every continuation line is indented under the container, so no line of record text can start a heading or list
+    item at the container's level; empty lines stay empty. Single-line text is returned unchanged.
+    """
+
+    first, *continuation = text.split("\n")
+    return "\n".join((first, *(f"{indent}{line}" if line else line for line in continuation)))
 
 
 def _encoded_record(value: msgspec.Struct) -> bytes:
@@ -66,7 +81,7 @@ class TransitionReceiptOutcome(msgspec.Struct, frozen=True, forbid_unknown_field
 class CheckpointAcceptanceOutcome(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     candidate: CanonicalLine
     checkpoint: CanonicalLine
-    evidence: CanonicalLine
+    evidence: RecordText
     outcome: CanonicalLine
 
 

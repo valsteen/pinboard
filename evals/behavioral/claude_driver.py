@@ -2,12 +2,14 @@
 
 The agent loads only project settings (``--setting-sources project``), the exported revision as its one plugin
 (``--plugin-dir``) and no claude.ai account connectors (``ENABLE_CLAUDEAI_MCP_SERVERS=false``), and runs with
-``--permission-mode bypassPermissions``. Output is the ``claude -p`` stream-json event stream, an accepted
-externally owned protocol boundary whose final result record is the ``--output-format json`` result: each consumed
-field is validated and unrelated additive fields are ignored. Its result reports the session's cumulative cost, so a
-turn's cost is the difference from the previous turn's total, and a result that reports an error is a failed turn.
-The session retains known or unknown turn evidence once its process starts, including output-publication failure;
-setup or launch failure before a process starts retains no paid turn.
+``--permission-mode bypassPermissions``. A requested effort is sent as ``--effort`` on every turn, first and resumed,
+because Claude Code scopes effort to the current session process; the driver reads no applied level from the stream.
+Output is the ``claude -p`` stream-json event stream, an accepted externally owned protocol boundary whose final result
+record is the ``--output-format json`` result: each consumed field is validated and unrelated additive fields are
+ignored. Its result reports the session's cumulative cost, so a turn's cost is the difference from the previous turn's
+total, and a result that reports an error is a failed turn. The session retains known or unknown turn evidence once its
+process starts, including output-publication failure; setup or launch failure before a process starts retains no paid
+turn.
 
 The init event lists skill names without their source. The first turn therefore also writes Claude Code's debug log
 to a temporary file, and the driver reads the skill-loading summary lines from that captured text (searched with
@@ -27,7 +29,14 @@ from pathlib import Path
 import msgspec
 
 from evals.behavioral import processes
-from evals.behavioral.records import ClaudeRunDetails, Hook, InventoryEntry, PermissionDenial, TurnEvidence
+from evals.behavioral.records import (
+    ClaudeEffort,
+    ClaudeRunDetails,
+    Hook,
+    InventoryEntry,
+    PermissionDenial,
+    TurnEvidence,
+)
 
 TURN_TIMEOUT_SECONDS = 5400
 HOST_PATTERN = re.compile(r'host_id: "([^"]+)"')
@@ -176,6 +185,7 @@ class ClaudeTurn:
 class ClaudeSession:
     plugin_root: Path
     model: str
+    reasoning_effort: ClaudeEffort | None
     project: Path
     available_tools: tuple[str, ...]
     session_id: str
@@ -188,10 +198,18 @@ class ClaudeSession:
     environment: dict[str, str]
 
     @classmethod
-    def start(cls, plugin_root: Path, model: str, project: Path, available_tools: tuple[str, ...]) -> ClaudeSession:
+    def start(
+        cls,
+        plugin_root: Path,
+        model: str,
+        reasoning_effort: ClaudeEffort | None,
+        project: Path,
+        available_tools: tuple[str, ...],
+    ) -> ClaudeSession:
         return cls(
             plugin_root,
             model,
+            reasoning_effort,
             project,
             available_tools,
             str(uuid.uuid4()),
@@ -217,7 +235,11 @@ class ClaudeSession:
         return isolation_findings(self.init, self.plugin_root, self.provenance)
 
     def details(self) -> ClaudeRunDetails:
-        return ClaudeRunDetails(permission_mode="bypassPermissions", cost_basis="claude total_cost_usd")
+        return ClaudeRunDetails(
+            permission_mode="bypassPermissions",
+            cost_basis="claude total_cost_usd",
+            reasoning_effort=self.reasoning_effort,
+        )
 
     def turn(self, index: int, human: str, hook_ran: Hook | None, raw_path: Path) -> ClaudeTurn:
         session = ["--session-id", self.session_id] if index == 1 else ["--resume", self.session_id]
@@ -250,6 +272,7 @@ class ClaudeSession:
                         "-p",
                         "--model",
                         self.model,
+                        *([] if self.reasoning_effort is None else ["--effort", self.reasoning_effort.value]),
                         "--setting-sources",
                         "project",
                         "--plugin-dir",

@@ -8,6 +8,7 @@ declared difference in ``fixture_difference``: Codex reads ``AGENTS.md`` and not
 import asyncio
 import json
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -19,8 +20,10 @@ from evals.behavioral.export import LauncherResult, SeedFailure
 from evals.behavioral.records import Hook, ObservedState, Runtime, Scenario, SeededItem, WorldExtra, WorldKind
 from evals.behavioral.scenarios import FIXTURE
 from evals.behavioral.world_content import (
+    CONTINUE_CHECKPOINT_STATES,
     EXPERIMENT_STATES,
     FULL_WORLD_STATES,
+    seed_continue_checkpoint,
     seed_full_world,
     seed_merge_change,
     seed_skip_comments_experiment,
@@ -106,10 +109,14 @@ def build_world(
                 raise SeedFailure("the scratch-board experiment needs a minimal world with a scratch board")
             seeded += verify_seed(world, "scratch", world.scratch_board, EXPERIMENT_STATES)
         case WorldExtra.REVIEWED_CHANGE | WorldExtra.UNREVIEWED_CHANGE:
+            record_review = scenario.world_extra is WorldExtra.REVIEWED_CHANGE
             asyncio.run(
-                _seed_merge_change(world, owner, record_review=scenario.world_extra is WorldExtra.REVIEWED_CHANGE)
+                _seed_project(world, owner, lambda seeder: seed_merge_change(seeder, record_review=record_review))
             )
             seeded += verify_seed(world, "project", world.work_root, {"merge-change": "review"})
+        case WorldExtra.CONTINUE_CHECKPOINT_REVIEW:
+            asyncio.run(_seed_project(world, owner, seed_continue_checkpoint))
+            seeded += verify_seed(world, "project", world.work_root, CONTINUE_CHECKPOINT_STATES)
         case _ as unreachable:
             raise AssertionError(unreachable)
     return world, seeded
@@ -139,12 +146,9 @@ async def _seed(world: World, owner: str, *, full: bool) -> None:
             await seed_skip_comments_experiment(seeder)
 
 
-async def _seed_merge_change(world: World, owner: str, *, record_review: bool) -> None:
+async def _seed_project(world: World, owner: str, content: Callable[[seeding.Seeder], Awaitable[None]]) -> None:
     async with board.connect(world.launcher, world.mcp_log, world.window) as client:
-        await seed_merge_change(
-            seeding.Seeder(board=client, project=world.project, work_root=world.work_root, owner=owner),
-            record_review=record_review,
-        )
+        await content(seeding.Seeder(board=client, project=world.project, work_root=world.work_root, owner=owner))
 
 
 def create_project(world: World, runtime: Runtime) -> None:

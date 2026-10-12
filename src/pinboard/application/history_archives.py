@@ -527,7 +527,7 @@ def render_archive(archive: HistoryArchive) -> bytes:
             case _ as unreachable:
                 assert_never(unreachable)
         lines.append(
-            f"- History {checkpoint.history_id}: {checkpoint.checkpoint_id}; {checkpoint.candidate.candidate}; {assurance}. {checkpoint.acceptance_evidence}"
+            f"- History {checkpoint.history_id}: {checkpoint.checkpoint_id}; {checkpoint.candidate.candidate}; {assurance}. {history.nest_record_text(checkpoint.acceptance_evidence, '  ')}"
         )
     lines.extend(["", "## Original completion evidence", ""])
     lines.extend(

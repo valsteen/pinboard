@@ -11,7 +11,7 @@ import msgspec
 
 from pinboard.application import pr_reviews
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.history import WorkItemDefinitionPayload
+from pinboard.domain.history import RecordText, WorkItemDefinitionPayload
 
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\n]+\z")]
 type Identity = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
@@ -68,6 +68,12 @@ class DeclaredSubmitReviewInputPayload(msgspec.Struct, frozen=True, forbid_unkno
 
 
 class ReasonInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Pause and return-for-correction input; its reason is human-read record text."""
+
+    reason: RecordText
+
+
+class RejectProposalInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     reason: NonEmptyLine
 
 
@@ -108,12 +114,12 @@ class ReviewedCompleteInputPayload(msgspec.Struct, frozen=True, forbid_unknown_f
 class AcceptCheckpointInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     checkpoint: Identity
     candidate: NonEmptyLine
-    evidence: NonEmptyLine
+    evidence: RecordText
 
 
 class AcceptReviewAndContinueInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     candidate: NonEmptyLine
-    evidence: NonEmptyLine
+    evidence: RecordText
 
 
 class RecordPlannedReplacementInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -159,7 +165,7 @@ class ReviseItemInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=
     expected_revision: PositiveInt
     expected_digest: Sha256
     source_task: NonEmptyLine
-    reason: NonEmptyLine
+    reason: RecordText
     definition: WorkItemDefinitionPayload
 
 
@@ -175,6 +181,7 @@ type InputPayload = (
     | SubmitReviewInputPayload
     | DeclaredSubmitReviewInputPayload
     | ReasonInputPayload
+    | RejectProposalInputPayload
     | BlockInputPayload
     | EvidenceInputPayload
     | AcceptCheckpointInputPayload
@@ -222,12 +229,10 @@ def action_input_model(kind: decision_models.ActionKind) -> InputModel | None:  
             return RetainTemporarilyInputPayload
         case decision_models.ActionKind.DEFER:
             return DeferInputPayload
-        case (
-            decision_models.ActionKind.PAUSE
-            | decision_models.ActionKind.REJECT_PROPOSAL
-            | decision_models.ActionKind.RETURN_FOR_CORRECTION
-        ):
+        case decision_models.ActionKind.PAUSE | decision_models.ActionKind.RETURN_FOR_CORRECTION:
             return ReasonInputPayload
+        case decision_models.ActionKind.REJECT_PROPOSAL:
+            return RejectProposalInputPayload
         case decision_models.ActionKind.MERGE_PROPOSAL:
             return MergeProposalInputPayload
         case decision_models.ActionKind.RESUME:

@@ -221,22 +221,22 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             return decision_models.DeferCommand(
                 action, work_models.DeferInput(payload.timing, payload.reopen_condition)
             )
-        case (
-            decision_models.PauseAction()
-            | decision_models.RejectProposalAction()
-            | decision_models.ReturnForCorrectionAction()
-        ):
+        case decision_models.PauseAction() | decision_models.ReturnForCorrectionAction():
             if isinstance(payload := _decode(data, transition_models.ReasonInputPayload), TransitionInputFailure):
                 return payload
             match action:
                 case decision_models.PauseAction():
                     return decision_models.PauseCommand(action, work_models.ReasonInput(payload.reason))
-                case decision_models.RejectProposalAction():
-                    return decision_models.RejectProposalCommand(action, work_models.ReasonInput(payload.reason))
                 case decision_models.ReturnForCorrectionAction():
                     return decision_models.ReturnForCorrectionCommand(action, work_models.ReasonInput(payload.reason))
                 case _ as unreachable:
                     assert_never(unreachable)
+        case decision_models.RejectProposalAction():
+            if isinstance(
+                payload := _decode(data, transition_models.RejectProposalInputPayload), TransitionInputFailure
+            ):
+                return payload
+            return decision_models.RejectProposalCommand(action, work_models.ReasonInput(payload.reason))
         case decision_models.MergeProposalAction():
             if isinstance(
                 payload := _decode(data, transition_models.MergeProposalInputPayload), TransitionInputFailure

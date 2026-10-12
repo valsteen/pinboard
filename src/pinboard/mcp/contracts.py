@@ -838,7 +838,7 @@ type MergeProposalTransitionRequest = ProjectTransitionRequest[
 ]
 type PauseTransitionRequest = ProjectTransitionRequest[Literal["pause"], action_models.ReasonInputPayload]
 type RejectProposalTransitionRequest = ProjectTransitionRequest[
-    Literal["reject-proposal"], action_models.ReasonInputPayload
+    Literal["reject-proposal"], action_models.RejectProposalInputPayload
 ]
 type ReopenTransitionRequest = ProjectTransitionRequest[Literal["reopen"], action_models.EvidenceInputPayload]
 type RecordReplacementTransitionRequest = ProjectTransitionRequest[

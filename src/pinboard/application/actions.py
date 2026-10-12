@@ -237,11 +237,10 @@ def completion_input_contract(
             ),
         )
     if isinstance(brief.checkpoint.disposition, work_brief_models.ContinueCheckpointDisposition):
-        pending = "\n".join(f"- {work}" for work in brief.checkpoint.disposition.remaining_work)
         return query_models.CompletionRecoveryRequired(
             attempt.attempt_id,
             "The accepted brief marks this checkpoint as continuing work, so it cannot authorize completion. "
-            f"Remaining work:\n{pending}",
+            f"Remaining work:\n{brief.checkpoint.disposition.remaining_work}",
         )
     if (recovery := completion_candidate_recovery(completion)) is not None:
         return recovery

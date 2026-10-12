@@ -228,6 +228,7 @@ def run_claude(  # noqa: C901, PLR0912, PLR0915
         session = claude_driver.ClaudeSession.start(
             Path(exported.plugin_root),
             "claude-haiku-4-5-20251001",
+            None,
             inquiry,
             ("Bash", "Read", "Write", "Edit", "Glob", "Grep"),
         )

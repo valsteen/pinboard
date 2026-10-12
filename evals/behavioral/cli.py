@@ -34,6 +34,7 @@ from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
     Assessed,
     AssessmentFailure,
+    ClaudeEffort,
     Completed,
     CoverageResult,
     CoverageWindow,
@@ -60,6 +61,7 @@ class RunClaude:
     runs: int
     first_index: int
     model: str
+    reasoning_effort: ClaudeEffort | None
     out: Path
     worlds: Path
     cap_usd: float
@@ -227,6 +229,7 @@ def parser() -> argparse.ArgumentParser:  # noqa: PLR0915
         leaf.add_argument("--cap-usd", type=float, required=True)
         if runtime == "claude":
             leaf.add_argument("--jobs", type=positive, default=1)
+            leaf.add_argument("--reasoning-effort", type=claude_effort, default=None)
         else:
             leaf.add_argument("--reasoning-effort", required=True)
 
@@ -317,6 +320,14 @@ def add_coverage_parser(commands: argparse._SubParsersAction[argparse.ArgumentPa
     coverage.add_argument("--worlds", type=Path, required=True)
     coverage.add_argument("--cap-usd", type=float, required=True)
     coverage.add_argument("--accept-unknown-reviewer-price", action="store_true", required=True)
+
+
+def claude_effort(value: str) -> ClaudeEffort:
+    try:
+        return ClaudeEffort(value)
+    except ValueError:
+        allowed = ", ".join(level.value for level in ClaudeEffort)
+        raise argparse.ArgumentTypeError(f"must be one of {allowed}") from None
 
 
 def positive(value: str) -> int:
@@ -413,6 +424,7 @@ def decode_run(options: argparse.Namespace) -> RunClaude | RunCodex:
                 options.runs,
                 options.first_index,
                 options.model,
+                options.reasoning_effort,
                 options.out,
                 options.worlds,
                 options.cap_usd,
@@ -619,7 +631,11 @@ def run_claude(command: RunClaude) -> int:
     )
     try:
         report_skipped(
-            runner.run_claude(plan, spend.Budget(Layout(c.out), c.cap_usd, processes.Window(None), False), c.jobs)
+            runner.run_claude(
+                runner.ClaudePlan(plan, c.reasoning_effort),
+                spend.Budget(Layout(c.out), c.cap_usd, processes.Window(None), False),
+                c.jobs,
+            )
         )
     except runner.IsolationBreachError as stop:
         print(f"Claude Code runs stopped: {stop}")

@@ -83,7 +83,7 @@ If a discovered problem blocks the attempt:
 4. return the blocker to the owning task with a concise purpose label and a native clickable link to that Markdown, and apply the main Pinboard skill's readable-artifact rule to every mentioned item, attempt, or related evidence whose Markdown is confirmed available;
 5. use `$pinboard-intake` to propose a prerequisite when explicitly requested;
 6. use the worker-visible `report-blocker:<attempt>` affordance to report that preserved evidence; it is advisory and has no mutation payload;
-7. leave shared lifecycle mutation to the owning task, which must select the exact project action `block:<attempt>` only for dependencies already accepted in the current definition or `pause:<attempt>` when no accepted dependency condition applies; a newly accepted dependency requires a complete item revision and revised-brief recovery, and `block-item:<item>` is only for unstarted intake work.
+7. leave shared lifecycle mutation to the owning task, which must select the exact project action `block:<attempt>` only for dependencies already accepted in the current definition or `pause:<attempt>` with a reason written as a [human-read record](../pinboard/references/setup-and-transitions.md#write-human-read-records) when no accepted dependency condition applies; a newly accepted dependency requires a complete item revision and revised-brief recovery, and `block-item:<item>` is only for unstarted intake work.
 
 ## Implement and verify
 

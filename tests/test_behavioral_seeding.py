@@ -1,8 +1,11 @@
-"""Launcher recovery results and MCP contract mismatches become typed seed failures, never repaired."""
+"""Launcher recovery results and MCP contract mismatches become typed seed failures, never repaired, and each world
+extra seeds its declared board state through the exact Pinboard request contracts."""
 
+import asyncio
 import unittest
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,10 +14,11 @@ import msgspec
 from mcp.client.session import ClientSession
 from mcp_types import CallToolResult, TextContent
 
-from evals.behavioral import board, export, seeding, world
+from evals.behavioral import board, export, processes, seeding, world, world_content
 from evals.behavioral.export import SeedFailure
 from evals.behavioral.processes import Completed, Window
-from pinboard.application import action_models
+from evals.behavioral.records import Runtime, Scenario, Turn, WorldExtra, WorldKind
+from pinboard.application import action_models, work_brief_models
 from pinboard.mcp import contracts
 
 RECOVERY = (
@@ -147,6 +151,125 @@ class SeededReviewTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(completion.payload, action_models.ReviewedCompleteInputPayload)
         assert isinstance(completion.payload, action_models.ReviewedCompleteInputPayload)
         self.assertEqual(ready.review.reviewer_task_id, completion.payload.reviewer_task_id)
+
+
+@dataclass
+class FakeBoard:
+    """Answers the seeder's MCP calls after decoding each consumed request through Pinboard's own contracts."""
+
+    briefs: list[contracts.BriefPublishRequest]
+    reviews: list[contracts.ReviewJobRequest]
+    transitions: list[contracts.TransitionRequest]
+
+    async def answer(self, tool: str, arguments: dict[str, contracts.JsonValue]) -> CallToolResult:
+        match tool:
+            case "pinboard_proposal_create":
+                msgspec.convert(arguments, type=contracts.ProposalCreateRequest, strict=True)
+                content = {"status": "committed"}
+            case "pinboard_preparation_authority" | "pinboard_attempt_authority":
+                content = {"status": "committed", "lease_id": "lease-1", "generation": 1}
+            case "pinboard_item_definition":
+                content = {"definition_revision": 1, "definition_digest": "e" * 64}
+            case "pinboard_brief_publish":
+                self.briefs.append(msgspec.convert(arguments, type=contracts.BriefPublishRequest, strict=True))
+                content = {"status": "committed", "reference": {"artifact_ref_id": 3}}
+            case "pinboard_actions":
+                content = {"actions": [{"subject_revision": "7"}]}
+            case "pinboard_transition":
+                self.transitions.append(contracts.decode_transition_request(arguments))
+                content = {"status": "committed"}
+            case "pinboard_review_job":
+                request = msgspec.convert(arguments, type=contracts.ReviewJobRequest, strict=True)
+                self.reviews.append(request)
+                initial = isinstance(request.review, contracts.InitialReviewChoice)
+                content = (
+                    {"status": "ready", "prompt_reference": {"sha256": "a" * 64}} if initial else {"status": "recorded"}
+                )
+            case "pinboard_attempt_inspect":
+                content = {"candidate_recovery": {"sha256": "b" * 64}, "accepted_brief": {"sha256": "c" * 64}}
+            case _:
+                raise AssertionError(f"unexpected tool {tool}")
+        return CallToolResult(content=[], structured_content=content, is_error=False)
+
+
+def committed_project(root: Path, window: Window) -> Path:
+    project = root / "tally"
+    processes.git_checked(["init", "-q", "-b", "main", str(project)], cwd=root, window=window)
+    processes.git_checked(["config", "user.name", "Fixture"], cwd=project, window=window)
+    processes.git_checked(["config", "user.email", "fixture@example.test"], cwd=project, window=window)
+    (project / "docs").mkdir()
+    (project / "docs" / "usage.md").write_text("# Usage\n")
+    processes.git_checked(["add", "-A"], cwd=project, window=window)
+    processes.git_checked(["commit", "-q", "-m", "Initial"], cwd=project, window=window)
+    return project
+
+
+class ContinueCheckpointWorldTest(unittest.TestCase):
+    """The continue-checkpoint extra publishes a continue brief and records commissioned ready review in review."""
+
+    def test_seeding_publishes_a_continue_checkpoint_and_records_ready_review(self) -> None:
+        fake = FakeBoard(briefs=[], reviews=[], transitions=[])
+        session = AsyncMock(spec=ClientSession)
+        session.call_tool.side_effect = fake.answer
+        window = Window(None)
+        with TemporaryDirectory() as temporary:
+            project = committed_project(Path(temporary), window)
+            seeder = seeding.Seeder(board.BoardClient(session, window), project, project / ".pinboard", "owner")
+            asyncio.run(world_content.seed_continue_checkpoint(seeder))
+            candidate = seeding.head(seeder.worktree("usage-guide"), window)
+
+        (published,) = fake.briefs
+        self.assertEqual("usage-guide", published.brief.item_id)
+        disposition = published.brief.checkpoint.disposition
+        self.assertIsInstance(disposition, work_brief_models.ContinueCheckpointDisposition)
+        assert isinstance(disposition, work_brief_models.ContinueCheckpointDisposition)
+        self.assertIn("exit status", disposition.remaining_work)
+        self.assertEqual(
+            ["activate", "submit-review"], [transition.receipt.action_id.kind for transition in fake.transitions]
+        )
+        initial, ready = (review.review for review in fake.reviews)
+        self.assertIsInstance(initial, contracts.InitialReviewChoice)
+        self.assertIsInstance(ready, contracts.RecordReadyReviewChoice)
+        assert isinstance(ready, contracts.RecordReadyReviewChoice)
+        self.assertEqual("usage-guide-1", ready.attempt_id)
+        self.assertEqual(candidate, ready.candidate_revision)
+
+    def test_build_world_seeds_the_extra_on_the_project_board_and_verifies_review(self) -> None:
+        scenario = Scenario(
+            id="continue-checkpoint",
+            title="Accept the reviewed checkpoint",
+            world=WorldKind.MINIMAL,
+            world_extra=WorldExtra.CONTINUE_CHECKPOINT_REVIEW,
+            source="fixture",
+            ground_truth="fixture",
+            turns=[Turn(human="What remains?", before=None)],
+        )
+        seeded_content: list[Path] = []
+
+        @asynccontextmanager
+        async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
+            yield board.BoardClient(MagicMock(spec=ClientSession), window)
+
+        async def seed(seeder: seeding.Seeder) -> None:
+            seeded_content.append(seeder.work_root)
+
+        async def states(*arguments: Path | tuple[str, ...] | Window) -> list[tuple[str, str]]:
+            self.assertEqual(("usage-guide",), arguments[4])
+            return [("usage-guide", "review")]
+
+        with (
+            TemporaryDirectory() as temporary,
+            patch.object(world, "create_project"),
+            patch.object(world, "init_board"),
+            patch.object(board, "connect", connected),
+            patch.object(world, "seed_continue_checkpoint", seed),
+            patch.object(board, "item_states", states),
+        ):
+            built, seeded = world.build_world(
+                Path(temporary) / "world", scenario, Runtime.CLAUDE_CODE, Path("plugin"), "owner", Window(None)
+            )
+        self.assertEqual([built.work_root], seeded_content)
+        self.assertEqual([("project", "usage-guide", "review")], [(s.board, s.item_id, s.state) for s in seeded])
 
 
 if __name__ == "__main__":

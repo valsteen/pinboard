@@ -4796,6 +4796,7 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.BRIEF_REVIEW_TOOL,
                 mcp_server.BRIEF_CONTRACT_TOOL,
                 mcp_server.BRIEF_SOURCES_TOOL,
+                mcp_server.FIXTURE_REVIEW_TOOL,
                 mcp_server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
                 mcp_server.ORDER_TOOL,
                 mcp_server.PARALLEL_PREVIEW_TOOL,

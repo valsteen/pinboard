@@ -15,6 +15,7 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters import candidate_evidence, dispatch_operations, review_operations
+from pinboard.adapters.files import fixture_review as fixture_review_files
 from pinboard.adapters.files import root, views
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
@@ -29,6 +30,7 @@ from pinboard.application import (
     brief_source_models,
     brief_sources,
     candidate_snapshots,
+    fixture_review,
     ports,
     queries,
     query_models,
@@ -1827,3 +1829,179 @@ def _verify_artifact(
     )
     assert isinstance(content, dict)
     return execution.OperationResult(content, "ok", str(reference.artifact_ref_id))
+
+
+def _fixture_review_rejected(
+    resource: str, message: str, recovery: str, max_batch_bytes: int | None
+) -> execution.OperationResult:
+    result = contracts.FixtureReviewRejected(
+        "pinboard-fixture-review-result/v1",
+        "rejected",
+        "FIXTURE_REVIEW_INVALID",
+        resource,
+        message,
+        recovery,
+        False,
+        "unchanged",
+        "correct-input",
+        (),
+    )
+    if max_batch_bytes is not None and len(msgspec.json.encode(result)) > max_batch_bytes:
+        result = msgspec.structs.replace(result, message="Selected input is invalid.")
+        if len(msgspec.json.encode(result)) > max_batch_bytes:
+            result = msgspec.structs.replace(
+                result,
+                resource="max_batch_bytes",
+                message="The budget cannot fit the rejection's resource and correction.",
+                recovery="Raise max_batch_bytes (up to 16000), or shorten selected paths, then restart with operation start.",
+            )
+    content: dict[str, JsonValue] = msgspec.to_builtins(result)
+    return execution.OperationResult(content, "rejected", None)
+
+
+def _fixture_page_content(
+    request: contracts.FixtureReviewStartRequest | contracts.FixtureReviewContinueRequest,
+    view: str,
+    view_sha256: str,
+    start: int,
+    end: int,
+    before_size: int,
+    after_size: int,
+    view_size: int,
+) -> dict[str, JsonValue]:
+    continuation = (
+        contracts.FixtureReviewContinueRequest(
+            request.project_root,
+            request.work_root,
+            request.before,
+            request.after,
+            request.recipe,
+            request.max_batch_bytes,
+            view_sha256,
+            end,
+        )
+        if end < len(view)
+        else None
+    )
+    return {
+        "schema": "pinboard-fixture-review-page/v1",
+        "status": "ok",
+        "before": msgspec.to_builtins(request.before),
+        "before_size_bytes": before_size,
+        "after": msgspec.to_builtins(request.after),
+        "after_size_bytes": after_size,
+        "recipe": msgspec.to_builtins(request.recipe),
+        "view_sha256": view_sha256,
+        "view_size_bytes": view_size,
+        "start_character": start,
+        "end_character": end,
+        "text": view[start:end],
+        "max_batch_bytes": request.max_batch_bytes,
+        "continuation": msgspec.to_builtins(continuation),
+        "authority": "presentation-only",
+        "state_changed": False,
+        "effect": "unchanged",
+        "retry": "safe-to-repeat",
+        "changed_surfaces": [],
+    }
+
+
+def _fixture_review(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+    """Verify two selected files, compare decoded fields and return one bound page without state access."""
+    token.checkpoint()
+    try:
+        request = msgspec.convert(raw, type=contracts.FixtureReviewEnvelope, strict=True).request
+    except (msgspec.ValidationError, ValueError) as error:
+        return _fixture_review_rejected(
+            "request",
+            str(error),
+            "Correct the request against pinboard_fixture_review's advertised start/continue schema.",
+            None,
+        )
+    selected: list[bytes] = []
+    selections: list[contracts.FixtureSource] = []
+    for source in (request.before, request.after):
+        path = Path(source.path)
+        if not path.is_absolute():
+            path = Path(request.project_root) / path
+        path = path.absolute()
+        acquired = fixture_review_files.read_verified_fixture(path, source.sha256)
+        if isinstance(acquired, fixture_review.FixtureReviewFailure):
+            return _fixture_review_rejected(
+                acquired.resource,
+                acquired.message,
+                "Select the intended readable fixture and supply the SHA-256 of its complete bytes; restart with operation start.",
+                request.max_batch_bytes,
+            )
+        selected.append(acquired)
+        selections.append(contracts.FixtureSource(str(path), source.sha256))
+        token.checkpoint()
+    request = msgspec.structs.replace(request, before=selections[0], after=selections[1])
+    view = fixture_review.render_fixture_review(
+        selected[0],
+        selected[1],
+        request.recipe.repeat_text,
+        request.recipe.repeat_count,
+    )
+    if isinstance(view, fixture_review.FixtureReviewFailure):
+        source = request.before if view.resource == "before" else request.after
+        return _fixture_review_rejected(
+            source.path,
+            view.message,
+            "Select unambiguous UTF-8 JSON objects of serialized JSON strings, supply their exact hashes, and restart with operation start.",
+            request.max_batch_bytes,
+        )
+    view_sha256 = hashlib.sha256(msgspec.json.encode((request.before, request.after, request.recipe, view))).hexdigest()
+    match request:
+        case contracts.FixtureReviewStartRequest():
+            start = 0
+        case contracts.FixtureReviewContinueRequest():
+            start = request.start_character
+            if request.view_sha256 != view_sha256 or start >= len(view):
+                return _fixture_review_rejected(
+                    "view",
+                    "Continuation does not identify this exact source/recipe/view or an available character.",
+                    "Restart with operation start for these exact sources and recipe, then follow its continuation verbatim.",
+                    request.max_batch_bytes,
+                )
+        case _ as unreachable:
+            assert_never(unreachable)
+    token.checkpoint()
+    page = _bounded_fixture_page(request, view, view_sha256, start, len(selected[0]), len(selected[1]))
+    if isinstance(page, execution.OperationResult):
+        return page
+    msgspec.convert(page, type=contracts.FixtureReviewPage, strict=True)
+    token.checkpoint()
+    return execution.OperationResult(page, "read", None)
+
+
+def _bounded_fixture_page(
+    request: contracts.FixtureReviewStartRequest | contracts.FixtureReviewContinueRequest,
+    view: str,
+    view_sha256: str,
+    start: int,
+    before_size: int,
+    after_size: int,
+) -> dict[str, JsonValue] | execution.OperationResult:
+    view_size = len(view.encode("utf-8"))
+    # A final page has less metadata; price it first when its text can fit at all.
+    if len(view) - start <= request.max_batch_bytes:
+        page = _fixture_page_content(request, view, view_sha256, start, len(view), before_size, after_size, view_size)
+        if len(msgspec.json.encode(page)) <= request.max_batch_bytes:
+            return page
+    low, high = start, min(len(view) - 1, start + request.max_batch_bytes)
+    while low < high:
+        end = (low + high + 1) // 2
+        candidate = _fixture_page_content(request, view, view_sha256, start, end, before_size, after_size, view_size)
+        if len(msgspec.json.encode(candidate)) <= request.max_batch_bytes:
+            low = end
+        else:
+            high = end - 1
+    if low == start:
+        return _fixture_review_rejected(
+            "max_batch_bytes",
+            "The budget cannot fit page identities, continuation and one character.",
+            "Raise max_batch_bytes (up to 16000), or shorten the selected paths/recipe, then restart with operation start.",
+            request.max_batch_bytes,
+        )
+    return _fixture_page_content(request, view, view_sha256, start, low, before_size, after_size, view_size)

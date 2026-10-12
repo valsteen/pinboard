@@ -37,6 +37,12 @@ type ItemStatusGitCode = Literal[
     "PROJECT_GIT_ROOT_UNAVAILABLE",
 ]
 
+type FixtureReviewRejectedCode = Annotated[
+    Literal["FIXTURE_REVIEW_INVALID"],
+    CodeMeanings(((0, "The selected fixture, repetition recipe or bound review page could not be verified."),)),
+]
+
+
 type BriefContractRejectedCode = Annotated[
     Literal["BRIEF_CONTRACT_REQUEST_INVALID"],
     CodeMeanings(((0, "The brief-contract request could not be decoded or validated."),)),

@@ -381,6 +381,98 @@ class BriefSourcePlanOutputEnvelope(msgspec.Struct, frozen=True, forbid_unknown_
     request: BriefSourcesPlanToFileRequest
 
 
+class FixtureSource(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    path: RootPath
+    sha256: Sha256
+
+
+class FixtureRepeatRecipe(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    repeat_text: NonEmptyText
+    repeat_count: PositiveInt
+
+    def __post_init__(self) -> None:
+        self.repeat_text.encode("utf-8")
+
+
+class FixtureReviewStartRequest(
+    msgspec.Struct, tag="start", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    before: FixtureSource
+    after: FixtureSource
+    recipe: FixtureRepeatRecipe
+    max_batch_bytes: Annotated[int, msgspec.Meta(ge=1, le=16_000)]
+
+
+class FixtureReviewContinueRequest(
+    msgspec.Struct, tag="continue", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    before: FixtureSource
+    after: FixtureSource
+    recipe: FixtureRepeatRecipe
+    max_batch_bytes: Annotated[int, msgspec.Meta(ge=1, le=16_000)]
+    view_sha256: Sha256
+    start_character: PositiveInt
+
+
+class FixtureReviewEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: FixtureReviewStartRequest | FixtureReviewContinueRequest
+
+
+class FixtureReviewRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-fixture-review-result/v1"]
+    status: Literal["rejected"]
+    code: diagnostic_codes.FixtureReviewRejectedCode
+    resource: NonEmptyText
+    message: NonEmptyText
+    recovery: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input"]
+    changed_surfaces: Empty
+
+
+class FixtureReviewPage(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-fixture-review-page/v1"]
+    status: Literal["ok"]
+    before: FixtureSource
+    before_size_bytes: NonNegativeInt
+    after: FixtureSource
+    after_size_bytes: NonNegativeInt
+    recipe: FixtureRepeatRecipe
+    view_sha256: Sha256
+    view_size_bytes: PositiveInt
+    start_character: NonNegativeInt
+    end_character: PositiveInt
+    text: NonEmptyText
+    max_batch_bytes: PositiveInt
+    continuation: FixtureReviewContinueRequest | None
+    authority: Literal["presentation-only"]
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.end_character != self.start_character + len(self.text):
+            raise ValueError("Page character bounds must match the text")
+        if len(msgspec.json.encode(self)) > self.max_batch_bytes:
+            raise ValueError("The complete serialized page exceeds max_batch_bytes")
+        if self.continuation is not None and (
+            self.continuation.start_character != self.end_character
+            or self.continuation.view_sha256 != self.view_sha256
+            or self.continuation.before != self.before
+            or self.continuation.after != self.after
+            or self.continuation.recipe != self.recipe
+            or self.continuation.max_batch_bytes != self.max_batch_bytes
+        ):
+            raise ValueError("Continuation must retain exact source, recipe and view binding")
+
+
 class BriefContractRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-contract-result/v1"]
     status: Literal["rejected"]
@@ -2970,8 +3062,12 @@ TRANSITION_RESULT_TYPES = (
     TransitionFailedAfterPublication,
     ExecutorBusyResult,
 )
+FIXTURE_REVIEW_RESULT_TYPES = (FixtureReviewPage, FixtureReviewRejected, ExecutorBusyResult)
+
+
 type RequestBoundary = (
-    type[BriefContractEnvelope]
+    type[FixtureReviewEnvelope]
+    | type[BriefContractEnvelope]
     | type[BriefSourcesEnvelope]
     | type[ItemStatusEnvelope]
     | type[ProposalCreateRequest]
@@ -2994,7 +3090,9 @@ type RequestBoundary = (
     | type[ParallelPreviewEnvelope]
 )
 type ResultBoundary = (
-    type[work_brief_contract.WorkBriefContract]
+    type[FixtureReviewPage]
+    | type[FixtureReviewRejected]
+    | type[work_brief_contract.WorkBriefContract]
     | type[work_brief_contract.WorkBriefStarterContract]
     | type[BriefContractRejected]
     | type[brief_source_models.BriefSourcePlanView]

@@ -24,3 +24,5 @@ BRIEF_SOURCES_TOOL = "pinboard_brief_sources"
 BRIEF_SOURCE_PLAN_OUTPUT_TOOL = "pinboard_brief_source_plan_output"
 ORDER_TOOL = "pinboard_order"
 PARALLEL_PREVIEW_TOOL = "pinboard_parallel_preview"
+
+FIXTURE_REVIEW_TOOL = "pinboard_fixture_review"

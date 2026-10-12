@@ -75,6 +75,8 @@ from pinboard.mcp.contracts import (
     DispatchReady,
     DispatchRejected,
     ExecutorBusyResult,
+    FixtureReviewPage,
+    FixtureReviewRejected,
     IntegrationCandidateEvidenceInvalid,
     IntegrationCandidateUnavailable,
     IntegrationTargetUnresolved,
@@ -708,6 +710,8 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     surfaces = content.get("changed_surfaces")
     if schema == "pinboard-mcp-execution-result/v1":
         msgspec.convert(content, type=TracePreflightResult if status == "rejected" else ExecutorBusyResult, strict=True)
+    elif tool_name == "pinboard_fixture_review":
+        msgspec.convert(content, type=FixtureReviewRejected if status == "rejected" else FixtureReviewPage, strict=True)
     elif tool_name == "pinboard_order":
         msgspec.convert(content, type=OrderRejected if status == "rejected" else OrderCommitted, strict=True)
     elif tool_name == "pinboard_pr_review":

@@ -46,6 +46,7 @@ from pinboard.mcp.tool_names import (
     CLOSE_TOOL,
     CORRECTION_CONTEXT_TOOL,
     DISPATCH_TOOL,
+    FIXTURE_REVIEW_TOOL,
     ITEM_DEFINITION_TOOL,
     ITEM_STATUS_TOOL,
     ORDER_TOOL,
@@ -67,7 +68,7 @@ LOCAL_AUTHORITY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
     openWorldHint=False,
 )
 # Full-invocation read-only hints exclude auxiliary settings and trace writes.
-# The two source tools bypass capture; ordinary ledger reads may use it.
+# Selected-file source tools bypass capture; ordinary ledger reads may use it.
 READ_ONLY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
     readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
 )
@@ -222,6 +223,35 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             BRIEF_SOURCES_TOOL,
             str(request.get("project_root", "")),
             partial(read_operations._brief_sources, {"request": request}),
+            arguments={"request": request},
+            capture=None,
+        )
+
+    @server.tool(
+        name=FIXTURE_REVIEW_TOOL,
+        description=(
+            "Read two exact SHA-256-bound JSON-string fixture envelopes as a decoded field-change view. "
+            "Relative paths select from project_root; returned source identities and continuations use absolute paths. "
+            "Supply one repeat_text/repeat_count recipe; compact only its uniquely corresponding identical body, "
+            "retaining changed frames and surrounding text. Literal source data cannot act as a marker. "
+            "Pages (including exact continuation) and resource rejections fit usable max_batch_bytes (up to 16000). "
+            "An unusable budget or invalid request returns its diagnosis even when that budget cannot fit it. "
+            "Concatenate page text in order to read complete JSON Lines changes; character offsets preserve UTF-8. "
+            "Follow continuation verbatim under request. Sources are fully reverified on every page. "
+            "Whole inputs and the selected view remain materialized in memory. A projection is presentation only: "
+            "full-byte verification does not establish semantic review, readiness or lifecycle authority. "
+            "Never writes source, artifacts, ledger, settings or optional invocation traces."
+        ),
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    async def fixture_review(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return await execution._run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            FIXTURE_REVIEW_TOOL,
+            str(request.get("project_root", "")),
+            partial(read_operations._fixture_review, {"request": request}),
             arguments={"request": request},
             capture=None,
         )
@@ -752,6 +782,11 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 def _install_boundary_contracts(server: MCPServer) -> None:
     """Install exact schemas through the pinned SDK's mutable tool metadata seam."""
     definitions = (
+        (
+            FIXTURE_REVIEW_TOOL,
+            contract_schemas.schema_for(contracts.FixtureReviewEnvelope),
+            contract_schemas.union_schema_for(contracts.FIXTURE_REVIEW_RESULT_TYPES),
+        ),
         (
             ORDER_TOOL,
             contract_schemas.schema_for(contracts.OrderEnvelope),

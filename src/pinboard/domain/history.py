@@ -1,4 +1,5 @@
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
@@ -20,15 +21,27 @@ type Identity = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*
 type RecordText = Annotated[str, msgspec.Meta(min_length=1)]
 
 
+# Markdown ends a line at CRLF, a bare CR or LF; record text keeps whichever it was accepted with.
+_RECORD_LINE_BREAK = re.compile(r"(\r\n|\r|\n)")
+
+
+def record_text_is_multiline(text: str) -> bool:
+    return _RECORD_LINE_BREAK.search(text) is not None
+
+
 def nest_record_text(text: str, indent: str) -> str:
     """Keep record text inside the Markdown container whose first line holds it.
 
-    Every continuation line is indented under the container, so no line of record text can start a heading or list
-    item at the container's level; empty lines stay empty. Single-line text is returned unchanged.
+    Every continuation line after a CRLF, CR or LF break is indented under the container, so no line of record text
+    can start a heading or list item at the container's level; empty lines stay empty and each break keeps its
+    accepted bytes. Single-line text is returned unchanged.
     """
 
-    first, *continuation = text.split("\n")
-    return "\n".join((first, *(f"{indent}{line}" if line else line for line in continuation)))
+    first, *rest = _RECORD_LINE_BREAK.split(text)
+    breaks_and_lines = zip(rest[::2], rest[1::2], strict=True)
+    return first + "".join(
+        f"{line_break}{indent}{line}" if line else line_break for line_break, line in breaks_and_lines
+    )
 
 
 def _encoded_record(value: msgspec.Struct) -> bytes:

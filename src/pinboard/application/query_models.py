@@ -647,7 +647,7 @@ class ReviewJobContextFacts:
     checkpoint_package_reference: stored_state.ArtifactReference | None
     checkpoint_candidate_reference: stored_state.ArtifactReference | None
     correction_receipt: stored_state.StoredTransitionReceipt | None
-    returned_candidate_reference: stored_state.ArtifactReference | None
+    returned_candidate_snapshot: CandidateSnapshotContextFacts | None
 
 
 @dataclass(frozen=True, slots=True)

@@ -1045,7 +1045,7 @@ class SQLiteWorkStore:
                     if correction_history_id is None
                     else sqlite_state.read_history_receipt(connection, correction_history_id)
                 )
-                returned_candidate_reference = None
+                returned_candidate_snapshot = None
                 if (
                     correction_receipt is not None
                     and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
@@ -1064,9 +1064,19 @@ class SQLiteWorkStore:
                             connection, decode_row(submission_row, HistoryIdRow).history_id
                         )
                         if submission is not None and submission.artifact_ref_id is not None:
-                            returned_candidate_reference = read_artifact_reference_by_id(
-                                connection, submission.artifact_ref_id
-                            )
+                            reference = read_artifact_reference_by_id(connection, submission.artifact_ref_id)
+                            if reference is not None:
+                                returned_candidate_snapshot = query_models.CandidateSnapshotContextFacts(
+                                    attempt.attempt_id,
+                                    attempt.work_item_id,
+                                    work_models.AttemptState.ACTIVE,
+                                    attempt.branch,
+                                    attempt.base_revision,
+                                    None,
+                                    None,
+                                    submission,
+                                    reference,
+                                )
                 return query_models.ReviewJobContextFacts(
                     attempt,
                     candidate_snapshot,
@@ -1075,7 +1085,7 @@ class SQLiteWorkStore:
                     checkpoint_package_reference,
                     checkpoint_candidate_reference,
                     correction_receipt,
-                    returned_candidate_reference,
+                    returned_candidate_snapshot,
                 )
         finally:
             connection.close()

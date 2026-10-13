@@ -709,6 +709,7 @@ class ReplacementReadinessChoice(
     receipt: DispatchReceipt
     checkpoint_id: PathComponent
     brief_review: work_brief_models.CorrectionSourceReview
+    current_candidate: NonEmptyText
     review_id: PathComponent
     correction_history_id: PositiveInt
 
@@ -2673,6 +2674,7 @@ class ReplacementReadinessReady(msgspec.Struct, frozen=True, forbid_unknown_fiel
     status: Literal["replacement-ready"]
     attempt_id: PathComponent
     checkpoint_id: PathComponent
+    candidate_revision: NonEmptyText
     proof_reference: ReviewEvidenceReference
     ready_review_reference: ReviewEvidenceReference
     next_step: NonEmptyText

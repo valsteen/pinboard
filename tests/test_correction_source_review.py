@@ -2,6 +2,7 @@ import base64
 import dataclasses
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 from copy import deepcopy
@@ -536,6 +537,259 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         operation = self.json_object(self.json_object(inspected["continuation"])["next_operation"])
         self.assertEqual("repository-disposition", operation["kind"], inspected)
 
+    def test_cross_base_replacement_reviews_rebased_candidate_and_preserves_history(self) -> None:
+        self.fixed_native_time()
+        for candidate_form in ("commit", "working-tree"):
+            with self.subTest(candidate_form=candidate_form):
+                self.cross_base_replacement_recovery(candidate_form)
+
+    def cross_base_replacement_recovery(self, candidate_form: str) -> None:  # noqa: PLR0915 - one native persisted cross-base journey
+        fixture = self.correction_fixture()
+        old_base = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=fixture.project, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        (fixture.project / "tests" / "test_only.py").write_text("assert 'original'\n", encoding="utf-8")
+        original = self.commit_all(fixture.project, "original candidate")
+        lease = self.native_attempt_acquire(fixture, "original-worker")
+        submitted = self.transition_result(
+            fixture,
+            self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease),
+            {"candidate": original},
+        )
+        self.assertEqual("committed", submitted["status"], submitted)
+        original_review = self.record_commissioned_review(fixture, original, "original-reviewer")
+        original_review_reference = self.json_object(original_review["candidate_review"])
+        original_review_path = fixture.work / str(original_review_reference["selector"])
+        original_review_bytes = original_review_path.read_bytes()
+        original_verdict = self.json_object(json.loads(original_review_bytes))
+        original_context = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert original_context is not None
+        original_snapshot = (fixture.work / original_context.reference.selector).read_bytes()
+        returned = self.transition_result(
+            fixture,
+            self.project_action(fixture, "return-for-correction:work-a-1"),
+            {"reason": "Reassess the candidate on its new accepted base."},
+        )
+        history_id = returned["history_id"]
+        assert isinstance(history_id, int)
+        subprocess.run(
+            ["git", "switch", "-c", "new-base", old_base], cwd=fixture.project, check=True, capture_output=True
+        )
+        (fixture.project / "tracked.txt").write_text("new base\n", encoding="utf-8")
+        new_base = self.commit_all(fixture.project, "new accepted base")
+        subprocess.run(["git", "switch", fixture.brief.branch], cwd=fixture.project, check=True, capture_output=True)
+        rebase_environment = os.environ.copy()
+        for variable in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"):
+            rebase_environment.pop(variable, None)
+        rebase_environment.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
+        rebase = subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.useConfigOnly=true",
+                "-c",
+                "user.name=Pinboard Tests",
+                "-c",
+                "user.email=pinboard@example.invalid",
+                "rebase",
+                "--onto",
+                new_base,
+                old_base,
+            ],
+            cwd=fixture.project,
+            env=rebase_environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, rebase.returncode, rebase.stderr)
+        rebased = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=fixture.project, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        self.assertNotEqual(original, rebased)
+        self.assertNotEqual(fixture.brief.base_revision, new_base)
+        if candidate_form == "working-tree":
+            (fixture.project / "tests" / "test_only.py").write_text("assert 'rebased working tree'\n", encoding="utf-8")
+            rebased = root.read_working_tree_candidate(fixture.project).identity
+        replacement = msgspec.structs.replace(
+            fixture.brief,
+            artifact_revision=fixture.brief.artifact_revision + 1,
+            base_revision=new_base,
+        )
+        before = fixture.store.validated_snapshot()
+        wrong_scope = msgspec.to_builtins(replacement)
+        assert isinstance(wrong_scope, dict)
+        self.json_object(wrong_scope["accepted_scope"])["revision"] = 2
+        rejected = call_native_tool(
+            server.BRIEF_PUBLISH_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "brief": wrong_scope,
+            },
+        )
+        self.assertEqual("rejected", rejected["status"], rejected)
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        published = call_native_tool(
+            server.BRIEF_PUBLISH_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "brief": msgspec.to_builtins(replacement),
+            },
+        )
+        self.assertEqual("committed", published["status"], published)
+        brief_reference = self.json_object(published["reference"])
+        before = fixture.store.validated_snapshot()
+        rejected = self.transition_result(
+            fixture,
+            self.project_action(fixture, "rebind-attempt:work-a-1"),
+            {
+                "branch": replacement.branch,
+                "base_revision": fixture.brief.base_revision,
+                "brief_artifact_ref_id": brief_reference["artifact_ref_id"],
+            },
+        )
+        self.assertEqual("rejected", rejected["status"], rejected)
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        rebound = self.transition_result(
+            fixture,
+            self.project_action(fixture, "rebind-attempt:work-a-1"),
+            {
+                "branch": replacement.branch,
+                "base_revision": new_base,
+                "brief_artifact_ref_id": brief_reference["artifact_ref_id"],
+            },
+        )
+        self.assertEqual("committed", rebound["status"], rebound)
+        fixture = dataclasses.replace(fixture, brief=replacement, store=SQLiteWorkStore(fixture.work / "state.sqlite3"))
+        choice = self.correction_choice(
+            fixture,
+            "cross-base-readiness",
+            original_context.reference,
+            history_id,
+            "Reassess the candidate on its new accepted base.",
+        )
+        choice["kind"] = "replacement-readiness"
+        choice["current_candidate"] = rebased
+        del choice["environment"]
+        del choice["prompt"]
+        before = fixture.store.validated_snapshot()
+        artifacts = {path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()}
+        for field, value in (("current_candidate", original), ("current_candidate", "f" * 40)):
+            rejected = self.dispatch_native(fixture, choice | {field: value})
+            self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected["code"], rejected)
+            self.assertEqual(before, fixture.store.validated_snapshot())
+            self.assertEqual(
+                artifacts,
+                {path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()},
+            )
+        correction = self.correction_choice(
+            fixture,
+            "stale-correction",
+            original_context.reference,
+            history_id,
+            "Reassess the candidate on its new accepted base.",
+        )
+        rejected = self.dispatch_native(fixture, correction)
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", rejected["code"], rejected)
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        ready = call_native_tool(
+            server.DISPATCH_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "dispatch": choice,
+            },
+        )
+        self.assertEqual("replacement-ready", ready["status"], ready)
+        self.assertEqual(rebased, ready["candidate_revision"])
+        proof_path = fixture.work / str(self.json_object(ready["proof_reference"])["selector"])
+        proof = msgspec.json.decode(proof_path.read_bytes(), type=dispatch_operations.ReplacementReadinessProof)
+        self.assertEqual(rebased, proof.current_candidate)
+        self.assertEqual(
+            original_context.reference.content_sha256, proof.source_review.starting_candidate.content_sha256
+        )
+        lease = self.native_attempt_acquire(fixture, "rebased-worker")
+        submitted = self.transition_result(
+            fixture,
+            self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease),
+            {"candidate": rebased},
+        )
+        self.assertEqual("committed", submitted["status"], submitted)
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+        current = fresh.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert current is not None
+        snapshot = candidate_snapshots.verify_candidate_snapshot_context(
+            current,
+            rebased,
+            (fixture.work / current.reference.selector).read_bytes(),
+        ).snapshot
+        self.assertEqual(new_base, snapshot.accepted_base_revision)
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        (attempt_root / "result.md").write_bytes(b"Complete rebased result on the new accepted base.\n")
+        (attempt_root / "review.md").write_bytes(
+            b"New candidate satisfies the replacement; historical finding revalidated.\n"
+        )
+        job = self.review_result(
+            fixture,
+            {
+                "kind": "correction",
+                "candidate_revision": rebased,
+                "correction_history_id": history_id,
+            },
+        )
+        self.assertEqual("ready", job["status"], job)
+        old_prompt = original_verdict["reviewer_prompt_sha256"]
+        assert isinstance(old_prompt, str)
+        stale = call_native_tool(
+            server.REVIEW_JOB_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "review": self.ready_review_request(fixture, rebased, "new-reviewer", old_prompt),
+            },
+        )
+        self.assertEqual("REVIEWER_PROMPT_NOT_COMMISSIONED", stale["code"], stale)
+        prompt = self.json_object(job["prompt_reference"])["sha256"]
+        assert isinstance(prompt, str)
+        before = fresh.validated_snapshot()
+        current_request = self.ready_review_request(fixture, rebased, "new-reviewer", prompt)
+        old_bindings = {
+            "candidate_revision": original,
+            "candidate_snapshot_sha256": original_context.reference.content_sha256,
+            "accepted_brief_sha256": self.json_object(original_verdict["accepted_brief"])["content_sha256"],
+            "result_sha256": original_verdict["result_sha256"],
+            "review_sha256": original_verdict["review_sha256"],
+            "reviewer_prompt_sha256": old_prompt,
+        }
+        for field, value in old_bindings.items():
+            with self.subTest(stale_review_binding=field):
+                stale = call_native_tool(
+                    server.REVIEW_JOB_TOOL,
+                    {
+                        "project_root": str(fixture.project),
+                        "work_root": str(fixture.work),
+                        "review": current_request | {field: value},
+                    },
+                )
+                self.assertEqual("rejected", stale["status"], stale)
+                self.assertFalse(stale["state_changed"], stale)
+                self.assertEqual(before, fresh.validated_snapshot())
+        recorded = call_native_tool(
+            server.REVIEW_JOB_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "review": self.ready_review_request(fixture, rebased, "new-reviewer", prompt),
+            },
+        )
+        self.assertEqual("recorded", recorded["status"], recorded)
+        self.assertEqual(original_snapshot, (fixture.work / original_context.reference.selector).read_bytes())
+        self.assertEqual(original_review_bytes, original_review_path.read_bytes())
+        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+        self.run_json_cli(*fixture.common, "export")
+
     def test_replacement_brief_uses_historical_findings_but_requires_a_new_current_return(self) -> None:
         with (
             patch("pinboard.mcp.job_operations.datetime", wraps=datetime) as boundary_clock,
@@ -562,6 +816,8 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
     def replacement_readiness_checks(self, fixture: CheckpointFixture, choice: JsonObject, failure: str) -> None:  # noqa: PLR0915 - one ordered rejection/publication recovery matrix
         mutations: tuple[tuple[tuple[str, ...], JsonValue], ...] = (
             (("checkpoint_id",), "wrong-checkpoint"),
+            (("current_candidate",), "f" * 40),
+            (("current_candidate",), "working-tree-state-sha256:" + "f" * 64),
             (("correction_history_id",), 999999),
             (("receipt", "subject_revision"), "1"),
             (("brief_review", "contract_review", "reviewer_task_id"), fixture.brief.owner_task_id),
@@ -773,15 +1029,16 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             returned_context = SQLiteWorkStore(fixture.work / "state.sqlite3").read_review_job_context(
                 AttemptId("work-a-1"), None, HistoryId(old_history), None, None
             )
-            assert returned_context is not None and returned_context.returned_candidate_reference is not None
+            assert returned_context is not None and returned_context.returned_candidate_snapshot is not None
             replacement_choice = self.correction_choice(
                 fixture,
                 "replacement-readiness",
-                returned_context.returned_candidate_reference,
+                returned_context.returned_candidate_snapshot.reference,
                 old_history,
                 "Repair the test-only candidate.",
             )
             replacement_choice["kind"] = "replacement-readiness"
+            replacement_choice["current_candidate"] = candidate
             replacement_review = self.json_object(replacement_choice["brief_review"])
             self.json_object(replacement_review["contract_review"])["reviewer_task_id"] = "replacement-reviewer"
             replacement_review["assessment"] = (
@@ -811,7 +1068,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             self.assertEqual(proof["sha256"], accepted.content_sha256)
             self.assertEqual(
                 msgspec.json.decode(msgspec.json.encode(replacement_choice["brief_review"])),
-                json.loads((fixture.work / accepted.selector).read_bytes()),
+                self.json_object(json.loads((fixture.work / accepted.selector).read_bytes()))["source_review"],
             )
             reused = self.dispatch_native(fixture, replacement_choice)
             self.assertEqual("replacement-ready", reused["status"], reused)

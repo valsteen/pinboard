@@ -349,6 +349,7 @@ def _dispatch_job(  # noqa: PLR0912 - distinct readiness publication and worker 
             supplied_action,
             choice.checkpoint_id,
             choice.brief_review,
+            choice.current_candidate,
             ReviewId(choice.review_id),
             HistoryId(choice.correction_history_id),
         )
@@ -385,13 +386,14 @@ def _dispatch_job(  # noqa: PLR0912 - distinct readiness publication and worker 
                 "replacement-ready",
                 attempt_id,
                 choice.checkpoint_id,
+                publication.candidate,
                 msgspec.convert(
                     common._artifact_reference_json(publication.proof), type=contracts.ReviewEvidenceReference
                 ),
                 msgspec.convert(
                     common._artifact_reference_json(publication.ready_review), type=contracts.ReviewEvidenceReference
                 ),
-                "Protect the exact unchanged candidate using your own attempt authority, then commission a full candidate review "
+                f"Protect current candidate {publication.candidate} using your own attempt authority, then commission a full candidate review "
                 "against the replacement brief, retaining every prior finding. Obtain a new current return before correction dispatch.",
                 bool(surfaces),
                 "committed" if surfaces else "unchanged",

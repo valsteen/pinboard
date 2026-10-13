@@ -10,7 +10,7 @@ from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -217,9 +217,18 @@ class CorrectionContext:
 
 @dataclass(frozen=True, slots=True)
 class ReplacementReadiness:
+    candidate: str
     proof: stored_state.ArtifactReference
     ready_review: stored_state.ArtifactReference
     changed_surfaces: tuple[ChangedSurface, ...]
+
+
+class ReplacementReadinessProof(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Bind independent current-candidate assessment to exact historical return evidence."""
+
+    schema: Literal["pinboard-replacement-readiness-proof/v1"]
+    source_review: work_brief_models.CorrectionSourceReview
+    current_candidate: work_brief_models.NonEmptyLine
 
 
 type DispatchPreparationChoice = OrdinaryDispatch | ReviewedDispatch | CorrectionDispatch
@@ -635,6 +644,7 @@ def _replacement_readiness_context(
     action: decision_models.DispatchAction,
     checkpoint_id: str,
     review: work_brief_models.CorrectionSourceReview,
+    current_candidate: str,
     history_id: HistoryId,
 ) -> DispatchResult[tuple[work_brief_models.WorkBrief, candidate_snapshots.CandidateSnapshot]]:
     selected = select_dispatch(store, action, datetime.now(UTC))
@@ -689,32 +699,15 @@ def _replacement_readiness_context(
         )
     if (failure := validate_work_brief_review(review.contract_review, brief)) is not None:
         return review_failure(failure)
-    facts = store.read_review_job_context(attempt.attempt_id, None, history_id, None, None)
-    reference = None if facts is None else facts.returned_candidate_reference
-    identity = review.starting_candidate
-    if reference is None or (
-        reference.key,
-        reference.revision,
-        reference.selector,
-        reference.content_sha256,
-        reference.size_bytes,
-    ) != (identity.key, identity.revision, identity.selector, identity.content_sha256, identity.size_bytes):
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
-            "Replacement readiness must name the selected return's exact accepted snapshot.",
-            _fresh_review_details((), ()),
-        )
-    snapshot = _read_correction_snapshot(
-        store,
-        artifacts,
-        source_checkout_root,
-        brief,
-        history_id,
-        review.starting_candidate,
-        review.correction_input.reason,
+    snapshot = _read_returned_snapshot(
+        store, artifacts, brief, history_id, review.starting_candidate, review.correction_input.reason
     )
     if isinstance(snapshot, DispatchFailure):
         return snapshot
+    if (
+        failure := _validate_replacement_candidate(source_checkout_root, brief, snapshot, current_candidate)
+    ) is not None:
+        return failure
     return brief, snapshot
 
 
@@ -725,23 +718,36 @@ def prepare_replacement_readiness(
     action: decision_models.DispatchAction,
     checkpoint_id: str,
     review: work_brief_models.CorrectionSourceReview,
+    current_candidate: str,
     review_id: ReviewId,
     history_id: HistoryId,
 ) -> DispatchResult[ReplacementReadiness] | ArtifactAcceptanceFailure | ArtifactWriteFailure:
     """Publish candidate proof then plain readiness; never publish a prompt or change lifecycle/authority."""
     context = _replacement_readiness_context(
-        store, artifacts, source_checkout_root, action, checkpoint_id, review, history_id
+        store, artifacts, source_checkout_root, action, checkpoint_id, review, current_candidate, history_id
     )
     if isinstance(context, DispatchFailure):
         return context
     brief, snapshot = context
-    proof_key = "replacement-readiness-" + _correction_review_subject(review, snapshot)
+    proof_key = (
+        "replacement-readiness-"
+        + hashlib.sha256(
+            msgspec.json.encode((_correction_review_subject(review, snapshot), current_candidate))
+        ).hexdigest()
+    )
+    proof_bytes = (
+        msgspec.json.encode(
+            ReplacementReadinessProof("pinboard-replacement-readiness-proof/v1", review, current_candidate),
+            order="sorted",
+        )
+        + b"\n"
+    )
     surfaces: tuple[ChangedSurface, ...] = ()
     selectors: tuple[FailureFact, ...] = ()
     publications: list[stored_state.ArtifactReference] = []
     try:
         for key, content in (
-            (proof_key, canonical_correction_source_review_bytes(review)),
+            (proof_key, proof_bytes),
             (ready_review_key_sha256(brief), canonical_work_brief_review_bytes(review.contract_review)),
         ):
             publication = publish_dispatch_review(
@@ -777,7 +783,7 @@ def prepare_replacement_readiness(
             if artifacts.read(publication.reference) != content:
                 raise AssertionError("Accepted readiness bytes differ from their immutable publication.")
             rechecked = _replacement_readiness_context(
-                store, artifacts, source_checkout_root, action, checkpoint_id, review, history_id
+                store, artifacts, source_checkout_root, action, checkpoint_id, review, current_candidate, history_id
             )
             if isinstance(rechecked, DispatchFailure):
                 return _after_publication_failure(
@@ -791,7 +797,7 @@ def prepare_replacement_readiness(
         ):
             raise
         return _after_infrastructure_failure(DispatchErrorCode.DISPATCH_REVIEW_READ_FAILED, error, surfaces, selectors)
-    return ReplacementReadiness(publications[0], publications[1], surfaces)
+    return ReplacementReadiness(current_candidate, publications[0], publications[1], surfaces)
 
 
 def _validate_correction_history(
@@ -860,6 +866,98 @@ def _validate_correction_history(
     return None
 
 
+def _read_returned_snapshot(
+    store: WorkStore,
+    artifacts: DispatchArtifactPort,
+    brief: work_brief_models.WorkBrief,
+    correction_history_id: HistoryId,
+    identity: work_brief_models.PortableArtifactIdentity,
+    reason: str,
+) -> DispatchResult[candidate_snapshots.CandidateSnapshot]:
+    """Verify immutable historical submission and canonical return, independently of the current checkout."""
+    facts = store.read_review_job_context(AttemptId(brief.attempt_id), None, correction_history_id, None, None)
+    context = None if facts is None else facts.returned_candidate_snapshot
+    receipt = None if facts is None else facts.correction_receipt
+    if (
+        context is None
+        or receipt is None
+        or (
+            context.reference.key,
+            context.reference.revision,
+            context.reference.selector,
+            context.reference.content_sha256,
+            context.reference.size_bytes,
+        )
+        != (identity.key, identity.revision, identity.selector, identity.content_sha256, identity.size_bytes)
+    ):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+            "Returned snapshot does not match its exact accepted submission artifact identity.",
+            _fresh_review_details((), ()),
+        )
+    outcome = checkpoint_packages.decode_correction_outcome(receipt, brief.attempt_id)
+    if isinstance(outcome, DecisionFailure):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID, outcome.message, outcome.details
+        )
+    try:
+        snapshot = candidate_snapshots.verify_candidate_snapshot_context(
+            context, outcome.candidate, artifacts.read(context.reference)
+        ).snapshot
+    except (msgspec.DecodeError, ValueError) as error:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID,
+            f"Returned submission snapshot is invalid: {error}",
+            _fresh_review_details((), ()),
+        )
+    if reason != outcome.evidence:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+            "Source review does not identify the canonical return reason.",
+            _fresh_review_details((), (FailureMismatch("correction_reason", outcome.evidence, reason),)),
+        )
+    return snapshot
+
+
+def _validate_replacement_candidate(
+    source_checkout_root: Path,
+    brief: work_brief_models.WorkBrief,
+    historical_snapshot: candidate_snapshots.CandidateSnapshot,
+    current_candidate: str,
+) -> DispatchFailure | None:
+    """Recheck the assessed current candidate on the replacement binding without restoring historical code."""
+    branch, _ = root.observe_checkout_identity(source_checkout_root)
+    mismatches = [FailureMismatch("checkout_branch", brief.branch, branch)]
+    if current_candidate.startswith("working-tree-state-sha256:"):
+        current = root.read_working_tree_candidate(source_checkout_root)
+        mismatches.append(FailureMismatch("current_candidate", current_candidate, current.identity))
+    else:
+        committed = root.read_current_head_candidate(
+            source_checkout_root,
+            current_candidate,
+            brief.base_revision,
+            excluded_untracked_paths=candidate_snapshots.excluded_untracked_paths(historical_snapshot),
+        )
+        match committed:
+            case root.CurrentHeadCandidate():
+                pass
+            case root.DifferentHeadCandidate():
+                mismatches.append(FailureMismatch("current_candidate", current_candidate, committed.current_head))
+            case root.DirtyHeadCandidate():
+                mismatches.append(FailureMismatch("checkout_state", "clean", "dirty"))
+            case _ as unreachable:
+                assert_never(unreachable)
+    changed = tuple(value for value in mismatches if value.expected != value.observed)
+    if changed:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+            "Replacement review does not identify the exact current candidate on its accepted branch and base. "
+            "Use pinboard_candidate_observe for this attempt and independently assess that identity before a fresh readiness request.",
+            _fresh_review_details((), changed),
+        )
+    return None
+
+
 def _read_correction_snapshot(
     store: WorkStore,
     artifacts: DispatchArtifactPort,
@@ -869,44 +967,15 @@ def _read_correction_snapshot(
     identity: work_brief_models.PortableArtifactIdentity,
     reason: str,
 ) -> DispatchResult[candidate_snapshots.CandidateSnapshot]:
-    """Verify selected accepted bytes, canonical return and the actual checkout; no effects."""
-
-    reference = store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, identity.key, identity.revision)
-    if reference is None or (reference.selector, reference.content_sha256, reference.size_bytes) != (
-        identity.selector,
-        identity.content_sha256,
-        identity.size_bytes,
-    ):
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
-            "Correction starting snapshot does not match its exact accepted artifact identity.",
-            _fresh_review_details((), ()),
-        )
-    try:
-        snapshot = candidate_snapshots.decode_candidate_snapshot(artifacts.read(reference))
-    except (msgspec.DecodeError, ValueError) as error:
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID,
-            f"Correction starting snapshot is invalid: {error}",
-            _fresh_review_details((), ()),
-        )
-    facts = store.read_review_job_context(AttemptId(brief.attempt_id), None, correction_history_id, None, None)
-    receipt = None if facts is None else facts.correction_receipt
-    assert receipt is not None  # the caller checked the selected canonical return before this operation
-    outcome = checkpoint_packages.decode_correction_outcome(receipt, brief.attempt_id)
-    if isinstance(outcome, DecisionFailure):
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID, outcome.message, outcome.details
-        )
+    """Verify selected historical bytes and require the exact current correction starting checkout; no effects."""
+    snapshot = _read_returned_snapshot(store, artifacts, brief, correction_history_id, identity, reason)
+    if isinstance(snapshot, DispatchFailure):
+        return snapshot
     mismatches = tuple(
         value
         for value in (
-            FailureMismatch("snapshot_attempt", brief.attempt_id, snapshot.attempt_id),
-            FailureMismatch("snapshot_item", brief.item_id, snapshot.item_id),
             FailureMismatch("snapshot_branch", brief.branch, snapshot.branch),
             FailureMismatch("snapshot_base", brief.base_revision, snapshot.accepted_base_revision),
-            FailureMismatch("snapshot_candidate", outcome.candidate, snapshot.candidate),
-            FailureMismatch("correction_reason", outcome.evidence, reason),
         )
         if value.expected != value.observed
     )
@@ -1005,7 +1074,7 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
         failure := _validate_correction_history(store, attempt_id, attempt.subject_revision, correction_history_id)
     ) is not None:
         return failure
-    if facts.returned_candidate_reference is None or facts.correction_receipt is None:
+    if facts.returned_candidate_snapshot is None or facts.correction_receipt is None:
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE, "Accepted correction snapshot is unavailable.", None
         )
@@ -1035,7 +1104,7 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
     effective_brief = _effective_correction_brief(source_checkout_root, brief)
     if isinstance(effective_brief, DispatchFailure):
         return effective_brief
-    reference = facts.returned_candidate_reference
+    reference = facts.returned_candidate_snapshot.reference
     identity = work_brief_models.PortableArtifactIdentity(
         "candidate",
         "evidence",

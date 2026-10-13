@@ -295,7 +295,14 @@ def validate_candidate_snapshot_history(
                 raise ValueError("Retired patch-only snapshot lacks its exact verified terminal archive closure.")
             linked.add(reference.artifact_ref_id)
             continue
-        current = attempt.candidate_recorded_at == receipt.committed_at
+        current = (
+            attempt.candidate_recorded_at == receipt.committed_at
+            and attempt.candidate_revision is not None
+            and reference.key
+            == candidate_snapshot_artifact_key(
+                str(attempt.attempt_id), attempt.candidate_revision, receipt.committed_at.isoformat()
+            )
+        )
         context = query_models.CandidateSnapshotContextFacts(
             attempt.attempt_id,
             attempt.item_id,

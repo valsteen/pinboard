@@ -149,7 +149,8 @@ class ItemLifecycleSupport(CheckpointPackageSupport):
                 fixture,
                 "complete:work-a-1",
                 {
-                    "schema": "pinboard-reviewed-completion/v2",
+                    "schema": "pinboard-reviewed-completion/v3",
+                    "human_decision": "Complete this item with its reviewed outcome.",
                     "candidate": fixture.candidate_revision,
                     "evidence": evidence,
                     "reviewer_task_id": "independent-reviewer",

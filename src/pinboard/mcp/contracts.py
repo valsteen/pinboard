@@ -935,7 +935,7 @@ def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest
         case "complete":
             payload = inner.get("payload") if isinstance(inner, dict) else None
             schema = payload.get("schema") if isinstance(payload, dict) else None
-            if schema == "pinboard-reviewed-completion/v2":
+            if schema is not None:
                 request = msgspec.convert(
                     raw, type=TransitionEnvelope[ReviewedCompleteTransitionRequest], strict=True
                 ).request

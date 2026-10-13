@@ -216,7 +216,8 @@ class ReasonPayload(Request, frozen=True):
 
 
 class ReviewedCompletion(Request, frozen=True):
-    schema: Literal["pinboard-reviewed-completion/v2"]
+    schema: Literal["pinboard-reviewed-completion/v3"]
+    human_decision: str
     candidate: str
     evidence: str
     reviewer_task_id: str

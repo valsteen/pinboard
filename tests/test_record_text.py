@@ -267,7 +267,8 @@ class RecordTextJourneyTest(RecordTextSupport):
             fixture,
             "complete:work-a-1",
             {
-                "schema": "pinboard-reviewed-completion/v2",
+                "schema": "pinboard-reviewed-completion/v3",
+                "human_decision": "Complete this item with its reviewed outcome.",
                 "candidate": completed,
                 "evidence": "The item outcome is complete.",
                 "reviewer_task_id": "independent-reviewer",

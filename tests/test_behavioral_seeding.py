@@ -151,6 +151,10 @@ class SeededReviewTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(completion.payload, action_models.ReviewedCompleteInputPayload)
         assert isinstance(completion.payload, action_models.ReviewedCompleteInputPayload)
         self.assertEqual(ready.review.reviewer_task_id, completion.payload.reviewer_task_id)
+        self.assertEqual(
+            "Fixture owner authorizes completing example with the seeded reviewed outcome.",
+            completion.payload.human_decision,
+        )
 
 
 @dataclass

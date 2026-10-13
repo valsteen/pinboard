@@ -161,6 +161,7 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                 return decision_models.CoveredCompleteCommand(
                     action,
                     work_models.CoveredCompleteInput(
+                        payload.human_decision,
                         CandidateId(payload.candidate),
                         payload.evidence,
                         TaskId(payload.reviewer_task_id),

@@ -130,7 +130,8 @@ class TransitionInputTest(unittest.TestCase):
         complete = action(decision_models.CompleteAction, AttemptId("attempt-1"))
         direct = expect_transition_command(parse_transition_input(complete, '{"evidence":"accepted"}'))
         covered_payload = {
-            "schema": "pinboard-reviewed-completion/v2",
+            "schema": "pinboard-reviewed-completion/v3",
+            "human_decision": "Complete this item with its reviewed outcome.",
             "candidate": "candidate-1",
             "evidence": "all checkpoints remain covered",
             "reviewer_task_id": "reviewer-task",
@@ -161,6 +162,8 @@ class TransitionInputTest(unittest.TestCase):
         invalid_payloads = (
             covered_payload | {"unknown": True},
             covered_payload | {"schema": "unknown"},
+            covered_payload | {"schema": "pinboard-reviewed-completion/v2"},
+            covered_payload | {"human_decision": ""},
             covered_payload | {"schema": "pinboard-covered-completion/v1"},
             covered_payload | {"packages": [covered_payload["packages"][0], covered_payload["packages"][0]]},
             {"candidate": "candidate-1", "evidence": "accepted"},
@@ -511,7 +514,8 @@ class RecordTextInputTest(unittest.TestCase):
 
     def test_every_other_text_field_still_rejects_a_line_break(self) -> None:
         reviewed_complete: JsonObject = {
-            "schema": "pinboard-reviewed-completion/v2",
+            "schema": "pinboard-reviewed-completion/v3",
+            "human_decision": "Complete this item with its reviewed outcome.",
             "candidate": "candidate",
             "evidence": "complete",
             "reviewer_task_id": "reviewer",

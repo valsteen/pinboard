@@ -261,20 +261,24 @@ def _completion_outcome(
 def _completion_input(
     receipt: stored_state.StoredTransitionReceipt,
 ) -> work_brief_models.WorkBriefResult[
-    work_brief_compatibility_models.HistoricalCoveredCompletionInput | action_models.ReviewedCompleteInputPayload
+    work_brief_compatibility_models.HistoricalCoveredCompletionInput
+    | work_brief_compatibility_models.HistoricalReviewedCompletionInputV2
+    | action_models.ReviewedCompleteInputPayload
 ]:
-    if receipt.input_schema not in ("pinboard-covered-completion/v1", "pinboard-reviewed-completion/v2"):
-        return _package_provenance_failure(
-            f"Completion history {int(receipt.history_id)} does not preserve covered completion input."
-        )
+    match receipt.input_schema:
+        case "pinboard-covered-completion/v1":
+            model = work_brief_compatibility_models.HistoricalCoveredCompletionInput
+        case "pinboard-reviewed-completion/v2":
+            model = work_brief_compatibility_models.HistoricalReviewedCompletionInputV2
+        case "pinboard-reviewed-completion/v3":
+            model = action_models.ReviewedCompleteInputPayload
+        case _:
+            return _package_provenance_failure(
+                f"Completion history {int(receipt.history_id)} has unsupported completion input."
+            )
     try:
-        model = (
-            work_brief_compatibility_models.HistoricalCoveredCompletionInput
-            if receipt.input_schema == "pinboard-covered-completion/v1"
-            else action_models.ReviewedCompleteInputPayload
-        )
         value = msgspec.json.decode(bytes(receipt.input_payload), type=model)
-    except msgspec.DecodeError as error:
+    except (msgspec.DecodeError, ValueError) as error:
         return _package_provenance_failure(
             f"Completion history {int(receipt.history_id)} has invalid covered completion input: {error}"
         )
@@ -287,6 +291,7 @@ def _completion_input(
 
 def _completion_input_matches_package(
     value: work_brief_compatibility_models.HistoricalCoveredCompletionInput
+    | work_brief_compatibility_models.HistoricalReviewedCompletionInputV2
     | action_models.ReviewedCompleteInputPayload,
     package: work_brief_compatibility_models.HistoricalCompletionReviewPackage,
 ) -> bool:

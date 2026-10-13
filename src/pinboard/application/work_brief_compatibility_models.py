@@ -25,6 +25,26 @@ class HistoricalCoveredCompletionInput(msgspec.Struct, frozen=True, forbid_unkno
             raise ValueError("packages must be unique and strictly ascending by history_id")
 
 
+class HistoricalReviewedCompletionInputV2(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Original attributed review facts, never a current completion request.
+
+    Retain while supported history validation or export requires receipts without a human decision.
+    """
+
+    schema: Literal["pinboard-reviewed-completion/v2"]
+    candidate: action_models.NonEmptyLine
+    evidence: action_models.NonEmptyLine
+    reviewer_task_id: action_models.NonEmptyLine
+    result_sha256: action_models.Sha256
+    review_sha256: action_models.Sha256
+    packages: tuple[action_models.CoveredCompletionPackageInputPayload, ...]
+
+    def __post_init__(self) -> None:
+        history_ids = tuple(row.history_id for row in self.packages)
+        if history_ids != tuple(sorted(set(history_ids))):
+            raise ValueError("packages must be unique and strictly ascending by history_id")
+
+
 class HistoricalCompletionReviewPackageV1(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """Original package facts for archive, validation and export; never execution.
 

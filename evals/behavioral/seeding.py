@@ -346,7 +346,8 @@ class Seeder:
     async def complete_reviewed(self, item: str, evidence: str) -> None:
         attempt = f"{item}-1"
         completion = ReviewedCompletion(
-            schema="pinboard-reviewed-completion/v2",
+            schema="pinboard-reviewed-completion/v3",
+            human_decision=f"Fixture owner authorizes completing {item} with the seeded reviewed outcome.",
             candidate=head(self.worktree(item), self.board.window),
             evidence=evidence,
             reviewer_task_id=f"review-{item}",

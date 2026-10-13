@@ -392,7 +392,8 @@ def project_completion_acceptance_mutation(
     input_payload = work_models.CanonicalJson(
         msgspec.json.encode(
             {
-                "schema": "pinboard-reviewed-completion/v2",
+                "schema": "pinboard-reviewed-completion/v3",
+                "human_decision": value.human_decision,
                 "candidate": str(value.candidate),
                 "evidence": value.evidence,
                 "reviewer_task_id": str(value.reviewer_task_id),
@@ -421,7 +422,7 @@ def project_completion_acceptance_mutation(
             completion_changes.package_id,
             actor_task_id,
             actor_host_id,
-            "pinboard-reviewed-completion/v2",
+            "pinboard-reviewed-completion/v3",
             input_payload,
         ),
         completion_changes,

@@ -159,7 +159,8 @@ class MergeEvidenceTest(unittest.TestCase):
                 board.Actions,
             )
             payload = board.ReviewedCompletion(
-                schema="pinboard-reviewed-completion/v2",
+                schema="pinboard-reviewed-completion/v3",
+                human_decision="Complete this merged item now.",
                 candidate=integration.source.candidate_revision,
                 evidence=f"Accepted usage diff is present at main {integration.target_revision}; original candidate review preserved",
                 reviewer_task_id="review-merge-change",

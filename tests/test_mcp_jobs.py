@@ -27,6 +27,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     candidate_snapshots,
     dispatch_models,
+    project_export,
     stored_state,
     work_brief_models,
     work_briefs,
@@ -42,6 +43,7 @@ from pinboard.mcp import read_operations as mcp_reads
 from pinboard.mcp import server as mcp_server
 from tests import test_correction_source_review, test_dispatch
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
+from tests.native_support import call_advertised_tool
 from tests.work_brief_support import CHECKPOINT_ID, ready_review
 
 
@@ -164,11 +166,27 @@ class McpJobsTest(CheckpointPackageSupport):
         lease = self.native_attempt_acquire(fixture, "native-observer-worker")
         selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
         before_stale_submission = fixture.store.validated_snapshot()
+        artifacts_before_rejection = tuple(sorted((fixture.work / "artifacts").rglob("*")))
         (fixture.project / "GREETING.md").write_text("Changed after observation\n", encoding="utf-8")
         stale = self.transition_result(fixture, selected, {"candidate": prepared["candidate"]})
         self.assertEqual("rejected", stale["status"], stale)
+        current = observe()["candidate"]
+        self.assertEqual(
+            [{"field": "candidate_revision", "expected": current, "observed": prepared["candidate"]}],
+            stale["mismatches"],
+        )
+        self.assertEqual("correct-input", stale["retry"])
+        self.assertEqual("unchanged", stale["effect"])
         self.assertEqual([], stale["changed_surfaces"])
         self.assertEqual(before_stale_submission, fixture.store.validated_snapshot())
+        truncated = str(prepared["candidate"])[:-1]
+        rejected = self.transition_result(fixture, selected, {"candidate": truncated})
+        self.assertEqual(
+            [{"field": "candidate_revision", "expected": current, "observed": truncated}], rejected["mismatches"]
+        )
+        self.assertEqual([], rejected["changed_surfaces"])
+        self.assertEqual(before_stale_submission, fixture.store.validated_snapshot())
+        self.assertEqual(artifacts_before_rejection, tuple(sorted((fixture.work / "artifacts").rglob("*"))))
         (fixture.project / "GREETING.md").write_text("Hello\n", encoding="utf-8")
         selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
         self.assertEqual(
@@ -1002,6 +1020,155 @@ class McpJobsTest(CheckpointPackageSupport):
                     self.assertTrue(verified.structured_content["verified"])
 
         asyncio.run(scenario())
+
+    def test_lost_correction_request_recovers_exact_exported_review_and_fresh_recipe(self) -> None:  # noqa: PLR0915 - one lost-request recovery through export, verification and native dispatch
+        support = test_correction_source_review.CorrectionSourceReviewTest()
+        self.addCleanup(support.doCleanups)
+        fixture = support.correction_fixture()
+        history_id, choice = support.submit_and_return(fixture, "lost-correction", committed=False)
+        roots: dict[str, contracts.JsonValue] = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+        # Drop both the successful response and all original request/assessment bytes.
+        call_advertised_tool("pinboard_dispatch", roots | {"dispatch": choice})
+        del choice
+        before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        before_bytes = {
+            value.selector: (fixture.work / value.selector).read_bytes() for value in before.artifact_references
+        }
+        artifacts_before = tuple(sorted((fixture.work / "artifacts").rglob("*")))
+        code, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
+        self.assertEqual(0, code, stderr)
+        private_export = fixture.work / "recovery-export.json"
+        private_export.write_text(stdout, encoding="utf-8")
+        del stdout
+        exported = msgspec.json.decode(private_export.read_bytes(), type=project_export.ProjectExport)
+        json_ids = {
+            value.artifact_ref_id for value in exported.artifact_references if value.media_type == "application/json"
+        }
+        assessments = tuple(
+            value
+            for value in exported.artifact_contents
+            if value.encoding == project_export.ContentEncoding.UTF8
+            and value.artifact_ref_id in json_ids
+            and self.json_object(msgspec.json.decode(value.content))["schema"] == "pinboard-correction-source-review/v1"
+        )
+        self.assertEqual(1, len(assessments))
+        assessment = assessments[0]
+        reference = next(
+            value for value in exported.artifact_references if value.artifact_ref_id == assessment.artifact_ref_id
+        )
+        review_bytes = assessment.content.encode()
+        self.assertEqual(reference.size_bytes, len(review_bytes))
+        self.assertEqual(reference.content_sha256, sha256(review_bytes).hexdigest())
+        verified = call_advertised_tool(
+            "pinboard_artifact_verify",
+            roots
+            | {
+                "artifact_ref_id": reference.artifact_ref_id,
+                "selector": reference.selector,
+                "sha256": reference.content_sha256,
+                "size_bytes": reference.size_bytes,
+            },
+        )
+        self.assertTrue(verified["verified"])
+        review = msgspec.json.decode(review_bytes, type=work_brief_models.CorrectionSourceReview)
+        context = call_advertised_tool(
+            "pinboard_correction_context",
+            roots
+            | {
+                "attempt_id": "work-a-1",
+                "correction_history_id": history_id,
+            },
+        )
+        self.assertEqual(review.correction_input.reason, context["correction_reason"])
+        self.assertEqual(msgspec.to_builtins(review.starting_candidate), context["starting_candidate"])
+        action = self.project_action(fixture, "dispatch:work-a-1")
+        environment = msgspec.structs.replace(
+            test_dispatch.DispatchTest().environment(fixture.project),
+            branch=fixture.brief.branch,
+            starting_revision=fixture.brief.base_revision,
+        )
+        recovered = msgspec.to_builtins(
+            {
+                "kind": "correction",
+                "receipt": {"action_id": action["action_id"], "subject_revision": action["subject_revision"]},
+                "checkpoint_id": fixture.brief.checkpoint.checkpoint_id,
+                "environment": environment,
+                "prompt": None,
+                "brief_review": review,
+                "review_id": "recovered-exact-review",
+                "correction_history_id": history_id,
+            },
+            enc_hook=test_dispatch.dispatch_environment_enc_hook,
+        )
+        assert isinstance(recovered, dict)
+        first = call_advertised_tool("pinboard_dispatch", roots | {"dispatch": recovered})
+        second = call_advertised_tool("pinboard_dispatch", roots | {"dispatch": recovered})
+        for result in (first, second):
+            self.assertEqual("ready", result["status"], result)
+            self.assertEqual("unchanged", result["effect"])
+            self.assertFalse(result["state_changed"])
+            self.assertEqual([], result["changed_surfaces"])
+            self.assertEqual("safe-to-repeat", result["retry"])
+        self.assertEqual(first["prompt_reference"], second["prompt_reference"])
+        first_args = self.json_object(self.json_object(first["native_launch"])["arguments"])
+        second_args = self.json_object(self.json_object(second["native_launch"])["arguments"])
+        self.assertNotEqual(first_args["task_name"], second_args["task_name"])
+        self.assertEqual(first_args["message"], second_args["message"])
+        self.assertEqual("none", second_args["fork_turns"])
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+        self.assertEqual(artifacts_before, tuple(sorted((fixture.work / "artifacts").rglob("*"))))
+        for selector, value in before_bytes.items():
+            self.assertEqual(value, (fixture.work / selector).read_bytes())
+        stale = deepcopy(recovered)
+        self.json_object(stale["receipt"])["subject_revision"] = "0"
+        self.assertEqual("STALE_ACTION", call_advertised_tool("pinboard_dispatch", roots | {"dispatch": stale})["code"])
+        (fixture.project / "architecture.md").write_text(
+            "# Architecture\n\n## Contract\nChanged contract\n", encoding="utf-8"
+        )
+        self.assertEqual(
+            "DISPATCH_BRIEF_REVIEW_STALE",
+            call_advertised_tool("pinboard_dispatch", roots | {"dispatch": recovered})["code"],
+        )
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+
+    def test_lost_reviewer_reply_reuses_exact_evidence_with_a_fresh_codex_name(self) -> None:
+        fixture = self.checkpoint_fixture()
+        roots: dict[str, contracts.JsonValue] = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+        choice: dict[str, contracts.JsonValue] = {
+            "kind": "initial",
+            "attempt_id": "work-a-1",
+            "candidate_revision": fixture.candidate_revision,
+            "runtime": "codex",
+            "background": False,
+        }
+        call_advertised_tool("pinboard_review_job", roots | {"review": choice})
+        before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        before_bytes = {
+            value.selector: (fixture.work / value.selector).read_bytes() for value in before.artifact_references
+        }
+        first = call_advertised_tool("pinboard_review_job", roots | {"review": choice})
+        second = call_advertised_tool("pinboard_review_job", roots | {"review": choice})
+        self.assertEqual(first["prompt_reference"], second["prompt_reference"])
+        for result in (first, second):
+            self.assertEqual("ready", result["status"], result)
+            self.assertEqual("unchanged", result["effect"])
+            self.assertFalse(result["state_changed"])
+            self.assertEqual([], result["changed_surfaces"])
+            self.assertEqual("safe-to-repeat", result["retry"])
+        first_args = self.json_object(self.json_object(first["native_launch"])["arguments"])
+        second_args = self.json_object(self.json_object(second["native_launch"])["arguments"])
+        self.assertNotEqual(first_args["task_name"], second_args["task_name"])
+        self.assertEqual(first_args["message"], second_args["message"])
+        self.assertEqual("none", second_args["fork_turns"])
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+        for selector, value in before_bytes.items():
+            self.assertEqual(value, (fixture.work / selector).read_bytes())
+        stale = choice | {"candidate_revision": "f" * 40}
+        rejected = call_advertised_tool("pinboard_review_job", roots | {"review": stale})
+        self.assertEqual("rejected", rejected["status"])
+        self.assertEqual("unchanged", rejected["effect"])
+        self.assertEqual([], rejected["changed_surfaces"])
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
 
     def test_stdio_lost_dispatch_reply_recovers_accepted_prompt_without_replay(self) -> None:
         project, work, choice = self.dispatch_fixture()

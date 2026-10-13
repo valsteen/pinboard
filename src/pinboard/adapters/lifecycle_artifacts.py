@@ -67,6 +67,7 @@ from pinboard.domain.errors import (
     EffectDisposition,
     FailureDetails,
     FailureFact,
+    FailureMismatch,
     RetryDisposition,
 )
 from pinboard.domain.identifiers import ArtifactRefId
@@ -286,7 +287,23 @@ def _observe_review_candidate(
         except RootError as error:
             return _unchanged(f"Cannot read the working-tree candidate: {error}", candidate=candidate)
         if observed.identity != candidate:
-            return _unchanged("Review submission requires the exact current binary HEAD diff.", candidate=candidate)
+            return DecisionFailure(
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                "Supplied candidate identity differs from the current working-tree HEAD and binary diff. "
+                "Call pinboard_candidate_observe for this attempt and exact roots, then copy its complete candidate "
+                "into a fresh submit-review action.",
+                FailureDetails(
+                    observed=(
+                        FailureFact("candidate_revision", candidate),
+                        FailureFact("current_candidate_revision", observed.identity),
+                    ),
+                    mismatches=(FailureMismatch("candidate_revision", observed.identity, candidate),),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
         return _review_snapshot(context, command.value, branch, recorded_at, observed)
     try:
         observed_commit = read_current_head_candidate(

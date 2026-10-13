@@ -97,7 +97,10 @@ class CoveredCompletionPackageInputPayload(msgspec.Struct, frozen=True, forbid_u
 
 
 class ReviewedCompleteInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-reviewed-completion/v2"]
+    """Current completion and stored receipt; human words are attribution, not authentication."""
+
+    schema: Literal["pinboard-reviewed-completion/v3"]
+    human_decision: RecordText
     candidate: NonEmptyLine
     evidence: NonEmptyLine
     reviewer_task_id: NonEmptyLine

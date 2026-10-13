@@ -149,7 +149,8 @@ def _representative_transition_requests() -> tuple[dict[str, contracts.JsonValue
             "complete",
             "project",
             {
-                "schema": "pinboard-reviewed-completion/v2",
+                "schema": "pinboard-reviewed-completion/v3",
+                "human_decision": "Complete this item with its reviewed outcome.",
                 "candidate": "candidate",
                 **evidence,
                 "reviewer_task_id": "reviewer",
@@ -1853,7 +1854,7 @@ class McpTransportTest(unittest.TestCase):
         for advisory_kind in (b'"continue"', b'"dispatch"', b'"inspect"', b'"report-blocker"'):
             self.assertNotIn(advisory_kind, encoded_schema)
         self.assertNotIn(b"pinboard-covered-completion/v1", encoded_schema)
-        self.assertIn(b"pinboard-reviewed-completion/v2", encoded_schema)
+        self.assertIn(b"pinboard-reviewed-completion/v3", encoded_schema)
 
     def test_original_covered_completion_rejects_before_source_or_state_access(self) -> None:
         raw: dict[str, contracts.JsonValue] = {

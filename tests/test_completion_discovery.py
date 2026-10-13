@@ -185,6 +185,8 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 self.assertNotIn("oneOf", schema)
                 definitions = self.json_object(schema["$defs"])
                 self.assertIn("ReviewedCompleteInputPayload", definitions)
+                required = self.json_array(self.json_object(definitions["ReviewedCompleteInputPayload"])["required"])
+                self.assertIn("human_decision", required)
                 self.assertNotIn("EvidenceInputPayload", definitions)
                 self.assertNotIn("CoveredCompleteInputPayload", definitions)
                 packages = self.json_array(contract["checkpoint_packages"])
@@ -404,7 +406,8 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                                 "subject_revision": selected["subject_revision"],
                             },
                             "payload": {
-                                "schema": "pinboard-reviewed-completion/v2",
+                                "schema": "pinboard-reviewed-completion/v3",
+                                "human_decision": "Complete this item with its reviewed outcome.",
                                 "candidate": contract["candidate"],
                                 "evidence": "All returned checkpoint evidence is covered.",
                                 "reviewer_task_id": "terminal-reviewer",

@@ -53,7 +53,8 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
         )
         attempt_root = fixture.work / "attempts" / "work-a-1"
         payload: JsonObject = {
-            "schema": "pinboard-reviewed-completion/v2",
+            "schema": "pinboard-reviewed-completion/v3",
+            "human_decision": "Complete this item with its reviewed outcome.",
             "candidate": candidate,
             "evidence": "The original accepted closure is complete.",
             "reviewer_task_id": "archive-reviewer",

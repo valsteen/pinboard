@@ -824,6 +824,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             decision_models.CoveredCompleteCommand(
                 completed_action,
                 work_models.CoveredCompleteInput(
+                    "Complete this item with its reviewed outcome.",
                     CandidateId("candidate"),
                     "review accepted",
                     TaskId("reviewer"),
@@ -857,6 +858,7 @@ class LifecycleDecisionTest(unittest.TestCase):
         attempt = AttemptRecord("target-1", "target", work_models.AttemptState.ACTIVE)
         complete = action(decision_models.CompleteAction, AttemptId("target-1"))
         covered_value = work_models.CoveredCompleteInput(
+            "Complete this item with its reviewed outcome.",
             CandidateId("candidate"),
             "all evidence covered",
             TaskId("reviewer"),
@@ -904,6 +906,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             decision_models.CoveredCompleteCommand(
                 complete,
                 work_models.CoveredCompleteInput(
+                    "Complete this item with its reviewed outcome.",
                     CandidateId("candidate"),
                     "reviewed",
                     TaskId("reviewer"),

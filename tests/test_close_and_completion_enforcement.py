@@ -6,20 +6,32 @@ import hashlib
 import io
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from threading import Event
 from unittest.mock import patch
 
 import msgspec
 
+from pinboard.adapters import lifecycle_artifacts
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import action_models, dispatch_models, query_models, work_brief_models, work_briefs
+from pinboard.application import (
+    action_models,
+    dispatch_models,
+    ports,
+    query_models,
+    work_brief_compatibility_models,
+    work_brief_models,
+    work_briefs,
+)
 from pinboard.application.artifact_publication import AcceptedArtifactPublication, publish_accepted_artifact
-from pinboard.application.artifacts import NewArtifact
+from pinboard.application.artifacts import CurrentAttemptWorkBriefIdentity, NewArtifact
 from pinboard.application.project_export import ProjectExport
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.identifiers import AttemptId, WorkItemId
+from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.identifiers import AttemptId, HostId, TaskId, WorkItemId
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import AcceptedPackageFixture, CheckpointFixture, CheckpointPackageSupport
@@ -291,7 +303,8 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         )
         attempt_root = fixture.work / "attempts" / "work-a-1"
         return {
-            "schema": "pinboard-reviewed-completion/v2",
+            "schema": "pinboard-reviewed-completion/v3",
+            "human_decision": "Complete this item with its reviewed outcome.",
             "candidate": candidate,
             "evidence": "The commissioned reviewer accepted the exact candidate.",
             "reviewer_task_id": reviewer,
@@ -339,6 +352,182 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         self.assertEqual(before, fixture.store.validated_snapshot())
         return refused
 
+    def test_ready_candidate_without_a_distinct_human_decision_rejects_before_publication(self) -> None:
+        fixture, candidate = self.review_fixture()
+        fixture = self.terminalize_brief(fixture)
+        self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
+        payload = self.completion_payload(fixture, candidate, "commissioned-reviewer")
+        missing = {key: value for key, value in payload.items() if key != "human_decision"}
+        before = fixture.store.validated_snapshot()
+        invalid: tuple[JsonObject, ...] = (
+            missing,
+            payload | {"human_decision": ""},
+            payload | {"human_decision": None},
+            missing | {"schema": "pinboard-reviewed-completion/v2"},
+            payload | {"schema": "pinboard-reviewed-completion/v2"},
+        )
+        for rejected_payload in invalid:
+            with (
+                self.subTest(payload=rejected_payload),
+                patch(
+                    "pinboard.adapters.lifecycle_artifacts.ArtifactRepository.publish",
+                    side_effect=AssertionError("completion published without a current human decision"),
+                ),
+            ):
+                refused = call_advertised_tool(
+                    mcp_server.TRANSITION_TOOL,
+                    self.native_transition_request(
+                        fixture, self.project_action(fixture, "complete:work-a-1"), rejected_payload
+                    ),
+                )
+                self.assertEqual("TRANSITION_INPUT_INVALID", refused["code"], refused)
+                self.assertEqual(
+                    ("unchanged", "correct-input", []),
+                    (refused["effect"], refused["retry"], refused["changed_surfaces"]),
+                )
+                self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def test_human_terminal_words_survive_completion_fresh_reload_and_portable_export(self) -> None:
+        for words in (
+            "I merged it into main.\nComplete this whole item now.",
+            "Keep this reviewed result isolated; no merge or deletion. Complete the whole item.",
+        ):
+            with self.subTest(decision=words):
+                fixture, candidate = self.review_fixture()
+                fixture = self.terminalize_brief(fixture)
+                self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
+                payload = self.completion_payload(fixture, candidate, "commissioned-reviewer") | {
+                    "human_decision": words
+                }
+                committed = call_advertised_tool(
+                    mcp_server.TRANSITION_TOOL,
+                    self.native_transition_request(fixture, self.project_action(fixture, "complete:work-a-1"), payload),
+                )
+                self.assertEqual("committed", committed["status"], committed)
+                fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+                receipt = fresh.transition_receipts[-1]
+                self.assertEqual("pinboard-reviewed-completion/v3", receipt.input_schema)
+                decoded = msgspec.json.decode(
+                    bytes(receipt.input_payload), type=action_models.ReviewedCompleteInputPayload
+                )
+                self.assertEqual(words, decoded.human_decision)
+                self.assertEqual(msgspec.json.encode(decoded, order="sorted"), bytes(receipt.input_payload))
+                self.assertEqual("completion-acceptance/v2", receipt.outcome_schema)
+                self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+                code, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
+                self.assertEqual(0, code, stderr)
+                exported = msgspec.json.decode(stdout, type=ProjectExport)
+                completion = next(value for value in exported.transitions if value.action_kind == "complete")
+                self.assertEqual(
+                    words,
+                    msgspec.json.decode(
+                        bytes(completion.input), type=action_models.ReviewedCompleteInputPayload
+                    ).human_decision,
+                )
+                self.assertEqual("pinboard-completion-review-package/v2", exported.completion_packages[0].schema)
+
+    def test_historical_v2_receipt_validates_and_exports_exactly_but_rejects_malformed_facts(self) -> None:
+        fixture, candidate = self.review_fixture()
+        fixture = self.terminalize_brief(fixture)
+        self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
+        payload = self.completion_payload(fixture, candidate, "commissioned-reviewer")
+        committed = self.transition_result(fixture, self.project_action(fixture, "complete:work-a-1"), payload)
+        self.assertEqual("committed", committed["status"], committed)
+        historical = {key: value for key, value in payload.items() if key != "human_decision"} | {
+            "schema": "pinboard-reviewed-completion/v2"
+        }
+        original = msgspec.json.encode(historical, order="sorted").decode()
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            connection.execute(
+                "UPDATE transition_history SET input_schema = 'pinboard-reviewed-completion/v2', input_json = ? WHERE action_id = 'complete:work-a-1'",
+                (original,),
+            )
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        self.assertEqual(original.encode(), bytes(fresh.transition_receipts[-1].input_payload))
+        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+        code, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
+        self.assertEqual(0, code, stderr)
+        exported = msgspec.json.decode(stdout, type=ProjectExport)
+        receipt = next(value for value in exported.transitions if value.action_kind == "complete")
+        historical_record = msgspec.json.decode(
+            bytes(receipt.input), type=work_brief_compatibility_models.HistoricalReviewedCompletionInputV2
+        )
+        self.assertEqual(original.encode(), msgspec.json.encode(historical_record, order="sorted"))
+        missing = {key: value for key, value in historical.items() if key != "reviewer_task_id"}
+        malformed = (
+            historical | {"human_decision": "Fabricated historical decision"},
+            missing,
+            historical | {"packages": self.json_array(payload["packages"]) * 2},
+            historical | {"schema": "pinboard-reviewed-completion/v3"},
+        )
+        for invalid in malformed:
+            with self.subTest(payload=invalid):
+                with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+                    connection.execute(
+                        "UPDATE transition_history SET input_json = ? WHERE action_id = 'complete:work-a-1'",
+                        (msgspec.json.encode(invalid, order="sorted").decode(),),
+                    )
+                code, _, _ = self.run_cli(*fixture.common, "validate", "--json")
+                self.assertNotEqual(0, code)
+                code, _, _ = self.run_cli(*fixture.common, "export", "--json")
+                self.assertNotEqual(0, code)
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            connection.execute(
+                "UPDATE transition_history SET input_json = ? WHERE action_id = 'complete:work-a-1'", (original,)
+            )
+        self.assertEqual(fresh, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+
+    def test_human_decision_does_not_allow_a_concurrent_stale_completion(self) -> None:
+        fixture, candidate = self.review_fixture()
+        fixture = self.terminalize_brief(fixture)
+        self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
+        payload = self.completion_payload(fixture, candidate, "commissioned-reviewer")
+        action = self.project_action(fixture, "complete:work-a-1")
+        request = self.native_transition_request(fixture, action, payload)
+        delayed_request = self.native_transition_request(fixture, action, payload, task_id="delayed-owner")
+        entered, resume = Event(), Event()
+        preflight = lifecycle_artifacts.service.preflight_covered_completion
+
+        def controlled_preflight(
+            store: ports.WorkStore,
+            command: decision_models.CoveredCompleteCommand,
+            now: datetime,
+            *,
+            actor_task_id: TaskId,
+            actor_host_id: HostId,
+            transition_brief_identity: CurrentAttemptWorkBriefIdentity,
+        ) -> DecisionFailure | None:
+            failure = preflight(
+                store,
+                command,
+                now,
+                actor_task_id=actor_task_id,
+                actor_host_id=actor_host_id,
+                transition_brief_identity=transition_brief_identity,
+            )
+            if actor_task_id == "delayed-owner":
+                entered.set()
+                if not resume.wait(10):
+                    raise AssertionError("concurrent completion did not resume")
+            return failure
+
+        with (
+            patch.object(lifecycle_artifacts.service, "preflight_covered_completion", side_effect=controlled_preflight),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            delayed = pool.submit(call_advertised_tool, mcp_server.TRANSITION_TOOL, delayed_request)
+            try:
+                self.assertTrue(entered.wait(10), "completion did not reach preflight")
+                committed = call_advertised_tool(mcp_server.TRANSITION_TOOL, request)
+                self.assertEqual("committed", committed["status"], committed)
+                winner = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+            finally:
+                resume.set()
+            refused = delayed.result(timeout=10)
+        self.assertEqual("rejected", refused["status"], refused)
+        self.assertEqual("unchanged", refused["effect"], refused)
+        self.assertEqual(winner, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+
     def test_reviewed_completion_requires_a_commissioned_review_by_the_named_reviewer(self) -> None:
         fixture, candidate = self.review_fixture()
         fixture = self.terminalize_brief(fixture)
@@ -372,7 +561,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         )
         self.assertEqual("committed", committed["status"], committed)
         receipt = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot().transition_receipts[-1]
-        self.assertEqual("pinboard-reviewed-completion/v2", receipt.input_schema)
+        self.assertEqual("pinboard-reviewed-completion/v3", receipt.input_schema)
 
     def test_unchanged_reviewed_work_keeps_review_after_private_settlement_note_and_commit(self) -> None:
         fixture = self.terminalize_brief(self.checkpoint_fixture())
@@ -397,7 +586,8 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
         action = self.project_action(fixture, "complete:work-a-1")
         payload: JsonObject = {
-            "schema": "pinboard-reviewed-completion/v2",
+            "schema": "pinboard-reviewed-completion/v3",
+            "human_decision": "Complete this item with its reviewed outcome.",
             "candidate": candidate,
             "evidence": "Read-only settlement confirms the accepted outcome.",
             "reviewer_task_id": "commissioned-reviewer",

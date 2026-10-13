@@ -274,6 +274,7 @@ class CoveredCompletionPackageInput:
 
 @dataclass(frozen=True, slots=True)
 class CoveredCompleteInput:
+    human_decision: str
     candidate: CandidateId
     evidence: str
     reviewer_task_id: TaskId

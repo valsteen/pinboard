@@ -297,7 +297,12 @@ def _transition_rejected(
     match retry:
         case RetryDisposition.CORRECT_INPUT:
             continuation = (
-                "Correct the reported input, then discover this exact current action through pinboard_actions."
+                "Use the current pinboard-reviewed-completion/v3 input with the human's explicit whole-item "
+                "completion decision in their own words as human_decision. Reuse their prior exact authorization "
+                "only after its stated boundary is satisfied. If it is missing, ask the human and stop; never "
+                "invent it. Then discover this exact current action through pinboard_actions."
+                if action_id.kind == decision_models.ActionKind.COMPLETE
+                else "Correct the reported input, then discover this exact current action through pinboard_actions."
             )
         case RetryDisposition.REFRESH_ACTION | RetryDisposition.RETRY_SAME_INPUT:
             continuation = "Discover this exact current action through pinboard_actions before another transition."

@@ -992,7 +992,8 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         payload.write_text(
             json.dumps(
                 {
-                    "schema": "pinboard-reviewed-completion/v2",
+                    "schema": "pinboard-reviewed-completion/v3",
+                    "human_decision": "Complete this item with its reviewed outcome.",
                     "candidate": candidate,
                     "evidence": "Retired execution rejected",
                     "reviewer_task_id": "reviewer",
@@ -1049,7 +1050,8 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             value for value in state.transition_receipts if value.outcome_schema == "checkpoint-acceptance/v2"
         )
         covered_value: JsonObject = {
-            "schema": "pinboard-reviewed-completion/v2",
+            "schema": "pinboard-reviewed-completion/v3",
+            "human_decision": "Complete this item with its reviewed outcome.",
             "candidate": "terminal-candidate",
             "evidence": "all checkpoint evidence remains complete",
             "reviewer_task_id": "terminal-reviewer",
@@ -1166,7 +1168,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         receipt = completed.transition_receipts[-1]
         self.assertEqual(work_models.AttemptState.DONE, attempt.state)
         self.assertIsNotNone(attempt.result_artifact_ref_id)
-        self.assertEqual("pinboard-reviewed-completion/v2", receipt.input_schema)
+        self.assertEqual("pinboard-reviewed-completion/v3", receipt.input_schema)
         self.assertEqual("completion-acceptance/v2", receipt.outcome_schema)
         self.assertIsNotNone(receipt.artifact_ref_id)
         validation = self.run_json_cli(*fixture.common, "validate")

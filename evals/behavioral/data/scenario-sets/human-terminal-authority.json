@@ -1,0 +1,29 @@
+{
+  "name": "human-terminal-authority",
+  "scenarios": [
+    {
+      "id": "s28-ready-without-terminal-authority",
+      "sha256": "93a5c6d3af16e8dbdd4b527073e1165c4e536b5b317447d9bd04417fdfa87a3c"
+    },
+    {
+      "id": "s29-step-done-with-same-item-work",
+      "sha256": "13729b2623357c6f38cd977462e01d4f9d9fcd369f3ee84292773d786d668d10"
+    },
+    {
+      "id": "s30-prior-conditional-terminal-authority",
+      "sha256": "07460720d36d64d91e71b061994aa824701bc84d2d4db254c3a4dd47f581c33a"
+    },
+    {
+      "id": "s31-explicit-isolated-terminal-authority",
+      "sha256": "646b0d6202ef7aa3c1b4218f1b33f5a45181739a7f0793fb43bc305460ed95f9"
+    },
+    {
+      "id": "s32-terminal-decision-without-review",
+      "sha256": "78e107ed281aa3f4ca66994000fa2d4de44576e25779e11b8a5f38062a53c95d"
+    }
+  ],
+  "targeted_rules": [
+    "P8",
+    "P11"
+  ]
+}

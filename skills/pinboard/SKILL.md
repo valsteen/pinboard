@@ -110,6 +110,8 @@ Before acquiring a preparation claim for any relevant refinement or change, insp
 
 When the proposed work crosses a previously acknowledged limitation without materially changing its consequence, preserve that accepted boundary without asking again. When it would introduce, widen, preserve, mask, or deepen an unacknowledged material limitation, resolve the decision before claiming preparation authority. Generic task permission and silence are insufficient.
 
+Evaluate the effect being implemented now. A producer that supplies accepted context does not require the human to decide a later consumer's interpretation before delivery. Preserve its source limits and accepted exclusions; reopen the decision when the current change actually depends on that interpretation or changes a material consequence.
+
 Present the decision in this information order:
 
 **Architecture checkpoint**
@@ -153,6 +155,8 @@ Load [preparation and dispatch](references/preparation-and-dispatch.md) before c
 One coding-agent task owns one outcome through final human disposition. Keep product, scope, approval, review, and repository-disposition decisions in that task. Use subagents for bounded research, implementation, verification, and review whose results should return to it automatically. Create another task only for a genuinely independent outcome the human intends to follow in that task's own conversation; it is not a subordinate worker or return destination.
 
 In multi-task use, recommend one task per distinct independent outcome.
+
+An active implementation request covers candidate submission, review by a separate reviewer, and correction of in-scope findings through the supported workflow. Continue those steps in the owning turn without another general review approval or a human nudge. Keep explicit pauses, background requests, scope changes, missing capabilities, mandated executors and runtime access, repository disposition, and terminal completion under their existing authority rules. A request only to assess a review remains inspection-only.
 
 Do not infer work from arbitrary Markdown, historical plans, unchecked boxes, branch names, or transcript memory. Do not directly edit canonical lifecycle fields when the executable can perform the transition.
 
@@ -205,6 +209,8 @@ Never use a later edit to imply earlier coverage. If a broad item existed before
 Process newly delivered intake only after the current review, transition, commit, or other atomic repository action ends. Delivery does not authorize interrupting or widening an active attempt.
 
 Before nested intake, load the [continuation anchor](references/setup-and-transitions.md#nested-intake-and-concern-revision), keep the current objective and promised next action with its durable selector, then return after persistence.
+
+Keep that same anchor before compaction or a long gap in active work. Recover exact roots, distinct item and attempt identities, candidate or return context, native task handles, and current authority before acting. Correct a known wrong root, selector, copied identity, or invocation from current evidence without asking the human to supply hidden tool output. For lost or invalid launches, follow [fresh launch-response recovery](references/preparation-and-dispatch.md#recover-a-worker-or-reviewer-launch-response); a verified prompt alone is not a native recipe.
 
 ## Wrap up with facts
 

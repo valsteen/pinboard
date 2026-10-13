@@ -39,6 +39,8 @@ Do not enable Claude agent teams, open another session, create another worktree,
 
 Do not infer that subagents are unavailable because an unrelated, nested, shell, MCP, or dynamically listed tool surface omits their controls. Report a missing subagent capability only after the runtime's native launch surface is actually absent or unsupported, or an actual required native launch returns an unavailable or unsupported result.
 
+If the exact recipe cannot launch because its Codex task name was consumed by an invalid pre-verification launch, stop that context and follow [fresh launch-response recovery](preparation-and-dispatch.md#recover-a-worker-or-reviewer-launch-response). Obtain a new validated dispatch or candidate review-job response and use its new arguments exactly. Do not edit a task name or digest or follow up an invalid reviewer to repair its task. The same recovery applies when the successful response was lost; it neither substitutes another client nor bypasses worker submission, independent review or runtime permission.
+
 ## Claude confined evidence-write recovery
 
 A Claude session that entered a managed worktree with `EnterWorktree` is confined to it, and a write to an exact attempt `result.md`, `blocker.md`, or `review.md` path under the shared work root can be refused. Use only this recovery; do not relocate attempt evidence, edit saved permission policy, remove the checkout, or retry through another path.

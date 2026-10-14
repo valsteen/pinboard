@@ -209,22 +209,38 @@ class CorrectionDispatch:
 
 
 @dataclass(frozen=True, slots=True)
+class DriftedWorkingTreeCandidate:
+    candidate: root.WorkingTreeCandidate
+    current_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class CorrectionContext:
     effective_brief: work_brief_models.WorkBrief
     starting_candidate: work_brief_models.PortableArtifactIdentity
     starting_snapshot: candidate_snapshots.CandidateSnapshot
     correction_reason: str
     correction_history_id: HistoryId
-    drifted_candidate: root.WorkingTreeCandidate | None
+    drifted_candidate: DriftedWorkingTreeCandidate | None
     reuse_eligible: bool
     reuse_blockers: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
-class CorrectionReviewFacts:
+class ExactCorrectionReviewFacts:
     starting_candidate: work_brief_models.PortableArtifactIdentity
     correction_input: action_models.ReasonInputPayload
-    current_candidate: work_brief_models.WorkingTreeCandidateIdentity | None
+
+
+@dataclass(frozen=True, slots=True)
+class DriftedCorrectionReviewFacts:
+    starting_candidate: work_brief_models.PortableArtifactIdentity
+    correction_input: action_models.ReasonInputPayload
+    current_candidate: work_brief_models.WorkingTreeCandidateIdentity
+    current_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
+
+
+type CorrectionReviewFacts = ExactCorrectionReviewFacts | DriftedCorrectionReviewFacts
 
 
 type CorrectionReview = (
@@ -244,13 +260,18 @@ def _correction_review_facts(review: CorrectionReview) -> CorrectionReviewFacts:
             | work_brief_models.LocalCorrectionSourceReview()
             | work_brief_models.ReusedCoverageCorrectionReview()
         ):
-            return CorrectionReviewFacts(review.starting_candidate, review.correction_input, None)
+            return ExactCorrectionReviewFacts(review.starting_candidate, review.correction_input)
         case (
             work_brief_models.DriftedCorrectionSourceReview()
             | work_brief_models.DriftedLocalCorrectionSourceReview()
             | work_brief_models.DriftedReusedCoverageCorrectionReview()
         ):
-            return CorrectionReviewFacts(review.starting_candidate, review.correction_input, review.current_candidate)
+            return DriftedCorrectionReviewFacts(
+                review.starting_candidate,
+                review.correction_input,
+                review.current_candidate,
+                review.current_untracked_paths,
+            )
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -496,11 +517,18 @@ def _canonical_prompt(
             f"- Canonical return reason (JSON string): {msgspec.json.encode(review_facts.correction_input.reason).decode()}\n"
             f"- Read current review evidence before editing: {work_root / 'attempts' / attempt_id / 'review.md'}\n"
         )
-        if review_facts.current_candidate is not None:
-            correction_context += (
-                f"- Independently assessed current checkout candidate: {review_facts.current_candidate}\n"
-                "- Preserve the current checkout; do not restore the returned candidate. Recheck this identity before editing and stop if it changed.\n"
-            )
+        match review_facts:
+            case ExactCorrectionReviewFacts():
+                pass
+            case DriftedCorrectionReviewFacts():
+                correction_context += (
+                    f"- Independently assessed current checkout candidate: {review_facts.current_candidate}\n"
+                    "- Git-visible untracked paths explicitly bound by the fresh review and excluded from candidate bytes: "
+                    f"{msgspec.json.encode(review_facts.current_untracked_paths).decode()}\n"
+                    "- Preserve the current checkout; do not restore the returned candidate. Recheck this identity and path list before editing and stop if either changed.\n"
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
         correction_context += "\n"
     return (
         "Use $pinboard-deliver for this repository attempt.\n\n"
@@ -1019,6 +1047,20 @@ def _correction_snapshot_binding_mismatches(
     )
 
 
+def _read_correction_untracked_paths(source_checkout_root: Path) -> DispatchResult[tuple[str, ...]]:
+    try:
+        return tuple(sorted(root.read_untracked_paths(source_checkout_root)))
+    except UnicodeDecodeError as error:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+            "A current Git-visible untracked path is not UTF-8 and cannot be represented by the strict correction review.",
+            _fresh_review_details(
+                (),
+                (FailureMismatch("checkout_untracked_paths", "UTF-8 repository-relative paths", str(error)),),
+            ),
+        )
+
+
 def _read_correction_snapshot(
     store: WorkStore,
     artifacts: DispatchArtifactPort,
@@ -1028,13 +1070,24 @@ def _read_correction_snapshot(
     identity: work_brief_models.PortableArtifactIdentity,
     reason: str,
 ) -> DispatchResult[candidate_snapshots.CandidateSnapshot]:
-    """Verify selected historical bytes and require the exact current correction starting checkout; no effects."""
+    """Verify historical bytes and require the exact tracked candidate and untracked path set; no effects."""
     snapshot = _read_returned_snapshot(store, artifacts, brief, correction_history_id, identity, reason)
     if isinstance(snapshot, DispatchFailure):
         return snapshot
     mismatches = _correction_snapshot_binding_mismatches(brief, snapshot)
     branch, head = root.observe_checkout_identity(source_checkout_root)
-    checkout_mismatches = [FailureMismatch("checkout_branch", snapshot.branch, branch)]
+    untracked_paths = _read_correction_untracked_paths(source_checkout_root)
+    if isinstance(untracked_paths, DispatchFailure):
+        return untracked_paths
+    excluded_untracked_paths = candidate_snapshots.excluded_untracked_paths(snapshot)
+    checkout_mismatches = [
+        FailureMismatch("checkout_branch", snapshot.branch, branch),
+        FailureMismatch(
+            "checkout_untracked_paths",
+            msgspec.json.encode(tuple(sorted(excluded_untracked_paths))).decode(),
+            msgspec.json.encode(untracked_paths).decode(),
+        ),
+    ]
     match snapshot:
         case (
             candidate_snapshots.WorkingTreeCandidateSnapshot()
@@ -1092,50 +1145,77 @@ def _read_drifted_correction_candidate(
     source_checkout_root: Path,
     brief: work_brief_models.WorkBrief,
     snapshot: candidate_snapshots.CandidateSnapshot,
-    expected_current_candidate: str | None,
-) -> DispatchResult[root.WorkingTreeCandidate]:
-    """Bind a changed tracked checkout to the returned baseline without restoring either candidate."""
+    expected_review: DriftedCorrectionReviewFacts | None,
+) -> DispatchResult[DriftedWorkingTreeCandidate]:
+    """Bind current tracked bytes and the explicitly reviewed untracked exclusion list."""
     mismatches = list(_correction_snapshot_binding_mismatches(brief, snapshot))
     branch, head = root.observe_checkout_identity(source_checkout_root)
     current = root.read_working_tree_candidate(source_checkout_root)
     excluded_untracked_paths = candidate_snapshots.excluded_untracked_paths(snapshot)
-    untracked_paths = tuple(sorted(root.read_untracked_paths(source_checkout_root)))
+    raw_untracked_paths = _read_correction_untracked_paths(source_checkout_root)
+    if isinstance(raw_untracked_paths, DispatchFailure):
+        return raw_untracked_paths
+    try:
+        untracked_paths = msgspec.convert(
+            raw_untracked_paths,
+            type=tuple[action_models.CanonicalRepoRelativeFile, ...],
+            strict=True,
+        )
+        action_models.require_canonical_excluded_paths(untracked_paths)
+    except (msgspec.ValidationError, ValueError) as error:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+            f"Current Git-visible untracked paths cannot be bound to a correction review: {error}",
+            _fresh_review_details(
+                (),
+                (
+                    FailureMismatch(
+                        "checkout_untracked_paths",
+                        "canonical sorted repository-relative paths",
+                        msgspec.json.encode(raw_untracked_paths).decode(),
+                    ),
+                ),
+            ),
+        )
     match snapshot:
         case (
             candidate_snapshots.WorkingTreeCandidateSnapshot()
             | candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot()
         ):
             expected_head = snapshot.preimage_revision
-            unchanged_candidate = current.identity == snapshot.candidate
+            unchanged_tracked_candidate = current.identity == snapshot.candidate
         case candidate_snapshots.CommitCandidateSnapshot() | candidate_snapshots.DeclaredCommitCandidateSnapshot():
             expected_head = snapshot.candidate
-            unchanged_candidate = not current.diff
+            unchanged_tracked_candidate = not current.diff
         case _ as unreachable:
             assert_never(unreachable)
+    unchanged_context = unchanged_tracked_candidate and untracked_paths == tuple(sorted(excluded_untracked_paths))
     mismatches.extend(
         value
         for value in (
             FailureMismatch("checkout_branch", snapshot.branch, branch),
             FailureMismatch("checkout_head", expected_head, head),
-            FailureMismatch(
-                "checkout_untracked_paths",
-                msgspec.json.encode(tuple(sorted(excluded_untracked_paths))).decode(),
-                msgspec.json.encode(untracked_paths).decode(),
-            ),
             *(
                 (
                     FailureMismatch(
                         "checkout_candidate",
-                        "a tracked working-tree candidate different from the returned candidate",
-                        "the returned candidate is unchanged",
+                        "a current candidate or untracked-path set different from the returned snapshot",
+                        "the tracked candidate and untracked-path set are unchanged",
                     ),
                 )
-                if unchanged_candidate
+                if unchanged_context
                 else ()
             ),
             *(
-                (FailureMismatch("current_candidate", expected_current_candidate, current.identity),)
-                if expected_current_candidate is not None
+                (
+                    FailureMismatch("current_candidate", expected_review.current_candidate, current.identity),
+                    FailureMismatch(
+                        "current_untracked_paths",
+                        msgspec.json.encode(expected_review.current_untracked_paths).decode(),
+                        msgspec.json.encode(untracked_paths).decode(),
+                    ),
+                )
+                if expected_review is not None
                 else ()
             ),
         )
@@ -1144,10 +1224,10 @@ def _read_drifted_correction_candidate(
     if mismatches:
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
-            "Drifted correction review does not identify a changed tracked candidate on the returned branch and HEAD.",
+            "Drifted correction review does not identify the exact current candidate and untracked paths on the returned branch and HEAD.",
             _fresh_review_details((), tuple(mismatches)),
         )
-    return current
+    return DriftedWorkingTreeCandidate(current, untracked_paths)
 
 
 def _read_correction_start(
@@ -1158,32 +1238,39 @@ def _read_correction_start(
     choice: CorrectionDispatch,
 ) -> DispatchResult[candidate_snapshots.CandidateSnapshot]:
     review_facts = _correction_review_facts(choice.review)
-    if review_facts.current_candidate is not None:
-        snapshot = _read_returned_snapshot(
-            store,
-            artifacts,
-            brief,
-            choice.correction_history_id,
-            review_facts.starting_candidate,
-            review_facts.correction_input.reason,
-        )
-        if isinstance(snapshot, DispatchFailure):
+    match review_facts:
+        case ExactCorrectionReviewFacts():
+            return _read_correction_snapshot(
+                store,
+                artifacts,
+                source_checkout_root,
+                brief,
+                choice.correction_history_id,
+                review_facts.starting_candidate,
+                review_facts.correction_input.reason,
+            )
+        case DriftedCorrectionReviewFacts():
+            snapshot = _read_returned_snapshot(
+                store,
+                artifacts,
+                brief,
+                choice.correction_history_id,
+                review_facts.starting_candidate,
+                review_facts.correction_input.reason,
+            )
+            if isinstance(snapshot, DispatchFailure):
+                return snapshot
+            current = _read_drifted_correction_candidate(
+                source_checkout_root,
+                brief,
+                snapshot,
+                review_facts,
+            )
+            if isinstance(current, DispatchFailure):
+                return current
             return snapshot
-        current = _read_drifted_correction_candidate(
-            source_checkout_root, brief, snapshot, review_facts.current_candidate
-        )
-        if isinstance(current, DispatchFailure):
-            return current
-        return snapshot
-    return _read_correction_snapshot(
-        store,
-        artifacts,
-        source_checkout_root,
-        brief,
-        choice.correction_history_id,
-        review_facts.starting_candidate,
-        review_facts.correction_input.reason,
-    )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def read_correction_context(  # noqa: C901, PLR0912 - one read binds current return, brief and accepted snapshot
@@ -1193,7 +1280,7 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
     attempt_id: AttemptId,
     correction_history_id: HistoryId,
 ) -> DispatchResult[CorrectionContext]:
-    """Read the exact effective source and returned candidate before independent review."""
+    """Read returned evidence and any changed candidate or untracked exclusions before independent review."""
     facts = store.read_review_job_context(attempt_id, None, correction_history_id, None, None)
     if facts is None or not isinstance(facts.attempt, query_models.NonterminalAttemptContextFacts):
         return DispatchFailure(
@@ -1294,6 +1381,13 @@ def _correction_review_subject(
 ) -> str:
     # Recording/receipt identities are provenance, not new semantic subjects.
     review_facts = _correction_review_facts(review)
+    match review_facts:
+        case ExactCorrectionReviewFacts():
+            current_candidate_binding = ()
+        case DriftedCorrectionReviewFacts():
+            current_candidate_binding = (review_facts.current_candidate, review_facts.current_untracked_paths)
+        case _ as unreachable:
+            assert_never(unreachable)
     match review:
         case (
             work_brief_models.CorrectionSourceReview(contract_review=contract_review)
@@ -1325,7 +1419,7 @@ def _correction_review_subject(
                 snapshot.accepted_base_revision,
                 snapshot.diff,
                 review_facts.correction_input,
-                *((review_facts.current_candidate,) if review_facts.current_candidate is not None else ()),
+                *current_candidate_binding,
             ),
             order="sorted",
         )

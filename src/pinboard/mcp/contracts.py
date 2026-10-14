@@ -1872,7 +1872,17 @@ class DeclaredCorrectionSnapshot(
 type CorrectionSnapshot = CorrectionSnapshotV1 | CorrectionSnapshotV2 | DeclaredCorrectionSnapshot
 
 
-class CorrectionContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class _CorrectionContextReuse(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    reuse_eligible: bool
+    reuse_blockers: tuple[NonEmptyText, ...]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.reuse_eligible == bool(self.reuse_blockers):
+            raise ValueError("Correction reuse eligibility and blockers disagree.")
+
+
+class CorrectionContextReady(_CorrectionContextReuse, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-correction-context/v1"]
     status: Literal["ready"]
     attempt_id: PathComponent
@@ -1884,20 +1894,13 @@ class CorrectionContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forb
     reviewed_authority_set_sha256: Sha256 | None
     starting_candidate: work_brief_models.PortableArtifactIdentity
     starting_snapshot: CorrectionSnapshot
-    reuse_eligible: bool
-    reuse_blockers: tuple[NonEmptyText, ...]
     state_changed: bool
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
 
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if self.reuse_eligible == bool(self.reuse_blockers):
-            raise ValueError("Correction reuse eligibility and blockers disagree.")
 
-
-class CorrectionContextDrifted(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class CorrectionContextDrifted(_CorrectionContextReuse, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-correction-context/v2"]
     status: Literal["drifted"]
     attempt_id: PathComponent
@@ -1912,8 +1915,7 @@ class CorrectionContextDrifted(_UnchangedResult, msgspec.Struct, frozen=True, fo
     current_candidate: work_brief_models.WorkingTreeCandidateIdentity
     current_preimage_revision: NonEmptyText
     current_diff_base64: str
-    reuse_eligible: bool
-    reuse_blockers: tuple[NonEmptyText, ...]
+    current_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
     state_changed: bool
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
@@ -1921,8 +1923,7 @@ class CorrectionContextDrifted(_UnchangedResult, msgspec.Struct, frozen=True, fo
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.reuse_eligible == bool(self.reuse_blockers):
-            raise ValueError("Correction reuse eligibility and blockers disagree.")
+        action_models.require_canonical_excluded_paths(self.current_untracked_paths)
 
 
 class CorrectionContextRejected(RejectedReadResult, frozen=True):

@@ -866,55 +866,47 @@ class LocalCorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fi
         )
 
 
-class DriftedCorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Independent full contract assessment bound to the returned and current tracked candidates."""
-
-    schema: Literal["pinboard-correction-source-review/v3"]
-    contract_review: WorkBriefReview
+class _DriftedCorrectionReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     starting_candidate: PortableArtifactIdentity
-    correction_input: action_models.ReasonInputPayload
-    assessment: NonEmptyText
-    current_candidate: WorkingTreeCandidateIdentity
+    current_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
 
     def __post_init__(self) -> None:
         require_candidate_evidence_identity(
             self.starting_candidate, "Drifted correction review requires one accepted candidate Evidence identity."
         )
+        action_models.require_canonical_excluded_paths(self.current_untracked_paths)
 
 
-class DriftedReusedCoverageCorrectionReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Independent candidate assessment retaining exact accepted ready coverage."""
+class DriftedCorrectionSourceReview(_DriftedCorrectionReview, frozen=True, forbid_unknown_fields=True):
+    """Independent full contract assessment bound to both candidates and current untracked paths."""
+
+    schema: Literal["pinboard-correction-source-review/v3"]
+    contract_review: WorkBriefReview
+    correction_input: action_models.ReasonInputPayload
+    assessment: NonEmptyText
+    current_candidate: WorkingTreeCandidateIdentity
+
+
+class DriftedReusedCoverageCorrectionReview(_DriftedCorrectionReview, frozen=True, forbid_unknown_fields=True):
+    """Independent candidate assessment binding current untracked paths and retaining accepted ready coverage."""
 
     schema: Literal["pinboard-correction-source-review/v4"]
     accepted_brief_sha256: Sha256
     reviewer_task_id: NonEmptyLine
-    starting_candidate: PortableArtifactIdentity
     correction_input: action_models.ReasonInputPayload
     assessment: NonEmptyText
     current_candidate: WorkingTreeCandidateIdentity
 
-    def __post_init__(self) -> None:
-        require_candidate_evidence_identity(
-            self.starting_candidate, "Drifted correction review requires one accepted candidate Evidence identity."
-        )
 
-
-class DriftedLocalCorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Independent local assessment bound to the returned and current tracked candidates."""
+class DriftedLocalCorrectionSourceReview(_DriftedCorrectionReview, frozen=True, forbid_unknown_fields=True):
+    """Independent local assessment bound to both candidates and current untracked paths."""
 
     schema: Literal["pinboard-local-correction-source-review/v2"]
     accepted_brief_sha256: Sha256
     reviewer_task_id: NonEmptyLine
-    starting_candidate: PortableArtifactIdentity
     correction_input: action_models.ReasonInputPayload
     assessment: NonEmptyText
     current_candidate: WorkingTreeCandidateIdentity
-
-    def __post_init__(self) -> None:
-        require_candidate_evidence_identity(
-            self.starting_candidate,
-            "Drifted local correction review requires one accepted candidate Evidence identity.",
-        )
 
 
 class LocalReviewBasis(

@@ -280,7 +280,10 @@ class CandidateExclusionsTest(CheckpointPackageSupport):
                     identity,
                     "Repair candidate.",
                 )
-                self.assertEqual(evidence.snapshot, result)
+                if not committed and not declared:
+                    self.assertIsInstance(result, dispatch_operations.DispatchFailure)
+                else:
+                    self.assertEqual(evidence.snapshot, result)
                 context = call_advertised_tool(
                     server.CORRECTION_CONTEXT_TOOL,
                     {
@@ -290,7 +293,12 @@ class CandidateExclusionsTest(CheckpointPackageSupport):
                         "correction_history_id": history_id,
                     },
                 )
-                self.assertEqual("ready", context["status"], context)
+                if not committed and not declared:
+                    self.assertEqual("drifted", context["status"], context)
+                    self.assertEqual("pinboard-correction-context/v3", context["schema"])
+                    self.assertEqual(["local.txt"], context["current_untracked_paths"])
+                else:
+                    self.assertEqual("ready", context["status"], context)
                 view = self.json_object(context["starting_snapshot"])
                 self.assertEqual(
                     "pinboard-candidate-snapshot/v3"

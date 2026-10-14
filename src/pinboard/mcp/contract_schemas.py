@@ -67,6 +67,8 @@ from pinboard.mcp.contracts import (
     CandidateRestoreRejected,
     CandidateReviewRecorded,
     CompletionActionsSuccess,
+    CorrectionContextDrifted,
+    CorrectionContextDriftedPaths,
     CorrectionContextReady,
     CorrectionContextRejected,
     DispatchFailedAfterPublication,
@@ -843,9 +845,20 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         result_type = TerminalAttemptInspectionSuccess if state == "done" else NonterminalAttemptInspectionSuccess
         msgspec.convert(content, type=result_type, strict=True)
     elif tool_name == "pinboard_correction_context":
-        msgspec.convert(
-            content, type=CorrectionContextReady if status == "ready" else CorrectionContextRejected, strict=True
-        )
+        match (schema, status):
+            case ("pinboard-correction-context/v1", "ready"):
+                result_type = CorrectionContextReady
+            case ("pinboard-correction-context/v1", "rejected"):
+                result_type = CorrectionContextRejected
+            case ("pinboard-correction-context/v2", "drifted"):
+                result_type = CorrectionContextDrifted
+            case ("pinboard-correction-context/v3", "drifted"):
+                result_type = CorrectionContextDriftedPaths
+            case ("pinboard-mcp-execution-result/v1", "busy"):
+                result_type = ExecutorBusyResult
+            case _:
+                raise msgspec.ValidationError("Unexpected correction context result schema or status.")
+        msgspec.convert(content, type=result_type, strict=True)
     elif tool_name == "pinboard_artifact_verify" and schema == "pinboard-verified-artifact-reference/v1":
         msgspec.convert(content, type=ArtifactVerified, strict=True)
     elif tool_name == "pinboard_overview":

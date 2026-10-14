@@ -883,10 +883,15 @@ class _PathBoundDriftedCorrectionReview(_DriftedCorrectionReview, frozen=True, f
         action_models.require_canonical_excluded_paths(self.current_untracked_paths)
 
 
-class DriftedCorrectionSourceReview(_DriftedCorrectionReview, frozen=True, forbid_unknown_fields=True):
+class DriftedCorrectionSourceReview(
+    _DriftedCorrectionReview,
+    tag="pinboard-correction-source-review/v3",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
     """Independent full contract assessment of a tracked candidate with unchanged exclusions."""
 
-    schema: Literal["pinboard-correction-source-review/v3"]
     contract_review: WorkBriefReview
     correction_input: action_models.ReasonInputPayload
     assessment: NonEmptyText
@@ -894,21 +899,29 @@ class DriftedCorrectionSourceReview(_DriftedCorrectionReview, frozen=True, forbi
 
 
 class PathBoundDriftedCorrectionSourceReview(
-    _PathBoundDriftedCorrectionReview, frozen=True, forbid_unknown_fields=True
+    _PathBoundDriftedCorrectionReview,
+    tag="pinboard-correction-source-review/v5",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
 ):
     """Independent full contract assessment bound to changed current untracked exclusions."""
 
-    schema: Literal["pinboard-correction-source-review/v5"]
     contract_review: WorkBriefReview
     correction_input: action_models.ReasonInputPayload
     assessment: NonEmptyText
     current_candidate: WorkingTreeCandidateIdentity
 
 
-class DriftedReusedCoverageCorrectionReview(_DriftedCorrectionReview, frozen=True, forbid_unknown_fields=True):
+class DriftedReusedCoverageCorrectionReview(
+    _DriftedCorrectionReview,
+    tag="pinboard-correction-source-review/v4",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
     """Independent candidate assessment retaining accepted coverage with unchanged exclusions."""
 
-    schema: Literal["pinboard-correction-source-review/v4"]
     accepted_brief_sha256: Sha256
     reviewer_task_id: NonEmptyLine
     correction_input: action_models.ReasonInputPayload
@@ -917,11 +930,14 @@ class DriftedReusedCoverageCorrectionReview(_DriftedCorrectionReview, frozen=Tru
 
 
 class PathBoundDriftedReusedCoverageCorrectionReview(
-    _PathBoundDriftedCorrectionReview, frozen=True, forbid_unknown_fields=True
+    _PathBoundDriftedCorrectionReview,
+    tag="pinboard-correction-source-review/v6",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
 ):
     """Independent candidate assessment binding changed exclusions and retaining accepted ready coverage."""
 
-    schema: Literal["pinboard-correction-source-review/v6"]
     accepted_brief_sha256: Sha256
     reviewer_task_id: NonEmptyLine
     correction_input: action_models.ReasonInputPayload
@@ -929,10 +945,15 @@ class PathBoundDriftedReusedCoverageCorrectionReview(
     current_candidate: WorkingTreeCandidateIdentity
 
 
-class DriftedLocalCorrectionSourceReview(_DriftedCorrectionReview, frozen=True, forbid_unknown_fields=True):
+class DriftedLocalCorrectionSourceReview(
+    _DriftedCorrectionReview,
+    tag="pinboard-local-correction-source-review/v2",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
     """Independent local assessment of a tracked candidate with unchanged exclusions."""
 
-    schema: Literal["pinboard-local-correction-source-review/v2"]
     accepted_brief_sha256: Sha256
     reviewer_task_id: NonEmptyLine
     correction_input: action_models.ReasonInputPayload
@@ -941,11 +962,14 @@ class DriftedLocalCorrectionSourceReview(_DriftedCorrectionReview, frozen=True, 
 
 
 class PathBoundDriftedLocalCorrectionSourceReview(
-    _PathBoundDriftedCorrectionReview, frozen=True, forbid_unknown_fields=True
+    _PathBoundDriftedCorrectionReview,
+    tag="pinboard-local-correction-source-review/v3",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
 ):
     """Independent local assessment bound to changed current untracked exclusions."""
 
-    schema: Literal["pinboard-local-correction-source-review/v3"]
     accepted_brief_sha256: Sha256
     reviewer_task_id: NonEmptyLine
     correction_input: action_models.ReasonInputPayload

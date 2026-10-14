@@ -303,7 +303,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         return candidate
 
     def return_for_correction(self, fixture: CheckpointFixture, reason: str, suffix: str) -> int:
-        payload = fixture.project / f"return-{suffix}.json"
+        payload = fixture.work / f"return-{suffix}.json"
         payload.write_text(json.dumps({"reason": reason}), encoding="utf-8")
         rendered = self.transition_json(
             fixture,

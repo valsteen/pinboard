@@ -1400,6 +1400,23 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected.content["code"])
         self.assertEqual(before, fixture.store.validated_snapshot())
 
+    def test_tracked_drift_keeps_v2_context_when_untracked_paths_are_unchanged(self) -> None:
+        fixture = self.correction_fixture()
+        history_id, _choice = self.submit_and_return(fixture, "tracked-drift", committed=True)
+        (fixture.project / "tracked.txt").write_text("working tree drift\n", encoding="utf-8")
+        context = call_native_tool(
+            server.CORRECTION_CONTEXT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "correction_history_id": history_id,
+            },
+        )
+        self.assertEqual("pinboard-correction-context/v2", context["schema"])
+        self.assertEqual("drifted", context["status"])
+        self.assertNotIn("current_untracked_paths", context)
+
     def test_native_correction_context_binds_fresh_review_before_dispatch(self) -> None:
         fixture = self.correction_fixture()
         (fixture.project / "architecture.md").write_text(

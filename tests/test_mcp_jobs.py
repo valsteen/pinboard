@@ -44,6 +44,7 @@ from pinboard.mcp import server as mcp_server
 from tests import test_correction_source_review, test_dispatch
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_advertised_tool
+from tests.support import JsonObject
 from tests.work_brief_support import CHECKPOINT_ID, ready_review
 
 
@@ -759,9 +760,46 @@ class McpJobsTest(CheckpointPackageSupport):
             self.assertEqual("REVIEW_JOB_INVALID", outcome.content["code"])
             store.assert_not_called()
 
+    def bind_path_bound_correction_review(
+        self, fixture: CheckpointFixture, history_id: int, choice: JsonObject
+    ) -> None:
+        context = call_advertised_tool(
+            "pinboard_correction_context",
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "correction_history_id": history_id,
+            },
+        )
+        self.assertEqual("pinboard-correction-context/v3", context["schema"])
+        self.assertEqual("drifted", context["status"])
+        self.assertEqual(["tests/test_only.py"], context["current_untracked_paths"])
+        choice["kind"] = "drifted-correction"
+        review = self.json_object(choice["brief_review"])
+        review.update(
+            {
+                "schema": "pinboard-correction-source-review/v5",
+                "starting_candidate": context["starting_candidate"],
+                "correction_input": {"reason": context["correction_reason"]},
+                "current_candidate": context["current_candidate"],
+                "current_untracked_paths": context["current_untracked_paths"],
+            }
+        )
+
+    def assert_changed_path_binding_rejected(self, fixture: CheckpointFixture, choice: JsonObject) -> None:
+        changed = deepcopy(choice)
+        self.json_object(changed["brief_review"])["current_untracked_paths"] = []
+        before = fixture.store.validated_snapshot()
+        rejected = mcp_jobs._dispatch_job(
+            str(fixture.project), str(fixture.work), changed, mcp_execution.CancellationToken()
+        )
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected.content["code"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
+
     def test_correction_dispatch_requires_current_return_and_fresh_independent_review(self) -> None:
         fixture = self.checkpoint_fixture()
-        payload = fixture.project / "return.json"
+        payload = fixture.work / "return.json"
         payload.write_text('{"reason":"Revalidate the changed authority."}', encoding="utf-8")
         receipt = self.transition_json(fixture, self.project_action(fixture, "return-for-correction:work-a-1"), payload)
         correction_history_id = receipt["history_id"]
@@ -773,6 +811,7 @@ class McpJobsTest(CheckpointPackageSupport):
                 fixture, "actual-mcp-correction", committed=False
             )
         )
+        self.bind_path_bound_correction_review(fixture, correction_history_id, actual_choice)
         checkpoint = fixture.brief.checkpoint
         assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
         reviewed_authorities: list[work_brief_models.ReviewedAuthority] = []
@@ -794,7 +833,7 @@ class McpJobsTest(CheckpointPackageSupport):
         )
         choice = msgspec.to_builtins(
             {
-                "kind": "correction",
+                "kind": "drifted-correction",
                 "receipt": {
                     "action_id": {"kind": "dispatch", "subject": "work-a-1"},
                     "subject_revision": action["subject_revision"],
@@ -848,6 +887,7 @@ class McpJobsTest(CheckpointPackageSupport):
                         contracts.CorrectionDispatchChoice,
                         contracts.ReuseCorrectionDispatchChoice,
                         contracts.LocalCorrectionDispatchChoice,
+                        contracts.DriftedCorrectionDispatchChoice,
                     ),
                 )
                 self.assertEqual(
@@ -873,12 +913,12 @@ class McpJobsTest(CheckpointPackageSupport):
             str(fixture.project), str(fixture.work), local_shape, mcp_execution.CancellationToken()
         )
         self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", wrong_family.content["code"])
-        self.assertEqual(before, fixture.store.validated_snapshot())
         stale = mcp_jobs._dispatch_job(
             str(fixture.project), str(fixture.work), stale_choice, mcp_execution.CancellationToken()
         )
         self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", stale.content["code"])
         self.assertEqual(before, fixture.store.validated_snapshot())
+        self.assert_changed_path_binding_rejected(fixture, choice)
         ready = mcp_jobs._dispatch_job(
             str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
         )

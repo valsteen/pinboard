@@ -1,0 +1,30 @@
+{
+  "name": "bounded-local-closure",
+  "scenarios": [
+    {
+      "id": "s35-authorized-local-cleanup-stop",
+      "sha256": "b697eae15386083223600b52c0729ca0e11fc80b7b647ff9e0731ef98df65536"
+    },
+    {
+      "id": "s36-narrowed-closure-effects",
+      "sha256": "f5ca30c6edc9538ffbdf5b4726bc087a9870dd1fdd6174991ad7162ba0d35840"
+    },
+    {
+      "id": "s37-still-typing-then-ready",
+      "sha256": "f9455a178759b487243a03bdb0b31d9538d6217d3ea05ff687586a657f068c46"
+    },
+    {
+      "id": "s38-closure-without-ready-evidence",
+      "sha256": "6cc4a56115dc3932296c20a193de7289f42887a55ab89f5b017becab48d89c25"
+    },
+    {
+      "id": "s39-merged-status-only-stop",
+      "sha256": "9010423e6f3b10f5ec275df94cd3ff19dd0056a117b34056cd6138d2ddd4dc7d"
+    }
+  ],
+  "targeted_rules": [
+    "P8",
+    "P11",
+    "N1"
+  ]
+}

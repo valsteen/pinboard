@@ -1,0 +1,53 @@
+skills/pinboard/references/preparation-and-dispatch.md
+  s_50a3886b7e6b61::t_493d3209b23ff8 53
+ARCHITECTURE.md
+  s_50a3886b7e6b61::t_de821cf5d5d314 407
+  s_50a3886b7e6b61::t_4801a6ce480869 267
+  s_50a3886b7e6b61::t_4651674a669e39 405,413
+src/pinboard/adapters/dispatch_operations.py
+  s_50a3886b7e6b61::t_eba5f2e23a39b9 234,1241-1266,1268-1270,1272-1273
+  s_50a3886b7e6b61::t_a06044562f7208 1073,1283
+  s_50a3886b7e6b61::t_1874809d9442b6 1082-1090,1149-1150,1158-1179,1186,1189,1192,1202-1203,1206,1210,1212-1213,1215-1217,1227,1230
+  s_50a3886b7e6b61::t_5b2047a357eb8e 1148,1211,1214,1218,1267
+  s_50a3886b7e6b61::t_a0db47b7d167be 212-216
+  s_50a3886b7e6b61::t_be051cabe3ddaa 1059
+  s_50a3886b7e6b61::t_414988952a276b 211,230,235-236,239-243,263,269
+  s_50a3886b7e6b61::t_605189bd6b7529 224,270-274
+  s_50a3886b7e6b61::t_436d7afcbc7209 520-531,1384-1390,1422
+  s_50a3886b7e6b61::t_893b79769fdfad 1050-1058,1060-1063,1079-1081,1155-1157
+  s_50a3886b7e6b61::t_eacf68ef8c9b08 231-233
+src/pinboard/mcp/read_operations.py
+  s_50a3886b7e6b61::t_bab045a66f6824 366-376,383,395
+  s_50a3886b7e6b61::t_a495aca62c24ae 381-382,393-394,396-399
+src/pinboard/application/work_brief_models.py
+  s_50a3886b7e6b61::t_4b06597e8a70f2 869
+  s_50a3886b7e6b61::t_88bed70681acf4 880,890,901
+  s_50a3886b7e6b61::t_97ae92bd20d153 881,891,902
+  s_50a3886b7e6b61::t_e7869231b00350 871,877-878
+  s_50a3886b7e6b61::t_3010271078f419 882-884
+  s_50a3886b7e6b61::t_ab8e4e208bca71 889
+src/pinboard/mcp/server.py
+  s_50a3886b7e6b61::t_cb770cdee40b49 484-487,691-696,721-722,724-728
+src/pinboard/mcp/contracts.py
+  s_50a3886b7e6b61::t_e8bdbca7d82625 1876-1882,1918,1926
+  s_50a3886b7e6b61::t_5e411f4e39c798 1875,1885,1903
+  s_50a3886b7e6b61::t_aa85c6c752e5f2 1883-1884
+skills/pinboard/references/runtime-adapters.md
+  s_50a3886b7e6b61::t_493d3209b23ff8 65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "bd2b4d2d984aae7bdcfffc9a2b631b499df6f729",
+  "prompts": {},
+  "sessions": {
+    "s_50a3886b7e6b61": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a139e7-a27c-7810-b6e1-3eedc9547248",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Vincent Alsteen <vincent.alsteen@deliveryhero.com>"
+    }
+  }
+}

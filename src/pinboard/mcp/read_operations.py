@@ -363,25 +363,49 @@ def _read_correction_context(
             snapshot_view = contracts.CorrectionSnapshotV1(*snapshot_fields)
         case _ as unreachable:
             assert_never(unreachable)
-    result = contracts.CorrectionContextReady(
-        "pinboard-correction-context/v1",
-        "ready",
-        request.attempt_id,
-        request.correction_history_id,
-        context.correction_reason,
-        brief,
-        hashlib.sha256(work_briefs.canonical_work_brief_bytes(brief)).hexdigest(),
-        hashlib.sha256(work_briefs.canonical_checkpoint_bytes(checkpoint)).hexdigest(),
-        reviewed_set_sha256,
-        context.starting_candidate,
-        snapshot_view,
-        context.reuse_eligible,
-        context.reuse_blockers,
-        False,
-        "unchanged",
-        "safe-to-repeat",
-        (),
-    )
+    if context.drifted_candidate is None:
+        result = contracts.CorrectionContextReady(
+            "pinboard-correction-context/v1",
+            "ready",
+            request.attempt_id,
+            request.correction_history_id,
+            context.correction_reason,
+            brief,
+            hashlib.sha256(work_briefs.canonical_work_brief_bytes(brief)).hexdigest(),
+            hashlib.sha256(work_briefs.canonical_checkpoint_bytes(checkpoint)).hexdigest(),
+            reviewed_set_sha256,
+            context.starting_candidate,
+            snapshot_view,
+            context.reuse_eligible,
+            context.reuse_blockers,
+            False,
+            "unchanged",
+            "safe-to-repeat",
+            (),
+        )
+    else:
+        result = contracts.CorrectionContextDrifted(
+            "pinboard-correction-context/v2",
+            "drifted",
+            request.attempt_id,
+            request.correction_history_id,
+            context.correction_reason,
+            brief,
+            hashlib.sha256(work_briefs.canonical_work_brief_bytes(brief)).hexdigest(),
+            hashlib.sha256(work_briefs.canonical_checkpoint_bytes(checkpoint)).hexdigest(),
+            reviewed_set_sha256,
+            context.starting_candidate,
+            snapshot_view,
+            context.drifted_candidate.identity,
+            context.drifted_candidate.preimage_revision,
+            base64.b64encode(context.drifted_candidate.diff).decode("ascii"),
+            context.reuse_eligible,
+            context.reuse_blockers,
+            False,
+            "unchanged",
+            "safe-to-repeat",
+            (),
+        )
     token.checkpoint()
     content = msgspec.to_builtins(result)
     assert isinstance(content, dict)

@@ -478,7 +478,14 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=CORRECTION_CONTEXT_TOOL,
-        description="Read the exact effective correction brief, accepted starting snapshot, and advisory coverage-reuse eligibility and blockers for a current returned candidate; dispatch rechecks every fact and this read changes no state.",
+        description=(
+            "Read the effective correction brief, accepted returned snapshot, and advisory coverage-reuse status. "
+            "Schema pinboard-correction-context/v1 means the checkout matches the returned candidate. "
+            "Schema pinboard-correction-context/v2 with status drifted supplies the current tracked diff and its "
+            "identity when branch and HEAD remain exact and the untracked path set matches the snapshot's declared "
+            "exclusions. Use a drifted correction review bound to both candidates; dispatch rechecks every fact. "
+            "This read changes no state."
+        ),
     )
     async def correction_context(
         project_root: str,
@@ -651,7 +658,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         description=(
             "Publish verified Pinboard worker launch instructions; creates no worker or worker authority. "
             "Arguments are project_root, work_root and dispatch (no request wrapper). Unknown fields reject.\n"
-            "All five dispatch leaves require kind, receipt, checkpoint_id, environment and prompt. "
+            "All eight worker-dispatch leaves require kind, receipt, checkpoint_id, environment and prompt. "
             "receipt contains ONLY action_id:{kind:'dispatch',subject:<attempt_id>} and subject_revision "
             "copied from the fresh project dispatch action returned by pinboard_actions, not the whole action. "
             "checkpoint_id is the accepted brief's stable checkpoint ID. Use explicit prompt:null for "
@@ -670,7 +677,19 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "kind:'reuse-correction' takes the same correction fields with brief_review:<ReusedCoverageCorrectionReview> "
             "only when the accepted brief, every reviewed source, and accepted ready review are unchanged. "
             "kind:'local-correction' takes the same correction fields with "
-            "brief_review:<LocalCorrectionSourceReview> for a local checkpoint.\n"
+            "brief_review:<LocalCorrectionSourceReview> for a local checkpoint. These exact-checkout leaves "
+            "require the current checkout to match the returned candidate.\n"
+            "When correction context returns schema:'pinboard-correction-context/v2', status:'drifted', use one "
+            "drifted leaf instead. kind:'drifted-correction' requires "
+            "brief_review:<DriftedCorrectionSourceReview> with schema:'pinboard-correction-source-review/v3', "
+            "a full current effective contract_review, exact starting_candidate and correction_input, a concrete "
+            "assessment, and current_candidate copied from the context. kind:'drifted-reuse-correction' uses "
+            "brief_review:<DriftedReusedCoverageCorrectionReview> with schema:'pinboard-correction-source-review/v4' "
+            "only when accepted ready coverage is unchanged. kind:'drifted-local-correction' uses "
+            "brief_review:<DriftedLocalCorrectionSourceReview> with schema:'pinboard-local-correction-source-review/v2'. "
+            "Each record names the exact returned snapshot and reason plus the assessed current_candidate. Current "
+            "identity must still match at dispatch; do not restore the returned candidate. A branch, HEAD or "
+            "untracked-path change uses the existing recovery path.\n"
             "WorkBriefReview requires schema:'pinboard-work-brief-review/v3', attempt_id, checkpoint_id, "
             "accepted_brief_sha256, checkpoint_sha256, reviewed_authority_set_sha256, reviewer_task_id, status:'complete', "
             "verdict:'ready', and nonempty coverage. Bind the current checkpoint and ordered reviewed "
@@ -694,6 +713,13 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "accepted_brief_sha256:<exact accepted brief digest>, reviewer_task_id:<independent task>, "
             "starting_candidate:<exact accepted candidate identity>, "
             "correction_input:{reason:<exact selected correction reason>}, and assessment:<nonempty JSON string containing independent candidate-bound prose>.\n"
+            "DriftedCorrectionSourceReview requires schema:'pinboard-correction-source-review/v3' and the same "
+            "full-contract fields plus current_candidate:'working-tree-state-sha256:<64 lowercase hex>'. "
+            "DriftedReusedCoverageCorrectionReview requires schema:'pinboard-correction-source-review/v4' and the "
+            "same accepted-coverage fields plus current_candidate. DriftedLocalCorrectionSourceReview requires "
+            "schema:'pinboard-local-correction-source-review/v2' and the same local fields plus current_candidate. "
+            "Each drifted review must be newly commissioned and independently assess the returned and current "
+            "candidate together.\n"
             "The negotiated strict schema and decoder remain authoritative. Dispatch publication may "
             "change immutable-artifact, accepted-artifact-reference and ledger surfaces, never lifecycle "
             "or worker authority; honor returned effect/retry facts. On ready, call the exact returned "

@@ -236,13 +236,16 @@ def canonical_correction_source_review_bytes(
         work_brief_models.CorrectionSourceReview
         | work_brief_models.ReusedCoverageCorrectionReview
         | work_brief_models.LocalCorrectionSourceReview
+        | work_brief_models.DriftedCorrectionSourceReview
+        | work_brief_models.DriftedReusedCoverageCorrectionReview
+        | work_brief_models.DriftedLocalCorrectionSourceReview
     ),
 ) -> bytes:
     return _canonical_bytes(review) + b"\n"
 
 
 def validate_reused_coverage_correction_review(
-    review: work_brief_models.ReusedCoverageCorrectionReview,
+    review: work_brief_models.ReusedCoverageCorrectionReview | work_brief_models.DriftedReusedCoverageCorrectionReview,
     brief: work_brief_models.WorkBrief,
 ) -> work_brief_models.WorkBriefFailure | None:
     if not isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
@@ -264,7 +267,7 @@ def validate_reused_coverage_correction_review(
 
 
 def validate_local_correction_source_review(
-    review: work_brief_models.LocalCorrectionSourceReview,
+    review: work_brief_models.LocalCorrectionSourceReview | work_brief_models.DriftedLocalCorrectionSourceReview,
     brief: work_brief_models.WorkBrief,
 ) -> work_brief_models.WorkBriefFailure | None:
     if not isinstance(brief.checkpoint, work_brief_models.LocalCheckpoint):

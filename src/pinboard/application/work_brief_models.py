@@ -65,6 +65,7 @@ type WorkBriefJsonValue = bool | int | float | str | list[WorkBriefJsonValue] | 
 
 type NonEmptyText = Annotated[str, msgspec.Meta(min_length=1)]
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A\S(?:[^\n]*\S)?\z")]
+type WorkingTreeCandidateIdentity = Annotated[str, msgspec.Meta(pattern=r"\Aworking-tree-state-sha256:[0-9a-f]{64}\z")]
 type KebabId = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
 type Sha256 = Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
 type PositiveInt = Annotated[int, msgspec.Meta(ge=1)]
@@ -778,6 +779,11 @@ class PortableArtifactIdentity(msgspec.Struct, frozen=True, forbid_unknown_field
     size_bytes: NonNegativeInt
 
 
+def require_candidate_evidence_identity(identity: PortableArtifactIdentity, message: str) -> None:
+    if (identity.role, identity.kind) != ("candidate", "evidence"):
+        raise ValueError(message)
+
+
 class CandidateReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """A ready verdict recorded for the reviewer that one Pinboard-published reviewer prompt commissioned.
 
@@ -823,8 +829,9 @@ class CorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fields=
     assessment: NonEmptyText
 
     def __post_init__(self) -> None:
-        if (self.starting_candidate.role, self.starting_candidate.kind) != ("candidate", "evidence"):
-            raise ValueError("Correction review requires one accepted candidate Evidence identity.")
+        require_candidate_evidence_identity(
+            self.starting_candidate, "Correction review requires one accepted candidate Evidence identity."
+        )
 
 
 class ReusedCoverageCorrectionReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -838,8 +845,9 @@ class ReusedCoverageCorrectionReview(msgspec.Struct, frozen=True, forbid_unknown
     assessment: NonEmptyText
 
     def __post_init__(self) -> None:
-        if (self.starting_candidate.role, self.starting_candidate.kind) != ("candidate", "evidence"):
-            raise ValueError("Correction review requires one accepted candidate Evidence identity.")
+        require_candidate_evidence_identity(
+            self.starting_candidate, "Correction review requires one accepted candidate Evidence identity."
+        )
 
 
 class LocalCorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -853,8 +861,60 @@ class LocalCorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fi
     assessment: NonEmptyText
 
     def __post_init__(self) -> None:
-        if (self.starting_candidate.role, self.starting_candidate.kind) != ("candidate", "evidence"):
-            raise ValueError("Local correction review requires one accepted candidate Evidence identity.")
+        require_candidate_evidence_identity(
+            self.starting_candidate, "Local correction review requires one accepted candidate Evidence identity."
+        )
+
+
+class DriftedCorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Independent full contract assessment bound to the returned and current tracked candidates."""
+
+    schema: Literal["pinboard-correction-source-review/v3"]
+    contract_review: WorkBriefReview
+    starting_candidate: PortableArtifactIdentity
+    correction_input: action_models.ReasonInputPayload
+    assessment: NonEmptyText
+    current_candidate: WorkingTreeCandidateIdentity
+
+    def __post_init__(self) -> None:
+        require_candidate_evidence_identity(
+            self.starting_candidate, "Drifted correction review requires one accepted candidate Evidence identity."
+        )
+
+
+class DriftedReusedCoverageCorrectionReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Independent candidate assessment retaining exact accepted ready coverage."""
+
+    schema: Literal["pinboard-correction-source-review/v4"]
+    accepted_brief_sha256: Sha256
+    reviewer_task_id: NonEmptyLine
+    starting_candidate: PortableArtifactIdentity
+    correction_input: action_models.ReasonInputPayload
+    assessment: NonEmptyText
+    current_candidate: WorkingTreeCandidateIdentity
+
+    def __post_init__(self) -> None:
+        require_candidate_evidence_identity(
+            self.starting_candidate, "Drifted correction review requires one accepted candidate Evidence identity."
+        )
+
+
+class DriftedLocalCorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Independent local assessment bound to the returned and current tracked candidates."""
+
+    schema: Literal["pinboard-local-correction-source-review/v2"]
+    accepted_brief_sha256: Sha256
+    reviewer_task_id: NonEmptyLine
+    starting_candidate: PortableArtifactIdentity
+    correction_input: action_models.ReasonInputPayload
+    assessment: NonEmptyText
+    current_candidate: WorkingTreeCandidateIdentity
+
+    def __post_init__(self) -> None:
+        require_candidate_evidence_identity(
+            self.starting_candidate,
+            "Drifted local correction review requires one accepted candidate Evidence identity.",
+        )
 
 
 class LocalReviewBasis(

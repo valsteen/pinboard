@@ -703,6 +703,28 @@ class LocalCorrectionDispatchChoice(DispatchChoiceBase, tag="local-correction", 
     correction_history_id: PositiveInt
 
 
+class DriftedCorrectionDispatchChoice(DispatchChoiceBase, tag="drifted-correction", tag_field="kind", frozen=True):
+    brief_review: work_brief_models.DriftedCorrectionSourceReview
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
+class DriftedReuseCorrectionDispatchChoice(
+    DispatchChoiceBase, tag="drifted-reuse-correction", tag_field="kind", frozen=True
+):
+    brief_review: work_brief_models.DriftedReusedCoverageCorrectionReview
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
+class DriftedLocalCorrectionDispatchChoice(
+    DispatchChoiceBase, tag="drifted-local-correction", tag_field="kind", frozen=True
+):
+    brief_review: work_brief_models.DriftedLocalCorrectionSourceReview
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
 class ReplacementReadinessChoice(
     msgspec.Struct, tag="replacement-readiness", tag_field="kind", frozen=True, forbid_unknown_fields=True
 ):
@@ -720,6 +742,9 @@ type DispatchChoice = (
     | CorrectionDispatchChoice
     | ReuseCorrectionDispatchChoice
     | LocalCorrectionDispatchChoice
+    | DriftedCorrectionDispatchChoice
+    | DriftedReuseCorrectionDispatchChoice
+    | DriftedLocalCorrectionDispatchChoice
     | ReplacementReadinessChoice
 )
 
@@ -1872,6 +1897,34 @@ class CorrectionContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forb
             raise ValueError("Correction reuse eligibility and blockers disagree.")
 
 
+class CorrectionContextDrifted(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-correction-context/v2"]
+    status: Literal["drifted"]
+    attempt_id: PathComponent
+    correction_history_id: PositiveInt
+    correction_reason: NonEmptyText
+    effective_brief: work_brief_models.WorkBrief
+    effective_brief_sha256: Sha256
+    checkpoint_sha256: Sha256
+    reviewed_authority_set_sha256: Sha256 | None
+    starting_candidate: work_brief_models.PortableArtifactIdentity
+    starting_snapshot: CorrectionSnapshot
+    current_candidate: work_brief_models.WorkingTreeCandidateIdentity
+    current_preimage_revision: NonEmptyText
+    current_diff_base64: str
+    reuse_eligible: bool
+    reuse_blockers: tuple[NonEmptyText, ...]
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.reuse_eligible == bool(self.reuse_blockers):
+            raise ValueError("Correction reuse eligibility and blockers disagree.")
+
+
 class CorrectionContextRejected(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-correction-context/v1"]
     code: NonEmptyText
@@ -1957,7 +2010,12 @@ class ExecutorBusyResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
 
 
 PR_REVIEW_RESULT_TYPES = (PrReviewSuccess, PrReviewRejected, ExecutorBusyResult)
-CORRECTION_CONTEXT_RESULT_TYPES = (CorrectionContextReady, CorrectionContextRejected, ExecutorBusyResult)
+CORRECTION_CONTEXT_RESULT_TYPES = (
+    CorrectionContextReady,
+    CorrectionContextDrifted,
+    CorrectionContextRejected,
+    ExecutorBusyResult,
+)
 
 
 class WarningResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

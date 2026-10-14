@@ -320,6 +320,9 @@ def _dispatch_job(  # noqa: PLR0912 - distinct readiness publication and worker 
             contracts.CorrectionDispatchChoice()
             | contracts.ReuseCorrectionDispatchChoice()
             | contracts.LocalCorrectionDispatchChoice()
+            | contracts.DriftedCorrectionDispatchChoice()
+            | contracts.DriftedReuseCorrectionDispatchChoice()
+            | contracts.DriftedLocalCorrectionDispatchChoice()
         ):
             preparation_choice = dispatch_operations.CorrectionDispatch(
                 choice.brief_review, ReviewId(choice.review_id), HistoryId(choice.correction_history_id)

@@ -1,0 +1,48 @@
+src/pinboard/mcp/server.py
+  s_50a3886b7e6b61::t_c5ded5fcc1a456 695-696,733,735
+  s_50a3886b7e6b61::t_e57e404f11e629 484-488,685,692-694,697-701,727,729,731-732,734,736-740
+src/pinboard/adapters/dispatch_operations.py
+  s_50a3886b7e6b61::t_2bb5fcb77e0b3d 204,206,208,239-245,285-293
+  s_50a3886b7e6b61::t_a9bebd3ca264a1 253-255,1455
+  s_50a3886b7e6b61::t_8c5c11ec0ec356 264,266,268,549-554
+  s_50a3886b7e6b61::t_8e4a4251a6d603 246,256,295
+  s_50a3886b7e6b61::t_a1b061a836d340 1295,1420,1422,1424,1433-1435,1443,1456-1458
+  s_50a3886b7e6b61::t_b30c2c2e56afa6 1572,1581-1582,1615,1627,1633,1770,1781-1782,1853-1855,1870,1880-1882
+  s_50a3886b7e6b61::t_84100156aa462d 1211-1233,1263
+  s_50a3886b7e6b61::t_34ac4dd7c65c2d 294
+src/pinboard/mcp/read_operations.py
+  s_50a3886b7e6b61::t_1b0821c68417db 390,398-424
+  s_50a3886b7e6b61::t_a9bebd3ca264a1 395-397
+skills/pinboard/references/preparation-and-dispatch.md
+  s_50a3886b7e6b61::t_72cd7185464df6 53
+ARCHITECTURE.md
+  s_50a3886b7e6b61::t_2d014ca2f5db54 405
+  s_50a3886b7e6b61::t_e45ae08ae1f89b 267,407
+  s_50a3886b7e6b61::t_fef631ab59fec5 488
+src/pinboard/application/work_brief_models.py
+  s_50a3886b7e6b61::t_a9bebd3ca264a1 896-898
+  s_50a3886b7e6b61::t_099d7fb11dcdea 901,924
+  s_50a3886b7e6b61::t_a12bda7a923f95 876-882,887,899-900,909,919-923,933,943-948
+  s_50a3886b7e6b61::t_334d8633dd24b8 902-907,925-931,949-955
+src/pinboard/mcp/contracts.py
+  s_50a3886b7e6b61::t_8b601baf333ab2 717-720,728-731,1926-1946,2046
+  s_50a3886b7e6b61::t_a9bebd3ca264a1 707-709
+src/pinboard/application/work_briefs.py
+  s_50a3886b7e6b61::t_01feeb95b13363 240,242,244,251-255,277-281
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "4e633ff126bd8fb7b97c91ad7a090e75e9097126",
+  "prompts": {},
+  "sessions": {
+    "s_50a3886b7e6b61": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a139e7-a27c-7810-b6e1-3eedc9547248",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Vincent Alsteen <vincent.alsteen@deliveryhero.com>"
+    }
+  }
+}

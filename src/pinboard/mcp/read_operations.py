@@ -326,19 +326,20 @@ def _read_correction_context(
         resolve_source_checkout_root(Path(request.project_root)),
         AttemptId(request.attempt_id),
         HistoryId(request.correction_history_id),
+        dispatch_operations.ReturnedCorrectionStart(),
     )
     if isinstance(context, dispatch_operations.DispatchFailure):
         return common._read_failure(
             "pinboard-correction-context/v1", context.code.value, context.message, context.details
         )
-    brief = context.effective_brief
-    checkpoint = brief.checkpoint
-    reviewed_set_sha256 = (
-        hashlib.sha256(work_briefs.canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest()
-        if isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
-        else None
-    )
-    snapshot = context.starting_snapshot
+    result = _correction_context_view(context)
+    token.checkpoint()
+    content = msgspec.to_builtins(result)
+    assert isinstance(content, dict)
+    return execution.OperationResult(content, "read", None)
+
+
+def _correction_snapshot_view(snapshot: candidate_snapshots.CandidateSnapshot) -> contracts.CorrectionSnapshot:
     snapshot_fields = (
         candidate_snapshots.candidate_kind(snapshot),
         snapshot.attempt_id,
@@ -363,11 +364,44 @@ def _read_correction_context(
             snapshot_view = contracts.CorrectionSnapshotV1(*snapshot_fields)
         case _ as unreachable:
             assert_never(unreachable)
-    result = contracts.CorrectionContextReady(
-        "pinboard-correction-context/v1",
-        "ready",
-        request.attempt_id,
-        request.correction_history_id,
+    return snapshot_view
+
+
+def _correction_context_view(context: dispatch_operations.CorrectionContext) -> contracts.CorrectionContextReady:
+    evidence = _correction_review_evidence(context)
+    return contracts.CorrectionContextReady(
+        schema="pinboard-correction-context/v1",
+        status="ready",
+        attempt_id=evidence.attempt_id,
+        correction_history_id=evidence.correction_history_id,
+        correction_reason=evidence.correction_reason,
+        effective_brief=evidence.effective_brief,
+        effective_brief_sha256=evidence.effective_brief_sha256,
+        checkpoint_sha256=evidence.checkpoint_sha256,
+        reviewed_authority_set_sha256=evidence.reviewed_authority_set_sha256,
+        starting_candidate=evidence.starting_candidate,
+        starting_snapshot=evidence.starting_snapshot,
+        reuse_eligible=evidence.reuse_eligible,
+        reuse_blockers=evidence.reuse_blockers,
+        state_changed=False,
+        effect="unchanged",
+        retry="safe-to-repeat",
+        changed_surfaces=(),
+    )
+
+
+def _correction_review_evidence(context: dispatch_operations.CorrectionContext) -> contracts.CorrectionReviewEvidence:
+    brief = context.effective_brief
+    checkpoint = brief.checkpoint
+    reviewed_set_sha256 = (
+        hashlib.sha256(work_briefs.canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)).hexdigest()
+        if isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        else None
+    )
+    snapshot_view = _correction_snapshot_view(context.starting_snapshot)
+    return contracts.CorrectionReviewEvidence(
+        context.effective_brief.attempt_id,
+        context.correction_history_id,
         context.correction_reason,
         brief,
         hashlib.sha256(work_briefs.canonical_work_brief_bytes(brief)).hexdigest(),
@@ -377,13 +411,72 @@ def _read_correction_context(
         snapshot_view,
         context.reuse_eligible,
         context.reuse_blockers,
-        False,
-        "unchanged",
-        "safe-to-repeat",
-        (),
     )
+
+
+def _read_return_context(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     token.checkpoint()
-    content = msgspec.to_builtins(result)
+    schema = "pinboard-return-context/v1"
+    try:
+        request = msgspec.convert(raw, type=contracts.ReturnContextRequest, strict=True)
+        durable = common._resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return common._read_failure(schema, ProducerOnlyCode.RETURN_CONTEXT_INVALID.value, str(error), None)
+    store = common.compose_store(durable)
+    artifacts = ArtifactRepository(durable)
+    history_id = HistoryId(request.selection.return_history_id)
+    evidence = dispatch_operations.read_returned_evidence(store, artifacts, AttemptId(request.attempt_id), history_id)
+    if isinstance(evidence, dispatch_operations.DispatchFailure):
+        return common._read_failure(schema, evidence.code.value, evidence.message, evidence.details)
+    receipt = evidence.receipt
+    receipt_view = contracts.ReturnReceiptEvidence(
+        receipt.history_id,
+        receipt.project_revision,
+        receipt.action_id,
+        "return-for-correction",
+        receipt.subject_id,
+        None,
+        "project",
+        "return-for-correction/v1",
+        bytes(receipt.input_payload).decode(),
+        "transition-receipt/v1",
+        bytes(receipt.outcome_payload).decode(),
+        receipt.actor_task_id,
+        receipt.actor_host_id,
+        receipt.committed_at.isoformat(),
+    )
+    selected: contracts.HistoricalReturnContext | contracts.CurrentCandidateReturnContext
+    match request.selection:
+        case contracts.HistoricalReturnSelection():
+            selected = contracts.HistoricalReturnContext(
+                receipt_view, evidence.reason, evidence.identity, _correction_snapshot_view(evidence.snapshot)
+            )
+        case contracts.CurrentCandidateReturnSelection():
+            source_checkout = resolve_source_checkout_root(Path(request.project_root))
+            binding = dispatch_operations.observe_correction_candidate(source_checkout)
+            if isinstance(binding, dispatch_operations.DispatchFailure):
+                return common._read_failure(schema, binding.code.value, binding.message, binding.details)
+            correction = dispatch_operations.read_correction_context(
+                store,
+                artifacts,
+                source_checkout,
+                AttemptId(request.attempt_id),
+                history_id,
+                dispatch_operations.ReviewedCurrentCorrectionStart(binding),
+            )
+            if isinstance(correction, dispatch_operations.DispatchFailure):
+                return common._read_failure(schema, correction.code.value, correction.message, correction.details)
+            selected = contracts.CurrentCandidateReturnContext(
+                receipt_view, _correction_review_evidence(correction), binding
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    token.checkpoint()
+    content = msgspec.to_builtins(
+        contracts.ReturnContextReady(
+            schema, "ready", request.attempt_id, selected, False, "unchanged", "safe-to-repeat", ()
+        )
+    )
     assert isinstance(content, dict)
     return execution.OperationResult(content, "read", None)
 

@@ -194,6 +194,24 @@ class OrdinaryDispatch:
 
 
 @dataclass(frozen=True, slots=True)
+class ReturnedCorrectionStart:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedCurrentCorrectionStart:
+    binding: work_brief_models.CorrectionCandidateBinding
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnedEvidence:
+    receipt: stored_state.StoredTransitionReceipt
+    identity: work_brief_models.PortableArtifactIdentity
+    snapshot: candidate_snapshots.CandidateSnapshot
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class CorrectionDispatch:
     review: (
         work_brief_models.CorrectionSourceReview
@@ -202,6 +220,17 @@ class CorrectionDispatch:
     )
     review_id: ReviewId
     correction_history_id: HistoryId
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentCandidateCorrectionDispatch:
+    review: work_brief_models.CorrectionSourceReview | work_brief_models.LocalCorrectionSourceReview
+    review_id: ReviewId
+    correction_history_id: HistoryId
+    binding: work_brief_models.CorrectionCandidateBinding
+
+
+type CorrectionPreparation = CorrectionDispatch | CurrentCandidateCorrectionDispatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,7 +260,9 @@ class ReplacementReadinessProof(msgspec.Struct, frozen=True, forbid_unknown_fiel
     current_candidate: work_brief_models.NonEmptyLine
 
 
-type DispatchPreparationChoice = OrdinaryDispatch | ReviewedDispatch | CorrectionDispatch
+type DispatchPreparationChoice = (
+    OrdinaryDispatch | ReviewedDispatch | CorrectionDispatch | CurrentCandidateCorrectionDispatch
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -452,9 +483,16 @@ def _canonical_prompt(
         f"- Selected return history ID: {choice.correction_history_id}\n"
         f"- Canonical return reason (JSON string): {msgspec.json.encode(choice.review.correction_input.reason).decode()}\n"
         f"- Read current review evidence before editing: {work_root / 'attempts' / attempt_id / 'review.md'}\n\n"
-        if isinstance(choice, CorrectionDispatch)
+        if isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch))
         else ""
     )
+    if isinstance(choice, CurrentCandidateCorrectionDispatch):
+        correction_context += (
+            "Independently assessed current starting checkout:\n"
+            f"- Canonical current candidate binding (JSON): {msgspec.json.encode(choice.binding, order='sorted').decode()}\n"
+            "Begin from this assessed current checkout. The original returned snapshot remains historical evidence; "
+            "omitted untracked content remains outside tracked candidate identity.\n\n"
+        )
     return (
         "Use $pinboard-deliver for this repository attempt.\n\n"
         f"Attempt: {attempt_id}\n"
@@ -866,6 +904,62 @@ def _validate_correction_history(
     return None
 
 
+def _starting_candidate_identity(
+    reference: stored_state.ArtifactReference,
+) -> work_brief_models.PortableArtifactIdentity:
+    return work_brief_models.PortableArtifactIdentity(
+        "candidate",
+        "evidence",
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+    )
+
+
+def read_returned_evidence(
+    store: WorkStore,
+    artifacts: DispatchArtifactPort,
+    attempt_id: AttemptId,
+    history_id: HistoryId,
+) -> DispatchResult[ReturnedEvidence]:
+    """Verify the selected original receipt and submission snapshot; no current authority or effects."""
+    facts = store.read_returned_candidate_context(attempt_id, history_id)
+    context = None if facts is None else facts.returned_candidate_snapshot
+    receipt = None if facts is None else facts.correction_receipt
+    if context is None or receipt is None:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+            "Selected return or its accepted submission snapshot is unavailable for this attempt. "
+            "Inspect the exact attempt and selected return identity before retrying.",
+            _fresh_review_details((FailureFact("selected_return_history_id", history_id),), ()),
+        )
+    outcome = checkpoint_packages.decode_correction_outcome(receipt, attempt_id)
+    if isinstance(outcome, DecisionFailure):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID, outcome.message, outcome.details
+        )
+    if outcome.evidence is None:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID, "Canonical return reason is unavailable.", None
+        )
+    try:
+        snapshot = candidate_snapshots.verify_candidate_snapshot_context(
+            context, outcome.candidate, artifacts.read(context.reference)
+        ).snapshot
+    except (ArtifactError, msgspec.DecodeError, ValueError) as error:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID,
+            f"Selected return {history_id} has invalid accepted snapshot evidence: {error}. "
+            "Report this selected evidence defect; do not reconstruct or overwrite historical bytes.",
+            _fresh_review_details((), ()),
+        )
+    reference = context.reference
+    identity = _starting_candidate_identity(reference)
+    return ReturnedEvidence(receipt, identity, snapshot, outcome.evidence)
+
+
 def _read_returned_snapshot(
     store: WorkStore,
     artifacts: DispatchArtifactPort,
@@ -874,49 +968,22 @@ def _read_returned_snapshot(
     identity: work_brief_models.PortableArtifactIdentity,
     reason: str,
 ) -> DispatchResult[candidate_snapshots.CandidateSnapshot]:
-    """Verify immutable historical submission and canonical return, independently of the current checkout."""
-    facts = store.read_review_job_context(AttemptId(brief.attempt_id), None, correction_history_id, None, None)
-    context = None if facts is None else facts.returned_candidate_snapshot
-    receipt = None if facts is None else facts.correction_receipt
-    if (
-        context is None
-        or receipt is None
-        or (
-            context.reference.key,
-            context.reference.revision,
-            context.reference.selector,
-            context.reference.content_sha256,
-            context.reference.size_bytes,
-        )
-        != (identity.key, identity.revision, identity.selector, identity.content_sha256, identity.size_bytes)
-    ):
+    evidence = read_returned_evidence(store, artifacts, AttemptId(brief.attempt_id), correction_history_id)
+    if isinstance(evidence, DispatchFailure):
+        return evidence
+    if identity != evidence.identity:
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
             "Returned snapshot does not match its exact accepted submission artifact identity.",
             _fresh_review_details((), ()),
         )
-    outcome = checkpoint_packages.decode_correction_outcome(receipt, brief.attempt_id)
-    if isinstance(outcome, DecisionFailure):
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID, outcome.message, outcome.details
-        )
-    try:
-        snapshot = candidate_snapshots.verify_candidate_snapshot_context(
-            context, outcome.candidate, artifacts.read(context.reference)
-        ).snapshot
-    except (msgspec.DecodeError, ValueError) as error:
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID,
-            f"Returned submission snapshot is invalid: {error}",
-            _fresh_review_details((), ()),
-        )
-    if reason != outcome.evidence:
+    if reason != evidence.reason:
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
             "Source review does not identify the canonical return reason.",
-            _fresh_review_details((), (FailureMismatch("correction_reason", outcome.evidence, reason),)),
+            _fresh_review_details((), (FailureMismatch("correction_reason", evidence.reason, reason),)),
         )
-    return snapshot
+    return evidence.snapshot
 
 
 def _validate_replacement_candidate(
@@ -1039,17 +1106,127 @@ def _read_correction_start(
     artifacts: DispatchArtifactPort,
     source_checkout_root: Path,
     brief: work_brief_models.WorkBrief,
-    choice: CorrectionDispatch,
+    choice: CorrectionPreparation,
 ) -> DispatchResult[candidate_snapshots.CandidateSnapshot]:
-    return _read_correction_snapshot(
-        store,
-        artifacts,
-        source_checkout_root,
-        brief,
-        choice.correction_history_id,
-        choice.review.starting_candidate,
-        choice.review.correction_input.reason,
+    match choice:
+        case CorrectionDispatch():
+            return _read_correction_snapshot(
+                store,
+                artifacts,
+                source_checkout_root,
+                brief,
+                choice.correction_history_id,
+                choice.review.starting_candidate,
+                choice.review.correction_input.reason,
+            )
+        case CurrentCandidateCorrectionDispatch(binding=binding):
+            snapshot = _read_returned_snapshot(
+                store,
+                artifacts,
+                brief,
+                choice.correction_history_id,
+                choice.review.starting_candidate,
+                choice.review.correction_input.reason,
+            )
+            if isinstance(snapshot, DispatchFailure):
+                return snapshot
+            if (
+                failure := _validate_current_correction_candidate(source_checkout_root, brief, snapshot, binding)
+            ) is not None:
+                return failure
+            return snapshot
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def observe_correction_candidate(
+    source_checkout_root: Path,
+) -> DispatchResult[work_brief_models.CorrectionCandidateBinding]:
+    current = root.read_working_tree_candidate(source_checkout_root)
+    omitted_paths = root.read_untracked_paths(source_checkout_root)
+    try:
+        return msgspec.convert(
+            {"candidate": current.identity, "omitted_untracked_paths": omitted_paths},
+            type=work_brief_models.CorrectionCandidateBinding,
+            strict=True,
+        )
+    except (msgspec.ValidationError, ValueError) as error:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_CHECKOUT_MISMATCH,
+            f"Omitted checkout path names cannot form a canonical correction binding: {error}. "
+            "Use pinboard_candidate_observe with this attempt and the same roots to inspect the exact omitted names before reassessment.",
+            _fresh_review_details(
+                (FailureFact("omitted_untracked_paths", msgspec.json.encode(omitted_paths).decode()),), ()
+            ),
+        )
+
+
+def _validate_current_correction_candidate(
+    source_checkout_root: Path,
+    brief: work_brief_models.WorkBrief,
+    snapshot: candidate_snapshots.CandidateSnapshot,
+    binding: work_brief_models.CorrectionCandidateBinding,
+) -> DispatchFailure | None:
+    """Allow reviewed diff/path drift while retaining the returned branch, HEAD and accepted base."""
+    branch, head = root.observe_checkout_identity(source_checkout_root)
+    current = observe_correction_candidate(source_checkout_root)
+    if isinstance(current, DispatchFailure):
+        return current
+    match snapshot:
+        case (
+            candidate_snapshots.WorkingTreeCandidateSnapshot()
+            | candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot()
+        ):
+            expected_head = snapshot.preimage_revision
+        case candidate_snapshots.CommitCandidateSnapshot() | candidate_snapshots.DeclaredCommitCandidateSnapshot():
+            expected_head = snapshot.candidate
+        case _ as unreachable:
+            assert_never(unreachable)
+    mismatches = tuple(
+        value
+        for value in (
+            FailureMismatch("snapshot_branch", brief.branch, snapshot.branch),
+            FailureMismatch("snapshot_base", brief.base_revision, snapshot.accepted_base_revision),
+            FailureMismatch("checkout_branch", snapshot.branch, branch),
+            FailureMismatch("checkout_head", expected_head, head),
+            FailureMismatch("current_candidate", binding.candidate, current.candidate),
+            FailureMismatch(
+                "omitted_untracked_paths",
+                msgspec.json.encode(binding.omitted_untracked_paths).decode(),
+                msgspec.json.encode(current.omitted_untracked_paths).decode(),
+            ),
+        )
+        if value.expected != value.observed
     )
+    if mismatches:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+            "Current correction assessment no longer matches its candidate, omitted path names or returned Git lineage. "
+            "Read pinboard_return_context with current-candidate selection and obtain a fresh independent assessment.",
+            _fresh_review_details((), mismatches),
+        )
+    return None
+
+
+def _correction_review_bytes(choice: CorrectionPreparation) -> bytes:
+    match choice:
+        case CorrectionDispatch():
+            return canonical_correction_source_review_bytes(choice.review)
+        case CurrentCandidateCorrectionDispatch(binding=binding):
+            match choice.review:
+                case work_brief_models.CorrectionSourceReview():
+                    review = work_brief_models.CurrentCrossBoundaryCorrectionReview(
+                        "pinboard-current-correction-source-review/v1", choice.review, binding
+                    )
+                case work_brief_models.LocalCorrectionSourceReview():
+                    review = work_brief_models.CurrentLocalCorrectionReview(
+                        "pinboard-current-correction-source-review/v1", choice.review, binding
+                    )
+                case _ as unreachable:
+                    assert_never(unreachable)
+            return msgspec.json.encode(review, order="sorted") + b"\n"
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def read_correction_context(  # noqa: C901, PLR0912 - one read binds current return, brief and accepted snapshot
@@ -1058,6 +1235,7 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
     source_checkout_root: Path,
     attempt_id: AttemptId,
     correction_history_id: HistoryId,
+    start: ReturnedCorrectionStart | ReviewedCurrentCorrectionStart,
 ) -> DispatchResult[CorrectionContext]:
     """Read the exact effective source and returned candidate before independent review."""
     facts = store.read_review_job_context(attempt_id, None, correction_history_id, None, None)
@@ -1105,18 +1283,32 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
     if isinstance(effective_brief, DispatchFailure):
         return effective_brief
     reference = facts.returned_candidate_snapshot.reference
-    identity = work_brief_models.PortableArtifactIdentity(
-        "candidate",
-        "evidence",
-        reference.key,
-        reference.revision,
-        reference.selector,
-        reference.content_sha256,
-        reference.size_bytes,
-    )
-    snapshot = _read_correction_snapshot(
-        store, artifacts, source_checkout_root, effective_brief, correction_history_id, identity, outcome.evidence
-    )
+    identity = _starting_candidate_identity(reference)
+    match start:
+        case ReturnedCorrectionStart():
+            snapshot = _read_correction_snapshot(
+                store,
+                artifacts,
+                source_checkout_root,
+                effective_brief,
+                correction_history_id,
+                identity,
+                outcome.evidence,
+            )
+        case ReviewedCurrentCorrectionStart(binding=binding):
+            snapshot = _read_returned_snapshot(
+                store, artifacts, effective_brief, correction_history_id, identity, outcome.evidence
+            )
+            if isinstance(snapshot, DispatchFailure):
+                return snapshot
+            if (
+                failure := _validate_current_correction_candidate(
+                    source_checkout_root, effective_brief, snapshot, binding
+                )
+            ) is not None:
+                return failure
+        case _ as unreachable:
+            assert_never(unreachable)
     if isinstance(snapshot, DispatchFailure):
         return snapshot
     if isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
@@ -1249,7 +1441,12 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
             match choice:
                 case OrdinaryDispatch():
                     return None
-                case CorrectionDispatch(review=work_brief_models.LocalCorrectionSourceReview() as review):
+                case (
+                    CorrectionDispatch(review=work_brief_models.LocalCorrectionSourceReview() as review)
+                    | CurrentCandidateCorrectionDispatch(
+                        review=work_brief_models.LocalCorrectionSourceReview() as review
+                    )
+                ):
                     if (failure := validate_local_correction_source_review(review, brief)) is not None:
                         return review_failure(failure)
                     return PublishSuppliedDispatchReview(
@@ -1257,7 +1454,7 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
                         canonical_correction_source_review_bytes(review),
                         choice.review_id,
                     )
-                case ReviewedDispatch() | CorrectionDispatch():
+                case ReviewedDispatch() | CorrectionDispatch() | CurrentCandidateCorrectionDispatch():
                     return DispatchFailure(
                         DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
                         "Local checkpoints do not publish cross-boundary brief reviews.",
@@ -1279,7 +1476,7 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
                         canonical_correction_source_review_bytes(reused),
                         choice.review_id,
                     )
-                case CorrectionDispatch():
+                case CorrectionDispatch() | CurrentCandidateCorrectionDispatch():
                     if not isinstance(choice.review, work_brief_models.CorrectionSourceReview):
                         return DispatchFailure(
                             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
@@ -1295,7 +1492,7 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
                 return review_failure(failure)
             candidate = (
                 canonical_correction_source_review_bytes(choice.review)
-                if isinstance(choice, CorrectionDispatch)
+                if isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch))
                 else canonical_work_brief_review_bytes(review)
             )
             return PublishSuppliedDispatchReview(ready_review_key_sha256(brief), candidate, choice.review_id)
@@ -1387,7 +1584,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         str(selected_dispatch.attempt.work_item_id),
         selected_dispatch.attempt.accepted_scope_revision,
         selected_dispatch.attempt.accepted_scope_digest,
-        validate_original_authorities=not isinstance(choice, CorrectionDispatch),
+        validate_original_authorities=not isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch)),
     )
     if isinstance(validated_brief, DispatchFailure):
         return validated_brief
@@ -1400,7 +1597,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
     ) is not None:
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, None)
     reusable_ready_bytes: bytes | None = None
-    if isinstance(choice, CorrectionDispatch):
+    if isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch)):
         if (
             failure := _validate_correction_history(
                 store,
@@ -1423,13 +1620,16 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
     review_choice = _select_dispatch_review(validated_brief, choice)
     if isinstance(review_choice, DispatchFailure):
         return review_choice
-    if isinstance(choice, CorrectionDispatch):
+    if isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch)):
         assert isinstance(review_choice, PublishSuppliedDispatchReview)
         starting_snapshot = _read_correction_start(store, artifacts, source_checkout_root, validated_brief, choice)
         if isinstance(starting_snapshot, DispatchFailure):
             return starting_snapshot
+        review_subject = _correction_review_subject(choice.review, starting_snapshot)
+        if isinstance(choice, CurrentCandidateCorrectionDispatch):
+            review_subject = hashlib.sha256(msgspec.json.encode((review_subject, choice.binding))).hexdigest()
         review_choice = dataclass_replace(
-            review_choice, review_key_sha256=_correction_review_subject(choice.review, starting_snapshot)
+            review_choice, review_key_sha256=review_subject, candidate=_correction_review_bytes(choice)
         )
     accepted_review_bytes: bytes | None = None
     review_publication_selector: str | None = None
@@ -1481,8 +1681,28 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
     review_selector_facts = (
         (FailureFact("published_review_selector", review_publication_selector),) if review_publication_surfaces else ()
     )
-    if isinstance(choice, CorrectionDispatch):
-        assert accepted_review_bytes == canonical_correction_source_review_bytes(choice.review)
+    if isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch)):
+        current_history = _validate_correction_history(
+            store, attempt.attempt_id, attempt.subject_revision, choice.correction_history_id
+        )
+        if current_history is not None:
+            return _after_publication_failure(
+                current_history.code,
+                current_history.message,
+                review_publication_surfaces,
+                current_history.details,
+                review_selector_facts,
+            )
+        checked_start = _read_correction_start(store, artifacts, source_checkout_root, validated_brief, choice)
+        if isinstance(checked_start, DispatchFailure):
+            return _after_publication_failure(
+                checked_start.code,
+                checked_start.message,
+                review_publication_surfaces,
+                checked_start.details,
+                review_selector_facts,
+            )
+        assert accepted_review_bytes == _correction_review_bytes(choice)
         checkpoint_value = validated_brief.checkpoint
         if isinstance(choice.review, work_brief_models.LocalCorrectionSourceReview):
             if (failure := validate_local_correction_source_review(choice.review, validated_brief)) is not None:
@@ -1645,7 +1865,47 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             selected_failure.details,
             invocation_selector_facts,
         )
-    if isinstance(choice, CorrectionDispatch):
+    if isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch)):
+        checked_history = _validate_correction_history(
+            store, attempt.attempt_id, attempt.subject_revision, choice.correction_history_id
+        )
+        if checked_history is not None:
+            return _after_publication_failure(
+                checked_history.code,
+                checked_history.message,
+                invocation_surfaces,
+                checked_history.details,
+                invocation_selector_facts,
+            )
+        try:
+            current_brief_bytes = artifacts.read(accepted_brief_reference)
+        except ArtifactError as error:
+            return _after_publication_failure(
+                DispatchErrorCode.DISPATCH_REVIEW_READ_FAILED,
+                str(error),
+                invocation_surfaces,
+                _fresh_review_details((), ()),
+                invocation_selector_facts,
+            )
+        current_sources = _effective_correction_brief(source_checkout_root, validated_brief)
+        if isinstance(current_sources, DispatchFailure):
+            return _after_publication_failure(
+                current_sources.code,
+                current_sources.message,
+                invocation_surfaces,
+                current_sources.details,
+                invocation_selector_facts,
+            )
+        if current_brief_bytes != accepted_brief_bytes or canonical_work_brief_bytes(
+            current_sources
+        ) != canonical_work_brief_bytes(validated_brief):
+            return _after_publication_failure(
+                DispatchErrorCode.DISPATCH_AUTHORITY_STALE,
+                "Correction brief or reviewed sources changed during prompt publication; inspect the committed evidence before continuing.",
+                invocation_surfaces,
+                _fresh_review_details((), ()),
+                invocation_selector_facts,
+            )
         checked_start = _read_correction_start(store, artifacts, source_checkout_root, validated_brief, choice)
         if isinstance(checked_start, DispatchFailure):
             return _after_publication_failure(

@@ -55,6 +55,7 @@ from pinboard.mcp.tool_names import (
     PR_REVIEW_TOOL,
     PREPARATION_AUTHORITY_TOOL,
     PROPOSAL_CREATE_TOOL,
+    RETURN_CONTEXT_TOOL,
     REVIEW_JOB_TOOL,
     TRANSITION_TOOL,
 )
@@ -477,8 +478,32 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         )
 
     @server.tool(
+        name=RETURN_CONTEXT_TOOL,
+        description="Read one exact same-attempt return and verified original submission snapshot. Explicit selection kind historical returns provenance after rebind/rebase without current correction authority. Selection kind current-candidate requires the current active return and returned branch/HEAD, and supplies the effective correction context plus observed tracked candidate and omitted path names for fresh independent candidate-correction review. No publication, restoration, authority or lifecycle effects.",
+    )
+    async def return_context(
+        project_root: str, work_root: str, attempt_id: str, selection: dict[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        arguments: dict[str, JsonValue] = {
+            "project_root": project_root,
+            "work_root": work_root,
+            "attempt_id": attempt_id,
+            "selection": selection,
+        }
+        return await execution._run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            RETURN_CONTEXT_TOOL,
+            project_root,
+            partial(read_operations._read_return_context, arguments),
+            arguments=arguments,
+            capture=capture,
+        )
+
+    @server.tool(
         name=CORRECTION_CONTEXT_TOOL,
-        description="Read the exact effective correction brief, accepted starting snapshot, and advisory coverage-reuse eligibility and blockers for a current returned candidate; dispatch rechecks every fact and this read changes no state.",
+        description="Read the exact effective correction brief, accepted starting snapshot, and advisory coverage-reuse eligibility and blockers for a current return on its exact returned checkout; dispatch rechecks every fact and this read changes no state.",
     )
     async def correction_context(
         project_root: str,
@@ -649,9 +674,9 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
     @server.tool(
         name=DISPATCH_TOOL,
         description=(
-            "Publish verified Pinboard worker launch instructions; creates no worker or worker authority. "
+            "Publish verified Pinboard worker launch instructions or independently assessed replacement-brief readiness; creates no worker or worker authority. "
             "Arguments are project_root, work_root and dispatch (no request wrapper). Unknown fields reject.\n"
-            "All five dispatch leaves require kind, receipt, checkpoint_id, environment and prompt. "
+            "The six worker-launch leaves require kind, receipt, checkpoint_id, environment and prompt; replacement-readiness has its distinct fields below. "
             "receipt contains ONLY action_id:{kind:'dispatch',subject:<attempt_id>} and subject_revision "
             "copied from the fresh project dispatch action returned by pinboard_actions, not the whole action. "
             "checkpoint_id is the accepted brief's stable checkpoint ID. Use explicit prompt:null for "
@@ -671,6 +696,12 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "only when the accepted brief, every reviewed source, and accepted ready review are unchanged. "
             "kind:'local-correction' takes the same correction fields with "
             "brief_review:<LocalCorrectionSourceReview> for a local checkpoint.\n"
+            "kind:'replacement-readiness' requires ONLY kind, receipt, checkpoint_id, review_id, correction_history_id, "
+            "brief_review:<full CorrectionSourceReview>, and current_candidate:<assessed working-tree identity or clean commit>. "
+            "Select the latest returned round made historical by replacement/rebind; pinboard_return_context historical selection "
+            "supplies its original receipt and starting snapshot. Independently assess the current replacement brief and candidate. "
+            "Pass no environment or prompt. Success publishes proof and plain readiness only, with no worker launch, authority, "
+            "lifecycle change or implementation verdict; protect the current candidate and commission its complete review next.\n"
             "WorkBriefReview requires schema:'pinboard-work-brief-review/v3', attempt_id, checkpoint_id, "
             "accepted_brief_sha256, checkpoint_sha256, reviewed_authority_set_sha256, reviewer_task_id, status:'complete', "
             "verdict:'ready', and nonempty coverage. Bind the current checkpoint and ordered reviewed "
@@ -679,6 +710,13 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "{disposition:'contract',contract_invariant:<text>}, {disposition:'acceptance',criterion:<positive "
             "integer>}, {disposition:'deferred',deferral_id:<ID>} or {disposition:'not-applicable',reason:<text>}, "
             "matching the brief's complete coverage. Needs-correction evidence is not ready evidence.\n"
+            "candidate-correction takes all worker-launch fields plus review_id, correction_history_id and "
+            "brief_review:{schema:'pinboard-current-correction-source-review/v1',boundary:'cross-boundary' or 'local',"
+            "source_review:<full CorrectionSourceReview or LocalCorrectionSourceReview>,current_candidate:{"
+            "candidate:<observed working-tree-state identity>,omitted_untracked_paths:<sorted exact omitted names>}}. "
+            "Read pinboard_return_context current-candidate selection and obtain fresh independent assessment first. "
+            "It permits reviewed tracked diff/path drift while preserving current return and returned branch/HEAD/base; "
+            "historical selection supplies provenance only for replacement readiness, never current correction authority.\n"
             "CorrectionSourceReview requires schema:'pinboard-correction-source-review/v1', "
             "contract_review:<current effective WorkBriefReview>, starting_candidate:<exact accepted "
             "candidate identity>, correction_input:{reason:<exact selected correction reason>}, and "
@@ -867,6 +905,11 @@ def _install_boundary_contracts(server: MCPServer) -> None:
             CORRECTION_CONTEXT_TOOL,
             contract_schemas.schema_for(contracts.CorrectionContextRequest),
             contract_schemas.union_schema_for(contracts.CORRECTION_CONTEXT_RESULT_TYPES),
+        ),
+        (
+            RETURN_CONTEXT_TOOL,
+            contract_schemas.schema_for(contracts.ReturnContextRequest),
+            contract_schemas.union_schema_for(contracts.RETURN_CONTEXT_RESULT_TYPES),
         ),
         (
             ARTIFACT_VERIFY_TOOL,

@@ -10,6 +10,10 @@ class ProducerOnlyCode(DescribedCode):
         "CORRECTION_CONTEXT_INVALID",
         "The correction context failed validation for this operation.",
     )
+    RETURN_CONTEXT_INVALID = (
+        "RETURN_CONTEXT_INVALID",
+        "The selected return-context request failed validation for this operation.",
+    )
     PR_REVIEW_INVALID = (
         "PR_REVIEW_INVALID",
         "The PR-review request could not be decoded or its caller identity did not match.",

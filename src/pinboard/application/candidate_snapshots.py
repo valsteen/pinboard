@@ -194,7 +194,7 @@ def candidate_snapshot_artifact_key(attempt_id: str, candidate: str, recorded_at
 
 
 def verify_candidate_snapshot_context(
-    context: query_models.CandidateSnapshotContextFacts,
+    context: query_models.CandidateSnapshotContextFacts | query_models.ReturnedCandidateSnapshotFacts,
     candidate: str | None,
     artifact_bytes: bytes,
 ) -> CandidateSnapshotEvidence:
@@ -242,11 +242,15 @@ def verify_candidate_snapshot_context(
         or snapshot.recorded_at != receipt.committed_at.isoformat()
     ):
         raise ValueError("The candidate snapshot does not match its attempt and receipt.")
-    if context.state == work_models.AttemptState.REVIEW and (
-        context.candidate_revision != snapshot.candidate
-        or context.candidate_recorded_at != receipt.committed_at
-        or context.branch != snapshot.branch
-        or context.base_revision != snapshot.accepted_base_revision
+    if (
+        isinstance(context, query_models.CandidateSnapshotContextFacts)
+        and context.state == work_models.AttemptState.REVIEW
+        and (
+            context.candidate_revision != snapshot.candidate
+            or context.candidate_recorded_at != receipt.committed_at
+            or context.branch != snapshot.branch
+            or context.base_revision != snapshot.accepted_base_revision
+        )
     ):
         raise ValueError("The live review attempt does not match its immutable candidate snapshot.")
     return CandidateSnapshotEvidence(snapshot, reference, receipt)

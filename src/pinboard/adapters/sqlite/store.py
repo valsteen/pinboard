@@ -624,6 +624,30 @@ def _read_candidate_snapshot_context_facts(
     )
 
 
+def _read_returned_candidate_snapshot(
+    connection: sqlite3.Connection,
+    attempt_id: AttemptId,
+    item_id: WorkItemId,
+    correction_receipt: stored_state.StoredTransitionReceipt,
+) -> query_models.ReturnedCandidateSnapshotFacts | None:
+    # shortcut: v7 walks intervening revision-index entries; revisit when focused recovery is noticeably slow.
+    submission_row = connection.execute(
+        """SELECT history_id FROM transition_history
+           WHERE subject_id = ? AND action_kind = 'submit-review' AND project_revision < ?
+           ORDER BY project_revision DESC LIMIT 1""",
+        (attempt_id, correction_receipt.project_revision),
+    ).fetchone()
+    if submission_row is None:
+        return None
+    submission = sqlite_state.read_history_receipt(connection, decode_row(submission_row, HistoryIdRow).history_id)
+    if submission is None or submission.artifact_ref_id is None:
+        return None
+    reference = read_artifact_reference_by_id(connection, submission.artifact_ref_id)
+    if reference is None:
+        return None
+    return query_models.ReturnedCandidateSnapshotFacts(attempt_id, item_id, submission, reference)
+
+
 def _read_integration_facts(
     connection: sqlite3.Connection,
     item_id: WorkItemId,
@@ -1161,38 +1185,15 @@ class SQLiteWorkStore:
                     if correction_history_id is None
                     else sqlite_state.read_history_receipt(connection, correction_history_id)
                 )
-                returned_candidate_snapshot = None
-                if (
-                    correction_receipt is not None
+                returned_candidate_snapshot = (
+                    _read_returned_candidate_snapshot(
+                        connection, attempt.attempt_id, attempt.work_item_id, correction_receipt
+                    )
+                    if correction_receipt is not None
                     and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
                     and attempt.state == work_models.AttemptState.ACTIVE
-                ):
-                    submission_row = connection.execute(
-                        """
-                        SELECT history_id FROM transition_history
-                        WHERE subject_id = ? AND action_kind = 'submit-review' AND project_revision < ?
-                        ORDER BY project_revision DESC LIMIT 1
-                        """,
-                        (attempt_id, correction_receipt.project_revision),
-                    ).fetchone()
-                    if submission_row is not None:
-                        submission = sqlite_state.read_history_receipt(
-                            connection, decode_row(submission_row, HistoryIdRow).history_id
-                        )
-                        if submission is not None and submission.artifact_ref_id is not None:
-                            reference = read_artifact_reference_by_id(connection, submission.artifact_ref_id)
-                            if reference is not None:
-                                returned_candidate_snapshot = query_models.CandidateSnapshotContextFacts(
-                                    attempt.attempt_id,
-                                    attempt.work_item_id,
-                                    work_models.AttemptState.ACTIVE,
-                                    attempt.branch,
-                                    attempt.base_revision,
-                                    None,
-                                    None,
-                                    submission,
-                                    reference,
-                                )
+                    else None
+                )
                 return query_models.ReviewJobContextFacts(
                     attempt,
                     candidate_snapshot,
@@ -1203,6 +1204,25 @@ class SQLiteWorkStore:
                     correction_receipt,
                     returned_candidate_snapshot,
                 )
+        finally:
+            connection.close()
+
+    def read_returned_candidate_context(
+        self, attempt_id: AttemptId, history_id: HistoryId
+    ) -> query_models.ReturnedCandidateContextFacts | None:
+        """Read only the named attempt identity, exact return and its selected original submission."""
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                row = connection.execute("SELECT item_id FROM attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+                if row is None:
+                    return None
+                item_id = decode_row(row, ItemIdRow).item_id
+                receipt = sqlite_state.read_history_receipt(connection, history_id)
+                if receipt is None:
+                    return None
+                snapshot = _read_returned_candidate_snapshot(connection, attempt_id, item_id, receipt)
+                return query_models.ReturnedCandidateContextFacts(receipt, snapshot)
         finally:
             connection.close()
 

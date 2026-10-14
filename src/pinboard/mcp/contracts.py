@@ -637,6 +637,28 @@ class CorrectionContextRequest(msgspec.Struct, frozen=True, forbid_unknown_field
     correction_history_id: PositiveInt
 
 
+class HistoricalReturnSelection(
+    msgspec.Struct, tag="historical", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    return_history_id: PositiveInt
+
+
+class CurrentCandidateReturnSelection(
+    msgspec.Struct, tag="current-candidate", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    return_history_id: PositiveInt
+
+
+type ReturnSelection = HistoricalReturnSelection | CurrentCandidateReturnSelection
+
+
+class ReturnContextRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    attempt_id: PathComponent
+    selection: ReturnSelection
+
+
 class CandidateObserveRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
@@ -703,6 +725,12 @@ class LocalCorrectionDispatchChoice(DispatchChoiceBase, tag="local-correction", 
     correction_history_id: PositiveInt
 
 
+class CandidateCorrectionDispatchChoice(DispatchChoiceBase, tag="candidate-correction", tag_field="kind", frozen=True):
+    brief_review: work_brief_models.CurrentCorrectionReview
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
 class ReplacementReadinessChoice(
     msgspec.Struct, tag="replacement-readiness", tag_field="kind", frozen=True, forbid_unknown_fields=True
 ):
@@ -720,6 +748,7 @@ type DispatchChoice = (
     | CorrectionDispatchChoice
     | ReuseCorrectionDispatchChoice
     | LocalCorrectionDispatchChoice
+    | CandidateCorrectionDispatchChoice
     | ReplacementReadinessChoice
 )
 
@@ -1847,9 +1876,7 @@ class DeclaredCorrectionSnapshot(
 type CorrectionSnapshot = CorrectionSnapshotV1 | CorrectionSnapshotV2 | DeclaredCorrectionSnapshot
 
 
-class CorrectionContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-correction-context/v1"]
-    status: Literal["ready"]
+class CorrectionReviewEvidence(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: PathComponent
     correction_history_id: PositiveInt
     correction_reason: NonEmptyText
@@ -1861,6 +1888,15 @@ class CorrectionContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forb
     starting_snapshot: CorrectionSnapshot
     reuse_eligible: bool
     reuse_blockers: tuple[NonEmptyText, ...]
+
+    def __post_init__(self) -> None:
+        if self.reuse_eligible == bool(self.reuse_blockers):
+            raise ValueError("Correction reuse eligibility and blockers disagree.")
+
+
+class CorrectionContextReady(_UnchangedResult, CorrectionReviewEvidence, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-correction-context/v1"]
+    status: Literal["ready"]
     state_changed: bool
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
@@ -1868,12 +1904,64 @@ class CorrectionContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forb
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.reuse_eligible == bool(self.reuse_blockers):
-            raise ValueError("Correction reuse eligibility and blockers disagree.")
+        CorrectionReviewEvidence.__post_init__(self)
 
 
 class CorrectionContextRejected(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-correction-context/v1"]
+    code: NonEmptyText
+    retry: Literal["correct-input", "refresh-action", "do-not-retry"]
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+
+class ReturnReceiptEvidence(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: PositiveInt
+    project_revision: PositiveInt
+    action_id: NonEmptyText
+    action_kind: Literal["return-for-correction"]
+    subject_id: PathComponent
+    artifact_ref_id: None
+    authorization: Literal["project"]
+    input_schema: Literal["return-for-correction/v1"]
+    input_payload: NonEmptyText
+    outcome_schema: Literal["transition-receipt/v1"]
+    outcome_payload: NonEmptyText
+    actor_task_id: NonEmptyText | None
+    actor_host_id: NonEmptyText | None
+    committed_at: NonEmptyText
+
+
+class HistoricalReturnContext(
+    msgspec.Struct, tag="historical", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    return_receipt: ReturnReceiptEvidence
+    correction_reason: NonEmptyText
+    starting_candidate: work_brief_models.PortableArtifactIdentity
+    starting_snapshot: CorrectionSnapshot
+
+
+class CurrentCandidateReturnContext(
+    msgspec.Struct, tag="current-candidate", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    return_receipt: ReturnReceiptEvidence
+    review_context: CorrectionReviewEvidence
+    current_candidate: work_brief_models.CorrectionCandidateBinding
+
+
+class ReturnContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-return-context/v1"]
+    status: Literal["ready"]
+    attempt_id: PathComponent
+    context: HistoricalReturnContext | CurrentCandidateReturnContext
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+
+class ReturnContextRejected(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-return-context/v1"]
     code: NonEmptyText
     retry: Literal["correct-input", "refresh-action", "do-not-retry"]
     observed: tuple[FailureObservation, ...]
@@ -1958,6 +2046,7 @@ class ExecutorBusyResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
 
 PR_REVIEW_RESULT_TYPES = (PrReviewSuccess, PrReviewRejected, ExecutorBusyResult)
 CORRECTION_CONTEXT_RESULT_TYPES = (CorrectionContextReady, CorrectionContextRejected, ExecutorBusyResult)
+RETURN_CONTEXT_RESULT_TYPES = (ReturnContextReady, ReturnContextRejected, ExecutorBusyResult)
 
 
 class WarningResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -3081,6 +3170,7 @@ type RequestBoundary = (
     | type[OverviewRequest]
     | type[AttemptInspectRequest]
     | type[CorrectionContextRequest]
+    | type[ReturnContextRequest]
     | type[CandidateObserveRequest]
     | type[CandidateRestoreRequest]
     | type[ArtifactVerifyRequest]
@@ -3155,6 +3245,8 @@ type ResultBoundary = (
     | type[NonterminalAttemptInspectionSuccess]
     | type[CorrectionContextReady]
     | type[CorrectionContextRejected]
+    | type[ReturnContextReady]
+    | type[ReturnContextRejected]
     | type[ArtifactVerified]
     | type[PreparationAuthorityStatusPresent]
     | type[PreparationAuthorityStatusAbsent]

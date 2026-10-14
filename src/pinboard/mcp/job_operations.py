@@ -291,7 +291,7 @@ def _review_histories(
             assert_never(unreachable)
 
 
-def _dispatch_job(  # noqa: PLR0912 - distinct readiness publication and worker launch outcomes
+def _dispatch_job(  # noqa: C901, PLR0912 - distinct readiness publication and worker launch outcomes
     project_root: str, work_root: str, dispatch: Mapping[str, JsonValue], token: execution.CancellationToken
 ) -> execution.OperationResult:
     token.checkpoint()
@@ -322,7 +322,16 @@ def _dispatch_job(  # noqa: PLR0912 - distinct readiness publication and worker 
             | contracts.LocalCorrectionDispatchChoice()
         ):
             preparation_choice = dispatch_operations.CorrectionDispatch(
-                choice.brief_review, ReviewId(choice.review_id), HistoryId(choice.correction_history_id)
+                choice.brief_review,
+                ReviewId(choice.review_id),
+                HistoryId(choice.correction_history_id),
+            )
+        case contracts.CandidateCorrectionDispatchChoice():
+            preparation_choice = dispatch_operations.CurrentCandidateCorrectionDispatch(
+                choice.brief_review.source_review,
+                ReviewId(choice.review_id),
+                HistoryId(choice.correction_history_id),
+                choice.brief_review.current_candidate,
             )
         case contracts.ReplacementReadinessChoice():
             preparation_choice = None

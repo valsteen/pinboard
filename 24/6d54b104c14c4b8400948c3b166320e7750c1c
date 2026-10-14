@@ -1,0 +1,35 @@
+src/pinboard/mcp/contract_schemas.py
+  s_50a3886b7e6b61::t_62aeebdb7ba381 70-71,861
+  s_50a3886b7e6b61::t_b54ebeb996ef75 848-860
+tests/test_correction_source_review.py
+  s_50a3886b7e6b61::t_50754e86e0393e 1403-1419
+tests/test_mcp_jobs.py
+  s_50a3886b7e6b61::t_9cb19a310a48ce 778
+  s_50a3886b7e6b61::t_27485d0a222956 763-765
+  s_50a3886b7e6b61::t_ee2a2b53e0a31f 47,766-777,779-799,814,921
+  s_50a3886b7e6b61::t_835778c1919468 890
+  s_50a3886b7e6b61::t_83ad5de76c2222 802
+  s_50a3886b7e6b61::t_bb8bbd1bd7fe8b 836
+tests/test_candidate_exclusions.py
+  s_50a3886b7e6b61::t_835778c1919468 283-286,296-301
+src/pinboard/application/work_brief_models.py
+  s_50a3886b7e6b61::t_de74542a224e3c 886-892,902-906,916-922,933-937,948-954,965-969
+tests/checkpoint_support.py
+  s_50a3886b7e6b61::t_83ad5de76c2222 306
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "246d54b104c14c4b8400948c3b166320e7750c1c",
+  "prompts": {},
+  "sessions": {
+    "s_50a3886b7e6b61": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a139e7-a27c-7810-b6e1-3eedc9547248",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Vincent Alsteen <vincent.alsteen@deliveryhero.com>"
+    }
+  }
+}

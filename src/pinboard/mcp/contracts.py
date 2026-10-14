@@ -704,7 +704,9 @@ class LocalCorrectionDispatchChoice(DispatchChoiceBase, tag="local-correction", 
 
 
 class DriftedCorrectionDispatchChoice(DispatchChoiceBase, tag="drifted-correction", tag_field="kind", frozen=True):
-    brief_review: work_brief_models.DriftedCorrectionSourceReview
+    brief_review: (
+        work_brief_models.DriftedCorrectionSourceReview | work_brief_models.PathBoundDriftedCorrectionSourceReview
+    )
     review_id: PathComponent
     correction_history_id: PositiveInt
 
@@ -712,7 +714,10 @@ class DriftedCorrectionDispatchChoice(DispatchChoiceBase, tag="drifted-correctio
 class DriftedReuseCorrectionDispatchChoice(
     DispatchChoiceBase, tag="drifted-reuse-correction", tag_field="kind", frozen=True
 ):
-    brief_review: work_brief_models.DriftedReusedCoverageCorrectionReview
+    brief_review: (
+        work_brief_models.DriftedReusedCoverageCorrectionReview
+        | work_brief_models.PathBoundDriftedReusedCoverageCorrectionReview
+    )
     review_id: PathComponent
     correction_history_id: PositiveInt
 
@@ -720,7 +725,10 @@ class DriftedReuseCorrectionDispatchChoice(
 class DriftedLocalCorrectionDispatchChoice(
     DispatchChoiceBase, tag="drifted-local-correction", tag_field="kind", frozen=True
 ):
-    brief_review: work_brief_models.DriftedLocalCorrectionSourceReview
+    brief_review: (
+        work_brief_models.DriftedLocalCorrectionSourceReview
+        | work_brief_models.PathBoundDriftedLocalCorrectionSourceReview
+    )
     review_id: PathComponent
     correction_history_id: PositiveInt
 
@@ -1915,6 +1923,27 @@ class CorrectionContextDrifted(_CorrectionContextReuse, frozen=True, forbid_unkn
     current_candidate: work_brief_models.WorkingTreeCandidateIdentity
     current_preimage_revision: NonEmptyText
     current_diff_base64: str
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+
+class CorrectionContextDriftedPaths(_CorrectionContextReuse, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-correction-context/v3"]
+    status: Literal["drifted"]
+    attempt_id: PathComponent
+    correction_history_id: PositiveInt
+    correction_reason: NonEmptyText
+    effective_brief: work_brief_models.WorkBrief
+    effective_brief_sha256: Sha256
+    checkpoint_sha256: Sha256
+    reviewed_authority_set_sha256: Sha256 | None
+    starting_candidate: work_brief_models.PortableArtifactIdentity
+    starting_snapshot: CorrectionSnapshot
+    current_candidate: work_brief_models.WorkingTreeCandidateIdentity
+    current_preimage_revision: NonEmptyText
+    current_diff_base64: str
     current_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
     state_changed: bool
     effect: Literal["unchanged"]
@@ -2014,6 +2043,7 @@ PR_REVIEW_RESULT_TYPES = (PrReviewSuccess, PrReviewRejected, ExecutorBusyResult)
 CORRECTION_CONTEXT_RESULT_TYPES = (
     CorrectionContextReady,
     CorrectionContextDrifted,
+    CorrectionContextDriftedPaths,
     CorrectionContextRejected,
     ExecutorBusyResult,
 )

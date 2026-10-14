@@ -201,8 +201,11 @@ class CorrectionDispatch:
         | work_brief_models.ReusedCoverageCorrectionReview
         | work_brief_models.LocalCorrectionSourceReview
         | work_brief_models.DriftedCorrectionSourceReview
+        | work_brief_models.PathBoundDriftedCorrectionSourceReview
         | work_brief_models.DriftedReusedCoverageCorrectionReview
+        | work_brief_models.PathBoundDriftedReusedCoverageCorrectionReview
         | work_brief_models.DriftedLocalCorrectionSourceReview
+        | work_brief_models.PathBoundDriftedLocalCorrectionSourceReview
     )
     review_id: ReviewId
     correction_history_id: HistoryId
@@ -233,14 +236,24 @@ class ExactCorrectionReviewFacts:
 
 
 @dataclass(frozen=True, slots=True)
-class DriftedCorrectionReviewFacts:
+class LegacyDriftedCorrectionReviewFacts:
+    starting_candidate: work_brief_models.PortableArtifactIdentity
+    correction_input: action_models.ReasonInputPayload
+    current_candidate: work_brief_models.WorkingTreeCandidateIdentity
+
+
+@dataclass(frozen=True, slots=True)
+class PathBoundDriftedCorrectionReviewFacts:
     starting_candidate: work_brief_models.PortableArtifactIdentity
     correction_input: action_models.ReasonInputPayload
     current_candidate: work_brief_models.WorkingTreeCandidateIdentity
     current_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
 
 
-type CorrectionReviewFacts = ExactCorrectionReviewFacts | DriftedCorrectionReviewFacts
+type CorrectionReviewFacts = (
+    ExactCorrectionReviewFacts | LegacyDriftedCorrectionReviewFacts | PathBoundDriftedCorrectionReviewFacts
+)
+type DriftedCorrectionReviewFacts = LegacyDriftedCorrectionReviewFacts | PathBoundDriftedCorrectionReviewFacts
 
 
 type CorrectionReview = (
@@ -248,8 +261,11 @@ type CorrectionReview = (
     | work_brief_models.ReusedCoverageCorrectionReview
     | work_brief_models.LocalCorrectionSourceReview
     | work_brief_models.DriftedCorrectionSourceReview
+    | work_brief_models.PathBoundDriftedCorrectionSourceReview
     | work_brief_models.DriftedReusedCoverageCorrectionReview
+    | work_brief_models.PathBoundDriftedReusedCoverageCorrectionReview
     | work_brief_models.DriftedLocalCorrectionSourceReview
+    | work_brief_models.PathBoundDriftedLocalCorrectionSourceReview
 )
 
 
@@ -266,7 +282,17 @@ def _correction_review_facts(review: CorrectionReview) -> CorrectionReviewFacts:
             | work_brief_models.DriftedLocalCorrectionSourceReview()
             | work_brief_models.DriftedReusedCoverageCorrectionReview()
         ):
-            return DriftedCorrectionReviewFacts(
+            return LegacyDriftedCorrectionReviewFacts(
+                review.starting_candidate,
+                review.correction_input,
+                review.current_candidate,
+            )
+        case (
+            work_brief_models.PathBoundDriftedCorrectionSourceReview()
+            | work_brief_models.PathBoundDriftedLocalCorrectionSourceReview()
+            | work_brief_models.PathBoundDriftedReusedCoverageCorrectionReview()
+        ):
+            return PathBoundDriftedCorrectionReviewFacts(
                 review.starting_candidate,
                 review.correction_input,
                 review.current_candidate,
@@ -520,7 +546,12 @@ def _canonical_prompt(
         match review_facts:
             case ExactCorrectionReviewFacts():
                 pass
-            case DriftedCorrectionReviewFacts():
+            case LegacyDriftedCorrectionReviewFacts():
+                correction_context += (
+                    f"- Independently assessed current checkout candidate: {review_facts.current_candidate}\n"
+                    "- Preserve the current checkout; do not restore the returned candidate. Recheck this identity before editing and stop if it changed.\n"
+                )
+            case PathBoundDriftedCorrectionReviewFacts():
                 correction_context += (
                     f"- Independently assessed current checkout candidate: {review_facts.current_candidate}\n"
                     "- Git-visible untracked paths explicitly bound by the fresh review and excluded from candidate bytes: "
@@ -1177,6 +1208,29 @@ def _read_drifted_correction_candidate(
                 ),
             ),
         )
+    match expected_review:
+        case None:
+            review_mismatches = ()
+        case LegacyDriftedCorrectionReviewFacts():
+            review_mismatches = (
+                FailureMismatch("current_candidate", expected_review.current_candidate, current.identity),
+                FailureMismatch(
+                    "checkout_untracked_paths",
+                    msgspec.json.encode(tuple(sorted(excluded_untracked_paths))).decode(),
+                    msgspec.json.encode(untracked_paths).decode(),
+                ),
+            )
+        case PathBoundDriftedCorrectionReviewFacts():
+            review_mismatches = (
+                FailureMismatch("current_candidate", expected_review.current_candidate, current.identity),
+                FailureMismatch(
+                    "current_untracked_paths",
+                    msgspec.json.encode(expected_review.current_untracked_paths).decode(),
+                    msgspec.json.encode(untracked_paths).decode(),
+                ),
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
     match snapshot:
         case (
             candidate_snapshots.WorkingTreeCandidateSnapshot()
@@ -1206,18 +1260,7 @@ def _read_drifted_correction_candidate(
                 if unchanged_context
                 else ()
             ),
-            *(
-                (
-                    FailureMismatch("current_candidate", expected_review.current_candidate, current.identity),
-                    FailureMismatch(
-                        "current_untracked_paths",
-                        msgspec.json.encode(expected_review.current_untracked_paths).decode(),
-                        msgspec.json.encode(untracked_paths).decode(),
-                    ),
-                )
-                if expected_review is not None
-                else ()
-            ),
+            *review_mismatches,
         )
         if value.expected != value.observed
     )
@@ -1249,7 +1292,7 @@ def _read_correction_start(
                 review_facts.starting_candidate,
                 review_facts.correction_input.reason,
             )
-        case DriftedCorrectionReviewFacts():
+        case LegacyDriftedCorrectionReviewFacts() | PathBoundDriftedCorrectionReviewFacts():
             snapshot = _read_returned_snapshot(
                 store,
                 artifacts,
@@ -1374,8 +1417,11 @@ def _correction_review_subject(
         | work_brief_models.ReusedCoverageCorrectionReview
         | work_brief_models.LocalCorrectionSourceReview
         | work_brief_models.DriftedCorrectionSourceReview
+        | work_brief_models.PathBoundDriftedCorrectionSourceReview
         | work_brief_models.DriftedReusedCoverageCorrectionReview
+        | work_brief_models.PathBoundDriftedReusedCoverageCorrectionReview
         | work_brief_models.DriftedLocalCorrectionSourceReview
+        | work_brief_models.PathBoundDriftedLocalCorrectionSourceReview
     ),
     snapshot: candidate_snapshots.CandidateSnapshot,
 ) -> str:
@@ -1384,7 +1430,9 @@ def _correction_review_subject(
     match review_facts:
         case ExactCorrectionReviewFacts():
             current_candidate_binding = ()
-        case DriftedCorrectionReviewFacts():
+        case LegacyDriftedCorrectionReviewFacts():
+            current_candidate_binding = (review_facts.current_candidate,)
+        case PathBoundDriftedCorrectionReviewFacts():
             current_candidate_binding = (review_facts.current_candidate, review_facts.current_untracked_paths)
         case _ as unreachable:
             assert_never(unreachable)
@@ -1392,6 +1440,7 @@ def _correction_review_subject(
         case (
             work_brief_models.CorrectionSourceReview(contract_review=contract_review)
             | work_brief_models.DriftedCorrectionSourceReview(contract_review=contract_review)
+            | work_brief_models.PathBoundDriftedCorrectionSourceReview(contract_review=contract_review)
         ):
             brief_binding = (
                 contract_review.accepted_brief_sha256,
@@ -1403,6 +1452,10 @@ def _correction_review_subject(
             | work_brief_models.ReusedCoverageCorrectionReview(accepted_brief_sha256=accepted_brief_sha256)
             | work_brief_models.DriftedLocalCorrectionSourceReview(accepted_brief_sha256=accepted_brief_sha256)
             | work_brief_models.DriftedReusedCoverageCorrectionReview(accepted_brief_sha256=accepted_brief_sha256)
+            | work_brief_models.PathBoundDriftedLocalCorrectionSourceReview(accepted_brief_sha256=accepted_brief_sha256)
+            | work_brief_models.PathBoundDriftedReusedCoverageCorrectionReview(
+                accepted_brief_sha256=accepted_brief_sha256
+            )
         ):
             brief_binding = (accepted_brief_sha256,)
         case _ as unreachable:
@@ -1516,6 +1569,7 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
                         case (
                             work_brief_models.LocalCorrectionSourceReview()
                             | work_brief_models.DriftedLocalCorrectionSourceReview()
+                            | work_brief_models.PathBoundDriftedLocalCorrectionSourceReview()
                         ) as review:
                             if (failure := validate_local_correction_source_review(review, brief)) is not None:
                                 return review_failure(failure)
@@ -1524,6 +1578,8 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
                             | work_brief_models.ReusedCoverageCorrectionReview()
                             | work_brief_models.DriftedCorrectionSourceReview()
                             | work_brief_models.DriftedReusedCoverageCorrectionReview()
+                            | work_brief_models.PathBoundDriftedCorrectionSourceReview()
+                            | work_brief_models.PathBoundDriftedReusedCoverageCorrectionReview()
                         ):
                             return DispatchFailure(
                                 DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
@@ -1556,6 +1612,7 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
                         case (
                             work_brief_models.ReusedCoverageCorrectionReview()
                             | work_brief_models.DriftedReusedCoverageCorrectionReview()
+                            | work_brief_models.PathBoundDriftedReusedCoverageCorrectionReview()
                         ) as reused:
                             if (failure := validate_reused_coverage_correction_review(reused, brief)) is not None:
                                 return review_failure(failure)
@@ -1567,11 +1624,13 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
                         case (
                             work_brief_models.CorrectionSourceReview(contract_review=contract_review)
                             | work_brief_models.DriftedCorrectionSourceReview(contract_review=contract_review)
+                            | work_brief_models.PathBoundDriftedCorrectionSourceReview(contract_review=contract_review)
                         ):
                             review = contract_review
                         case (
                             work_brief_models.LocalCorrectionSourceReview()
                             | work_brief_models.DriftedLocalCorrectionSourceReview()
+                            | work_brief_models.PathBoundDriftedLocalCorrectionSourceReview()
                         ):
                             return DispatchFailure(
                                 DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID,
@@ -1708,6 +1767,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             case (
                 work_brief_models.ReusedCoverageCorrectionReview()
                 | work_brief_models.DriftedReusedCoverageCorrectionReview()
+                | work_brief_models.PathBoundDriftedReusedCoverageCorrectionReview()
             ):
                 reusable = _read_reusable_ready_review(store, artifacts, accepted_source_brief, effective_brief)
                 if isinstance(reusable, DispatchFailure):
@@ -1718,6 +1778,8 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
                 | work_brief_models.LocalCorrectionSourceReview()
                 | work_brief_models.DriftedCorrectionSourceReview()
                 | work_brief_models.DriftedLocalCorrectionSourceReview()
+                | work_brief_models.PathBoundDriftedCorrectionSourceReview()
+                | work_brief_models.PathBoundDriftedLocalCorrectionSourceReview()
             ):
                 pass
             case _ as unreachable:
@@ -1788,7 +1850,9 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         checkpoint_value = validated_brief.checkpoint
         match choice.review:
             case (
-                work_brief_models.LocalCorrectionSourceReview() | work_brief_models.DriftedLocalCorrectionSourceReview()
+                work_brief_models.LocalCorrectionSourceReview()
+                | work_brief_models.DriftedLocalCorrectionSourceReview()
+                | work_brief_models.PathBoundDriftedLocalCorrectionSourceReview()
             ) as local_review:
                 if (failure := validate_local_correction_source_review(local_review, validated_brief)) is not None:
                     return _after_publication_failure(
@@ -1803,6 +1867,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             case (
                 work_brief_models.ReusedCoverageCorrectionReview()
                 | work_brief_models.DriftedReusedCoverageCorrectionReview()
+                | work_brief_models.PathBoundDriftedReusedCoverageCorrectionReview()
             ):
                 accepted_review_bytes = reusable_ready_bytes
                 assert accepted_review_bytes is not None
@@ -1812,7 +1877,9 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
                     checkpoint_value.reviewed_authorities,
                 )
             case (
-                work_brief_models.CorrectionSourceReview() | work_brief_models.DriftedCorrectionSourceReview()
+                work_brief_models.CorrectionSourceReview()
+                | work_brief_models.DriftedCorrectionSourceReview()
+                | work_brief_models.PathBoundDriftedCorrectionSourceReview()
             ) as full_review:
                 accepted_review_bytes = canonical_work_brief_review_bytes(full_review.contract_review)
                 assert isinstance(checkpoint_value, work_brief_models.CrossBoundaryCheckpoint)

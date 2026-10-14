@@ -868,17 +868,23 @@ class LocalCorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fi
 
 class _DriftedCorrectionReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     starting_candidate: PortableArtifactIdentity
-    current_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
 
     def __post_init__(self) -> None:
         require_candidate_evidence_identity(
             self.starting_candidate, "Drifted correction review requires one accepted candidate Evidence identity."
         )
+
+
+class _PathBoundDriftedCorrectionReview(_DriftedCorrectionReview, frozen=True, forbid_unknown_fields=True):
+    current_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
         action_models.require_canonical_excluded_paths(self.current_untracked_paths)
 
 
 class DriftedCorrectionSourceReview(_DriftedCorrectionReview, frozen=True, forbid_unknown_fields=True):
-    """Independent full contract assessment bound to both candidates and current untracked paths."""
+    """Independent full contract assessment of a tracked candidate with unchanged exclusions."""
 
     schema: Literal["pinboard-correction-source-review/v3"]
     contract_review: WorkBriefReview
@@ -887,8 +893,20 @@ class DriftedCorrectionSourceReview(_DriftedCorrectionReview, frozen=True, forbi
     current_candidate: WorkingTreeCandidateIdentity
 
 
+class PathBoundDriftedCorrectionSourceReview(
+    _PathBoundDriftedCorrectionReview, frozen=True, forbid_unknown_fields=True
+):
+    """Independent full contract assessment bound to changed current untracked exclusions."""
+
+    schema: Literal["pinboard-correction-source-review/v5"]
+    contract_review: WorkBriefReview
+    correction_input: action_models.ReasonInputPayload
+    assessment: NonEmptyText
+    current_candidate: WorkingTreeCandidateIdentity
+
+
 class DriftedReusedCoverageCorrectionReview(_DriftedCorrectionReview, frozen=True, forbid_unknown_fields=True):
-    """Independent candidate assessment binding current untracked paths and retaining accepted ready coverage."""
+    """Independent candidate assessment retaining accepted coverage with unchanged exclusions."""
 
     schema: Literal["pinboard-correction-source-review/v4"]
     accepted_brief_sha256: Sha256
@@ -898,10 +916,36 @@ class DriftedReusedCoverageCorrectionReview(_DriftedCorrectionReview, frozen=Tru
     current_candidate: WorkingTreeCandidateIdentity
 
 
+class PathBoundDriftedReusedCoverageCorrectionReview(
+    _PathBoundDriftedCorrectionReview, frozen=True, forbid_unknown_fields=True
+):
+    """Independent candidate assessment binding changed exclusions and retaining accepted ready coverage."""
+
+    schema: Literal["pinboard-correction-source-review/v6"]
+    accepted_brief_sha256: Sha256
+    reviewer_task_id: NonEmptyLine
+    correction_input: action_models.ReasonInputPayload
+    assessment: NonEmptyText
+    current_candidate: WorkingTreeCandidateIdentity
+
+
 class DriftedLocalCorrectionSourceReview(_DriftedCorrectionReview, frozen=True, forbid_unknown_fields=True):
-    """Independent local assessment bound to both candidates and current untracked paths."""
+    """Independent local assessment of a tracked candidate with unchanged exclusions."""
 
     schema: Literal["pinboard-local-correction-source-review/v2"]
+    accepted_brief_sha256: Sha256
+    reviewer_task_id: NonEmptyLine
+    correction_input: action_models.ReasonInputPayload
+    assessment: NonEmptyText
+    current_candidate: WorkingTreeCandidateIdentity
+
+
+class PathBoundDriftedLocalCorrectionSourceReview(
+    _PathBoundDriftedCorrectionReview, frozen=True, forbid_unknown_fields=True
+):
+    """Independent local assessment bound to changed current untracked exclusions."""
+
+    schema: Literal["pinboard-local-correction-source-review/v3"]
     accepted_brief_sha256: Sha256
     reviewer_task_id: NonEmptyLine
     correction_input: action_models.ReasonInputPayload

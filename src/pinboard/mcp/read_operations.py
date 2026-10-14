@@ -387,21 +387,41 @@ def _read_correction_context(
             (),
         )
     else:
-        result = contracts.CorrectionContextDrifted(
-            context.reuse_eligible,
-            context.reuse_blockers,
-            "pinboard-correction-context/v2",
-            "drifted",
-            *common_context_fields,
+        current_candidate_fields = (
             context.drifted_candidate.candidate.identity,
             context.drifted_candidate.candidate.preimage_revision,
             base64.b64encode(context.drifted_candidate.candidate.diff).decode("ascii"),
-            context.drifted_candidate.current_untracked_paths,
-            False,
-            "unchanged",
-            "safe-to-repeat",
-            (),
         )
+        snapshot_untracked_paths = tuple(
+            sorted(candidate_snapshots.excluded_untracked_paths(context.starting_snapshot))
+        )
+        if context.drifted_candidate.current_untracked_paths == snapshot_untracked_paths:
+            result = contracts.CorrectionContextDrifted(
+                context.reuse_eligible,
+                context.reuse_blockers,
+                "pinboard-correction-context/v2",
+                "drifted",
+                *common_context_fields,
+                *current_candidate_fields,
+                False,
+                "unchanged",
+                "safe-to-repeat",
+                (),
+            )
+        else:
+            result = contracts.CorrectionContextDriftedPaths(
+                context.reuse_eligible,
+                context.reuse_blockers,
+                "pinboard-correction-context/v3",
+                "drifted",
+                *common_context_fields,
+                *current_candidate_fields,
+                context.drifted_candidate.current_untracked_paths,
+                False,
+                "unchanged",
+                "safe-to-repeat",
+                (),
+            )
     token.checkpoint()
     content = msgspec.to_builtins(result)
     assert isinstance(content, dict)

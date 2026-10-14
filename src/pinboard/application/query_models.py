@@ -653,7 +653,7 @@ class ReviewJobContextFacts:
     checkpoint_package_reference: stored_state.ArtifactReference | None
     checkpoint_candidate_reference: stored_state.ArtifactReference | None
     correction_receipt: stored_state.StoredTransitionReceipt | None
-    returned_candidate_snapshot: CandidateSnapshotContextFacts | None
+    returned_candidate_snapshot: ReturnedCandidateSnapshotFacts | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -665,6 +665,22 @@ class CandidateSnapshotContextFacts:
     base_revision: str
     candidate_revision: str | None
     candidate_recorded_at: datetime | None
+    receipt: stored_state.StoredTransitionReceipt
+    reference: stored_state.ArtifactReference
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnedCandidateContextFacts:
+    correction_receipt: stored_state.StoredTransitionReceipt
+    returned_candidate_snapshot: ReturnedCandidateSnapshotFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReturnedCandidateSnapshotFacts:
+    """Selected historical submission evidence without current checkout qualification."""
+
+    attempt_id: AttemptId
+    work_item_id: WorkItemId
     receipt: stored_state.StoredTransitionReceipt
     reference: stored_state.ArtifactReference
 

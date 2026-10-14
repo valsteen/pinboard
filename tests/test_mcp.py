@@ -4793,6 +4793,7 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.CANDIDATE_RESTORE_TOOL,
                 mcp_server.CANDIDATE_OBSERVE_TOOL,
                 mcp_server.CORRECTION_CONTEXT_TOOL,
+                mcp_server.RETURN_CONTEXT_TOOL,
                 mcp_server.ITEM_DEFINITION_TOOL,
                 mcp_server.BRIEF_REVIEW_TOOL,
                 mcp_server.BRIEF_CONTRACT_TOOL,

@@ -3,6 +3,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import tempfile
 from copy import deepcopy
@@ -16,6 +17,7 @@ import msgspec
 
 from pinboard.adapters import dispatch_operations
 from pinboard.adapters.files import root
+from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -36,9 +38,9 @@ from pinboard.application.dispatch_models import DispatchArtifactPort
 from pinboard.application.ports import WorkStore
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, HistoryId, ReviewId
+from pinboard.mcp import contract_schemas, server
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import job_operations as mcp_jobs
-from pinboard.mcp import server
 from pinboard.mcp.contracts import JsonValue
 from tests import test_dispatch
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
@@ -508,6 +510,32 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         )
         self.assertEqual("ready", dispatched["status"], dispatched)
 
+        (fixture.project / "tracked.txt").write_text("independently assessed local drift\n", encoding="utf-8")
+        current_context = call_advertised_tool(
+            server.RETURN_CONTEXT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "selection": {"kind": "current-candidate", "return_history_id": history_id},
+            },
+        )
+        self.assertEqual("ready", current_context["status"], current_context)
+        current_choice = deepcopy(choice)
+        current_choice["kind"] = "candidate-correction"
+        current_choice["review_id"] = "local-drift-review"
+        current_choice["brief_review"] = {
+            "schema": "pinboard-current-correction-source-review/v1",
+            "boundary": "local",
+            "source_review": choice["brief_review"],
+            "current_candidate": self.json_object(current_context["context"])["current_candidate"],
+        }
+        current_result = call_advertised_tool(
+            server.DISPATCH_TOOL,
+            {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": current_choice},
+        )
+        self.assertEqual("ready", current_result["status"], current_result)
+
         (fixture.project / "tracked.txt").write_text("corrected\n", encoding="utf-8")
         candidate = self.commit_all(fixture.project, "corrected local candidate")
         lease = self.native_attempt_acquire(fixture, "local-correction-worker")
@@ -709,6 +737,35 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             history_id,
             "Reassess the candidate on its new accepted base.",
         )
+        historical = call_advertised_tool(
+            server.RETURN_CONTEXT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "selection": {"kind": "historical", "return_history_id": history_id},
+            },
+        )
+        self.assertEqual("ready", historical["status"], historical)
+        recovered = self.json_object(historical["context"])
+        self.assertEqual(original, self.json_object(recovered["starting_snapshot"])["candidate"])
+        self.assertEqual(history_id, self.json_object(recovered["return_receipt"])["history_id"])
+        self.assertEqual(
+            original_context.reference.content_sha256,
+            self.json_object(recovered["starting_candidate"])["content_sha256"],
+        )
+        self.json_object(choice["brief_review"])["starting_candidate"] = recovered["starting_candidate"]
+        self.json_object(choice["brief_review"])["correction_input"] = {"reason": recovered["correction_reason"]}
+        forbidden = call_advertised_tool(
+            server.RETURN_CONTEXT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "selection": {"kind": "current-candidate", "return_history_id": history_id},
+            },
+        )
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", forbidden["code"], forbidden)
         choice["kind"] = "replacement-readiness"
         choice["current_candidate"] = rebased
         del choice["environment"]
@@ -731,6 +788,22 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             "Reassess the candidate on its new accepted base.",
         )
         rejected = self.dispatch_native(fixture, correction)
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", rejected["code"], rejected)
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        observed_binding = dispatch_operations.observe_correction_candidate(fixture.project)
+        assert isinstance(observed_binding, work_brief_models.CorrectionCandidateBinding)
+        current_correction = deepcopy(correction)
+        current_correction["kind"] = "candidate-correction"
+        current_correction["brief_review"] = {
+            "schema": "pinboard-current-correction-source-review/v1",
+            "boundary": "cross-boundary",
+            "source_review": correction["brief_review"],
+            "current_candidate": msgspec.to_builtins(observed_binding),
+        }
+        rejected = call_advertised_tool(
+            server.DISPATCH_TOOL,
+            {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": current_correction},
+        )
         self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", rejected["code"], rejected)
         self.assertEqual(before, fixture.store.validated_snapshot())
         ready = call_native_tool(
@@ -1525,3 +1598,391 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                 self.assertEqual("DISPATCH_INVALID", rejected["code"])
                 self.assertFalse(rejected["state_changed"])
                 self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def current_candidate_choice(self, fixture: CheckpointFixture, history_id: int, choice: JsonObject) -> JsonObject:
+        context = call_advertised_tool(
+            server.RETURN_CONTEXT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "selection": {"kind": "current-candidate", "return_history_id": history_id},
+            },
+        )
+        self.assertEqual("ready", context["status"], context)
+        selected = self.json_object(context["context"])
+        correction = self.json_object(selected["review_context"])
+        result = deepcopy(choice)
+        source = self.json_object(result["brief_review"])
+        effective = msgspec.convert(correction["effective_brief"], type=work_brief_models.WorkBrief, strict=True)
+        source["contract_review"] = msgspec.json.decode(ready_review(effective))
+        source["starting_candidate"] = correction["starting_candidate"]
+        source["correction_input"] = {"reason": correction["correction_reason"]}
+        result["kind"] = "candidate-correction"
+        result["brief_review"] = {
+            "schema": "pinboard-current-correction-source-review/v1",
+            "boundary": "cross-boundary",
+            "source_review": source,
+            "current_candidate": selected["current_candidate"],
+        }
+        return result
+
+    def test_advertised_candidate_correction_accepts_tracked_and_untracked_drift(self) -> None:
+        for tracked_drift in (False, True):
+            with self.subTest(tracked_drift=tracked_drift):
+                fixture = self.correction_fixture()
+                history_id, choice = self.submit_and_return(fixture, "returned", committed=True)
+                scratch = fixture.project / "scratch.txt"
+                scratch.write_text("untracked content is not candidate identity\n")
+                if tracked_drift:
+                    (fixture.project / "tests" / "test_only.py").write_text("assert 'reviewed drift'\n")
+                before = fixture.store.validated_snapshot()
+                ordinary = call_advertised_tool(
+                    server.DISPATCH_TOOL,
+                    {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
+                )
+                self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", ordinary["code"], ordinary)
+                self.assertEqual(before, fixture.store.validated_snapshot())
+                current = self.current_candidate_choice(fixture, history_id, choice)
+                binding = self.json_object(self.json_object(current["brief_review"])["current_candidate"])
+                self.assertEqual(["scratch.txt"], binding["omitted_untracked_paths"])
+                scratch.write_text("different omitted bytes\n")
+                ready = call_advertised_tool(
+                    server.DISPATCH_TOOL,
+                    {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": current},
+                )
+                self.assertEqual("ready", ready["status"], ready)
+                prompt_reference = self.json_object(ready["prompt_reference"])
+                prompt = (fixture.work / str(prompt_reference["selector"])).read_bytes()
+                self.assertEqual(prompt_reference["sha256"], hashlib.sha256(prompt).hexdigest())
+                self.assertIn(msgspec.json.encode(binding, order="sorted"), prompt)
+                fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+                accepted = [
+                    ref
+                    for ref in fresh.validated_snapshot().artifact_references
+                    if b"pinboard-current-correction-source-review/v1" in (fixture.work / ref.selector).read_bytes()
+                ]
+                self.assertEqual(1, len(accepted))
+                evidence = msgspec.json.decode(
+                    (fixture.work / accepted[0].selector).read_bytes(), type=work_brief_models.CurrentCorrectionReview
+                )
+                self.assertEqual(binding, msgspec.json.decode(msgspec.json.encode(evidence.current_candidate)))
+
+    def test_current_candidate_binding_and_independent_source_gates_reject_before_effects(self) -> None:
+        fixture = self.correction_fixture()
+        history_id, exact = self.submit_and_return(fixture, "returned", committed=False)
+        tracked = fixture.project / "tests" / "test_only.py"
+        tracked.write_text("assert 'reviewed drift'\n")
+        current = self.current_candidate_choice(fixture, history_id, exact)
+        binding = self.json_object(self.json_object(current["brief_review"])["current_candidate"])
+        wrong = deepcopy(current)
+        self.json_object(self.json_object(wrong["brief_review"])["current_candidate"])["candidate"] = (
+            "working-tree-state-sha256:" + "f" * 64
+        )
+        wrong_reason = deepcopy(current)
+        self.json_object(
+            self.json_object(self.json_object(wrong_reason["brief_review"])["source_review"])["correction_input"]
+        )["reason"] = "wrong reason"
+        wrong_identity = deepcopy(current)
+        self.json_object(
+            self.json_object(self.json_object(wrong_identity["brief_review"])["source_review"])["starting_candidate"]
+        )["content_sha256"] = "f" * 64
+        for invalid in (wrong, wrong_reason, wrong_identity):
+            before = fixture.store.validated_snapshot()
+            result = self.dispatch_native(fixture, invalid)
+            self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", result["code"], result)
+            self.assertFalse(result["state_changed"])
+            self.assertEqual(before, fixture.store.validated_snapshot())
+        scratch = fixture.project / "scratch.txt"
+        scratch.write_text("new omitted name\n")
+        before = fixture.store.validated_snapshot()
+        result = self.dispatch_native(fixture, current)
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", result["code"], result)
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        scratch.unlink()
+        source = fixture.project / "architecture.md"
+        previous = source.read_bytes()
+        source.write_bytes(previous + b"Changed reviewed source.\n")
+        result = self.dispatch_native(fixture, current)
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", result["code"], result)
+        source.write_bytes(previous)
+        subprocess.run(["git", "switch", "-c", "wrong-branch"], cwd=fixture.project, check=True, capture_output=True)
+        result = self.dispatch_native(fixture, current)
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", result["code"], result)
+        subprocess.run(["git", "switch", fixture.brief.branch], cwd=fixture.project, check=True, capture_output=True)
+        self.commit_all(fixture.project, "changed returned HEAD")
+        self.json_object(self.json_object(current["brief_review"])["current_candidate"])["candidate"] = (
+            root.read_working_tree_candidate(fixture.project).identity
+        )
+        result = self.dispatch_native(fixture, current)
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", result["code"], result)
+        self.assertEqual([], binding["omitted_untracked_paths"])
+
+    def test_current_candidate_publication_rechecks_paths_and_reports_committed_effects(self) -> None:
+        for publication_stage in (2, 3):
+            with self.subTest(publication_stage=publication_stage):
+                self.check_publication_recheck(publication_stage)
+
+    def check_publication_recheck(self, publication_stage: int) -> None:
+        fixture = self.correction_fixture()
+        history_id, exact = self.submit_and_return(fixture, "returned", committed=True)
+        current = self.current_candidate_choice(fixture, history_id, exact)
+        observed = dispatch_operations._read_correction_start
+        calls = 0
+
+        def change_after_review(
+            store: WorkStore,
+            artifacts: DispatchArtifactPort,
+            source_checkout_root: Path,
+            brief: work_brief_models.WorkBrief,
+            choice: dispatch_operations.CorrectionPreparation,
+        ) -> dispatch_operations.DispatchResult[candidate_snapshots.CandidateSnapshot]:
+            nonlocal calls
+            calls += 1
+            if calls == publication_stage:
+                (fixture.project / "late-scratch.txt").write_text("late omitted name\n")
+            return observed(store, artifacts, source_checkout_root, brief, choice)
+
+        before = fixture.store.validated_snapshot()
+        with patch.object(dispatch_operations, "_read_correction_start", side_effect=change_after_review):
+            result = self.dispatch_native(fixture, current)
+        self.assertEqual("failed-after-publication", result["status"], result)
+        self.assertEqual("do-not-retry", result["retry"])
+        after = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
+        self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
+        self.assertGreater(len(after.artifact_references), len(before.artifact_references))
+
+    def test_historical_return_read_rejects_wrong_absent_and_damaged_selected_evidence(self) -> None:
+        fixture = self.correction_fixture()
+        history_id, choice = self.submit_and_return(fixture, "returned", committed=True)
+        arguments: JsonObject = {
+            "project_root": str(fixture.project),
+            "work_root": str(fixture.work),
+            "attempt_id": "work-a-1",
+            "selection": {"kind": "historical", "return_history_id": history_id},
+        }
+        returned = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+        selected = self.json_object(returned["context"])
+        before = fixture.store.validated_snapshot()
+        absent_selection: JsonObject = {"kind": "historical", "return_history_id": 999999}
+        invalid_requests: tuple[JsonObject, ...] = (
+            arguments | {"attempt_id": "work-b-1"},
+            arguments | {"selection": absent_selection},
+        )
+        for invalid in invalid_requests:
+            result = call_advertised_tool(server.RETURN_CONTEXT_TOOL, invalid)
+            self.assertEqual("rejected", result["status"], result)
+            self.assertEqual(before, fixture.store.validated_snapshot())
+        reference = self.json_object(selected["starting_candidate"])
+        path = fixture.work / str(reference["selector"])
+        original = path.read_bytes()
+        path.write_bytes(b"damaged selected snapshot\n")
+        result = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_INVALID", result["code"], result)
+        self.assertFalse(result["state_changed"])
+        path.write_bytes(original)
+        self.assertEqual(before, fixture.store.validated_snapshot())
+
+        for change in ({"status": "drifted"}, {"schema": "pinboard-return-context/v99"}, {"unknown": True}):
+            with self.assertRaises(msgspec.ValidationError):
+                contract_schemas.validate_result(server.RETURN_CONTEXT_TOOL, returned | change)
+        invalid = deepcopy(choice)
+        invalid["kind"] = "candidate-correction"
+        invalid["brief_review"] = {
+            "schema": "pinboard-current-correction-source-review/v1",
+            "boundary": "unknown",
+            "source_review": choice["brief_review"],
+            "current_candidate": {"candidate": "f" * 64, "omitted_untracked_paths": ["scratch.txt"]},
+        }
+        self.assertEqual("DISPATCH_INVALID", self.dispatch_native(fixture, invalid)["code"])
+
+    def test_historical_read_preserves_selected_evidence_with_unrelated_damaged_receipts_before_and_after_return(
+        self,
+    ) -> None:
+        fixture = self.correction_fixture()
+        (fixture.project / "tests" / "test_only.py").write_text("assert 'returned'\n", encoding="utf-8")
+        candidate = self.commit_all(fixture.project, "returned")
+        lease = self.native_attempt_acquire(fixture, "returned")
+        action = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+        payload = fixture.work / "submit.json"
+        payload.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
+        submission = self.transition_json(fixture, action, payload)
+        submission_history_id = submission["history_id"]
+        assert isinstance(submission_history_id, int)
+        database = fixture.work / "state.sqlite3"
+
+        def add_unrelated_damaged_receipts(template_history_id: int) -> None:
+            connection = sqlite3.connect(database)
+            try:
+                last = connection.execute(
+                    "SELECT MAX(history_id), MAX(project_revision) FROM transition_history"
+                ).fetchone()
+                assert last is not None
+                for index in range(1, 201):
+                    connection.execute(
+                        """INSERT INTO transition_history (
+                            history_id, project_revision, action_id, action_kind, subject_id,
+                            artifact_ref_id, artifact_kind, authorization_kind, actor_task_id, actor_host_id,
+                            input_schema, input_json, outcome_schema, outcome_json, committed_at
+                        ) SELECT ?, ?, action_id, action_kind, 'unrelated-attempt', artifact_ref_id, artifact_kind,
+                                 authorization_kind, actor_task_id, actor_host_id, input_schema, '{}', outcome_schema,
+                                 '{}', committed_at FROM transition_history WHERE history_id = ?""",
+                        (last[0] + index, last[1] + index, template_history_id),
+                    )
+                connection.execute("UPDATE project_meta SET revision = ? WHERE singleton = 1", (last[1] + 200,))
+                connection.commit()
+            finally:
+                connection.close()
+
+        add_unrelated_damaged_receipts(submission_history_id)
+        payload.write_text(json.dumps({"reason": "Repair the test-only candidate."}), encoding="utf-8")
+        returned = self.transition_json(
+            fixture, self.project_action(fixture, "return-for-correction:work-a-1"), payload
+        )
+        history_id = returned["history_id"]
+        assert isinstance(history_id, int)
+        arguments: JsonObject = {
+            "project_root": str(fixture.project),
+            "work_root": str(fixture.work),
+            "attempt_id": "work-a-1",
+            "selection": {"kind": "historical", "return_history_id": history_id},
+        }
+        baseline = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+        self.assertEqual("ready", baseline["status"], baseline)
+        selected = self.json_object(baseline["context"])
+        receipt = self.json_object(selected["return_receipt"])
+        self.assertEqual(history_id, receipt["history_id"])
+        self.assertEqual(returned["committed_revision"], receipt["project_revision"])
+        self.assertEqual("Repair the test-only candidate.", selected["correction_reason"])
+        self.assertEqual(candidate, self.json_object(selected["starting_snapshot"])["candidate"])
+        reference = self.json_object(selected["starting_candidate"])
+        self.assertEqual(
+            reference["content_sha256"],
+            hashlib.sha256((fixture.work / str(reference["selector"])).read_bytes()).hexdigest(),
+        )
+        add_unrelated_damaged_receipts(history_id)
+        before_database = database.read_bytes()
+        before_artifacts = {
+            path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()
+        }
+        with (
+            patch.object(
+                SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("full validation is unrelated")
+            ),
+            patch.object(
+                SQLiteWorkStore, "read_project_export_batches", side_effect=AssertionError("export is unrelated")
+            ),
+        ):
+            grown = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+        self.assertEqual(baseline, grown)
+        self.assertEqual(before_database, database.read_bytes())
+        self.assertEqual(
+            before_artifacts,
+            {path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()},
+        )
+
+    def test_final_source_read_failure_distinguishes_new_publication_from_unchanged_reuse(self) -> None:
+        read = ArtifactRepository.read
+        for reuse in (False, True):
+            with self.subTest(reuse=reuse):
+                fixture = self.correction_fixture()
+                history_id, exact = self.submit_and_return(fixture, "returned", committed=True)
+                current = self.current_candidate_choice(fixture, history_id, exact)
+                if reuse:
+                    self.assertEqual("ready", self.dispatch_native(fixture, current)["status"])
+                brief_reads = 0
+
+                def fail_selected_brief(
+                    repository: ArtifactRepository, reference: stored_state.ArtifactReference
+                ) -> bytes:
+                    nonlocal brief_reads
+                    if reference.kind == work_models.ArtifactKind.BRIEF:
+                        brief_reads += 1
+                        if brief_reads == 2:
+                            raise ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, "Selected brief cannot be reread.")
+                    return read(repository, reference)
+
+                before = fixture.store.validated_snapshot()
+                with patch.object(ArtifactRepository, "read", new=fail_selected_brief):
+                    result = call_advertised_tool(
+                        server.DISPATCH_TOOL,
+                        {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": current},
+                    )
+                self.assertEqual("DISPATCH_REVIEW_READ_FAILED", result["code"], result)
+                self.assertEqual("rejected" if reuse else "failed-after-publication", result["status"])
+                self.assertEqual("unchanged" if reuse else "committed", result["effect"])
+                self.assertEqual("correct-input" if reuse else "do-not-retry", result["retry"])
+                after = fixture.store.validated_snapshot()
+                self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
+                self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
+                if reuse:
+                    self.assertEqual(before, after)
+
+    def test_historical_read_survives_pause_and_new_protected_review_without_correction_authority(self) -> None:
+        for state in ("paused", "review"):
+            with self.subTest(state=state):
+                fixture = self.correction_fixture()
+                history_id, _choice = self.submit_and_return(fixture, "returned", committed=False)
+                arguments: JsonObject = {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "attempt_id": "work-a-1",
+                    "selection": {"kind": "historical", "return_history_id": history_id},
+                }
+                original = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+                match state:
+                    case "paused":
+                        paused = self.transition_result(
+                            fixture,
+                            self.project_action(fixture, "pause:work-a-1"),
+                            {"reason": "Wait for the maintainer."},
+                        )
+                        self.assertEqual("committed", paused["status"], paused)
+                    case "review":
+                        (fixture.project / "tracked.txt").write_text("new protected review candidate\n")
+                        lease = self.native_attempt_acquire(fixture, "new-review-worker")
+                        action = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+                        submitted = self.transition_result(
+                            fixture, action, {"candidate": root.read_working_tree_candidate(fixture.project).identity}
+                        )
+                        self.assertEqual("committed", submitted["status"], submitted)
+                before = fixture.store.validated_snapshot()
+                historical = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+                self.assertEqual(original, historical)
+                if state == "review":
+                    protected = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+                    assert protected is not None
+                    path = fixture.work / protected.reference.selector
+                    protected_bytes = path.read_bytes()
+                    path.write_bytes(b"unrelated newer protected snapshot damage\n")
+                    with patch.object(
+                        SQLiteWorkStore,
+                        "read_review_job_context",
+                        side_effect=AssertionError("current review context is unrelated"),
+                    ):
+                        selected = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+                    self.assertEqual(original, selected)
+                    path.write_bytes(protected_bytes)
+                selection: JsonObject = {"kind": "current-candidate", "return_history_id": history_id}
+                forbidden = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments | {"selection": selection})
+                self.assertEqual("DISPATCH_ATTEMPT_NOT_ACTIVE", forbidden["code"], forbidden)
+                self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def test_current_candidate_read_rejects_noncanonical_omitted_names_before_result_or_publication(self) -> None:
+        fixture = self.correction_fixture()
+        history_id, _choice = self.submit_and_return(fixture, "returned", committed=True)
+        (fixture.project / "scratch*.txt").write_text("omitted bytes\n")
+        before = fixture.store.validated_snapshot()
+        result = call_advertised_tool(
+            server.RETURN_CONTEXT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "selection": {"kind": "current-candidate", "return_history_id": history_id},
+            },
+        )
+        self.assertEqual("DISPATCH_CHECKOUT_MISMATCH", result["code"], result)
+        self.assertFalse(result["state_changed"])
+        self.assertEqual(before, fixture.store.validated_snapshot())

@@ -857,6 +857,35 @@ class LocalCorrectionSourceReview(msgspec.Struct, frozen=True, forbid_unknown_fi
             raise ValueError("Local correction review requires one accepted candidate Evidence identity.")
 
 
+class CorrectionCandidateBinding(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """An assessed tracked candidate and exact names omitted from its identity."""
+
+    candidate: Annotated[str, msgspec.Meta(pattern=r"\Aworking-tree-state-sha256:[0-9a-f]{64}\z")]
+    omitted_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
+
+    def __post_init__(self) -> None:
+        action_models.require_canonical_excluded_paths(self.omitted_untracked_paths)
+
+
+class CurrentCrossBoundaryCorrectionReview(
+    msgspec.Struct, tag="cross-boundary", tag_field="boundary", frozen=True, forbid_unknown_fields=True
+):
+    schema: Literal["pinboard-current-correction-source-review/v1"]
+    source_review: CorrectionSourceReview
+    current_candidate: CorrectionCandidateBinding
+
+
+class CurrentLocalCorrectionReview(
+    msgspec.Struct, tag="local", tag_field="boundary", frozen=True, forbid_unknown_fields=True
+):
+    schema: Literal["pinboard-current-correction-source-review/v1"]
+    source_review: LocalCorrectionSourceReview
+    current_candidate: CorrectionCandidateBinding
+
+
+type CurrentCorrectionReview = CurrentCrossBoundaryCorrectionReview | CurrentLocalCorrectionReview
+
+
 class LocalReviewBasis(
     msgspec.Struct,
     frozen=True,

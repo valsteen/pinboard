@@ -108,6 +108,8 @@ from pinboard.mcp.contracts import (
     ReplacementReadinessReady,
     RequestBoundary,
     ResultBoundary,
+    ReturnContextReady,
+    ReturnContextRejected,
     ReviewJobFailedAfterPublication,
     ReviewJobInfrastructureFailure,
     ReviewJobInvalid,
@@ -846,6 +848,8 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         msgspec.convert(
             content, type=CorrectionContextReady if status == "ready" else CorrectionContextRejected, strict=True
         )
+    elif tool_name == "pinboard_return_context":
+        msgspec.convert(content, type=ReturnContextReady if status == "ready" else ReturnContextRejected, strict=True)
     elif tool_name == "pinboard_artifact_verify" and schema == "pinboard-verified-artifact-reference/v1":
         msgspec.convert(content, type=ArtifactVerified, strict=True)
     elif tool_name == "pinboard_overview":

@@ -458,6 +458,14 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                     "replace and rebind the brief first if scope or Git lineage changed, then resume when available.",
                     None,
                 )
+            if item_value is not None and item_value.state == work_models.WorkState.ACTIVE:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    f"Item '{retained.work_item_id}' has an active attempt, and preparation authority transfers only "
+                    "for a ready, unstarted item. Inspect the active attempt and follow its returned continuation: "
+                    "if its brief or Git lineage is stale, publish a replacement brief and use rebind-attempt first.",
+                    None,
+                )
             if (
                 item_value is None
                 or item_value.state != work_models.WorkState.READY

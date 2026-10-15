@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,7 +43,7 @@ from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
-from tests.native_support import call_native_tool
+from tests.native_support import call_advertised_tool, call_native_tool
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 from tests.work_brief_support import ready_review, work_a_brief
 
@@ -56,6 +57,8 @@ class CheckpointFixture:
     candidate_revision: str
     candidate_bytes: bytes
     payload: Path
+    call_native_tool: Callable[[str, JsonObject], JsonObject]
+    call_advertised_tool: Callable[[str, JsonObject], JsonObject]
 
     @property
     def common(self) -> tuple[str, ...]:
@@ -128,7 +131,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         }
         if lease is not None:
             request.update(lease_id=lease["lease_id"], generation=lease["generation"])
-        result = call_native_tool(mcp_server.ACTIONS_TOOL, {"request": request})
+        result = fixture.call_native_tool(mcp_server.ACTIONS_TOOL, {"request": request})
         self.assertEqual("ok", result["status"], result)
         values = result["actions"]
         if not isinstance(values, list) or len(values) != 1:
@@ -136,7 +139,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         return self.json_object(values[0])
 
     def actions_result(self, fixture: CheckpointFixture, query: JsonObject) -> JsonObject:
-        return call_native_tool(
+        return fixture.call_native_tool(
             mcp_server.ACTIONS_TOOL,
             {
                 "request": {
@@ -148,7 +151,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         )
 
     def review_result(self, fixture: CheckpointFixture, review: JsonObject) -> JsonObject:
-        return call_native_tool(
+        return fixture.call_native_tool(
             mcp_server.REVIEW_JOB_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -206,7 +209,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         """Commission a reviewer through the review job, then record its ready verdict as completion requires."""
 
         prompt = self.commission_review(fixture, candidate)
-        recorded = call_native_tool(
+        recorded = fixture.call_native_tool(
             mcp_server.REVIEW_JOB_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -218,7 +221,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         return recorded
 
     def transition_result(self, fixture: CheckpointFixture, action: JsonObject, payload: JsonObject) -> JsonObject:
-        return call_native_tool(
+        return fixture.call_native_tool(
             mcp_server.TRANSITION_TOOL,
             self.native_transition_request(fixture, action, payload),
         )
@@ -643,6 +646,8 @@ class CheckpointPackageSupport(unittest.TestCase):
             candidate_revision,
             candidate_diff,
             payload,
+            call_native_tool,
+            call_advertised_tool,
         )
 
     def accepted_package_fixture(
@@ -673,6 +678,8 @@ class CheckpointPackageSupport(unittest.TestCase):
             fixture.candidate_revision,
             fixture.candidate_bytes,
             fixture.payload,
+            fixture.call_native_tool,
+            fixture.call_advertised_tool,
             package_reference,
         )
 

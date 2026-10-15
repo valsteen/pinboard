@@ -44,16 +44,24 @@ from pinboard.mcp import job_operations as mcp_jobs
 from pinboard.mcp.contracts import JsonValue
 from tests import test_dispatch
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
-from tests.native_support import call_advertised_tool, call_native_tool
+from tests.native_support import native_tools
 from tests.support import SQLITE_NOW, JsonObject
 from tests.work_brief_support import ready_review, work_a_brief
 
 
 class CorrectionSourceReviewTest(CheckpointPackageSupport):
+    def native_fixture(self, fixture: CheckpointFixture) -> CheckpointFixture:
+        native = self.enterContext(native_tools())
+        return dataclasses.replace(
+            fixture,
+            call_native_tool=native.call_native_tool,
+            call_advertised_tool=native.call_advertised_tool,
+        )
+
     def correction_fixture(
         self, *, review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready"
     ) -> CheckpointFixture:
-        fixture = self.checkpoint_fixture(review_condition=review_condition)
+        fixture = self.native_fixture(self.checkpoint_fixture(review_condition=review_condition))
         payload = fixture.work / "bootstrap-return.json"
         payload.write_text('{"reason":"Prepare the real correction scenario."}', encoding="utf-8")
         self.transition_json(fixture, self.project_action(fixture, "return-for-correction:work-a-1"), payload)
@@ -184,7 +192,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
 
     def pause_and_resume(self, fixture: CheckpointFixture, rounds: int) -> CheckpointFixture:
         action = self.project_action(fixture, "close:work-c")
-        closed = call_native_tool(
+        closed = fixture.call_native_tool(
             server.CLOSE_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -219,7 +227,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                     choice = self.reuse_choice(fixture, choice)
                 fixture = self.pause_and_resume(fixture, rounds)
                 before = fixture.store.validated_snapshot()
-                context = call_native_tool(
+                context = fixture.call_native_tool(
                     server.CORRECTION_CONTEXT_TOOL,
                     {
                         "project_root": str(fixture.project),
@@ -240,7 +248,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                     "action_id": action["action_id"],
                     "subject_revision": action["subject_revision"],
                 }
-                dispatched = call_native_tool(
+                dispatched = fixture.call_native_tool(
                     server.DISPATCH_TOOL,
                     {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
                 )
@@ -259,7 +267,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                 history_id, choice = self.submit_and_return(fixture, "multiline", committed=True, reason=reason)
                 if reuse:
                     choice = self.reuse_choice(fixture, choice)
-                context = call_advertised_tool(
+                context = fixture.call_advertised_tool(
                     server.CORRECTION_CONTEXT_TOOL,
                     {
                         "project_root": str(fixture.project),
@@ -269,7 +277,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                     },
                 )
                 self.assertEqual(reason, context["correction_reason"])
-                dispatched = call_advertised_tool(
+                dispatched = fixture.call_advertised_tool(
                     server.DISPATCH_TOOL,
                     {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
                 )
@@ -303,7 +311,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual("committed", continued["status"], continued)
         fixture = dataclasses.replace(fixture, store=SQLiteWorkStore(fixture.work / "state.sqlite3"))
         before = fixture.store.validated_snapshot()
-        context = call_native_tool(
+        context = fixture.call_native_tool(
             server.CORRECTION_CONTEXT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -323,7 +331,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         fixture = self.correction_fixture()
         history_id, full = self.submit_and_return(fixture, "reuse-review", committed=True)
         choice = self.reuse_choice(fixture, full)
-        context = call_native_tool(
+        context = fixture.call_native_tool(
             server.CORRECTION_CONTEXT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -353,7 +361,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.json_object(malformed["brief_review"])["unknown"] = True
         self.assertEqual("DISPATCH_INVALID", self.dispatch_native(fixture, malformed)["code"])
         self.assertEqual(before, fixture.store.validated_snapshot())
-        ready = call_native_tool(
+        ready = fixture.call_native_tool(
             server.DISPATCH_TOOL,
             {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
         )
@@ -387,7 +395,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                 history_id, full = self.submit_and_return(fixture, review_condition, committed=True)
                 choice = self.reuse_choice(fixture, full)
                 before = fixture.store.validated_snapshot()
-                context = call_native_tool(
+                context = fixture.call_native_tool(
                     server.CORRECTION_CONTEXT_TOOL,
                     {
                         "project_root": str(fixture.project),
@@ -417,7 +425,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         (fixture.project / "architecture.md").unlink()
         choice = self.reuse_choice(fixture, full)
         before = fixture.store.validated_snapshot()
-        context = call_native_tool(
+        context = fixture.call_native_tool(
             server.CORRECTION_CONTEXT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -432,7 +440,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_local_return_dispatches_and_corrected_commit_reaches_disposition(self) -> None:  # noqa: PLR0915 - one native recovery journey
-        fixture = self.checkpoint_fixture(local=True)
+        fixture = self.native_fixture(self.checkpoint_fixture(local=True))
         context = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
         assert context is not None
         reason = "Submit a clean commit for repository disposition."
@@ -504,14 +512,14 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", drifted["code"])
         self.assertEqual("unchanged", drifted["effect"])
         (fixture.project / "tracked.txt").write_text("candidate\n", encoding="utf-8")
-        dispatched = call_native_tool(
+        dispatched = fixture.call_native_tool(
             server.DISPATCH_TOOL,
             {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
         )
         self.assertEqual("ready", dispatched["status"], dispatched)
 
         (fixture.project / "tracked.txt").write_text("independently assessed local drift\n", encoding="utf-8")
-        current_context = call_advertised_tool(
+        current_context = fixture.call_advertised_tool(
             server.RETURN_CONTEXT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -530,7 +538,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             "source_review": choice["brief_review"],
             "current_candidate": self.json_object(current_context["context"])["current_candidate"],
         }
-        current_result = call_advertised_tool(
+        current_result = fixture.call_advertised_tool(
             server.DISPATCH_TOOL,
             {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": current_choice},
         )
@@ -543,7 +551,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         payload = fixture.work / "submit-local.json"
         payload.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
         self.transition_json(fixture, submit, payload)
-        review_job = call_native_tool(
+        review_job = fixture.call_native_tool(
             server.REVIEW_JOB_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -563,7 +571,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
         assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
         attempt_root = fixture.work / "attempts" / "work-a-1"
-        recorded = call_native_tool(
+        recorded = fixture.call_native_tool(
             server.REVIEW_JOB_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -584,7 +592,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             },
         )
         self.assertEqual("recorded", recorded["status"], recorded)
-        inspected = call_native_tool(
+        inspected = fixture.call_native_tool(
             server.ATTEMPT_INSPECT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -687,7 +695,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         wrong_scope = msgspec.to_builtins(replacement)
         assert isinstance(wrong_scope, dict)
         self.json_object(wrong_scope["accepted_scope"])["revision"] = 2
-        rejected = call_native_tool(
+        rejected = fixture.call_native_tool(
             server.BRIEF_PUBLISH_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -697,7 +705,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         )
         self.assertEqual("rejected", rejected["status"], rejected)
         self.assertEqual(before, fixture.store.validated_snapshot())
-        published = call_native_tool(
+        published = fixture.call_native_tool(
             server.BRIEF_PUBLISH_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -737,7 +745,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             history_id,
             "Reassess the candidate on its new accepted base.",
         )
-        historical = call_advertised_tool(
+        historical = fixture.call_advertised_tool(
             server.RETURN_CONTEXT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -756,7 +764,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         )
         self.json_object(choice["brief_review"])["starting_candidate"] = recovered["starting_candidate"]
         self.json_object(choice["brief_review"])["correction_input"] = {"reason": recovered["correction_reason"]}
-        forbidden = call_advertised_tool(
+        forbidden = fixture.call_advertised_tool(
             server.RETURN_CONTEXT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -800,13 +808,13 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             "source_review": correction["brief_review"],
             "current_candidate": msgspec.to_builtins(observed_binding),
         }
-        rejected = call_advertised_tool(
+        rejected = fixture.call_advertised_tool(
             server.DISPATCH_TOOL,
             {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": current_correction},
         )
         self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", rejected["code"], rejected)
         self.assertEqual(before, fixture.store.validated_snapshot())
-        ready = call_native_tool(
+        ready = fixture.call_native_tool(
             server.DISPATCH_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -854,7 +862,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual("ready", job["status"], job)
         old_prompt = original_verdict["reviewer_prompt_sha256"]
         assert isinstance(old_prompt, str)
-        stale = call_native_tool(
+        stale = fixture.call_native_tool(
             server.REVIEW_JOB_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -877,7 +885,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         }
         for field, value in old_bindings.items():
             with self.subTest(stale_review_binding=field):
-                stale = call_native_tool(
+                stale = fixture.call_native_tool(
                     server.REVIEW_JOB_TOOL,
                     {
                         "project_root": str(fixture.project),
@@ -888,7 +896,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                 self.assertEqual("rejected", stale["status"], stale)
                 self.assertFalse(stale["state_changed"], stale)
                 self.assertEqual(before, fresh.validated_snapshot())
-        recorded = call_native_tool(
+        recorded = fixture.call_native_tool(
             server.REVIEW_JOB_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -1092,7 +1100,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                 "Reassess the protected candidate against the complete replacement brief.",
             ),
         )
-        published = call_native_tool(
+        published = fixture.call_native_tool(
             server.BRIEF_PUBLISH_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -1121,7 +1129,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             "subject_revision": action["subject_revision"],
         }
         before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
-        stale = call_native_tool(
+        stale = fixture.call_native_tool(
             server.DISPATCH_TOOL,
             {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": old_choice},
         )
@@ -1159,7 +1167,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             del replacement_choice["environment"]
             del replacement_choice["prompt"]
             self.replacement_readiness_checks(fixture, replacement_choice, failure)
-            published_ready = call_native_tool(
+            published_ready = fixture.call_native_tool(
                 server.DISPATCH_TOOL,
                 {
                     "project_root": str(fixture.project),
@@ -1252,7 +1260,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         current_choice = self.correction_choice(
             fixture, "replacement-correction", context.reference, new_history, reason
         )
-        dispatched = call_native_tool(
+        dispatched = fixture.call_native_tool(
             server.DISPATCH_TOOL,
             {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": current_choice},
         )
@@ -1485,7 +1493,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             for path in (fixture.work / "artifacts").rglob("*")
             if path.is_file()
         }
-        context = call_native_tool(
+        context = fixture.call_native_tool(
             server.CORRECTION_CONTEXT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -1600,7 +1608,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                 self.assertEqual(before, fixture.store.validated_snapshot())
 
     def current_candidate_choice(self, fixture: CheckpointFixture, history_id: int, choice: JsonObject) -> JsonObject:
-        context = call_advertised_tool(
+        context = fixture.call_advertised_tool(
             server.RETURN_CONTEXT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -1637,7 +1645,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                 if tracked_drift:
                     (fixture.project / "tests" / "test_only.py").write_text("assert 'reviewed drift'\n")
                 before = fixture.store.validated_snapshot()
-                ordinary = call_advertised_tool(
+                ordinary = fixture.call_advertised_tool(
                     server.DISPATCH_TOOL,
                     {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
                 )
@@ -1647,7 +1655,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                 binding = self.json_object(self.json_object(current["brief_review"])["current_candidate"])
                 self.assertEqual(["scratch.txt"], binding["omitted_untracked_paths"])
                 scratch.write_text("different omitted bytes\n")
-                ready = call_advertised_tool(
+                ready = fixture.call_advertised_tool(
                     server.DISPATCH_TOOL,
                     {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": current},
                 )
@@ -1762,7 +1770,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             "attempt_id": "work-a-1",
             "selection": {"kind": "historical", "return_history_id": history_id},
         }
-        returned = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+        returned = fixture.call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
         selected = self.json_object(returned["context"])
         before = fixture.store.validated_snapshot()
         absent_selection: JsonObject = {"kind": "historical", "return_history_id": 999999}
@@ -1771,14 +1779,14 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             arguments | {"selection": absent_selection},
         )
         for invalid in invalid_requests:
-            result = call_advertised_tool(server.RETURN_CONTEXT_TOOL, invalid)
+            result = fixture.call_advertised_tool(server.RETURN_CONTEXT_TOOL, invalid)
             self.assertEqual("rejected", result["status"], result)
             self.assertEqual(before, fixture.store.validated_snapshot())
         reference = self.json_object(selected["starting_candidate"])
         path = fixture.work / str(reference["selector"])
         original = path.read_bytes()
         path.write_bytes(b"damaged selected snapshot\n")
-        result = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+        result = fixture.call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
         self.assertEqual("DISPATCH_BRIEF_REVIEW_INVALID", result["code"], result)
         self.assertFalse(result["state_changed"])
         path.write_bytes(original)
@@ -1848,7 +1856,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             "attempt_id": "work-a-1",
             "selection": {"kind": "historical", "return_history_id": history_id},
         }
-        baseline = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+        baseline = fixture.call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
         self.assertEqual("ready", baseline["status"], baseline)
         selected = self.json_object(baseline["context"])
         receipt = self.json_object(selected["return_receipt"])
@@ -1874,7 +1882,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                 SQLiteWorkStore, "read_project_export_batches", side_effect=AssertionError("export is unrelated")
             ),
         ):
-            grown = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+            grown = fixture.call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
         self.assertEqual(baseline, grown)
         self.assertEqual(before_database, database.read_bytes())
         self.assertEqual(
@@ -1905,7 +1913,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
 
                 before = fixture.store.validated_snapshot()
                 with patch.object(ArtifactRepository, "read", new=fail_selected_brief):
-                    result = call_advertised_tool(
+                    result = fixture.call_advertised_tool(
                         server.DISPATCH_TOOL,
                         {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": current},
                     )
@@ -1930,7 +1938,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                     "attempt_id": "work-a-1",
                     "selection": {"kind": "historical", "return_history_id": history_id},
                 }
-                original = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+                original = fixture.call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
                 match state:
                     case "paused":
                         paused = self.transition_result(
@@ -1948,7 +1956,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                         )
                         self.assertEqual("committed", submitted["status"], submitted)
                 before = fixture.store.validated_snapshot()
-                historical = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+                historical = fixture.call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
                 self.assertEqual(original, historical)
                 if state == "review":
                     protected = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
@@ -1961,11 +1969,13 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                         "read_review_job_context",
                         side_effect=AssertionError("current review context is unrelated"),
                     ):
-                        selected = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
+                        selected = fixture.call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
                     self.assertEqual(original, selected)
                     path.write_bytes(protected_bytes)
                 selection: JsonObject = {"kind": "current-candidate", "return_history_id": history_id}
-                forbidden = call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments | {"selection": selection})
+                forbidden = fixture.call_advertised_tool(
+                    server.RETURN_CONTEXT_TOOL, arguments | {"selection": selection}
+                )
                 self.assertEqual("DISPATCH_ATTEMPT_NOT_ACTIVE", forbidden["code"], forbidden)
                 self.assertEqual(before, fixture.store.validated_snapshot())
 
@@ -1974,7 +1984,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         history_id, _choice = self.submit_and_return(fixture, "returned", committed=True)
         (fixture.project / "scratch*.txt").write_text("omitted bytes\n")
         before = fixture.store.validated_snapshot()
-        result = call_advertised_tool(
+        result = fixture.call_advertised_tool(
             server.RETURN_CONTEXT_TOOL,
             {
                 "project_root": str(fixture.project),

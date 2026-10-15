@@ -1,4 +1,6 @@
+import asyncio
 import hashlib
+import io
 import json
 import subprocess
 import tempfile
@@ -9,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import msgspec
+from mcp import Client
 
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
@@ -29,8 +32,9 @@ from pinboard.application.brief_sources import (
     render_brief_source_batch,
     select_brief_source_bytes,
 )
+from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server
-from tests.native_support import call_advertised_tool, call_native_tool
+from tests.native_support import call_native_tool
 from tests.support import JsonObject, JsonValue
 
 
@@ -175,113 +179,150 @@ class BriefSourcesTest(unittest.TestCase):
         self.assertTrue(all(len(content) == batch.estimated_rendered_byte_count for batch, content in rendered_batches))
         self.assertEqual(tuple(range(len(plan.batches))), tuple(batch.index for batch in plan.batches))
 
-    def test_native_decimal_batch_indexes_preserve_all_content_within_the_exact_ceiling(self) -> None:
-        for label, contents in (
-            ("observed", (b"x" * 100 + b"\n",) * 120),
-            (
-                "mixed",
+    def test_native_decimal_batch_indexes_preserve_all_content_within_the_exact_ceiling(self) -> None:  # noqa: PLR0915 - one SDK paging journey across two isolated source cases
+        async def call(client: Client, tool: str, arguments: JsonObject) -> JsonObject:
+            result = await client.call_tool(tool, arguments)
+            assert isinstance(result.structured_content, dict)
+            assert not result.is_error
+            content: JsonObject = result.structured_content
+            return content
+
+        async def check_paging() -> None:  # noqa: PLR0915 - retain the complete paging and rejection checks per session
+            for label, contents in (
+                ("observed", (b"x" * 100 + b"\n",) * 120),
                 (
-                    b"x" * 206 + b"\n",
-                    (b"x" * 100 + b"\n") * 120,
-                    ('quote=" slash=\\ tab=\t control=\x01 音🎛é\n' * 4).encode() * 10,
-                    b"final without newline",
-                    b"",
+                    "mixed",
+                    (
+                        b"x" * 206 + b"\n",
+                        (b"x" * 100 + b"\n") * 120,
+                        ('quote=" slash=\\ tab=\t control=\x01 音🎛é\n' * 4).encode() * 10,
+                        b"final without newline",
+                        b"",
+                    ),
                 ),
-            ),
-        ):
-            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
-                project = Path(directory)
-                self.run_git(project, "init", "--quiet")
-                # Keep the reproduced source framing; the mixed case adds later independent sources.
-                selected = (b"".join(contents),) if label == "observed" else contents
-                requests: list[BriefSourceRequest] = []
-                for index, content in enumerate(selected):
-                    name = ("source", "second", "third0", "fourth", "empty0")[index]
-                    (project / f"{name}.md").write_bytes(content)
-                    requests.append(BriefSourceRequest(name, f"{name}.md", ("contract",)))
-                roots: JsonObject = {
-                    "project_root": str(project.resolve()),
-                    "work_root": str(project / "absent-state"),
-                }
-                plan_path = project / "plan.json"
-                receipt = call_advertised_tool(
-                    server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
-                    {
-                        "request": {
-                            **roots,
-                            "operation": "plan-to-file",
-                            "manifest": self.manifest_value(*requests),
-                            "max_batch_bytes": 500,
-                            "destination": str(plan_path),
-                        }
-                    },
-                )
-                self.assertEqual("pinboard-brief-source-plan-output/v1", receipt["schema"])
-                plan = msgspec.json.decode(plan_path.read_bytes(), type=BriefSourcePlanView)
-                self.assertGreater(len(plan.batches), 100)
-                reconstructed = {request.authority_id: bytearray() for request in requests}
-                seen_segments: list[tuple[str, int]] = []
-                for batch in plan.batches:
-                    emitted = call_advertised_tool(
-                        server.BRIEF_SOURCES_TOOL,
-                        {
-                            "request": {
-                                **roots,
-                                "operation": "emit-file",
-                                "plan_path": str(plan_path),
-                                "batch_index": batch.index,
-                            }
-                        },
+            ):
+                with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                    project = Path(directory)
+                    self.run_git(project, "init", "--quiet")
+                    # Keep the reproduced source framing; the mixed case adds later independent sources.
+                    selected = (b"".join(contents),) if label == "observed" else contents
+                    requests: list[BriefSourceRequest] = []
+                    for index, content in enumerate(selected):
+                        name = ("source", "second", "third0", "fourth", "empty0")[index]
+                        (project / f"{name}.md").write_bytes(content)
+                        requests.append(BriefSourceRequest(name, f"{name}.md", ("contract",)))
+                    roots: JsonObject = {
+                        "project_root": str(project.resolve()),
+                        "work_root": str(project / "absent-state"),
+                    }
+                    plan_path = project / "plan.json"
+                    executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+                    transport = server.create_server(
+                        executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
                     )
-                    payload_size = len(msgspec.json.encode(emitted))
-                    self.assertEqual(payload_size, emitted["presented_byte_count"])
-                    self.assertLessEqual(payload_size, 500)
-                    if label == "mixed" and batch.index == 0:
-                        self.assertEqual(500, payload_size)
-                    rendered = emitted["text"]
-                    assert isinstance(rendered, str)
-                    remaining = rendered.encode()
-                    for segment in batch.segments:
-                        header, remaining = remaining.split(b"\n", 1)
-                        self.assertIn(f"authority={segment.authority_id} ".encode(), header)
-                        content = remaining[: segment.content_byte_count]
-                        reconstructed[segment.authority_id].extend(content)
-                        seen_segments.append((segment.authority_id, segment.index))
-                        remaining = remaining[segment.content_byte_count :]
-                        if content and not segment.ends_with_newline:
-                            self.assertTrue(remaining.startswith(b"\n"))
-                            remaining = remaining[1:]
-                        footer, remaining = remaining.split(b"\n", 1)
-                        self.assertEqual(
-                            f"===== END BRIEF SOURCE authority={segment.authority_id} segment={segment.index} =====".encode(),
-                            footer,
-                        )
-                    self.assertEqual(b"", remaining)
-                self.assertEqual(
-                    [(source.authority_id, segment.index) for source in plan.sources for segment in source.segments],
-                    seen_segments,
-                )
-                self.assertEqual(list(selected), [bytes(reconstructed[request.authority_id]) for request in requests])
-                (project / "source.md").write_bytes(b"x" * 207 + b"\n")
-                oversized = call_advertised_tool(
-                    server.BRIEF_SOURCES_TOOL,
-                    {
-                        "request": {
-                            **roots,
-                            "operation": "plan",
-                            "manifest": self.manifest_value(requests[0]),
-                            "max_batch_bytes": 500,
-                        }
-                    },
-                )
-                self.assertEqual(BriefSourceErrorCode.LINE_TOO_LARGE.value, oversized["code"])
-                self.assertIn("501 presented bytes; limit is 500", str(oversized["message"]))
-                changed = call_advertised_tool(
-                    server.BRIEF_SOURCES_TOOL,
-                    {"request": {**roots, "operation": "emit-file", "plan_path": str(plan_path), "batch_index": 0}},
-                )
-                self.assertEqual(BriefSourceErrorCode.SOURCE_CHANGED.value, changed["code"])
-                self.assertFalse((project / "absent-state").exists())
+
+                    try:
+                        async with Client(transport) as client:
+                            receipt = await call(
+                                client,
+                                server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
+                                {
+                                    "request": {
+                                        **roots,
+                                        "operation": "plan-to-file",
+                                        "manifest": self.manifest_value(*requests),
+                                        "max_batch_bytes": 500,
+                                        "destination": str(plan_path),
+                                    }
+                                },
+                            )
+                            self.assertEqual("pinboard-brief-source-plan-output/v1", receipt["schema"])
+                            plan = msgspec.json.decode(plan_path.read_bytes(), type=BriefSourcePlanView)
+                            self.assertGreater(len(plan.batches), 100)
+                            reconstructed = {request.authority_id: bytearray() for request in requests}
+                            seen_segments: list[tuple[str, int]] = []
+                            for batch in plan.batches:
+                                emitted = await call(
+                                    client,
+                                    server.BRIEF_SOURCES_TOOL,
+                                    {
+                                        "request": {
+                                            **roots,
+                                            "operation": "emit-file",
+                                            "plan_path": str(plan_path),
+                                            "batch_index": batch.index,
+                                        }
+                                    },
+                                )
+                                payload_size = len(msgspec.json.encode(emitted))
+                                self.assertEqual(payload_size, emitted["presented_byte_count"])
+                                self.assertLessEqual(payload_size, 500)
+                                if label == "mixed" and batch.index == 0:
+                                    self.assertEqual(500, payload_size)
+                                rendered = emitted["text"]
+                                assert isinstance(rendered, str)
+                                remaining = rendered.encode()
+                                for segment in batch.segments:
+                                    header, remaining = remaining.split(b"\n", 1)
+                                    self.assertIn(f"authority={segment.authority_id} ".encode(), header)
+                                    content = remaining[: segment.content_byte_count]
+                                    reconstructed[segment.authority_id].extend(content)
+                                    seen_segments.append((segment.authority_id, segment.index))
+                                    remaining = remaining[segment.content_byte_count :]
+                                    if content and not segment.ends_with_newline:
+                                        self.assertTrue(remaining.startswith(b"\n"))
+                                        remaining = remaining[1:]
+                                    footer, remaining = remaining.split(b"\n", 1)
+                                    self.assertEqual(
+                                        f"===== END BRIEF SOURCE authority={segment.authority_id} segment={segment.index} =====".encode(),
+                                        footer,
+                                    )
+                                self.assertEqual(b"", remaining)
+                            self.assertEqual(
+                                [
+                                    (source.authority_id, segment.index)
+                                    for source in plan.sources
+                                    for segment in source.segments
+                                ],
+                                seen_segments,
+                            )
+                            self.assertEqual(
+                                list(selected), [bytes(reconstructed[request.authority_id]) for request in requests]
+                            )
+                            (project / "source.md").write_bytes(b"x" * 207 + b"\n")
+                            oversized = await call(
+                                client,
+                                server.BRIEF_SOURCES_TOOL,
+                                {
+                                    "request": {
+                                        **roots,
+                                        "operation": "plan",
+                                        "manifest": self.manifest_value(requests[0]),
+                                        "max_batch_bytes": 500,
+                                    }
+                                },
+                            )
+                            self.assertEqual(BriefSourceErrorCode.LINE_TOO_LARGE.value, oversized["code"])
+                            self.assertIn("501 presented bytes; limit is 500", str(oversized["message"]))
+                            changed = await call(
+                                client,
+                                server.BRIEF_SOURCES_TOOL,
+                                {
+                                    "request": {
+                                        **roots,
+                                        "operation": "emit-file",
+                                        "plan_path": str(plan_path),
+                                        "batch_index": 0,
+                                    }
+                                },
+                            )
+                            self.assertEqual(BriefSourceErrorCode.SOURCE_CHANGED.value, changed["code"])
+                            self.assertFalse((project / "absent-state").exists())
+
+                    finally:
+                        executor.shutdown()
+
+        asyncio.run(check_paging())
 
     def test_plan_rejects_overlap_non_utf8_oversized_lines_and_unknown_batches(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

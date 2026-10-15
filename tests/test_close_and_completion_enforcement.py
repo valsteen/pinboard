@@ -38,7 +38,7 @@ from tests.checkpoint_support import AcceptedPackageFixture, CheckpointFixture, 
 from tests.native_support import call_advertised_tool, call_native_tool
 from tests.support import JsonObject, JsonValue
 
-HUMAN_WORDS = "Yes, drop work-c: the parser rewrite already covers it."
+HUMAN_WORDS = "Yes, close work-c as done: the parser rewrite already covers it."
 
 
 class HumanConfirmedCloseTest(CheckpointPackageSupport):

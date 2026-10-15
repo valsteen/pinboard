@@ -216,7 +216,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 ("revise-item:target", "resume:target"),
             ),
         )
-        for name, item_state, attempt_state, accepted_digest, live_dependencies, expected in cases:
+        for name, item_state, attempt_state, accepted_digest, unsatisfied_dependencies, expected in cases:
             with self.subTest(name=name):
                 revision_index = expected.index("revise-item:target")
                 expected = (
@@ -226,7 +226,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 )
                 target = replace_dataclass(
                     item("target", item_state, attempt="target-1"),
-                    depends_on=live_dependencies,
+                    depends_on=unsatisfied_dependencies,
                 )
                 attempt = AttemptRecord(
                     "target-1",
@@ -240,15 +240,20 @@ class LifecycleDecisionTest(unittest.TestCase):
                 )
                 snapshot = LedgerSnapshot(
                     "revision",
-                    (target, dependency) if live_dependencies else (target,),
+                    (target, dependency) if unsatisfied_dependencies else (target,),
                     attempts=(attempt,),
                     definitions=(current_definition,),
                     subject_revisions=(
                         work_models.SubjectRevision(WorkItemId("target"), "1"),
                         work_models.SubjectRevision(AttemptId("target-1"), "1"),
-                        *((work_models.SubjectRevision(WorkItemId("dependency"), "1"),) if live_dependencies else ()),
+                        *(
+                            (work_models.SubjectRevision(WorkItemId("dependency"), "1"),)
+                            if unsatisfied_dependencies
+                            else ()
+                        ),
                     ),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 )
                 global_actions = available_actions(snapshot, actor)
                 selected_global = tuple(
@@ -266,7 +271,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                         attempt,
                         1,
                         DIGEST_A,
-                        live_dependencies,
+                        unsatisfied_dependencies,
                         True,
                         None,
                         True,
@@ -276,7 +281,8 @@ class LifecycleDecisionTest(unittest.TestCase):
                 selected_exact = tuple(
                     decision_models.action_id(action) for action in (*groups.attempt_actions, *groups.item_actions)
                 )
-                self.assertEqual(expected, selected_global)
+                self.assertEqual(expected, tuple(value for value in selected_global if value != "cancel:target"))
+                self.assertEqual(1, selected_global.count("cancel:target"))
                 self.assertEqual(expected, selected_exact)
                 if name in {"active-current", "review-current"}:
                     completion = next(
@@ -332,7 +338,12 @@ class LifecycleDecisionTest(unittest.TestCase):
             AttemptId("target-1"), WorkItemId("target"), LeaseId("worker-lease"), 3
         )
         snapshot = LedgerSnapshot(
-            "revision", (review,), attempts=(attempt,), attempt_authorities=(authority,), dependency_facts=()
+            "revision",
+            (review,),
+            attempts=(attempt,),
+            attempt_authorities=(authority,),
+            dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
 
         project_actions = available_actions(
@@ -405,7 +416,12 @@ class LifecycleDecisionTest(unittest.TestCase):
             AttemptId("target-1"), WorkItemId("target"), LeaseId("worker-lease"), 3
         )
         snapshot = LedgerSnapshot(
-            "revision", (review,), attempts=(attempt,), attempt_authorities=(authority,), dependency_facts=()
+            "revision",
+            (review,),
+            attempts=(attempt,),
+            attempt_authorities=(authority,),
+            dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
 
         mismatch = decision_outcome(
@@ -439,6 +455,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     definitions=(definition,),
                     attempt_authorities=(authority,),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 )
                 selected = next(
                     value
@@ -494,6 +511,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     definitions=(definition_anchor("target", 2, DIGEST_B, target.depends_on),),
                     attempt_authorities=(authority,),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 )
                 advertised = available_actions(
                     snapshot,
@@ -544,6 +562,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     definitions=(definition,),
                     attempt_authorities=(authority,),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 ),
                 DecisionFailureCode.ACTION_NOT_AVAILABLE,
             ),
@@ -556,6 +575,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     definitions=(definition,),
                     attempt_authorities=(authority,),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 ),
                 DecisionFailureCode.ACTION_NOT_AVAILABLE,
             ),
@@ -568,6 +588,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     definitions=(definition,),
                     attempt_authorities=(authority,),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 ),
                 DecisionFailureCode.ATTEMPT_NOT_FOUND,
             ),
@@ -579,6 +600,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     artifacts=(brief,),
                     definitions=(definition,),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 ),
                 DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
             ),
@@ -613,6 +635,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             attempts=(AttemptRecord("target-1", "target", work_models.AttemptState.PAUSED, 1, DIGEST_A),),
             definitions=(definition_anchor("target", 1, DIGEST_A, (dependency,)),),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
 
         actions = available_actions(
@@ -643,6 +666,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.AttemptAuthority(AttemptId("target-1"), WorkItemId("target"), LeaseId("worker-lease"), 4),
             ),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
         project = available_actions(
             snapshot,
@@ -761,6 +785,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             ),
             attempts=(AttemptRecord("paused-attempt-1", "paused-attempt", work_models.AttemptState.PAUSED),),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
 
         actions = {
@@ -790,7 +815,7 @@ class LifecycleDecisionTest(unittest.TestCase):
         )
 
     def test_missing_attempt_is_a_returned_failure(self) -> None:
-        snapshot = LedgerSnapshot("revision", (), dependency_facts=())
+        snapshot = LedgerSnapshot("revision", (), dependency_facts=(), dropped_item_ids=frozenset())
         command = decision_models.PauseCommand(
             action(decision_models.PauseAction, AttemptId("missing-attempt")), work_models.ReasonInput("pause")
         )
@@ -816,6 +841,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 ),
             ),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
 
         completed_action = action(decision_models.CompleteAction, AttemptId("target-1"))
@@ -840,18 +866,23 @@ class LifecycleDecisionTest(unittest.TestCase):
         assert isinstance(completed.change, decision_models.CoveredCompletionChange)
         self.assertEqual("review accepted", completed.change.evidence)
 
-        intake = LedgerSnapshot("revision", (item("obsolete", work_models.WorkState.READY),), dependency_facts=())
+        intake = LedgerSnapshot(
+            "revision",
+            (item("obsolete", work_models.WorkState.READY),),
+            dependency_facts=(),
+            dropped_item_ids=frozenset(),
+        )
         closed = decide(
             intake,
             decision_models.CloseCommand(
                 action(decision_models.CloseAction, WorkItemId("obsolete")),
                 work_models.CloseInput(
-                    work_models.CloseOutcome.DROPPED, "no longer needed", "The human asked to close it."
+                    work_models.CloseOutcome.DONE, "covered elsewhere", "The human asked to close it."
                 ),
             ),
             NOW,
         )
-        self.assertEqual(("dropped", "no longer needed"), (closed.receipt.outcome, closed.receipt.evidence))
+        self.assertEqual(("done", "covered elsewhere"), (closed.receipt.outcome, closed.receipt.evidence))
 
     def test_completion_leaf_is_selected_by_authoritative_checkpoint_history(self) -> None:
         active = item("target", work_models.WorkState.ACTIVE, attempt="target-1")
@@ -873,13 +904,24 @@ class LifecycleDecisionTest(unittest.TestCase):
 
         direct_with_history = decision_outcome(
             LedgerSnapshot(
-                "revision", (active,), attempts=(attempt,), checkpoint_history_ids=(HistoryId(7),), dependency_facts=()
+                "revision",
+                (active,),
+                attempts=(attempt,),
+                checkpoint_history_ids=(HistoryId(7),),
+                dependency_facts=(),
+                dropped_item_ids=frozenset(),
             ),
             decision_models.CompleteCommand(complete, work_models.EvidenceInput("done")),
             NOW,
         )
         covered_without_history = decision_outcome(
-            LedgerSnapshot("revision", (active,), attempts=(attempt,), dependency_facts=()),
+            LedgerSnapshot(
+                "revision",
+                (active,),
+                attempts=(attempt,),
+                dependency_facts=(),
+                dropped_item_ids=frozenset(),
+            ),
             decision_models.CoveredCompleteCommand(complete, covered_value),
             NOW,
         )
@@ -897,12 +939,24 @@ class LifecycleDecisionTest(unittest.TestCase):
         )
         complete = action(decision_models.CompleteAction, AttemptId("target-1"))
         direct = decision_outcome(
-            LedgerSnapshot("revision", (review,), attempts=(attempt,), dependency_facts=()),
+            LedgerSnapshot(
+                "revision",
+                (review,),
+                attempts=(attempt,),
+                dependency_facts=(),
+                dropped_item_ids=frozenset(),
+            ),
             decision_models.CompleteCommand(complete, work_models.EvidenceInput("done")),
             NOW,
         )
         reviewed = decision_outcome(
-            LedgerSnapshot("revision", (review,), attempts=(attempt,), dependency_facts=()),
+            LedgerSnapshot(
+                "revision",
+                (review,),
+                attempts=(attempt,),
+                dependency_facts=(),
+                dropped_item_ids=frozenset(),
+            ),
             decision_models.CoveredCompleteCommand(
                 complete,
                 work_models.CoveredCompleteInput(
@@ -930,6 +984,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             attempts=(AttemptRecord("build-map-1", "build-map", work_models.AttemptState.ACTIVE, 1, DIGEST_A),),
             definitions=(current,),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
 
         action_ids = {
@@ -960,7 +1015,7 @@ class LifecycleDecisionTest(unittest.TestCase):
         stale_definition = definition_anchor("target", 2, DIGEST_B)
         cases: tuple[tuple[LedgerSnapshot, decision_models.TransitionCommand, str], ...] = (
             (
-                LedgerSnapshot("r", (), dependency_facts=()),
+                LedgerSnapshot("r", (), dependency_facts=(), dropped_item_ids=frozenset()),
                 decision_models.ActivateCommand(
                     action(decision_models.ActivateAction, WorkItemId("missing")),
                     work_models.ActivateInput(AttemptId("missing-1"), "branch", "base", "owner", ArtifactRefId(1)),
@@ -968,7 +1023,12 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "ITEM_NOT_FOUND",
             ),
             (
-                LedgerSnapshot("r", (item("target", work_models.WorkState.READY),), dependency_facts=()),
+                LedgerSnapshot(
+                    "r",
+                    (item("target", work_models.WorkState.READY),),
+                    dependency_facts=(),
+                    dropped_item_ids=frozenset(),
+                ),
                 decision_models.ActivateCommand(
                     action(decision_models.ActivateAction, WorkItemId("target")),
                     work_models.ActivateInput(AttemptId("target-1"), "branch", "base", "owner", ArtifactRefId(1)),
@@ -976,21 +1036,37 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "ACTION_NOT_AVAILABLE",
             ),
             (
-                LedgerSnapshot("r", (ready,), dependency_facts=()),
+                LedgerSnapshot(
+                    "r",
+                    (ready,),
+                    dependency_facts=(),
+                    dropped_item_ids=frozenset(),
+                ),
                 decision_models.PauseCommand(
                     action(decision_models.PauseAction, AttemptId("missing-1")), work_models.ReasonInput("pause")
                 ),
                 "ATTEMPT_NOT_FOUND",
             ),
             (
-                LedgerSnapshot("r", (review,), attempts=(attempt_review,), dependency_facts=()),
+                LedgerSnapshot(
+                    "r",
+                    (review,),
+                    attempts=(attempt_review,),
+                    dependency_facts=(),
+                    dropped_item_ids=frozenset(),
+                ),
                 decision_models.PauseCommand(
                     action(decision_models.PauseAction, AttemptId("target-1")), work_models.ReasonInput("pause")
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
             (
-                LedgerSnapshot("r", (paused,), dependency_facts=()),
+                LedgerSnapshot(
+                    "r",
+                    (paused,),
+                    dependency_facts=(),
+                    dropped_item_ids=frozenset(),
+                ),
                 decision_models.CompleteCommand(
                     action(decision_models.CompleteAction, AttemptId("target-1")), work_models.EvidenceInput("done")
                 ),
@@ -1003,6 +1079,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     attempts=(replace(attempt_active, accepted_scope_revision=1, accepted_scope_digest=DIGEST_A),),
                     definitions=(stale_definition,),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 ),
                 decision_models.CompleteCommand(
                     action(decision_models.CompleteAction, AttemptId("target-1")), work_models.EvidenceInput("done")
@@ -1016,6 +1093,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     attempts=(attempt_review,),
                     history_items=(WorkItemId("target"),),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 ),
                 decision_models.CompleteCommand(
                     action(decision_models.CompleteAction, AttemptId("target-1")), work_models.EvidenceInput("done")
@@ -1023,7 +1101,13 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "HISTORY_RECORD_EXISTS",
             ),
             (
-                LedgerSnapshot("r", (active,), attempts=(attempt_active,), dependency_facts=()),
+                LedgerSnapshot(
+                    "r",
+                    (active,),
+                    attempts=(attempt_active,),
+                    dependency_facts=(),
+                    dropped_item_ids=frozenset(),
+                ),
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, WorkItemId("target")),
                     work_models.CloseInput(work_models.CloseOutcome.DONE, "done", "The human asked to close it."),
@@ -1036,6 +1120,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     (paused,),
                     attempts=(replace(attempt_active, state=work_models.AttemptState.PAUSED),),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 ),
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, WorkItemId("target")),
@@ -1050,6 +1135,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "r",
                     (ready, replace(item("dependent", work_models.WorkState.READY), depends_on=("target",))),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 ),
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, WorkItemId("target")),
@@ -1057,10 +1143,16 @@ class LifecycleDecisionTest(unittest.TestCase):
                         work_models.CloseOutcome.DROPPED, "obsolete", "The human asked to close it."
                     ),
                 ),
-                "LIVE_DEPENDENTS",
+                "ACTION_NOT_AVAILABLE",
             ),
             (
-                LedgerSnapshot("r", (ready,), history_items=(WorkItemId("target"),), dependency_facts=()),
+                LedgerSnapshot(
+                    "r",
+                    (ready,),
+                    history_items=(WorkItemId("target"),),
+                    dependency_facts=(),
+                    dropped_item_ids=frozenset(),
+                ),
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, WorkItemId("target")),
                     work_models.CloseInput(work_models.CloseOutcome.DONE, "done", "The human asked to close it."),
@@ -1068,7 +1160,12 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "HISTORY_RECORD_EXISTS",
             ),
             (
-                LedgerSnapshot("r", (ready,), dependency_facts=()),
+                LedgerSnapshot(
+                    "r",
+                    (ready,),
+                    dependency_facts=(),
+                    dropped_item_ids=frozenset(),
+                ),
                 decision_models.ResumeCommand(
                     action(decision_models.ResumeAction, WorkItemId("target")), work_models.ResumeInput()
                 ),
@@ -1079,6 +1176,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "r",
                     (replace(paused, depends_on=("source",)), item("source", work_models.WorkState.READY)),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 ),
                 decision_models.ResumeCommand(
                     action(decision_models.ResumeAction, WorkItemId("target")), work_models.ResumeInput()
@@ -1086,7 +1184,13 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "DEPENDENCY_NOT_SATISFIED",
             ),
             (
-                LedgerSnapshot("r", (review,), attempts=(attempt_review,), dependency_facts=()),
+                LedgerSnapshot(
+                    "r",
+                    (review,),
+                    attempts=(attempt_review,),
+                    dependency_facts=(),
+                    dropped_item_ids=frozenset(),
+                ),
                 decision_models.SubmitReviewCommand(
                     action(decision_models.SubmitReviewAction, AttemptId("target-1")),
                     work_models.SubmitReviewInput(CandidateId("candidate")),
@@ -1100,6 +1204,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     attempts=(replace(attempt_active, accepted_scope_revision=1, accepted_scope_digest=DIGEST_A),),
                     definitions=(stale_definition,),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 ),
                 decision_models.SubmitReviewCommand(
                     action(decision_models.SubmitReviewAction, AttemptId("target-1")),
@@ -1108,21 +1213,36 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "ITEM_DEFINITION_STALE",
             ),
             (
-                LedgerSnapshot("r", (active,), dependency_facts=()),
+                LedgerSnapshot(
+                    "r",
+                    (active,),
+                    dependency_facts=(),
+                    dropped_item_ids=frozenset(),
+                ),
                 decision_models.BlockWorkItemCommand(
                     action(decision_models.BlockWorkItemAction, WorkItemId("target")), work_models.BlockInput("blocked")
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
             (
-                LedgerSnapshot("r", (item("target", work_models.WorkState.READY),), dependency_facts=()),
+                LedgerSnapshot(
+                    "r",
+                    (item("target", work_models.WorkState.READY),),
+                    dependency_facts=(),
+                    dropped_item_ids=frozenset(),
+                ),
                 decision_models.ReopenCommand(
                     action(decision_models.ReopenAction, WorkItemId("target")), work_models.EvidenceInput("reopen")
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
             (
-                LedgerSnapshot("r", (active,), dependency_facts=()),
+                LedgerSnapshot(
+                    "r",
+                    (active,),
+                    dependency_facts=(),
+                    dropped_item_ids=frozenset(),
+                ),
                 decision_models.DeferCommand(
                     action(decision_models.DeferAction, WorkItemId("target")), DeferInput("safe-to-defer", "later")
                 ),
@@ -1137,7 +1257,13 @@ class LifecycleDecisionTest(unittest.TestCase):
 
     def test_proposal_rejections_use_unstarted_vocabulary(self) -> None:
         proposal = ProposalRecord("proposal", "p1")
-        missing_item = LedgerSnapshot("r", (), proposals=(proposal,), dependency_facts=())
+        missing_item = LedgerSnapshot(
+            "r",
+            (),
+            proposals=(proposal,),
+            dependency_facts=(),
+            dropped_item_ids=frozenset(),
+        )
         cases: tuple[tuple[decision_models.TransitionCommand, str], ...] = (
             (
                 decision_models.MergeProposalCommand(
@@ -1173,6 +1299,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     (item("proposal", state), item("target", work_models.WorkState.READY)),
                     proposals=(proposal,),
                     dependency_facts=(),
+                    dropped_item_ids=frozenset(),
                 )
                 actions = available_actions(snapshot, actor)
                 merge = next(value for value in actions if isinstance(value, decision_models.MergeProposalAction))
@@ -1202,6 +1329,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             attempts=(AttemptRecord("proposal-1", "proposal", work_models.AttemptState.ACTIVE),),
             proposals=(proposal,),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
         self.assertFalse(
             any(

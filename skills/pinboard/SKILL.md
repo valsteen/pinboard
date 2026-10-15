@@ -23,6 +23,10 @@ Before the first implementation write, read the actual human invocation and iden
 
 If implementation already began before that classification, recover the actual prior effects and changed surfaces from available invocation and repository evidence. State what was observed and what remains unknown; a later item or brief does not retroactively authorize the earlier effects or make a narrower recorded file list truthful. Continue only the effects the current request authorizes.
 
+## Human-confirmed cancellation
+
+Cancellation releases a live commitment as **dropped**, preserving its work and history. Only the human's explicit cancellation request starts this route. Never initiate cancellation or infer it from cleanup, completion, vague wording, silence or an obsolete-looking item. Use the [cancellation procedure](references/setup-and-transitions.md#cancel-after-separate-exact-item-confirmation), show the exact item and consequences, then stop for a separate explicit confirmation. Ordinary close and reviewed successful completion keep their independent requirements.
+
 ## Phase index
 
 Use only the phase needed now. A reference supplies concrete mechanics; this core remains the conversation owner.

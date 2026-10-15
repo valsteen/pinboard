@@ -743,6 +743,7 @@ class BoardProjectionTest(unittest.TestCase):
                     "item_id": "needed-first",
                     "reason": "Inferred prerequisite needed-first: Blocked work cannot start without it.",
                     "on_board": True,
+                    "unsatisfied": True,
                 }
             ],
             items["blocked-work"]["dependencies"],

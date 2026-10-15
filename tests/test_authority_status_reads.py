@@ -88,7 +88,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 decision_models.CloseCommand(
                     action,
                     work_models.CloseInput(
-                        work_models.CloseOutcome.DROPPED, "The human cancelled it.", "The human requested this close."
+                        work_models.CloseOutcome.DONE, "Covered elsewhere.", "The human requested this close."
                     ),
                 ),
                 SQLITE_NOW,
@@ -118,7 +118,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assertEqual(revisions[0], reply["committed_revision"])
         later = SQLiteWorkStore(work / "state.sqlite3").read_item_status(WorkItemId("proposal-1"))
         assert later is not None
-        self.assertEqual(stored_state.StoredWorkItemState.DROPPED, later.work_item.state)
+        self.assertEqual(stored_state.StoredWorkItemState.DONE, later.work_item.state)
         self.assertIsNone(later.work_item.queue_position)
 
     def test_committed_authority_replies_keep_locked_facts_after_another_writer(self) -> None:
@@ -1257,7 +1257,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
             store.read_candidate_snapshot_context(AttemptId("work-a-1"))
         self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
-    def test_terminal_attempt_inspection_stops_before_related_rows_and_artifacts(self) -> None:
+    def test_terminal_attempt_inspection_reads_only_identity_and_parent_outcome(self) -> None:
         state = self.state_with_unrelated_attempt_authority()
         selected_item = next(value for value in state.lifecycle.work_items if value.item_id == WorkItemId("work-a"))
         selected_attempt = next(
@@ -1299,7 +1299,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assertNotIn("code", stdout)
         self.assertTrue(self.json_object(stdout["continuation"])["terminal"])
         tables, statements = reads
-        self.assertEqual({"attempts", "project_meta"}, tables)
+        self.assertEqual({"attempts", "project_meta", "work_items"}, tables)
         self.assert_keyed_status_queries(work / "state.sqlite3", statements, expected_operations=2)
 
     def test_attempt_inspection_rejects_selected_corruption_and_ignores_unrelated_corruption(self) -> None:

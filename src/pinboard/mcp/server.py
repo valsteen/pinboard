@@ -21,6 +21,7 @@ from pinboard.application import (
     work_brief_models,
 )
 from pinboard.mcp import (
+    cancellation_operations,
     common,
     contract_schemas,
     contracts,
@@ -41,6 +42,7 @@ from pinboard.mcp.tool_names import (
     BRIEF_REVIEW_TOOL,
     BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
     BRIEF_SOURCES_TOOL,
+    CANCEL_TOOL,
     CANDIDATE_OBSERVE_TOOL,
     CANDIDATE_RESTORE_TOOL,
     CLOSE_TOOL,
@@ -121,11 +123,11 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "item and bring its pause_reason decision to the human before resuming. Call board work done only when "
             "the board records it complete; a merge is not completion or review. Close only an unstarted item, only "
             "through pinboard_close, and only with the human's explicit decision in their own words as "
-            "human_decision. An item with an attempt cannot be closed: it completes only after a reviewer "
+            "human_decision. Ordinary close cannot close an item with an attempt; successful completion requires a reviewer "
             "commissioned through pinboard_review_job has its ready verdict recorded. Commission that review only when "
             "the required commissioned evidence is missing or invalid; otherwise reuse the valid ready record "
             "through fresh attempt inspection and the completion contract. Never pause or block work to "
-            "approximate a refused or denied close. "
+            "approximate a refused or denied close. Cancellation is separate: only an explicit human cancellation request permits pinboard_cancel preview, then stop for a separate explicit confirmation of that exact item and its shown consequences before confirm. All sharing clients must use a cancellation-aware build before first cancellation. Never infer cancellation from cleanup, completion, ambiguity or silence. "
             "An active implementation request covers worker submission, separate candidate review and in-scope "
             "correction through the loaded workflow without another general review approval. Explicit pauses, "
             "scope changes, missing capabilities, mandated executors and runtime access, integration and terminal "
@@ -630,13 +632,13 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
     @server.tool(
         name=CLOSE_TOOL,
         description=(
-            "Close one unstarted Pinboard item as done or dropped on the human's explicit decision. Never close in "
+            "Close one unstarted Pinboard item as done on the human's explicit success decision. To abandon work, use pinboard_cancel preview and separate exact-item human confirmation. Never close in "
             "the same turn as your own source change for that item unless the human explicitly asked you to close "
             "it; otherwise report the change and ask the human first. Claude Code v2.1.199 or later asks the human "
             "to confirm every call; Codex and earlier Claude Code versions may not ask. Arguments are project_root, work_root, receipt, payload, actor_task_id "
             "and actor_host_id (no request wrapper, no role). receipt contains ONLY action_id:{kind:'close',"
             "subject:<item_id>} and subject_revision from the close action pinboard_actions returned. payload is "
-            "{outcome:'done'|'dropped', reason:<one line>, human_decision:<the human's explicit close decision in "
+            "{outcome:'done', reason:<one line>, human_decision:<the human's explicit close decision in "
             "their own words, one line>}. If you do not have the human's own words, ask the human and stop; never "
             "write them yourself. If this call is denied, report that the human must confirm the close and seek no "
             "other route: no shell or CLI close, pause, block, defer or other transition."
@@ -825,6 +827,23 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             capture=capture,
         )
 
+    @server.tool(
+        name=CANCEL_TOOL,
+        description="Preview one live item's cancellation without effects, then confirm only after a separate explicit human confirmation for the exact shown item and consequences. Never initiate cancellation or infer it from cleanup, completion, ambiguity or silence. Every sharing client must use a cancellation-aware build before first cancellation.",
+    )
+    async def cancel(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        arguments: dict[str, JsonValue] = {"request": request}
+        return await execution._run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            CANCEL_TOOL,
+            str(request.get("project_root", "")),
+            partial(cancellation_operations.operate, arguments),
+            arguments=arguments,
+            capture=None if request.get("operation") == "preview" else capture,
+        )
+
     _install_boundary_contracts(server)
     return server
 
@@ -832,6 +851,11 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 def _install_boundary_contracts(server: MCPServer) -> None:
     """Install exact schemas through the pinned SDK's mutable tool metadata seam."""
     definitions = (
+        (
+            CANCEL_TOOL,
+            contract_schemas.schema_for(contracts.CancellationEnvelope),
+            contract_schemas.union_schema_for(contracts.CANCELLATION_RESULT_TYPES),
+        ),
         (
             FIXTURE_REVIEW_TOOL,
             contract_schemas.schema_for(contracts.FixtureReviewEnvelope),

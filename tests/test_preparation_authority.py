@@ -362,7 +362,7 @@ class PreparationAuthorityTest(unittest.TestCase):
                     ),
                 ),
                 acquisition,
-                "Item 'work-c' has live dependencies.",
+                "Item 'work-c' has unsatisfied prerequisites.",
             ),
             (
                 "planned replacement after selection",

@@ -624,6 +624,14 @@ def read_current_snapshot(
         )
     )
 
+    dropped = frozenset(
+        decode_row(row, _ItemIdRow).item_id
+        for row in select_by_ids(
+            connection,
+            "SELECT item_id FROM work_items WHERE item_id IN ({ids}) AND state = 'dropped'",
+            tuple(row.dependency_id for row in dependency_rows),
+        )
+    )
     return LedgerSnapshot(
         revision=str(project.revision),
         items=tuple(
@@ -665,6 +673,7 @@ def read_current_snapshot(
             )
             for value in definitions
         ),
+        dropped_item_ids=dropped,
     )
 
 
@@ -991,6 +1000,11 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
                 value.item_id, tuple(WorkItemId(dependency) for dependency in value.definition.dependencies)
             )
             for value in definitions.values()
+        ),
+        dropped_item_ids=frozenset(
+            value.item_id
+            for value in selected_items.values()
+            if value.state == stored_state.StoredWorkItemState.DROPPED
         ),
     )
     return query_models.DecisionFacts(

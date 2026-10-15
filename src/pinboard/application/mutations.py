@@ -12,6 +12,7 @@ from pinboard.application.artifacts import (
 )
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
+    CancellationMutation,
     CheckpointAcceptanceArtifactChanges,
     CheckpointAcceptanceMutation,
     CheckpointArtifactChanges,
@@ -101,7 +102,13 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                     candidate=candidate,
                 ),
             )
-        case ProposalCreationMutation() | AttemptAuthorityMutation() | PreparationAuthorityMutation() | OrderMutation():
+        case (
+            CancellationMutation()
+            | ProposalCreationMutation()
+            | AttemptAuthorityMutation()
+            | PreparationAuthorityMutation()
+            | OrderMutation()
+        ):
             transition = mutation.receipt.transition
             return HistoryOutcome(
                 "transition-receipt/v1",

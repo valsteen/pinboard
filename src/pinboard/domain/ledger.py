@@ -10,6 +10,7 @@ from pinboard.domain.identifiers import AttemptId, HistoryId, LeaseId, ProposalI
 class LedgerSnapshot:
     revision: str
     items: tuple[work_models.WorkItem, ...]
+    dropped_item_ids: frozenset[WorkItemId] = field(kw_only=True)
     dependency_facts: tuple[work_models.DefinitionDependencies, ...] = field(kw_only=True)
     attempts: tuple[work_models.AttemptRecord, ...] = ()
     artifacts: tuple[work_models.ArtifactRecord, ...] = ()
@@ -25,6 +26,10 @@ class LedgerSnapshot:
     checkpoint_history_ids: tuple[HistoryId, ...] = ()
     planned_replacements: tuple[work_models.PlannedReplacement, ...] = ()
     replacement_dispositions: tuple[work_models.ReplacementDisposition, ...] = ()
+
+    @property
+    def unsatisfied_dependency_ids(self) -> frozenset[WorkItemId]:
+        return self.dropped_item_ids | frozenset(item.work_item_id for item in self.items)
 
     def work_items_by_id(self) -> Mapping[WorkItemId, work_models.WorkItem]:
         return MappingProxyType({item.work_item_id: item for item in self.items})

@@ -65,3 +65,6 @@ When the human asks for a new priority recommendation, prefer, in order:
 5. optional hardening only after its recorded reopen condition occurs.
 
 Do not turn that ordering into a score. A recommendation remains an explanation, not an automatic product decision.
+
+
+A dropped item is cancelled work, not successful completion. It is absent from the live queue but retains its definition, attempt and evidence. Exact item status names its `cancel` closure; exact retained-attempt inspection presents `dropped` with no executable continuation, and branch-owner output says `cancelled`. Live dependents keep `unsatisfied_dependencies`, including dropped prerequisites. Report the retained repository disposition separately; cancellation proves neither absorption nor integration.

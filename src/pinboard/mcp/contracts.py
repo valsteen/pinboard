@@ -10,6 +10,7 @@ from pinboard.adapters import dispatch_operations, review_operations
 from pinboard.application import (
     action_models,
     brief_source_models,
+    cancellation_models,
     dispatch_models,
     pr_reviews,
     proposal_models,
@@ -19,6 +20,7 @@ from pinboard.application import (
 )
 from pinboard.domain import authority_models, decision_models, ordering
 from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
+from pinboard.domain.history import RecordText
 
 type JsonScalar = bool | int | float | str | None
 
@@ -1624,6 +1626,12 @@ class TerminalAttemptContinuation(
             raise ValueError("an attempt continuation requires the exact forbidden routes")
 
 
+class CancelledAttemptContinuation(
+    TerminalAttemptContinuation, tag="dropped", tag_field="state", frozen=True, forbid_unknown_fields=True
+):
+    """Dropped parent disposition for a terminal retained attempt."""
+
+
 class NonterminalAttemptContinuationBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-attempt-continuation/v1"]
     attempt_id: PathComponent
@@ -1756,7 +1764,7 @@ class BlockedAttemptContinuation(
 type NonterminalAttemptContinuation = (
     ActiveAttemptContinuation | ReviewAttemptContinuation | PausedAttemptContinuation | BlockedAttemptContinuation
 )
-type AttemptContinuation = TerminalAttemptContinuation | NonterminalAttemptContinuation
+type AttemptContinuation = TerminalAttemptContinuation | CancelledAttemptContinuation | NonterminalAttemptContinuation
 
 
 class CandidateRecoveryAbsent(msgspec.Struct, tag="absent", tag_field="kind", frozen=True, forbid_unknown_fields=True):
@@ -1800,7 +1808,7 @@ type CandidateRecovery = CandidateRecoveryAbsent | CandidateRecoveryPresent
 class TerminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
     status: Literal["ok"]
-    continuation: TerminalAttemptContinuation
+    continuation: TerminalAttemptContinuation | CancelledAttemptContinuation
     candidate_recovery: CandidateRecovery
     accepted_brief: None
     result: EvidenceReference
@@ -2133,6 +2141,7 @@ def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tu
             | decision_models.ActionKind.ACTIVATE
             | decision_models.ActionKind.BLOCK
             | decision_models.ActionKind.BLOCK_ITEM
+            | decision_models.ActionKind.CANCEL
             | decision_models.ActionKind.CLOSE
             | decision_models.ActionKind.DEFER
             | decision_models.ActionKind.MERGE_PROPOSAL
@@ -3289,3 +3298,72 @@ type ResultBoundary = (
     | type[BriefReviewInfrastructureFailure]
     | type[BriefReviewInfrastructureUnchangedFailure]
 )
+
+
+class CancellationPreviewRequest(
+    msgspec.Struct, tag="preview", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: action_models.Identity
+
+
+class CancellationConfirmRequest(
+    msgspec.Struct, tag="confirm", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: action_models.Identity
+    binding: cancellation_models.CancellationBinding
+    human_confirmation: RecordText
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+
+    def __post_init__(self) -> None:
+        if not self.human_confirmation.strip():
+            raise ValueError("human_confirmation must contain the human's own explicit confirmation")
+
+
+class CancellationEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: CancellationPreviewRequest | CancellationConfirmRequest
+
+
+class CancellationPreviewResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-cancellation-preview-result/v1"]
+    status: Literal["ok"]
+    preview: cancellation_models.CancellationPreview
+    binding: cancellation_models.CancellationBinding
+    continuation: str
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+
+class CancellationRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-cancellation-result/v1"]
+    status: Literal["rejected"]
+    code: Literal["TRANSITION_INPUT_INVALID", "ACTION_NOT_AVAILABLE"]
+    message: str
+    recovery: str
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input", "refresh-action"]
+    changed_surfaces: Empty
+
+
+class CancellationCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-cancellation-result/v1"]
+    status: Literal["committed", "committed-with-warning"]
+    item_id: str
+    outcome: Literal["dropped"]
+    committed_revision: int
+    history_id: int
+    state_changed: bool
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: LedgerSurface
+    warning: WarningResult | None
+
+
+CANCELLATION_RESULT_TYPES = (CancellationPreviewResult, CancellationRejected, CancellationCommitted, ExecutorBusyResult)

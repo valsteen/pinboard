@@ -91,6 +91,7 @@ class TypedTransitionContractTest(unittest.TestCase):
                 ),
             ),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
         preparation = work_models.PreparationCommandAuthority(
             1,
@@ -163,6 +164,7 @@ class TypedTransitionContractTest(unittest.TestCase):
             ),
             artifacts=(work_models.ArtifactRecord(ArtifactRefId(1), work_models.ArtifactKind.BRIEF),),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
         rejected_without_attempt = decision_outcome(
             without_attempt,
@@ -231,6 +233,7 @@ class TypedTransitionContractTest(unittest.TestCase):
                 ),
             ),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
         resume = action(decision_models.ResumeAction, WorkItemId("ready-item"))
 

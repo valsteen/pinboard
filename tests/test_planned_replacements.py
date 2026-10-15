@@ -66,6 +66,7 @@ class PlannedReplacementTests(unittest.TestCase):
             planned_replacements=() if relation_value is None else (relation_value,),
             replacement_dispositions=dispositions,
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
 
     def action_ids(self, snapshot: LedgerSnapshot) -> set[str]:
@@ -267,6 +268,7 @@ class PlannedReplacementTests(unittest.TestCase):
                 work_models.SubjectRevision(WorkItemId("replace-cache-again"), "1"),
             ),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
         self.assertNotIn("retain-temporarily:replace-cache", self.action_ids(snapshot))
 

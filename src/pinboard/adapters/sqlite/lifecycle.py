@@ -411,6 +411,7 @@ class TerminalAttemptContextSelection:
     project_revision: int
     attempt_id: AttemptId
     item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,7 +445,7 @@ class ParallelPreviewLifecycleItem:
     item_id: WorkItemId
     label: str
     state: work_models.WorkState
-    live_dependencies: tuple[WorkItemId, ...]
+    unsatisfied_dependencies: tuple[WorkItemId, ...]
     attempt: ParallelPreviewLifecycleAttempt | None
 
 
@@ -811,7 +812,8 @@ def read_parallel_preview_lifecycle(
                 tuple(
                     value.dependency_id
                     for value in dependencies
-                    if stored_state.live_work_state(value.state) is not None
+                    if value.state
+                    not in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED}
                 ),
                 attempt,
             )
@@ -840,7 +842,13 @@ def read_attempt_context(
         return None
     attempt = decode_row(attempt_row, _AttemptContextRow)
     if attempt.state == work_models.AttemptState.DONE:
-        return TerminalAttemptContextSelection(project_revision, attempt.attempt_id, attempt.item_id)
+        row = connection.execute(
+            "SELECT item_id, state, subject_revision FROM work_items WHERE item_id = ?", (attempt.item_id,)
+        ).fetchone()
+        if row is None:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "Terminal attempt has no parent item.")
+        item = decode_row(row, _AttemptItemRow)
+        return TerminalAttemptContextSelection(project_revision, attempt.attempt_id, attempt.item_id, item.state)
     match attempt.state:
         case (
             work_models.AttemptState.ACTIVE
@@ -903,7 +911,10 @@ def read_attempt_context(
             definition.revision,
             definition.digest,
             tuple(
-                value.dependency_id for value in dependencies if stored_state.live_work_state(value.state) is not None
+                value.dependency_id
+                for value in dependencies
+                if value.state
+                not in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED}
             ),
             None,
             True,

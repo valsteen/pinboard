@@ -154,7 +154,7 @@ class OrderingTest(unittest.TestCase):
         next_unstarted = overview["next_unstarted"]
         assert isinstance(next_unstarted, dict)
         self.assertEqual("zz-proposal-a", next_unstarted["item_id"])
-        dependencies = next_unstarted["live_dependencies"]
+        dependencies = next_unstarted["unsatisfied_dependencies"]
         assert isinstance(dependencies, list)
         self.assertEqual(["work-c"], dependencies)
         immediate_options = overview["immediate_options"]

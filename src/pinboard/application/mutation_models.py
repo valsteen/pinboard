@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from pinboard.application import query_models, stored_state
+from pinboard.application import cancellation_models, query_models, stored_state
 from pinboard.application.artifacts import EvidenceArtifactRef, ResultArtifactRef
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.identifiers import (
@@ -171,8 +171,15 @@ class OrderMutation:
     change: OrderChange
 
 
+@dataclass(frozen=True, slots=True)
+class CancellationMutation:
+    receipt: MutationReceipt
+    preview: cancellation_models.CancellationPreview
+
+
 type StoredStateMutation = (
-    OrderMutation
+    CancellationMutation
+    | OrderMutation
     | TransitionMutation
     | ReviewSubmissionMutation
     | CheckpointAcceptanceMutation

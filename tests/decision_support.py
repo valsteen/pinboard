@@ -312,6 +312,11 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
             )
             for value in latest_definitions.values()
         ),
+        dropped_item_ids=frozenset(
+            item.item_id
+            for item in state.lifecycle.work_items
+            if item.state == stored_state.StoredWorkItemState.DROPPED
+        ),
     )
 
 

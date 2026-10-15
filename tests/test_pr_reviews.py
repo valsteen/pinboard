@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import json
 import sqlite3
 import tempfile
 import threading
@@ -436,7 +437,9 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
                 "human",
             )
             self.assertEqual("rejected", stale_close["status"])
-            current = call_native_tool("pinboard_pr_review", {"request": {**common, "operation": "status"}})
+            diagnostic = str(stale_close["message"])
+            next_input, _ = json.JSONDecoder().raw_decode(diagnostic[diagnostic.index("{") :])
+            current = call_native_tool("pinboard_pr_review", next_input)
             self.assertEqual(head_three, msgspec.convert(current, type=contracts.PrReviewSuccess).unreviewed_head)
             closed = accepted(
                 "close",

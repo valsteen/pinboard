@@ -2754,7 +2754,7 @@ class McpTransportTest(unittest.TestCase):
         self.assertIn("pinboard_attempt_authority", contents[25]["continuation"])
         self.assertIn("pinboard_actions", contents[25]["continuation"])
 
-    def test_authority_tools_preserve_fixed_time_commit_reload_and_stale_rejection(self) -> None:
+    def test_authority_tools_preserve_fixed_time_commit_reload_and_stale_rejection(self) -> None:  # noqa: PLR0915 - native stale-authority inspection and fixed-time mutation journey
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=4)
         self.addCleanup(executor.shutdown)
         server = mcp_server.create_server(
@@ -2813,6 +2813,17 @@ class McpTransportTest(unittest.TestCase):
                         assert isinstance(rejected, CallToolResult)
                         assert isinstance(rejected.structured_content, dict)
                         self.assertEqual("rejected", rejected.structured_content["status"])
+                        observations = rejected.structured_content["observed"]
+                        assert isinstance(observations, list)
+                        next_read = {value["field"]: value["value"] for value in observations}
+                        inspected = _run_async(
+                            server.call_tool(
+                                next_read["next_step_tool"], msgspec.json.decode(next_read["next_step_input"])
+                            )
+                        )
+                        assert isinstance(inspected, CallToolResult)
+                        assert isinstance(inspected.structured_content, dict)
+                        self.assertNotEqual("rejected", inspected.structured_content.get("status"))
                         self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
                         result = _run_async(server.call_tool(tool, _mcp_arguments(tool, arguments)))
                     assert isinstance(result, CallToolResult)
@@ -4583,6 +4594,7 @@ class McpTransportTest(unittest.TestCase):
         self.assertIsInstance(content, dict)
         self.assertEqual("failed-after-publication", content["status"])
         self.assertEqual("ARTIFACT_ACCEPTANCE_FAILED", content["code"])
+        self.assertIn("database unavailable", content["message"])
         self.assertTrue(content["state_changed"])
         self.assertEqual("committed", content["effect"])
         self.assertEqual("do-not-retry", content["retry"])

@@ -123,7 +123,7 @@ def close(
         )
     views = work_views.refresh_effect(durable, store, committed, datetime.now(UTC))
     if views.warning is not None:
-        print(views.warning.message, file=sys.stderr)
+        print(f"{views.warning.message} {views.warning.repair}", file=sys.stderr)
     value = CloseView(command.item_id, command.outcome.value, command.reason, str(committed.receipt.project_revision))
     if command.json:
         write_json(value)

@@ -146,6 +146,13 @@ def _present_expected_result(
                 file=sys.stderr,
             )
         return exit_code
+    if isinstance(result, WorkBriefFailure):
+        if roots is None:
+            raise AssertionError("Accepted-evidence failure requires the selected work root.")
+        result = WorkBriefFailure(
+            result.code,
+            f"{result.message} Report this accepted-evidence defect under '{roots.work}' to the human for diagnosis; preserve authoritative state and do not reconstruct accepted bytes.",
+        )
     if json_requested:
         if isinstance(result, CommandFailure) and result.code == DecisionFailureCode.ITEM_STATUS_INCONSISTENT:
             cli_output.write_operation_rejection(
@@ -188,9 +195,9 @@ def _run_invocation(  # noqa: PLR0912 - preserve persisted-state invariant trace
         else:
             print(f"{error}; selected output published at '{error.path}'", file=sys.stderr)
         return 12
-    except (RootError, OSError) as error:
+    except RootError as error:
         if json_requested:
-            code = error.code.value if isinstance(error, RootError) else CliErrorCode.IO_ERROR.value
+            code = error.code.value
             cli_output.write_operation_rejection(
                 operation,
                 code,
@@ -207,6 +214,17 @@ def _run_invocation(  # noqa: PLR0912 - preserve persisted-state invariant trace
             )
         else:
             print(str(error), file=sys.stderr)
+        return 2
+    except OSError as error:
+        selected = (
+            "the selected command roots"
+            if roots is None
+            else f"project_root='{roots.source_checkout}' and work_root='{roots.work}'"
+        )
+        print(
+            f"{CliErrorCode.IO_ERROR.value}: {error}. The '{operation}' result could not be delivered; earlier command effects are unknown. Restore the output connection, then inspect current state using {selected} before repeating any mutating request. Report this condition to the human if inspection is unavailable.",
+            file=sys.stderr,
+        )
         return 2
     except (StorageError, ArtifactError, FileIOError) as error:
         if isinstance(error, StorageError) and error.invariant_violation:

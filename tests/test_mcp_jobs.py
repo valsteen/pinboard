@@ -912,6 +912,13 @@ class McpJobsTest(CheckpointPackageSupport):
             ["immutable-artifact", "accepted-artifact-reference", "ledger"], outcome.content["changed_surfaces"]
         )
         contract_schemas.validate_result("pinboard_dispatch", outcome.content)
+        observations = self.json_array(outcome.content["observed"])
+        next_read = {self.json_object(value)["field"]: self.json_object(value)["value"] for value in observations}
+        self.assertEqual("pinboard_attempt_inspect", next_read["inspection_tool"])
+        arguments = msgspec.json.decode(str(next_read["inspection_input"]))
+        inspected = mcp_reads._read_attempt_inspection(**arguments, token=mcp_execution.CancellationToken())
+        self.assertEqual("ok", inspected.content["status"])
+        self.assertEqual("active", self.json_object(inspected.content["continuation"])["state"])
         review = msgspec.convert(choice["brief_review"], type=work_brief_models.WorkBriefReview, strict=True)
         review_sha256 = sha256(work_briefs.canonical_work_brief_review_bytes(review)).hexdigest()
         self.assertTrue(

@@ -11,6 +11,7 @@ from pinboard.adapters.files import contributor_traces
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
+from pinboard.adapters.files.setting_resolution import SettingResolutionError
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import ports, stored_state, work_brief_models
@@ -48,8 +49,31 @@ def contributor_capture_control(arguments: Sequence[str]) -> int:
             raise
         if arguments[0] == "--contributor-capture-select":
             print(f"Contributor trace setup failed before Pinboard ran: {error}", file=sys.stderr)
+            if isinstance(error, SettingResolutionError):
+                print(
+                    f"Settings resource={error.resource}; operation={error.operation}; settings_parent_creation={error.effects.parent_creation}; settings_file_creation={error.effects.file_creation}; settings_mode_write={error.effects.key_write}. Inspect stored settings at {error.path} before retrying; the target did not run.",
+                    file=sys.stderr,
+                )
+                if isinstance(error.cause, FileExistsError):
+                    print(
+                        f"Wait for the settings edit at {error.resource} to finish; report a stale lock to the human rather than deleting an active edit.",
+                        file=sys.stderr,
+                    )
+                elif isinstance(error.cause, PermissionError):
+                    print(
+                        f"Request {'read' if error.operation == 'read' else 'write'} access to {error.resource if error.operation == 'read' else error.resource.parent} for the settings operation, then retry the original request.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        "Report the named settings condition to the human and resolve it before retrying the original request; preserve any acknowledged settings writes.",
+                        file=sys.stderr,
+                    )
         else:
-            print(f"Contributor trace retention cleanup failed after Pinboard ran: {error}", file=sys.stderr)
+            print(
+                f"Contributor trace retention cleanup failed after Pinboard ran: {error}. Inspect the selected trace destination and restore its directory access for cleanup only; do not repeat the target command.",
+                file=sys.stderr,
+            )
         return 64
     return 0
 
@@ -241,6 +265,9 @@ def rebuild_views(
     operation_time = datetime.now(UTC)
     rebuild_result = work_views.rebuild(durable, store, operation_time)
     if rebuild_result.warning is not None:
-        raise FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, rebuild_result.warning.message)
+        raise FileIOError(
+            FileIOErrorCode.VIEW_REFRESH_FAILED,
+            f"{rebuild_result.warning.message} {rebuild_result.warning.repair} Some replaceable views may already have refreshed; the authoritative ledger is unchanged.",
+        )
     print(f"OK VIEWS_REBUILT revision={rebuild_result.database_revision}")
     return 0

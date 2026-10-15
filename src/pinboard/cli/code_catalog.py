@@ -192,7 +192,7 @@ def select_code_catalog(command: cli_commands.CodeCatalogCommand) -> CommandResu
         DecisionFailureCode.TRANSITION_INPUT_INVALID,
         f"Unknown installed code: {command.code}",
         FailureDetails(
-            observed=(FailureFact("code", command.code),),
+            observed=(FailureFact("code", command.code), FailureFact("next_step", "pinboard code-catalog --json")),
             mismatches=(FailureMismatch("code", "code returned by pinboard code-catalog --json", command.code),),
             retry=RetryDisposition.CORRECT_INPUT,
             effect=EffectDisposition.UNCHANGED,

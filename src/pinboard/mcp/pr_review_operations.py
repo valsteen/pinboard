@@ -89,7 +89,10 @@ def execute(raw: dict[str, JsonValue], token: execution.CancellationToken) -> ex
         case contracts.PrReviewStatusRequest() | contracts.PrReviewActionsRequest():
             state = pr_review.read(durable.database_path, item_id)
             if state is None:
-                return _rejected(DecisionFailureCode.ITEM_NOT_FOUND.value, "Review item does not exist.")
+                return _rejected(
+                    DecisionFailureCode.ITEM_NOT_FOUND.value,
+                    f"Review item '{request.item_id}' does not exist. Read pinboard_overview with project_root={request.project_root!r} and work_root={request.work_root!r} to discover current items; do not create a replacement without human intent.",
+                )
             return _present(state, committed=False)
         case contracts.PrReviewStartRequest():
             payload = request.brief
@@ -109,7 +112,10 @@ def execute(raw: dict[str, JsonValue], token: execution.CancellationToken) -> ex
         case _ as unreachable:
             assert_never(unreachable)
     if claimed_task_id != request.actor_task_id:
-        return _rejected(ProducerOnlyCode.PR_REVIEW_INVALID.value, "Review task identity must match the caller.")
+        return _rejected(
+            ProducerOnlyCode.PR_REVIEW_INVALID.value,
+            "Review task identity must match actor_task_id. Use your own trusted runtime identity; this rejection supplies no identity or authority.",
+        )
     result = pr_review.write(
         durable.database_path,
         item_id,
@@ -120,7 +126,19 @@ def execute(raw: dict[str, JsonValue], token: execution.CancellationToken) -> ex
         datetime.now(UTC),
     )
     if isinstance(result, DecisionFailure):
-        return _rejected(result.code.value, result.message)
+        inspection = {
+            "request": {
+                "project_root": request.project_root,
+                "work_root": request.work_root,
+                "item_id": request.item_id,
+                "operation": "status",
+            }
+        }
+        return _rejected(
+            result.code.value,
+            result.message
+            + f" Read pinboard_pr_review with {msgspec.json.encode(inspection, order='sorted').decode()} and use its current subject_revision, brief, rounds and legal_actions before choosing another action. This rejection grants no permission to close or mutate the item.",
+        )
     token.checkpoint()
     refreshed = common._refresh_affected_views(
         durable,
@@ -128,5 +146,5 @@ def execute(raw: dict[str, JsonValue], token: execution.CancellationToken) -> ex
         AffectedViews((item_id,), (), (HistoryId(result.evidence[-1].history_id),)),
         datetime.now(UTC),
     )
-    warning = None if refreshed.warning is None else refreshed.warning.message
+    warning = None if refreshed.warning is None else f"{refreshed.warning.message} {refreshed.warning.repair}"
     return _present(result, committed=True, view_warning=warning)

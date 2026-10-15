@@ -96,12 +96,12 @@ def read_reference(
     except OSError as error:
         raise ArtifactError(
             ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION,
-            "Artifact bytes could not be read.",
+            f"Artifact bytes at '{work_root / relative}' could not be read: {error}. Report this exact resource to the human for diagnosis; preserve its accepted reference and do not reconstruct or overwrite accepted bytes.",
         ) from error
     if len(data) != reference.size_bytes or sha256(data).hexdigest() != reference.content_sha256:
         raise ArtifactError(
             ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION,
-            "Artifact size or digest does not match its reference.",
+            f"Artifact '{work_root / relative}' does not match accepted size {reference.size_bytes} and SHA-256 {reference.content_sha256}. Report this exact reference and byte mismatch to the human; do not reconstruct or overwrite accepted bytes.",
         )
     return data
 

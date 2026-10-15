@@ -503,7 +503,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=CORRECTION_CONTEXT_TOOL,
-        description="Read the exact effective correction brief, accepted starting snapshot, and advisory coverage-reuse eligibility and blockers for a current return on its exact returned checkout; dispatch rechecks every fact and this read changes no state.",
+        description="Read the exact effective correction brief, accepted starting snapshot, and advisory coverage-reuse eligibility and blockers for a current return on its exact returned checkout; dispatch rechecks every fact and this read changes no state. It returns no review_id: correction dispatch takes a caller-chosen label described by pinboard_dispatch.",
     )
     async def correction_context(
         project_root: str,
@@ -696,6 +696,12 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "only when the accepted brief, every reviewed source, and accepted ready review are unchanged. "
             "kind:'local-correction' takes the same correction fields with "
             "brief_review:<LocalCorrectionSourceReview> for a local checkpoint.\n"
+            "review_id is a caller-chosen label, not an ID that Pinboard issues or any context read returns: one path "
+            "component (nonempty; no '/', CR, LF or NUL; not '.' or '..'), for example 'correction-review-1'. It only "
+            "names the preserved rejected evidence when supplied review evidence differs from evidence already accepted "
+            "for the same review subject; first publication and byte-identical reuse ignore it. Retry identical evidence "
+            "with the same label. Differing evidence rejects as a do-not-retry review collision, preserves the later "
+            "evidence at the returned selector and changes no lifecycle; use a new label for each distinct submission.\n"
             "kind:'replacement-readiness' requires ONLY kind, receipt, checkpoint_id, review_id, correction_history_id, "
             "brief_review:<full CorrectionSourceReview>, and current_candidate:<assessed working-tree identity or clean commit>. "
             "Select the latest returned round made historical by replacement/rebind; pinboard_return_context historical selection "

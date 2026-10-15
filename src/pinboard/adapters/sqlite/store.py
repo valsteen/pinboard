@@ -56,6 +56,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_parallel_preview_lifecycle,
     read_receipts_at_revisions,
     read_recorded_pause_reasons,
+    read_selected_dependency_states,
     reject_damaged_pause_receipt,
 )
 from pinboard.adapters.sqlite.lifecycle import (
@@ -100,12 +101,6 @@ from pinboard.domain.ledger import LedgerSnapshot
 class _ItemUpdatedAtRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: WorkItemId
     updated_at: datetime
-
-
-class _SelectedDependencyViewRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: WorkItemId
-    dependency_id: WorkItemId
-    state: stored_state.StoredWorkItemState
 
 
 class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -232,17 +227,7 @@ def _read_generated_view_facts(
         )
     }
     selected_definitions = read_current_definitions(connection, item_ids)
-    selected_dependencies: dict[WorkItemId, list[_SelectedDependencyViewRow]] = {}
-    for row in select_by_ids(
-        connection,
-        """SELECT dependency.item_id, dependency.dependency_id, item.state
-           FROM item_dependencies AS dependency
-           JOIN work_items AS item ON item.item_id = dependency.dependency_id
-           WHERE dependency.item_id IN ({ids}) ORDER BY dependency.item_id, dependency.position""",
-        item_ids,
-    ):
-        dependency = decode_row(row, _SelectedDependencyViewRow)
-        selected_dependencies.setdefault(dependency.item_id, []).append(dependency)
+    selected_dependencies = read_selected_dependency_states(connection, item_ids)
     live_item_ids = tuple(
         item_id
         for item_id in item_ids
@@ -280,7 +265,7 @@ def _read_generated_view_facts(
         definition = selected_definitions.get(item_id)
         if item is None or definition is None:
             raise StorageError(StorageErrorCode.INVALID_STATE, "An affected item projection is missing.")
-        dependency_rows = tuple(selected_dependencies.get(item_id, ()))
+        dependency_rows = selected_dependencies.get(item_id, ())
         dependencies = tuple(value.dependency_id for value in dependency_rows)
         live_state = stored_state.live_work_state(item.state)
         projected: query_models.OverviewItem | None = None

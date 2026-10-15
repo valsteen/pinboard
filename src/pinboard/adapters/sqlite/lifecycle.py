@@ -725,6 +725,26 @@ def read_item_status(
     )
 
 
+def read_selected_dependency_states(
+    connection: sqlite3.Connection,
+    item_ids: tuple[WorkItemId, ...],
+) -> dict[WorkItemId, tuple[_SelectedDependencyStateRow, ...]]:
+    """Read selected items' ordered dependency states on the caller's connection."""
+
+    dependencies_by_item: dict[WorkItemId, list[_SelectedDependencyStateRow]] = {}
+    for row in select_by_ids(
+        connection,
+        """SELECT dependency.item_id, dependency.dependency_id, item.state
+           FROM item_dependencies AS dependency
+           JOIN work_items AS item ON item.item_id = dependency.dependency_id
+           WHERE dependency.item_id IN ({ids}) ORDER BY dependency.item_id, dependency.position""",
+        item_ids,
+    ):
+        dependency = decode_row(row, _SelectedDependencyStateRow)
+        dependencies_by_item.setdefault(dependency.item_id, []).append(dependency)
+    return {item_id: tuple(dependencies) for item_id, dependencies in dependencies_by_item.items()}
+
+
 def read_parallel_preview_lifecycle(
     connection: sqlite3.Connection,
     item_ids: tuple[WorkItemId, ...],
@@ -745,17 +765,7 @@ def read_parallel_preview_lifecycle(
         )
     }
     definitions = read_current_definitions(connection, item_ids)
-    dependencies_by_item: dict[WorkItemId, list[_SelectedDependencyStateRow]] = {}
-    for row in select_by_ids(
-        connection,
-        """SELECT dependency.item_id, dependency.dependency_id, item.state
-           FROM item_dependencies AS dependency
-           JOIN work_items AS item ON item.item_id = dependency.dependency_id
-           WHERE dependency.item_id IN ({ids}) ORDER BY dependency.item_id, dependency.position""",
-        item_ids,
-    ):
-        dependency = decode_row(row, _SelectedDependencyStateRow)
-        dependencies_by_item.setdefault(dependency.item_id, []).append(dependency)
+    dependencies_by_item = read_selected_dependency_states(connection, item_ids)
     attempts = {
         attempt.item_id: attempt
         for attempt in (
@@ -779,7 +789,7 @@ def read_parallel_preview_lifecycle(
         definition = definitions.get(item_id)
         if definition is None:
             raise StorageError(StorageErrorCode.INVALID_STATE, "The selected work item has no definition.")
-        dependencies = tuple(dependencies_by_item.get(item_id, ()))
+        dependencies = dependencies_by_item.get(item_id, ())
         if tuple(value.dependency_id for value in dependencies) != definition.definition.dependencies:
             raise StorageError(
                 StorageErrorCode.INVALID_STATE, "Current definition dependencies do not match relational dependencies."

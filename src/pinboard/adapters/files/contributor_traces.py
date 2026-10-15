@@ -38,13 +38,17 @@ def _project_data_root(project_root: Path, work_root: Path | None) -> Path | Non
         return None
     data_root = work_root.absolute() if work_root is not None else shared_repository / ".pinboard"
     if data_root.is_symlink():
-        raise ValueError("Contributor trace work root must be a real directory.")
+        raise ValueError(
+            f"Contributor trace work root must be a real directory: {data_root}. Pass its intended real directory as work_root."
+        )
     if not data_root.is_dir():
         return None
     data_root = data_root.resolve()
     if not _ignored_or_external(data_root, SETTINGS_NAME):
         if (data_root / SETTINGS_NAME).exists(follow_symlinks=False):
-            raise ValueError("Contributor trace settings must be Git-ignored before Pinboard can use them.")
+            raise ValueError(
+                f"Contributor trace settings {data_root / SETTINGS_NAME} must be Git-ignored before Pinboard can use them; restore that local exclusion before retrying."
+            )
         return None
     return data_root
 
@@ -190,11 +194,15 @@ def _read_settings(path: Path, effects: SettingEffects) -> ContributorTraceSetti
 def _trace_directory(data_root: Path) -> Path:
     path = data_root / TRACE_DIRECTORY
     if not _ignored_or_external(data_root, f"{TRACE_DIRECTORY}/"):
-        raise ValueError("Contributor trace directory must be Git-ignored before Pinboard can use it.")
+        raise ValueError(
+            f"Contributor trace directory {path} must be Git-ignored before Pinboard can use it; restore that local exclusion before retrying."
+        )
     with suppress(FileExistsError):
         path.mkdir(mode=0o700)
     if path.is_symlink() or not path.is_dir() or stat.S_IMODE(path.stat().st_mode) != 0o700:
-        raise ValueError("Contributor trace directory must be a real private directory (0700).")
+        raise ValueError(
+            f"Contributor trace directory {path} must be a real private directory (0700); restore the selected directory's type, mode and access before retrying."
+        )
     return path
 
 

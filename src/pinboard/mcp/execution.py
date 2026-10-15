@@ -35,6 +35,13 @@ from pinboard.mcp import contract_schemas
 from pinboard.mcp.contracts import JsonValue
 
 THREAD_NAME_PREFIX = "pinboard-mcp-worker"
+_CANCELLED_REQUEST_MESSAGE = (
+    "The request was cancelled at a cooperative checkpoint. Its effect is unknown. "
+    "Before deciding whether another call is safe, use pinboard_attempt_inspect with the original exact roots, "
+    "attempt_id and reconciliation:null, or pinboard_item_status with request containing the original roots, "
+    "operation:'item' and item_id. For a request without an item or attempt, read pinboard_overview with the "
+    "original project_root and work_root. Cancellation does not prove rollback; do not blindly replay a mutation."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -579,10 +586,7 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
                 None,
             )
             emit_request_event(TraceEvent.RESULT, "cancelled", None)
-            raise ToolError(
-                "The request was cancelled at a cooperative checkpoint. Its effect is unknown; inspect current "
-                "item or attempt state before deciding whether another call is safe."
-            ) from error
+            raise ToolError(_CANCELLED_REQUEST_MESSAGE) from error
         except ToolError:
             capture_effect(
                 lambda selected: selected.unavailable(
@@ -649,7 +653,4 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
         raise
     except OperationCancelled as error:
         emit_request_event(TraceEvent.RESULT, "cancelled", None)
-        raise ToolError(
-            "The request was cancelled at a cooperative checkpoint. Its effect is unknown; inspect current "
-            "item or attempt state before deciding whether another call is safe."
-        ) from error
+        raise ToolError(_CANCELLED_REQUEST_MESSAGE) from error

@@ -20,7 +20,7 @@ launcher_result() {
 invalid_capture_arguments() {
     launcher_result \
         "invalid-capture-arguments" \
-        '["Exact capture requires a caller-selected destination and --safe-to-persist-exactly."]' \
+        "[\"$1\"]" \
         "null" "correct-input" "unchanged" '[]' "null"
     exit 64
 }
@@ -124,23 +124,23 @@ capture_cli_invocation() {
     capture_parent=$(dirname -- "$capture_selected_path")
     capture_name=$(basename -- "$capture_selected_path")
     if [ "$capture_name" = "." ] || [ "$capture_name" = ".." ] || [ -z "$capture_name" ]; then
-        invalid_capture_arguments
+        invalid_capture_arguments 'Choose a destination with a nonempty file name, not dot or dot-dot.'
     fi
     if ! capture_parent=$(CDPATH= cd -- "$capture_parent" 2>/dev/null && pwd -P); then
-        invalid_capture_arguments
+        invalid_capture_arguments 'The selected capture parent is unavailable; restore that exact directory or choose an existing intended parent.'
     fi
     capture_destination="$capture_parent/$capture_name"
     if [ -e "$capture_destination" ] || [ -L "$capture_destination" ]; then
-        invalid_capture_arguments
+        invalid_capture_arguments 'The selected capture destination already exists; inspect it and choose a fresh exact destination. Do not overwrite it.'
     fi
     if ! command -v mktemp >/dev/null 2>&1 || ! command -v od >/dev/null 2>&1 || \
         ! command -v awk >/dev/null 2>&1 || ! command -v tr >/dev/null 2>&1 || \
         ! command -v wc >/dev/null 2>&1 || ! command -v ln >/dev/null 2>&1 || \
         (! command -v shasum >/dev/null 2>&1 && ! command -v sha256sum >/dev/null 2>&1); then
-        invalid_capture_arguments
+        invalid_capture_arguments 'Capture requires mktemp, od, awk, tr, wc, ln and shasum or sha256sum; restore the missing utility before retrying.'
     fi
     if ! capture_temporary=$(mktemp -d "$capture_parent/.pinboard-capture.XXXXXXXX"); then
-        invalid_capture_arguments
+        invalid_capture_arguments 'Cannot reserve private capture staging in the selected parent; request write access to that exact directory before retrying.'
     fi
     capture_stage=
     capture_child=
@@ -148,7 +148,7 @@ capture_cli_invocation() {
     trap capture_cleanup EXIT
     umask 077
     if ! capture_stage=$(mktemp "$capture_parent/.pinboard-capture-stage.XXXXXXXX"); then
-        invalid_capture_arguments
+        invalid_capture_arguments 'Cannot reserve the selected private capture publication file; restore write access to the selected parent before retrying.'
     fi
     trap 'capture_interrupt HUP 129' HUP
     trap 'capture_interrupt INT 130' INT
@@ -221,11 +221,11 @@ capture_cli_invocation() {
 
 if [ "$#" -ge 1 ] && [ "$1" = "--capture-evidence" ]; then
     if [ "$#" -lt 5 ] || [ "$3" != "--safe-to-persist-exactly" ] || [ "$4" != "--" ]; then
-        invalid_capture_arguments
+        invalid_capture_arguments 'Use --capture-evidence <fresh-file> --safe-to-persist-exactly -- <normal CLI arguments>.'
     fi
     case "$5" in
         --mcp|--claude-session-start|--claude-subagent-start)
-            invalid_capture_arguments
+            invalid_capture_arguments 'CLI process capture cannot wrap a protocol startup; use the declared MCP capture form for --mcp, and invoke hooks without CLI capture.'
             ;;
     esac
     capture_selected_path=$2
@@ -239,10 +239,10 @@ if [ "$#" -ge 1 ] && [ "$1" = "--mcp" ]; then
     shift
     if [ "$#" -eq 3 ] && [ "$1" = "--capture-evidence-dir" ] && [ "$3" = "--safe-to-persist-exactly" ]; then
         if [ ! -d "$2" ]; then
-            invalid_capture_arguments
+            invalid_capture_arguments 'MCP capture requires an existing selected directory; restore that directory or choose the intended existing directory.'
         fi
     elif capture_flag_present "$@"; then
-        invalid_capture_arguments
+        invalid_capture_arguments 'Use --mcp --capture-evidence-dir <existing-directory> --safe-to-persist-exactly with no partial capture declaration.'
     elif [ "$#" -ne 0 ]; then
         launcher_result \
             "invalid-startup-arguments" \
@@ -251,7 +251,7 @@ if [ "$#" -ge 1 ] && [ "$1" = "--mcp" ]; then
         exit 64
     fi
 elif capture_flag_present "$@"; then
-    invalid_capture_arguments
+    invalid_capture_arguments 'Choose the complete supported CLI or MCP capture declaration; do not mix capture flags into an ordinary invocation.'
 fi
 if [ "$#" -ge 1 ] && [ "$1" = "--claude-subagent-start" ]; then
     entry_name=pinboard-claude-subagent-start
@@ -306,7 +306,7 @@ runtime_write_failure() {
 preparation_required() {
     launcher_result \
         "runtime-preparation-required" \
-        '["Pinboard has no ready launcher-root private runtime."]' \
+        "$1" \
         "null" "run-preparation" "unchanged" '[]' "$preparation_action"
 }
 
@@ -346,8 +346,16 @@ if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
         printf 'launcher-root private runtime path is not a directory: %s\n' "$runtime_root" >&2
         runtime_write_failure 1
     fi
-    if ! mkdir -p "$runtime_root" 2>/dev/null || ! mkdir "$preparation_lock" 2>/dev/null; then
-        preparation_required
+    if ! mkdir -p "$runtime_root" 2>/dev/null; then
+        preparation_required '["Cannot create launcher-root .pinboard-runtime; request write access to that exact directory before retrying the returned preparation action. The target did not run."]'
+        exit 78
+    fi
+    if ! mkdir "$preparation_lock" 2>/dev/null; then
+        if [ -d "$preparation_lock" ]; then
+            preparation_required '["Launcher-root .pinboard-runtime/.preparing already exists. Wait for the current preparer to finish before retrying; if no preparer is running, report this exact stale lock to the human for diagnosis. Do not remove an active lock. The target did not run."]'
+        else
+            preparation_required '["Cannot create launcher-root .pinboard-runtime/.preparing; ask the human to inspect that exact path for a conflicting entry or unavailable directory write access before retrying preparation. The target did not run."]'
+        fi
         exit 78
     fi
     preparation_lock_held=1
@@ -681,20 +689,24 @@ if [ "$entry_name" = "pinboard-mcp" ]; then
         fi
     fi
     if [ "$preparation_exit_code" -eq 0 ]; then
-        preparation_required
+        preparation_required '["Pinboard has no ready launcher-root private runtime; run the returned same-launcher preparation action before retrying the original command."]'
         exit 78
     fi
     exit "$preparation_exit_code"
 fi
 if [ "$entry_name" != "pinboard-claude-session-start" ]; then
-    preparation_required
+    preparation_required '["Pinboard has no ready launcher-root private runtime; run the returned same-launcher preparation action before retrying the original command."]'
     exit 78
 fi
 # SessionStart stdout is the agent's context channel, not a protocol stream. The hook is the
 # nearest supported install trigger, so it runs the same explicit preparation path once and
 # otherwise names the exact manual route instead of leaving the failed connection opaque.
 hook_context() {
-    preparation_required
+    if [ -n "$2" ]; then
+        printf '%s\n' "$2" >&2
+    else
+        preparation_required '["Pinboard has no ready launcher-root private runtime; run the returned same-launcher preparation action before retrying the original command."]'
+    fi
     escaped=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')
     printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' "$escaped"
     exit 0
@@ -702,7 +714,7 @@ hook_context() {
 manual_route="Run exactly $plugin_root/scripts/pinboard --prepare-runtime once with uv available; it writes only $plugin_root/.pinboard-runtime. When it reports runtime-ready, check Pinboard tool availability; restart Claude Code or reconnect the pinboard MCP server if the connection remains unavailable. Do not substitute another Python environment or an ad hoc uv command."
 preparation_context="Pinboard's private runtime was unavailable when this SessionStart hook ran. MCP startup also attempts automatic preparation; this hook does not establish the connection's current status."
 if ! command -v uv >/dev/null 2>&1; then
-    hook_context "$preparation_context Pinboard could not prepare it automatically because uv is not on PATH. Tell the user. $manual_route"
+    hook_context "$preparation_context Pinboard could not prepare it automatically because uv is not on PATH. Tell the user. $manual_route" ""
 fi
 preparation=$("$0" --prepare-runtime </dev/null) || true
 preparation_status=$(printf '%s' "$preparation" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
@@ -710,6 +722,6 @@ if [ "$preparation_status" = "runtime-ready" ] && [ -f "$ready_marker" ] && [ -x
     PINBOARD_RUNTIME_PREPARED_NOW=1 exec "$runtime_executable"
 fi
 if [ "$preparation_status" = "runtime-preparation-required" ]; then
-    hook_context "$preparation_context Another Claude Code session is preparing that runtime now, or the lock directory $preparation_lock is stale. Tell the user: when the other session finishes, check Pinboard tool availability and reconnect if it remains unavailable; if no other session is running, remove that lock directory first. $manual_route"
+    hook_context "$preparation_context Preparation is blocked by an existing lock at $preparation_lock or unavailable write access to $runtime_root. Follow the exact stderr diagnosis: wait for a running preparer, request the named directory access, or report a stale lock to the human before any removal. After preparation, check tool availability and reconnect only if still unavailable. $manual_route" "$preparation"
 fi
-hook_context "$preparation_context Pinboard tried to prepare it automatically during this session start and failed with status ${preparation_status:-unknown}; the launcher diagnostics are on this hook's stderr. Tell the user. $manual_route"
+hook_context "$preparation_context Pinboard tried to prepare it automatically during this session start and failed with status ${preparation_status:-unknown}; the launcher diagnostics are on this hook's stderr. Tell the user. $manual_route" "$preparation"

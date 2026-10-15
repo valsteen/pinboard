@@ -50,6 +50,8 @@ When auditing semantic ownership, copied settings or evidence, or unexplained ch
 
 Apply the target project's current design authority when one exists. The reference remains self-contained when it does not; Slop Cleanup requires neither a project design guide nor Pinboard.
 
+Before consolidating apparently duplicate response paths, compare their reachable conditions, caller knowledge, effects and safe continuation at the installed boundary. A shared code or result shape does not establish that those decisions are equivalent. Preserve cause, repair and argument provenance through surviving projections, and check the actual consumer result when an inner helper already contains the missing fact. Keep this trace within the approved cleanup; it grants no new recovery or hardening scope.
+
 Mechanical matches are leads. Settle each candidate through its real producer, consumer, retained responsibility and accepted authority. Keep consequential unresolved decisions visible rather than treating them as retained exceptions or a fixed point.
 
 ## Keep the inventory bounded and resumable

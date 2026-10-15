@@ -542,7 +542,9 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
             refused["mismatches"],
         )
 
-        reviewed = self.completion_payload(fixture, candidate, "commissioned-reviewer")
+        recorded_reviewer = self.observed(refused)["recorded_reviewer_task_id"]
+        assert isinstance(recorded_reviewer, str)
+        reviewed = payload | {"reviewer_task_id": recorded_reviewer}
         committed = call_advertised_tool(
             mcp_server.TRANSITION_TOOL,
             self.native_transition_request(fixture, self.project_action(fixture, "complete:work-a-1"), reviewed),

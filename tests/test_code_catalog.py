@@ -158,6 +158,9 @@ class CodeCatalogTest(unittest.TestCase):
             self.assertEqual("TRANSITION_INPUT_INVALID", unknown["code"])
             self.assertEqual("rejected", unknown["status"])
             self.assertEqual("correct-input", unknown["retry"])
+            next_actions = self.entries(unknown["next_actions"])
+            self.assertEqual("pinboard code-catalog --json", next_actions[0]["command"])
+            self.assertEqual((0, catalog), self.run_json(*str(next_actions[0]["command"]).split()[1:]))
 
     def test_declared_and_emitted_codes_have_exact_lookup(self) -> None:
         status, catalog = self.run_json("code-catalog", "--json")

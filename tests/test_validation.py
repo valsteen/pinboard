@@ -306,6 +306,9 @@ class SQLiteValidationTest(unittest.TestCase):
         self.assertTrue(failure["state_changed"])
         self.assertEqual(["repository-git-exclude"], failure["changed_surfaces"])
         self.assertEqual("do-not-retry", failure["retry"])
+        observations = {observation["field"]: observation["value"] for observation in failure["observed"]}
+        next_step = observations.pop("next_step")
+        self.assertIn("Do not replay initialization", next_step)
         self.assertEqual(
             {
                 "git_exclude_path": str(exclude),
@@ -324,7 +327,7 @@ class SQLiteValidationTest(unittest.TestCase):
                     "'.git/info/exclude'; do not grant persistent '.git' access."
                 ),
             },
-            {observation["field"]: observation["value"] for observation in failure["observed"]},
+            observations,
         )
         self.assertEqual(original_exclude + b"/.pinboard/\n", exclude.read_bytes())
         self.assertFalse(database.exists())
@@ -349,13 +352,16 @@ class SQLiteValidationTest(unittest.TestCase):
         self.assertTrue(failure["state_changed"])
         self.assertEqual(["repository-git-exclude", "ledger"], failure["changed_surfaces"])
         self.assertEqual("do-not-retry", failure["retry"])
+        observations = {observation["field"]: observation["value"] for observation in failure["observed"]}
+        next_step = observations.pop("next_step")
+        self.assertIn("Do not replay initialization", next_step)
         self.assertEqual(
             {
                 "git_exclude_path": str(exclude),
                 "git_exclude_entry": "/.pinboard/",
                 "database_path": str(database),
             },
-            {observation["field"]: observation["value"] for observation in failure["observed"]},
+            observations,
         )
         self.assertEqual(original_exclude + b"/.pinboard/\n", exclude.read_bytes())
         self.assertTrue(database.exists())

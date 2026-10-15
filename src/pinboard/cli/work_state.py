@@ -92,7 +92,9 @@ def initialize_work_state(
             projection_facts, roots.work_root, archived_briefs, ComposedBoardReader(roots, store), operation_time
         )
         if rebuild_result.warning is not None:
-            raise FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, rebuild_result.warning.message)
+            raise FileIOError(
+                FileIOErrorCode.VIEW_REFRESH_FAILED, f"{rebuild_result.warning.message} {rebuild_result.warning.repair}"
+            )
     except (StorageError, ArtifactError, FileIOError) as error:
         if isinstance(error, StorageError) and error.invariant_violation:
             raise

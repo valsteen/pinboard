@@ -139,6 +139,8 @@ def _mcp_launch_envelope(
 
 
 def _job_failure(
+    project_root: str,
+    work_root: str,
     schema: str,
     attempt_id: str,
     code: str,
@@ -150,6 +152,22 @@ def _job_failure(
     if details is not None:
         rendered["changed_surfaces"] = list[JsonValue](_job_publication_surfaces(details.changed_surfaces))
     committed = details is not None and details.effect == EffectDisposition.COMMITTED
+    rendered["observed"] = [
+        *({"field": fact.field, "value": fact.value} for fact in (() if details is None else details.observed)),
+        {"field": "inspection_tool", "value": tool_names.ATTEMPT_INSPECT_TOOL},
+        {
+            "field": "inspection_input",
+            "value": msgspec.json.encode(
+                {
+                    "project_root": project_root,
+                    "work_root": work_root,
+                    "attempt_id": attempt_id,
+                    "reconciliation": None,
+                },
+                order="sorted",
+            ).decode(),
+        },
+    ]
     return execution.OperationResult(
         {
             "schema": schema,
@@ -160,7 +178,8 @@ def _job_failure(
             else "rejected",
             "attempt_id": attempt_id,
             "code": code,
-            "message": message,
+            "message": message
+            + " Inspect this attempt with inspection_tool and inspection_input in observed before choosing another action. Preserve any published selectors; do not replay after a committed or uncertain effect.",
             "state_changed": committed,
             **rendered,
         },
@@ -196,6 +215,7 @@ def _job_publication_surfaces(surfaces: tuple[ChangedSurface, ...]) -> tuple[con
 
 
 def _record_ready_review(
+    project_root: str,
     durable: DurableRoots,
     store: WorkStore,
     choice: contracts.RecordReadyReviewChoice,
@@ -230,9 +250,20 @@ def _record_ready_review(
                 changed_surfaces=details.changed_surfaces,
                 alternatives=details.alternatives,
             )
-        return _job_failure(schema, choice.attempt_id, recorded.code.value, recorded.message, details, False)
+        return _job_failure(
+            project_root,
+            str(durable.work_root),
+            schema,
+            choice.attempt_id,
+            recorded.code.value,
+            recorded.message,
+            details,
+            False,
+        )
     if isinstance(recorded, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         return _job_failure(
+            project_root,
+            str(durable.work_root),
             schema,
             choice.attempt_id,
             "ARTIFACT_ACCEPTANCE_FAILED"
@@ -348,7 +379,16 @@ def _dispatch_job(  # noqa: C901, PLR0912 - distinct readiness publication and w
         action_id=ActionId(f"dispatch:{attempt_id}"),
     )
     if isinstance(selected, DecisionFailure):
-        return _job_failure(schema, attempt_id, selected.code.value, selected.message, selected.details, False)
+        return _job_failure(
+            project_root,
+            str(durable.work_root),
+            schema,
+            attempt_id,
+            selected.code.value,
+            selected.message,
+            selected.details,
+            False,
+        )
     action = selected[0]
     if not isinstance(action, decision_models.DispatchAction):
         raise AssertionError("Exact dispatch discovery returned a different action.")
@@ -382,9 +422,20 @@ def _dispatch_job(  # noqa: C901, PLR0912 - distinct readiness publication and w
             preparation_choice,
         )
     if isinstance(publication, dispatch_operations.DispatchFailure):
-        return _job_failure(schema, attempt_id, publication.code.value, publication.message, publication.details, False)
+        return _job_failure(
+            project_root,
+            str(durable.work_root),
+            schema,
+            attempt_id,
+            publication.code.value,
+            publication.message,
+            publication.details,
+            False,
+        )
     if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         return _job_failure(
+            project_root,
+            str(durable.work_root),
             schema,
             attempt_id,
             "ARTIFACT_ACCEPTANCE_FAILED"
@@ -471,7 +522,7 @@ def _review_job(
     choice = request.review
     store = common.compose_store(durable)
     if isinstance(choice, contracts.RecordReadyReviewChoice):
-        return _record_ready_review(durable, store, choice, schema, token)
+        return _record_ready_review(project_root, durable, store, choice, schema, token)
     checkpoint_history_id, correction_history_id = _review_histories(choice)
     token.checkpoint()
     # Cancellation cannot turn an entered publication into an unchanged/replayable result.
@@ -485,11 +536,22 @@ def _review_job(
         correction_history_id,
     )
     if isinstance(prepared, DecisionFailure):
-        return _job_failure(schema, choice.attempt_id, prepared.code.value, prepared.message, prepared.details, False)
+        return _job_failure(
+            project_root,
+            str(durable.work_root),
+            schema,
+            choice.attempt_id,
+            prepared.code.value,
+            prepared.message,
+            prepared.details,
+            False,
+        )
     if isinstance(prepared, review_operations.ReviewPromptPublicationFailure):
         raise prepared.cause
     if isinstance(prepared, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         return _job_failure(
+            project_root,
+            str(durable.work_root),
             schema,
             choice.attempt_id,
             "ARTIFACT_ACCEPTANCE_FAILED"
@@ -655,6 +717,24 @@ def _candidate_restore(
     )
     if isinstance(restored, DecisionFailure):
         details = common._details_json(restored.details)
+        details["observed"] = [
+            *(
+                {"field": fact.field, "value": fact.value}
+                for fact in (() if restored.details is None else restored.details.observed)
+            ),
+            {"field": "next_step_tool", "value": tool_names.CANDIDATE_OBSERVE_TOOL},
+            {
+                "field": "next_step_input",
+                "value": msgspec.json.encode(
+                    {
+                        "project_root": request.project_root,
+                        "work_root": request.work_root,
+                        "attempt_id": request.attempt_id,
+                    },
+                    order="sorted",
+                ).decode(),
+            },
+        ]
         committed = restored.details is not None and restored.details.effect == EffectDisposition.COMMITTED
         return execution.OperationResult(
             {
@@ -662,7 +742,8 @@ def _candidate_restore(
                 "status": "failed-after-mutation" if committed else "rejected",
                 "attempt_id": request.attempt_id,
                 "code": restored.code.value,
-                "message": restored.message,
+                "message": restored.message
+                + " Observe the checkout through next_step_tool and next_step_input in observed before deciding how to recover. A committed source change must not be replayed.",
                 "state_changed": committed,
                 **details,
             },

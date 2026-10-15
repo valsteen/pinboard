@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pinboard.adapters.files.errors import ArtifactError, FileIOError
+from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError
 from pinboard.application import work_brief_models
 from pinboard.application.work_brief_models import WorkBriefFailure  # noqa: ICN003
@@ -31,6 +32,17 @@ def storage_failure_details(
     prior_observations: tuple[FailureFact, ...],
 ) -> FailureDetails:
     observations = prior_observations
+    if roots is not None and not isinstance(error, SQLiteReadOnlyError):
+        observations += (
+            FailureFact("database_path", str(DurableRoots(roots.work.parent, (roots.work.name,)).database_path)),
+            FailureFact("operation", operation),
+            FailureFact(
+                "storage_recovery",
+                "Wait for the competing database operation before retrying the same request."
+                if error.retryable and effect == EffectDisposition.UNCHANGED
+                else "Report the named database and exact storage condition to the human for diagnosis. Preserve authoritative state and inspect committed effects before another mutation; do not edit SQLite to bypass the failure.",
+            ),
+        )
     if isinstance(error, SQLiteReadOnlyError):
         if roots is None:
             raise AssertionError("A SQLite read-only failure requires resolved project roots.") from error
@@ -107,6 +119,10 @@ def initialization_failure_details(
         *((ChangedSurface.LEDGER,) if error.database_path is not None else ()),
     )
     observations = (
+        FailureFact(
+            "next_step",
+            "Inspect the named committed initialization surfaces and current stored state, then resolve the reported cause with the human. Do not replay initialization merely to recover a response; repair replaceable views with the existing views rebuild command when that is the named failure.",
+        ),
         *(
             (
                 FailureFact("git_exclude_path", str(error.git_exclude_path)),

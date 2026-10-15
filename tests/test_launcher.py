@@ -323,10 +323,34 @@ class LauncherTest(unittest.TestCase):
             self.write_uv(root, f'touch "{sentinel}"\n')
             parent = self.run_launcher(launcher, "--claude-session-start", path=f"{root}:/usr/bin:/bin")
             context = self.parent_context(parent)
-            self.assertIn("Another Claude Code session is preparing", context)
+            self.assertIn(".pinboard-runtime/.preparing", str(json.loads(parent.stderr)["observations"]))
             self.assertIn(str(lock), context)
             self.assertFalse(sentinel.exists())
             self.assertTrue(lock.is_dir())
+
+    def test_parent_context_preserves_runtime_and_lock_access_diagnoses(self) -> None:
+        for resource, arguments in ((".pinboard-runtime", "-p "), (".pinboard-runtime/.preparing", "")):
+            with self.subTest(resource=resource), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                launcher = self.copy_launcher(root)
+                sentinel = root / "uv-was-called"
+                self.write_uv(root, f'touch "{sentinel}"\n')
+                denied_mkdir = root / "mkdir"
+                denied_mkdir.write_text(
+                    f'#!/bin/sh\nif [ "$*" = "{arguments}{root}/{resource}" ]; then exit 41; fi\nexec /bin/mkdir "$@"\n',
+                    encoding="utf-8",
+                )
+                denied_mkdir.chmod(0o755)
+                parent = self.run_launcher(launcher, "--claude-session-start", path=f"{root}:/usr/bin:/bin")
+                context = self.parent_context(parent)
+                diagnostic = json.loads(parent.stderr)
+                self.assertEqual("runtime-preparation-required", diagnostic["status"])
+                self.assertIn(resource, str(diagnostic["observations"]))
+                self.assertIn("write access", str(diagnostic["observations"]))
+                self.assertIn("write access", context)
+                self.assertEqual("unchanged", diagnostic["effect_disposition"])
+                self.assertFalse(sentinel.exists())
+                self.assertFalse((root / ".pinboard-runtime" / ".preparing").exists())
 
     def test_preparation_rejects_previous_ready_runtime_without_parent_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -405,6 +429,7 @@ class LauncherTest(unittest.TestCase):
             self.assertEqual("", result.stdout)
             self.assertEqual("runtime-preparation-required", json.loads(result.stderr)["status"])
             self.assertEqual("run-preparation", json.loads(result.stderr)["retry_disposition"])
+            self.assertIn(".pinboard-runtime/.preparing", str(json.loads(result.stderr)["observations"]))
             self.assertFalse(sentinel.exists())
 
     def test_explicit_preparation_honors_held_lock_without_running_uv(self) -> None:
@@ -421,6 +446,7 @@ class LauncherTest(unittest.TestCase):
             self.assertEqual(78, result.returncode)
             self.assertEqual("", result.stderr)
             self.assertEqual("runtime-preparation-required", json.loads(result.stdout)["status"])
+            self.assertIn(".pinboard-runtime/.preparing", str(json.loads(result.stdout)["observations"]))
             self.assertFalse(sentinel.exists())
             self.assertTrue(lock.is_dir())
 

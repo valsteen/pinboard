@@ -44,7 +44,19 @@ def operate(arguments: dict[str, JsonValue], token: execution.CancellationToken)
                     "ACTION_NOT_AVAILABLE",
                     preview.message,
                     "refresh-action",
-                    "Read a fresh pinboard_cancel preview for the exact live item and obtain a separate explicit human confirmation.",
+                    "Read pinboard_item_status with "
+                    + msgspec.json.encode(
+                        {
+                            "request": {
+                                "project_root": request.project_root,
+                                "work_root": request.work_root,
+                                "operation": "item",
+                                "item_id": request.item_id,
+                            }
+                        },
+                        order="sorted",
+                    ).decode()
+                    + ". An absent or terminal item cannot be cancelled; stop cancellation for that item.",
                 )
             result = contracts.CancellationPreviewResult(
                 "pinboard-cancellation-preview-result/v1",

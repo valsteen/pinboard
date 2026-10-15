@@ -242,7 +242,9 @@ def _present_integration(
             assert_never(unreachable)
 
 
-def _read_item_status(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def _read_item_status(  # noqa: PLR0912 - distinct leaves and selected-state diagnosis
+    raw: Mapping[str, JsonValue], token: execution.CancellationToken
+) -> execution.OperationResult:
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.ItemStatusEnvelope, strict=True).request
@@ -268,7 +270,12 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
                 views.board_pages(durable.work_root),
             )
             if isinstance(projected, DecisionFailure):
-                return common._item_status_failure(projected.code.value, projected.message, projected.details)
+                message = projected.message
+                if projected.code == DecisionFailureCode.ITEM_STATUS_INCONSISTENT:
+                    message += " Report the named item and current-attempt facts to the human for diagnosis. Preserve the ledger; do not retry unchanged or change lifecycle to conceal the inconsistency."
+                else:
+                    message += " Check the exact project_root, work_root and item_id against the accepted task or pinboard_overview. Report a missing accepted definition to the human; do not create a replacement merely to satisfy this read."
+                return common._item_status_failure(projected.code.value, message, projected.details)
             if isinstance(projected, query_models.DamagedTransitionReceipt):
                 return common._damaged_receipt_failure(_ITEM_STATUS_RESULT_SCHEMA, projected)
             selected: query_models.ItemStatus | query_models.BranchOwners = projected
@@ -330,7 +337,11 @@ def _read_correction_context(
     )
     if isinstance(context, dispatch_operations.DispatchFailure):
         return common._read_failure(
-            "pinboard-correction-context/v1", context.code.value, context.message, context.details
+            "pinboard-correction-context/v1",
+            context.code.value,
+            context.message
+            + f" Inspect attempt '{request.attempt_id}' with pinboard_attempt_inspect using the same project_root/work_root and reconciliation:null before choosing a correction round. Report invalid accepted evidence to the human; do not reconstruct it or reset the checkout.",
+            context.details,
         )
     result = _correction_context_view(context)
     token.checkpoint()
@@ -427,7 +438,13 @@ def _read_return_context(raw: Mapping[str, JsonValue], token: execution.Cancella
     history_id = HistoryId(request.selection.return_history_id)
     evidence = dispatch_operations.read_returned_evidence(store, artifacts, AttemptId(request.attempt_id), history_id)
     if isinstance(evidence, dispatch_operations.DispatchFailure):
-        return common._read_failure(schema, evidence.code.value, evidence.message, evidence.details)
+        return common._read_failure(
+            schema,
+            evidence.code.value,
+            evidence.message
+            + f" Inspect attempt '{request.attempt_id}' with pinboard_attempt_inspect using the same project_root/work_root and reconciliation:null, and verify the selected return history. Report damaged accepted evidence to the human; do not reconstruct or overwrite it.",
+            evidence.details,
+        )
     receipt = evidence.receipt
     receipt_view = contracts.ReturnReceiptEvidence(
         receipt.history_id,
@@ -465,7 +482,13 @@ def _read_return_context(raw: Mapping[str, JsonValue], token: execution.Cancella
                 dispatch_operations.ReviewedCurrentCorrectionStart(binding),
             )
             if isinstance(correction, dispatch_operations.DispatchFailure):
-                return common._read_failure(schema, correction.code.value, correction.message, correction.details)
+                return common._read_failure(
+                    schema,
+                    correction.code.value,
+                    correction.message
+                    + f" Inspect attempt '{request.attempt_id}' with pinboard_attempt_inspect using the same project_root/work_root and reconciliation:null, and verify the selected return history. Report damaged accepted evidence to the human; do not reconstruct or overwrite it.",
+                    correction.details,
+                )
             selected = contracts.CurrentCandidateReturnContext(
                 receipt_view, _correction_review_evidence(correction), binding
             )
@@ -536,7 +559,7 @@ def _publish_source_plan(
                 "schema": schema,
                 "status": "committed-effect",
                 "code": error.code.value,
-                "message": str(error),
+                "message": f"{error} The plan is visible at '{error.path}'; inspect that exact file and report the synchronization failure to the human. Do not replay publication or delete the visible output.",
                 "destination": str(error.path),
                 "state_changed": True,
                 "effect": "committed",
@@ -547,7 +570,11 @@ def _publish_source_plan(
             None,
         )
     except FileIOError as error:
-        return _brief_preparation_failure(schema, error.code.value, str(error))
+        return _brief_preparation_failure(
+            schema,
+            error.code.value,
+            f"{error} Inspect the selected output '{destination}' and resolve its named filesystem condition. If different plan bytes already occupy it, choose a fresh explicit destination; immutable plans are never overwritten.",
+        )
     receipt: dict[str, JsonValue] = msgspec.to_builtins(
         brief_source_codec.plan_output_receipt(str(destination), created, plan_bytes, source_plan)
     )
@@ -605,13 +632,21 @@ def _brief_sources(raw: Mapping[str, JsonValue], token: execution.CancellationTo
                 )
             source_plan = brief_source_codec.decode_brief_source_plan(plan_bytes)
             if isinstance(source_plan, brief_source_models.BriefSourceFailure):
-                return _brief_preparation_failure(schema, source_plan.code.value, source_plan.message)
+                return _brief_preparation_failure(
+                    schema,
+                    source_plan.code.value,
+                    source_plan.message
+                    + f" Inspect saved plan '{request.plan_path}'. Re-plan the original selected manifest under the current negotiated schema at a fresh explicit destination; do not rewrite the old plan.",
+                )
         case _ as unreachable:
             assert_never(unreachable)
     token.checkpoint()
     batch = brief_sources.render_brief_source_batch(select_source, source_plan, request.batch_index)
     if isinstance(batch, brief_source_models.BriefSourceFailure):
-        return _brief_preparation_failure(schema, batch.code.value, batch.message)
+        message = batch.message
+        if batch.code == brief_source_models.BriefSourceErrorCode.SOURCE_CHANGED:
+            message += " Re-plan the original selected manifest through pinboard_brief_sources operation plan with the same project_root/work_root and restart at batch_index:0. If saving the plan, use pinboard_brief_source_plan_output operation plan-to-file with a fresh explicit destination; preserve the previous plan."
+        return _brief_preparation_failure(schema, batch.code.value, message)
     content: dict[str, JsonValue] = msgspec.to_builtins(
         brief_sources.brief_source_batch_payload(
             request.batch_index, source_plan.batches[request.batch_index].content_byte_count, batch
@@ -666,7 +701,11 @@ def _read_item_definition(
             assert_never(unreachable)
     if isinstance(selected, DecisionFailure):
         return common._read_failure(
-            "pinboard-mcp-item-definition-result/v1", selected.code.value, selected.message, selected.details
+            "pinboard-mcp-item-definition-result/v1",
+            selected.code.value,
+            selected.message
+            + f" Check item '{request.item_id}' and the exact roots against pinboard_overview or the accepted task. Report a missing accepted definition to the human; do not invent one.",
+            selected.details,
         )
     token.checkpoint()
     content = msgspec.to_builtins(selected)
@@ -718,7 +757,13 @@ def _brief_review(raw: Mapping[str, JsonValue], token: execution.CancellationTok
                 store, repository, ArtifactRefId(request.brief_artifact_ref_id)
             )
             if isinstance(selected, work_brief_models.WorkBriefFailure):
-                return common._read_failure(schema, selected.code.value, selected.message, None)
+                return common._read_failure(
+                    schema,
+                    selected.code.value,
+                    selected.message
+                    + f" Check accepted brief reference {request.brief_artifact_ref_id} at work_root '{request.work_root}'. Correct a mistaken selection; report damaged accepted bytes to the human without rewriting them.",
+                    None,
+                )
             token.checkpoint()
             content: dict[str, JsonValue] = {
                 "schema": schema,
@@ -755,11 +800,17 @@ def _brief_review(raw: Mapping[str, JsonValue], token: execution.CancellationTok
                     publication,
                     acceptance_message="The review's accepted reference could not be committed.",
                     publication_message="The review's immutable publication could not be completed.",
-                    acceptance_recovery="Inspect the accepted reference before continuing.",
-                    publication_recovery="Inspect the published artifact and repair immutable publication before continuing.",
+                    acceptance_recovery=f"Inspect the published selector under '{durable.work_root}' and pinboard_brief_review operation status with brief_artifact_ref_id:{request.brief_artifact_ref_id} and the same roots. Report the named storage condition; do not replay after a committed effect.",
+                    publication_recovery=f"Inspect the published selector under '{durable.work_root}' and resolve the named filesystem condition. After any committed publication, do not publish again merely to recover the response.",
                 )
             if isinstance(publication, work_brief_models.WorkBriefFailure):
-                return common._read_failure(schema, publication.code.value, publication.message, None)
+                return common._read_failure(
+                    schema,
+                    publication.code.value,
+                    publication.message
+                    + " Correct the named review binding against pinboard_brief_review operation status for the same brief reference and roots; independent assessment must remain independent. Report damaged accepted evidence to the human without rewriting it.",
+                    None,
+                )
             if isinstance(publication, DecisionFailure):
                 details = common._details_json(publication.details)
                 return execution.OperationResult(
@@ -932,7 +983,11 @@ def _parallel_preview(raw: Mapping[str, JsonValue], token: execution.Cancellatio
             assert_never(unreachable)
     if isinstance(preview, query_models.ParallelSelectionInvalid):
         return common._read_failure(
-            "pinboard-mcp-parallel-preview-result/v1", "PARALLEL_SELECTION_INVALID", preview.message, None
+            "pinboard-mcp-parallel-preview-result/v1",
+            "PARALLEL_SELECTION_INVALID",
+            preview.message
+            + " Read pinboard_overview with the same exact roots to verify current item IDs, then correct the intended selection; this preview grants no launch authority.",
+            None,
         )
     token.checkpoint()
     content = msgspec.to_builtins(queries.present_parallel_preview(preview))
@@ -957,12 +1012,49 @@ def _action_failure_details(
     lease_id: LeaseId | None,
     generation: int | None,
     action_id: ActionId | None,
+    selected_action: contracts.ActionIdentity | None,
+    project_root: str,
+    work_root: str,
 ) -> FailureDetails:
     observations = (
         FailureFact("role", role.value),
         FailureFact("lease_id", lease_id),
         FailureFact("generation", generation),
         FailureFact("action_id", action_id),
+    )
+    inspection_tool = tool_names.OVERVIEW_TOOL
+    inspection_input: dict[str, JsonValue] = {"project_root": project_root, "work_root": work_root}
+    match role:
+        case decision_models.Role.WORKER:
+            if (
+                selected_action is not None
+                and decision_models.action_semantics(selected_action.kind).subject_kind
+                == decision_models.ActionSubjectKind.ATTEMPT
+            ):
+                inspection_tool = tool_names.ATTEMPT_AUTHORITY_TOOL
+                inspection_input = {
+                    "request": {**inspection_input, "operation": "status", "attempt_id": selected_action.subject}
+                }
+            note = "Read pinboard_attempt_authority operation status for your accepted task's attempt_id before reacquiring; a lease or overview alone supplies no authority."
+        case decision_models.Role.PREPARER:
+            if (
+                selected_action is not None
+                and decision_models.action_semantics(selected_action.kind).subject_kind
+                == decision_models.ActionSubjectKind.ITEM
+            ):
+                inspection_tool = tool_names.PREPARATION_AUTHORITY_TOOL
+                inspection_input = {
+                    "request": {**inspection_input, "operation": "status", "item_id": selected_action.subject}
+                }
+            note = "Read pinboard_preparation_authority operation status for your accepted item's item_id before starting preparation again; do not borrow a conflicting lease."
+        case decision_models.Role.PROJECT | decision_models.Role.OBSERVER:
+            note = "Use current subject facts to rediscover only the intended supported action; discovery grants no mutation or human-decision authority."
+        case _ as unreachable:
+            assert_never(unreachable)
+    observations += (
+        FailureFact("next_step_tool", inspection_tool),
+        FailureFact("next_step_input", msgspec.json.encode(inspection_input, order="sorted").decode()),
+        FailureFact("next_step", note),
     )
     match failure.code:
         case DecisionFailureCode.ATTEMPT_LEASE_REQUIRED:
@@ -1061,7 +1153,16 @@ def _read_actions(
             "pinboard-mcp-actions-result/v1",
             selected.code.value,
             selected.message,
-            _action_failure_details(selected, selected_role, selected_lease, selected_generation, selected_action),
+            _action_failure_details(
+                selected,
+                selected_role,
+                selected_lease,
+                selected_generation,
+                selected_action,
+                selected_action_id,
+                request.project_root,
+                request.work_root,
+            ),
         )
     token.checkpoint()
     projected_actions: list[JsonValue] = []
@@ -1115,7 +1216,7 @@ def _mcp_action(
         except ArtifactError as error:
             return DecisionFailure(
                 DecisionFailureCode.ACTION_NOT_AVAILABLE,
-                f"Accepted attempt brief could not be verified: {error}",
+                f"Accepted attempt brief could not be verified: {error}. Report the exact accepted brief and defect to the human; do not retry unchanged, reconstruct or overwrite accepted bytes.",
                 FailureDetails(
                     observed=(FailureFact("attempt_id", str(action.capability.subject)),),
                     mismatches=(
@@ -1463,7 +1564,7 @@ def _mcp_candidate_recovery(
         return common._read_failure(
             "pinboard-mcp-attempt-inspection-result/v1",
             "ATTEMPT_BRIEF_INVALID",
-            f"Accepted candidate snapshot could not be verified: {error}",
+            f"Accepted candidate snapshot '{durable.work_root / snapshot_context.reference.selector}' could not be verified: {error}. Report this accepted reference and defect to the human; do not retry unchanged, reconstruct or overwrite the snapshot.",
             FailureDetails(
                 observed=(FailureFact("attempt_id", attempt_id),),
                 mismatches=(
@@ -1486,7 +1587,8 @@ def _candidate_lineage_failure(attempt_id: str, message: str) -> execution.Opera
     return common._read_failure(
         "pinboard-mcp-attempt-inspection-result/v1",
         "ATTEMPT_BRIEF_INVALID",
-        message,
+        message
+        + " Report the selected checkout, protected candidate and exact access/evidence defect to the human. Restore the named resource before reinspection; do not reset the checkout or rewrite accepted snapshot bytes.",
         FailureDetails(
             observed=(FailureFact("attempt_id", attempt_id),),
             mismatches=(FailureMismatch("candidate_lineage", "readable exact protected candidate", "unavailable"),),
@@ -1551,7 +1653,7 @@ def _inspection_context(
         return common._read_failure(
             "pinboard-mcp-attempt-inspection-result/v1",
             "ATTEMPT_NOT_FOUND",
-            f"Attempt '{attempt_id}' does not exist.",
+            f"Attempt '{attempt_id}' does not exist. Check the exact roots and accepted attempt_id; pinboard_item_status operation item for the accepted item lists its current attempt. Do not create a new task or attempt merely to satisfy this read.",
             None,
         )
     if isinstance(context, query_models.DamagedTransitionReceipt):
@@ -1602,7 +1704,7 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
             return common._read_failure(
                 "pinboard-mcp-attempt-inspection-result/v1",
                 "ATTEMPT_BRIEF_INVALID",
-                f"Accepted attempt brief could not be verified: {error}",
+                f"Accepted attempt brief could not be verified: {error}. Report the exact accepted brief and defect to the human; do not retry unchanged, reconstruct or overwrite accepted bytes.",
                 FailureDetails(
                     observed=(
                         FailureFact("attempt_id", request.attempt_id),
@@ -1628,7 +1730,8 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
             return common._read_failure(
                 "pinboard-mcp-attempt-inspection-result/v1",
                 "ATTEMPT_BRIEF_INVALID",
-                brief.message,
+                brief.message
+                + f" Report accepted brief '{durable.work_root / reference.selector}' and its canonical-content defect to the human; do not rewrite accepted bytes.",
                 FailureDetails(
                     observed=(
                         FailureFact("attempt_id", request.attempt_id),
@@ -1648,7 +1751,8 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
             return common._read_failure(
                 "pinboard-mcp-attempt-inspection-result/v1",
                 "ATTEMPT_BRIEF_INVALID",
-                failure.message,
+                failure.message
+                + f" Report accepted brief '{durable.work_root / reference.selector}' and the current attempt identity mismatch to the human; do not normalize or rewrite accepted facts.",
                 FailureDetails(
                     observed=(
                         FailureFact("attempt_id", request.attempt_id),
@@ -1675,7 +1779,7 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
             return common._read_failure(
                 "pinboard-mcp-attempt-inspection-result/v1",
                 "ATTEMPT_BRIEF_INVALID",
-                "Accepted brief reference identity differs from the attempt.",
+                f"Accepted brief reference identity differs from attempt '{request.attempt_id}' at '{durable.work_root / reference.selector}'. Report the conflicting reference facts to the human; preserve accepted bytes and ledger state.",
                 FailureDetails(
                     observed=(
                         FailureFact("attempt_id", request.attempt_id),
@@ -1714,7 +1818,7 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
         return common._read_failure(
             "pinboard-mcp-attempt-inspection-result/v1",
             "ATTEMPT_BRIEF_INVALID",
-            f"Attempt evidence could not be inspected: {error}",
+            f"Attempt evidence under '{attempt_root}' could not be inspected: {error}. Ask the human to restore access to the named evidence resource before reinspection; do not fabricate missing result or review evidence.",
             FailureDetails(
                 observed=(FailureFact("attempt_id", request.attempt_id),),
                 mismatches=(FailureMismatch("attempt_evidence", "readable regular files or absence", "unreadable"),),
@@ -1762,7 +1866,8 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
         return common._read_failure(
             "pinboard-mcp-attempt-inspection-result/v1",
             "ACTION_NOT_AVAILABLE",
-            continuation.message,
+            continuation.message
+            + f" Read pinboard_item_status operation item for '{context.work_item_id}' with the same roots and compare its review_verdict and current binding. Report an unresolved inconsistency to the human; do not choose a substitute task or lifecycle mutation.",
             details,
         )
     content = _attempt_inspection_success(
@@ -1822,7 +1927,7 @@ def _verify_artifact(
         return common._read_failure(
             "pinboard-mcp-artifact-verification-result/v1",
             "ARTIFACT_REFERENCE_MISMATCH",
-            "The accepted artifact reference does not exist.",
+            f"Accepted artifact reference {request.artifact_ref_id} does not exist under '{request.work_root}'. Check the exact work_root and obtain the intended accepted tuple from its producing operation; do not create a reference to satisfy verification.",
             details,
         )
     mismatches = tuple(
@@ -1844,7 +1949,7 @@ def _verify_artifact(
         return common._read_failure(
             "pinboard-mcp-artifact-verification-result/v1",
             "ARTIFACT_REFERENCE_MISMATCH",
-            "The supplied facts do not match the accepted artifact reference.",
+            "The supplied facts do not match the accepted artifact reference. Confirm this is the intended accepted artifact, then correct the supplied selector, SHA-256 or size from the reported mismatches; never silently select different bytes.",
             FailureDetails(
                 observations,
                 mismatches,
@@ -1856,11 +1961,11 @@ def _verify_artifact(
         )
     try:
         read_reference(durable.work_root, reference)
-    except ArtifactError:
+    except ArtifactError as error:
         return common._read_failure(
             "pinboard-mcp-artifact-verification-result/v1",
             "ARTIFACT_BYTES_INVALID",
-            "The immutable artifact bytes do not match the accepted reference.",
+            f"Accepted artifact {request.artifact_ref_id} at '{durable.work_root / reference.selector}' could not be verified: {error}. Report this exact reference and defect to the human; do not retry unchanged, reconstruct or overwrite accepted bytes.",
             FailureDetails(
                 observations,
                 (

@@ -228,7 +228,7 @@ def _artifact_publication_failure(
                 else "infrastructure-failure"
             ),
             "code": "ARTIFACT_ACCEPTANCE_FAILED" if acceptance_failed else "ARTIFACT_PUBLICATION_FAILED",
-            "message": acceptance_message if acceptance_failed else publication_message,
+            "message": f"{acceptance_message if acceptance_failed else publication_message} {failure.cause}",
             "state_changed": failure.details.effect == EffectDisposition.COMMITTED,
             "effect": failure.details.effect.value,
             "retry": failure.details.retry.value,

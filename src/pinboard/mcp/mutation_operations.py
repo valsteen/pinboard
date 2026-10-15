@@ -346,10 +346,12 @@ def _transition_rejected(
 
 
 _COMMISSIONED_REVIEW_ROUTE = (
-    "Do not replay this completion. Commission the review first: run pinboard_review_job for the round that "
-    "pinboard_attempt_inspect reports, launch exactly the returned native reviewer, record its ready verdict with "
-    "pinboard_review_job kind:'record-ready' and the returned prompt_reference.sha256 as reviewer_prompt_sha256, then "
-    "rediscover completion through pinboard_actions and complete with that reviewer's reviewer_task_id."
+    "Do not replay this completion. Inspect this exact attempt through pinboard_attempt_inspect first. "
+    "Reuse a valid current commissioned ready record and its recorded reviewer_task_id; a mismatched supplied "
+    "reviewer identity does not require another review. Only when that record is missing or invalid, run "
+    "pinboard_review_job for the reported round, launch exactly its native reviewer and record its ready verdict "
+    "with kind:'record-ready' and prompt_reference.sha256 as reviewer_prompt_sha256. Then rediscover completion "
+    "through pinboard_actions with the verified record's reviewer_task_id."
 )
 _CLOSE_DECISION_ROUTE = (
     "Close only through pinboard_close with the human's explicit close decision in their own words as "
@@ -769,17 +771,29 @@ def _authority_rejected(
     identity: Mapping[str, JsonValue],
     failure: DecisionFailure,
     conflict: dict[str, JsonValue] | None,
+    inspection_tool: str,
+    inspection_input: dict[str, JsonValue],
 ) -> execution.OperationResult:
+    details = _authority_rejection_details(failure)
+    details["observed"] = [
+        *(
+            {"field": fact.field, "value": fact.value}
+            for fact in (() if failure.details is None else failure.details.observed)
+        ),
+        {"field": "next_step_tool", "value": inspection_tool},
+        {"field": "next_step_input", "value": msgspec.json.encode(inspection_input, order="sorted").decode()},
+    ]
     return execution.OperationResult(
         {
             "schema": schema,
             "status": "rejected",
             **identity,
             "code": failure.code.value,
-            "message": failure.message,
+            "message": failure.message
+            + " Follow next_step_tool with next_step_input in observed to inspect the current subject. This rejection grants no authority; do not borrow a conflicting owner's lease or revoke it without authorization.",
             "conflict": conflict,
             "state_changed": False,
-            **_authority_rejection_details(failure),
+            **details,
         },
         "rejected",
         None,
@@ -909,6 +923,15 @@ def _preparation_authority(
             {"item_id": request.item_id},
             result,
             _authority_conflict(authority_operations.preparation_authority_status(store, work_item_id, now)),
+            tool_names.ITEM_STATUS_TOOL,
+            {
+                "request": {
+                    "project_root": request.project_root,
+                    "work_root": request.work_root,
+                    "operation": "item",
+                    "item_id": request.item_id,
+                }
+            },
         )
     warning = _refresh_authority_views(durable, store, result.effect, now)
     retained = result.authority
@@ -1018,6 +1041,13 @@ def _attempt_authority(
             _authority_conflict(
                 authority_operations.attempt_authority_status(store, AttemptId(request.attempt_id), now)
             ),
+            tool_names.ATTEMPT_INSPECT_TOOL,
+            {
+                "project_root": request.project_root,
+                "work_root": request.work_root,
+                "attempt_id": request.attempt_id,
+                "reconciliation": None,
+            },
         )
     warning = _refresh_authority_views(durable, store, result.effect, now)
     retained = result.authority

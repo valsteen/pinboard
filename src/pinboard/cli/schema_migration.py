@@ -25,7 +25,7 @@ from pinboard.domain.errors import (
 )
 
 
-def _failure(failure: SchemaProcedureFailure, database_path: str, plan_id: str) -> CommandFailure:
+def _failure(failure: SchemaProcedureFailure, database_path: str, plan_id: str, recovery: str) -> CommandFailure:
     changed = tuple(ChangedSurface(value) for value in failure.changed_surfaces)
     return CommandFailure(
         DecisionFailureCode.SCHEMA_MIGRATION_FAILED if changed else DecisionFailureCode.SCHEMA_MIGRATION_INVALID,
@@ -36,7 +36,7 @@ def _failure(failure: SchemaProcedureFailure, database_path: str, plan_id: str) 
                 FailureFact("plan_id", plan_id),
                 FailureFact(
                     "next_step",
-                    f"Inspect the named database and migration evidence, then resume --apply {plan_id} only if unchanged.",
+                    recovery,
                 ),
             ),
             mismatches=(),
@@ -61,16 +61,19 @@ def migrate_schema(
         case cli_commands.MigrateSchemaPreviewCommand():
             selected = preview_schema(path)
             requested_id = ""
+            recovery = "Inspect the named database and resolve the reported cause, then rerun pinboard migrate-schema with the same project_root and work_root. No plan ID is available until preview succeeds."
         case cli_commands.MigrateSchemaReverseCommand(reverse=forward_id):
             selected = preview_schema(path, forward_id)
             requested_id = forward_id
+            recovery = f"Inspect the named database and retained migration evidence, resolve the reported refusal, then request pinboard migrate-schema --reverse {forward_id} with the same roots. Preserve later writes; a refused reverse preview supplies no apply plan."
         case cli_commands.MigrateSchemaApplyCommand(apply=plan_id):
             selected = apply_schema(path, plan_id)
             requested_id = plan_id
+            recovery = f"Inspect the named database and migration evidence first. Resume pinboard migrate-schema --apply {plan_id} with the same roots only after resolving the reported cause and confirming the recorded plan still matches; preserve later writes."
         case _ as unreachable:
             assert_never(unreachable)
     if isinstance(selected, SchemaProcedureFailure):
-        return _failure(selected, str(path), requested_id)
+        return _failure(selected, str(path), requested_id, recovery)
     if isinstance(selected, PlannedSchema):
         version, _, _ = inspect_schema_migration(path)
         write_json(

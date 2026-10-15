@@ -10,6 +10,8 @@ from pinboard.domain.errors import (
     DecisionResult,
     EffectDisposition,
     FailureDetails,
+    FailureFact,
+    FailureMismatch,
     RetryDisposition,
 )
 from pinboard.domain.identifiers import AttemptId, LedgerId, ProposalId, SubjectId, WorkItemId
@@ -1489,8 +1491,20 @@ def _record_replacement(
     if value.expected_relation_revision != observed_revision:
         return DecisionFailure(
             DecisionFailureCode.REPLACEMENT_STALE,
-            "The expected planned-replacement revision is stale.",
-            None,
+            "The expected planned-replacement revision is stale. Compare the reported current relation revision with the intended replacement before correcting the input.",
+            FailureDetails(
+                observed=(
+                    FailureFact("affected_item", str(item.work_item_id)),
+                    FailureFact("current_relation_revision", observed_revision),
+                ),
+                mismatches=(
+                    FailureMismatch("expected_relation_revision", observed_revision, value.expected_relation_revision),
+                ),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
         )
     if (
         latest is not None

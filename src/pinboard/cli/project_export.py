@@ -8,9 +8,17 @@ from types import MappingProxyType
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.application import candidate_snapshots, history_archives, ports, project_export, work_brief_models
+from pinboard.application import (
+    cancellation,
+    candidate_snapshots,
+    history_archives,
+    ports,
+    project_export,
+    work_brief_models,
+)
 from pinboard.cli import cli_commands, work_state
 from pinboard.cli.cli_output import write_json
+from pinboard.domain import decision_models
 from pinboard.domain.identifiers import ArtifactRefId
 
 MEDIA_TYPE_BY_SUFFIX: Mapping[str, str] = MappingProxyType(
@@ -101,6 +109,12 @@ def export_project(
     )
     if isinstance(completion_packages, work_brief_models.WorkBriefFailure):
         return completion_packages
+    for receipt in captured_state.transition_receipts:
+        if (
+            receipt.action_kind == decision_models.ActionKind.CANCEL
+            and (message := cancellation.receipt_failure(receipt)) is not None
+        ):
+            return work_state._package_provenance_failure(message)
     portable_package = project_export.project_export_from_state(
         captured_state,
         projected_references,

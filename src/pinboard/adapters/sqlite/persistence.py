@@ -9,6 +9,7 @@ from types import MappingProxyType, TracebackType
 from typing import Literal, Self, assert_never
 
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
+from pinboard.adapters.sqlite import cancellation
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
     accept_artifact_reference as write_artifact_reference,
@@ -54,10 +55,11 @@ from pinboard.adapters.sqlite.proposals import (
     insert_planned_replacement,
     set_proposal_disposition,
 )
-from pinboard.application import query_models, stored_state
+from pinboard.application import cancellation_models, query_models, stored_state
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
+    CancellationMutation,
     CheckpointAcceptanceMutation,
     CheckpointMutationAllocation,
     CommittedEffect,
@@ -111,6 +113,8 @@ def _mutation_subjects(
     mutation: StoredStateMutation,
 ) -> tuple[tuple[WorkItemId, ...], tuple[AttemptId, ...]]:
     match mutation:
+        case CancellationMutation(preview=preview):
+            return (preview.item_id,), (() if preview.attempt is None else (preview.attempt.attempt_id,))
         case TransitionMutation(decision=decision) | ReviewSubmissionMutation(decision=decision):
             match decision.change:
                 case (
@@ -203,6 +207,15 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
     affected_items = list(item_ids)
     liveness_flip_roots: list[WorkItemId] = []
     match mutation:
+        case CancellationMutation(preview=preview):
+            affected_items.extend(
+                decode_row(row, ItemIdRow).item_id
+                for row in connection.execute(
+                    "SELECT item_id FROM work_items WHERE queue_position > (SELECT queue_position FROM work_items WHERE item_id = ?) ORDER BY queue_position",
+                    (preview.item_id,),
+                )
+            )
+            liveness_flip_roots.append(preview.item_id)
         case OrderMutation(change=change):
             affected_items.extend(item for _position, item in change.changed_positions)
         case ProposalCreationMutation(decision=decision):
@@ -794,6 +807,13 @@ def _persist_state_change(  # noqa: C901, PLR0912 - exhaustive closed mutation p
     mutation: StoredStateMutation,
 ) -> DecisionFailure | None:
     match mutation:
+        case CancellationMutation():
+            return cancellation.persist(
+                connection,
+                facts.work_item(mutation.preview.item_id),
+                None if mutation.preview.attempt is None else facts.attempt(mutation.preview.attempt.attempt_id),
+                mutation,
+            )
         case OrderMutation(change=change):
             moved = change.changed_positions
             # Move changed entries above the live range before assigning unique final positions.
@@ -957,6 +977,9 @@ class SQLiteWorkTransaction:
             self._active_connection().rollback()
             self._rejected = True
         return result
+
+    def read_cancellation_preview(self, item_id: WorkItemId) -> cancellation_models.CancellationPreview | None:
+        return cancellation.read_preview(self.connection, item_id)
 
     def read_decision_facts(self, scope: query_models.DecisionScope, now: datetime) -> query_models.DecisionFacts:
         return read_selected_decision_facts(self.connection, scope, now)

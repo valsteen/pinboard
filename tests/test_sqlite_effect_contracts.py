@@ -632,7 +632,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
             decision_models.CloseCommand(
                 close_action,
                 work_models.CloseInput(
-                    work_models.CloseOutcome.DROPPED, "No longer needed.", "The human asked to close it."
+                    work_models.CloseOutcome.DONE, "Covered elsewhere.", "The human asked to close it."
                 ),
             ),
             SQLITE_NOW,

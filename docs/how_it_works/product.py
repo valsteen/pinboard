@@ -27,6 +27,7 @@ ACTION_GROUPS: dict[decision_models.ActionKind, str] = {
     decision_models.ActionKind.BLOCK_ITEM: "lifecycle",
     decision_models.ActionKind.COMPLETE: "terminal",
     decision_models.ActionKind.CLOSE: "terminal",
+    decision_models.ActionKind.CANCEL: "terminal",
     decision_models.ActionKind.CONTINUE: "advisory",
     decision_models.ActionKind.DEFER: "lifecycle",
     decision_models.ActionKind.DISPATCH: "advisory",

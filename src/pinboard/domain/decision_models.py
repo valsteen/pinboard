@@ -88,6 +88,7 @@ class ActionKind(Enum):
     BLOCK = "block"
     BLOCK_ITEM = "block-item"
     COMPLETE = "complete"
+    CANCEL = "cancel"
     CLOSE = "close"
     CONTINUE = "continue"
     DEFER = "defer"
@@ -109,6 +110,15 @@ class ActionKind(Enum):
 
 def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR0912
     match kind:
+        case ActionKind.CANCEL:
+            return ActionSemantics(
+                "Cancel a live commitment after separate exact-item human confirmation.",
+                LifecycleEffect.CHANGES_LIFECYCLE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ITEM,
+                ActionLifecyclePrecondition.NONTERMINAL_ITEM,
+                "Drop the commitment while retaining history and unsatisfied dependency obligations.",
+            )
         case ActionKind.START_PR_REVIEW:
             return ActionSemantics(
                 "Record the brief that starts a human-owned PR review.",
@@ -219,13 +229,13 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.CLOSE:
             return ActionSemantics(
-                "Record the human's explicit terminal decision for eligible live work without an accepted attempt.",
+                "Record the human's explicit success decision for eligible live work without an accepted attempt.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.ITEM_WITHOUT_ATTEMPT,
                 "Apply only through the dedicated human-confirmed close route, not the general lifecycle transition, "
-                "carrying the human's decision in their own words; record the done or dropped outcome and remove the "
+                "carrying the human's decision in their own words; record the done outcome and remove the "
                 "item from live work.",
             )
         case ActionKind.CONTINUE:
@@ -431,6 +441,12 @@ class CloseAction:
 
 
 @dataclass(frozen=True, slots=True)
+class CancelAction:
+    capability: MutationActionCapability[WorkItemId]
+    kind: ActionKind = field(init=False, default=ActionKind.CANCEL)
+
+
+@dataclass(frozen=True, slots=True)
 class ContinueAction:
     capability: MutationActionCapability[AttemptId]
     kind: ActionKind = field(init=False, default=ActionKind.CONTINUE)
@@ -568,7 +584,7 @@ type NonCheckpointTransitionAction = (
     | ReviseWorkItemAction
     | SubmitReviewAction
 )
-type Action = TransitionAction | ContinueAction | DispatchAction | InspectAction | ReportBlockerAction
+type Action = TransitionAction | CancelAction | ContinueAction | DispatchAction | InspectAction | ReportBlockerAction
 
 
 def action_id(action: Action) -> ActionId:

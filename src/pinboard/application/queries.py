@@ -213,7 +213,12 @@ def project_attempt_continuation(
     """
     match context:
         case query_models.TerminalAttemptContextFacts():
-            return query_models.TerminalAttemptContinuation(
+            constructor = (
+                query_models.CancelledAttemptContinuation
+                if context.item_state == stored_state.StoredWorkItemState.DROPPED
+                else query_models.TerminalAttemptContinuation
+            )
+            return constructor(
                 "pinboard-attempt-continuation/v1",
                 context.attempt_id,
                 context.work_item_id,
@@ -253,7 +258,7 @@ def project_attempt_continuation(
                     attempt_record,
                     item.current_definition_revision,
                     item.current_definition_digest,
-                    item.live_dependencies,
+                    item.unsatisfied_dependencies,
                     True,
                     item.current_replacement_revision,
                     item.replacement_resolved,
@@ -484,8 +489,10 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 action.kind,
                 "Resolve the recorded pause or dependency condition and provide the matching current accepted brief.",
             )
-    if context.work_item.live_dependencies:
-        return query_models.DependencyContinuation(tuple(str(value) for value in context.work_item.live_dependencies))
+    if context.work_item.unsatisfied_dependencies:
+        return query_models.DependencyContinuation(
+            tuple(str(value) for value in context.work_item.unsatisfied_dependencies)
+        )
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
         f"Attempt '{context.attempt_id}' has no supported continuation among its current legal actions.",
@@ -628,14 +635,11 @@ def _proposal_origin(
 
 
 def _next_unstarted(items: tuple[query_models.OverviewItem, ...]) -> query_models.NextUnstarted | None:
-    live_ids = frozenset(item.item_id for item in items)
     for item in items:
         match item.state:
             case work_models.WorkState.READY | work_models.WorkState.BLOCKED | work_models.WorkState.DEFERRED:
                 if item.attempt_id is None:
-                    return query_models.NextUnstarted(
-                        item.item_id, tuple(dependency for dependency in item.depends_on if dependency in live_ids)
-                    )
+                    return query_models.NextUnstarted(item.item_id, item.unsatisfied_dependencies)
             case work_models.WorkState.ACTIVE | work_models.WorkState.PAUSED | work_models.WorkState.REVIEW:
                 pass
             case _ as unreachable:
@@ -701,7 +705,11 @@ def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tup
         for lease in state.authority.preparation_leases
     }
     live_items = _select_live_items(state)
-    live_ids = frozenset(item.item_id for item, _live_state in live_items)
+    unsatisfied_ids = frozenset(
+        item.item_id
+        for item in state.lifecycle.work_items
+        if item.state not in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED}
+    )
     current_replacements: dict[WorkItemId, stored_state.StoredPlannedReplacement] = {}
     for relation in state.replacements.planned_replacements:
         current = current_replacements.get(relation.affected_item_id)
@@ -719,9 +727,14 @@ def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tup
             definitions[item.item_id].unlock,
             live_state,
             item.queue_position,
-            not any(link.dependency_id in live_ids for link in dependency_links[item.item_id]),
+            not any(link.dependency_id in unsatisfied_ids for link in dependency_links[item.item_id]),
             item.timing.value if item.timing is not None else None,
             tuple(str(link.dependency_id) for link in dependency_links[item.item_id]),
+            tuple(
+                str(link.dependency_id)
+                for link in dependency_links[item.item_id]
+                if link.dependency_id in unsatisfied_ids
+            ),
             tuple(
                 _dependency_reason(proposals, prerequisite_proposals, item.item_id, link.dependency_id)
                 for link in dependency_links[item.item_id]
@@ -749,7 +762,7 @@ def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tup
 def _project_overview_item(
     item: work_models.WorkItem,
     definition: work_models.WorkItemDefinition,
-    live_dependencies: frozenset[WorkItemId],
+    unsatisfied_dependencies: frozenset[WorkItemId],
     proposals: Mapping[WorkItemId, stored_state.StoredProposal],
     prerequisite_proposals: Mapping[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
     preparation: query_models.PreparationAuthorityStatus | None,
@@ -764,9 +777,10 @@ def _project_overview_item(
         definition.unlock,
         item.state,
         item.queue_position,
-        not any(dependency in live_dependencies for dependency in item.depends_on),
+        not any(dependency in unsatisfied_dependencies for dependency in item.depends_on),
         item.timing,
         tuple(str(value) for value in item.depends_on),
+        tuple(str(value) for value in item.depends_on if value in unsatisfied_dependencies),
         tuple(
             _dependency_reason(proposals, prerequisite_proposals, item.work_item_id, value) for value in item.depends_on
         ),
@@ -792,7 +806,7 @@ def _project_current_items(
 ) -> tuple[query_models.OverviewItem, ...]:
     snapshot = facts.snapshot
     definitions = {value.work_item_id: value.definition for value in snapshot.definitions}
-    live_ids = frozenset(item.work_item_id for item in snapshot.items)
+    unsatisfied_ids = snapshot.unsatisfied_dependency_ids
     proposals, prerequisite_proposals = _proposal_maps(facts.proposals)
     preparations = {value.work_item_id: value for value in facts.preparations}
 
@@ -800,7 +814,7 @@ def _project_current_items(
         _project_overview_item(
             item,
             definitions[item.work_item_id],
-            live_ids,
+            unsatisfied_ids,
             proposals,
             prerequisite_proposals,
             preparations.get(item.work_item_id),
@@ -1018,6 +1032,7 @@ def _board_condition(facts: query_models.BoardAttemptFacts) -> query_models.Boar
             | decision_models.ActionKind.CLOSE_PR_REVIEW
             | decision_models.ActionKind.BLOCK_ITEM
             | decision_models.ActionKind.COMPLETE
+            | decision_models.ActionKind.CANCEL
             | decision_models.ActionKind.CLOSE
             | decision_models.ActionKind.CONTINUE
             | decision_models.ActionKind.DEFER
@@ -1215,11 +1230,13 @@ def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) 
 
     item = facts.work_item
     proposals, prerequisite_proposals = _proposal_maps(facts.proposals)
-    live_dependencies = frozenset(dependency_id for dependency_id, is_live in facts.dependency_liveness if is_live)
+    unsatisfied_dependencies = frozenset(
+        dependency_id for dependency_id, is_unsatisfied in facts.dependency_unsatisfied if is_unsatisfied
+    )
     return _project_overview_item(
         item,
         facts.definition.definition,
-        live_dependencies,
+        unsatisfied_dependencies,
         proposals,
         prerequisite_proposals,
         facts.preparation,
@@ -1418,6 +1435,8 @@ def _closure_action(
     match kind:
         case decision_models.ActionKind.COMPLETE:
             return query_models.ItemClosureAction.COMPLETE
+        case decision_models.ActionKind.CANCEL:
+            return query_models.ItemClosureAction.CANCEL
         case decision_models.ActionKind.CLOSE:
             return query_models.ItemClosureAction.CLOSE
         case decision_models.ActionKind.MERGE_PROPOSAL:
@@ -1575,7 +1594,12 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
         branch,
         tuple(
             query_models.BranchOwner(
-                str(owner.work_item_id), owner.item_state, str(owner.attempt_id), owner.attempt_state
+                str(owner.work_item_id),
+                owner.item_state,
+                str(owner.attempt_id),
+                "cancelled"
+                if owner.item_state == stored_state.StoredWorkItemState.DROPPED
+                else owner.attempt_state.value,
             )
             for owner in facts.owners
         ),
@@ -1771,11 +1795,11 @@ def _classify_parallel_exclusion_reasons(
                 f"Item '{item_id}' is being prepared until {item.preparation.expires_at.isoformat()}.",
             ),
         )
-    if item.live_dependencies:
+    if item.unsatisfied_dependencies:
         return (
             query_models.ParallelReason(
-                query_models.ParallelReasonCode.DEPENDENCY_LIVE,
-                f"Item '{item_id}' still depends on live work: {', '.join(item.live_dependencies)}.",
+                query_models.ParallelReasonCode.DEPENDENCY_UNSATISFIED,
+                f"Item '{item_id}' has unsatisfied prerequisites: {', '.join(item.unsatisfied_dependencies)}.",
             ),
         )
     if (
@@ -1828,7 +1852,7 @@ def project_current_parallel_preview(snapshot: LedgerSnapshot, *, now: datetime)
     """Project all-safe parallel work from current decision facts only."""
 
     definitions = {value.work_item_id: value.definition for value in snapshot.definitions}
-    live_ids = frozenset(item.work_item_id for item in snapshot.items)
+    unsatisfied_ids = snapshot.unsatisfied_dependency_ids
     attempts = {value.attempt: value for value in snapshot.attempts}
     attempt_authorities = {value.attempt: value for value in snapshot.command_attempt_authorities}
     preparations = {value.work_item_id: value for value in snapshot.command_preparation_authorities}
@@ -1858,7 +1882,7 @@ def project_current_parallel_preview(snapshot: LedgerSnapshot, *, now: datetime)
                 item.work_item_id,
                 definitions[item.work_item_id].title,
                 item.state,
-                tuple(dependency for dependency in item.depends_on if dependency in live_ids),
+                tuple(dependency for dependency in item.depends_on if dependency in unsatisfied_ids),
                 preparation,
                 attempt,
             )

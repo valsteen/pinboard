@@ -13,7 +13,7 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.adapters.sqlite import pr_review
+from pinboard.adapters.sqlite import cancellation, pr_review
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
     read_artifact_reference,
@@ -79,6 +79,7 @@ from pinboard.adapters.sqlite.proposals import (
     read_proposals_by_ids,
 )
 from pinboard.application import (
+    cancellation_models,
     candidate_snapshots,
     checkpoint_packages,
     history_archives,
@@ -104,7 +105,7 @@ class _ItemUpdatedAtRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
 class _SelectedDependencyViewRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: WorkItemId
     dependency_id: WorkItemId
-    queue_position: int | None
+    state: stored_state.StoredWorkItemState
 
 
 class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -234,7 +235,7 @@ def _read_generated_view_facts(
     selected_dependencies: dict[WorkItemId, list[_SelectedDependencyViewRow]] = {}
     for row in select_by_ids(
         connection,
-        """SELECT dependency.item_id, dependency.dependency_id, item.queue_position
+        """SELECT dependency.item_id, dependency.dependency_id, item.state
            FROM item_dependencies AS dependency
            JOIN work_items AS item ON item.item_id = dependency.dependency_id
            WHERE dependency.item_id IN ({ids}) ORDER BY dependency.item_id, dependency.position""",
@@ -307,7 +308,14 @@ def _read_generated_view_facts(
                         item.queue_position,
                         item.outcome_evidence,
                     ),
-                    tuple((value.dependency_id, value.queue_position is not None) for value in dependency_rows),
+                    tuple(
+                        (
+                            value.dependency_id,
+                            value.state
+                            not in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED},
+                        )
+                        for value in dependency_rows
+                    ),
                     current_definition_anchor(definition),
                     selected_proposals,
                     selected_preparations.get(item_id),
@@ -350,6 +358,14 @@ def _read_generated_view_facts(
         ),
     )
     archives = _read_archive_projections(connection, attempt_ids, selected_attempt_records)
+    parent_states = {
+        decode_row(row, _IntegrationItemRow).item_id: decode_row(row, _IntegrationItemRow).state
+        for row in select_by_ids(
+            connection,
+            "SELECT item_id, state, subject_revision FROM work_items WHERE item_id IN ({ids})",
+            tuple(attempt.item_id for attempt in selected_attempt_records.values()),
+        )
+    }
     attempts: list[query_models.AttemptProjectionFacts] = []
     for attempt_id in attempt_ids:
         attempt = selected_attempt_records.get(attempt_id)
@@ -359,6 +375,7 @@ def _read_generated_view_facts(
         attempts.append(
             query_models.AttemptProjectionFacts(
                 attempt,
+                parent_states[attempt.item_id],
                 None
                 if attempt.state == work_models.AttemptState.DONE
                 or reference is None
@@ -507,6 +524,7 @@ def _read_attempt_inspection_facts(
                 selected.project_revision,
                 selected.attempt_id,
                 selected.item_id,
+                selected.item_state,
             )
         case NonterminalAttemptContextSelection():
             if isinstance(selected.pause_reason, query_models.DamagedTransitionReceipt):
@@ -728,6 +746,14 @@ def _read_integration_facts(
 
 
 class SQLiteWorkStore:
+    def read_cancellation_preview(self, item_id: WorkItemId) -> cancellation_models.CancellationPreview | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return cancellation.read_preview(connection, item_id)
+        finally:
+            connection.close()
+
     def __init__(self, path: Path) -> None:
         self._path = path
 
@@ -1294,7 +1320,7 @@ class SQLiteWorkStore:
                             item.item_id,
                             item.label,
                             item.state,
-                            item.live_dependencies,
+                            item.unsatisfied_dependencies,
                             preparation,
                             attempt,
                         )

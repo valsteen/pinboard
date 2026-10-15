@@ -460,7 +460,7 @@ class ProjectAttemptActionContext:
     attempt_record: AttemptRecord | None
     current_definition_revision: int | None
     current_definition_digest: str | None
-    live_dependencies: tuple[WorkItemId, ...]
+    unsatisfied_dependencies: tuple[WorkItemId, ...]
     revision_available: bool
     current_replacement_revision: int | None
     replacement_resolved: bool

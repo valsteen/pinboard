@@ -123,6 +123,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             definitions=(work_models.DefinitionAnchor(item.work_item_id, 3, current_digest, current),),
             history_items=(WorkItemId("survey-west"), WorkItemId("survey-east")),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
 
         decision = expect_success(
@@ -176,6 +177,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             ),
             history_items=(WorkItemId("survey-east"),),
             dependency_facts=(work_models.DefinitionDependencies(survey.work_item_id, (build.work_item_id,)),),
+            dropped_item_ids=frozenset(),
         )
 
         cases = (
@@ -219,6 +221,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             definitions=(),
             history_items=(WorkItemId("done"),),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
 
         rejected = decide_definition_revision(
@@ -276,6 +279,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
                 work_models.SubjectRevision(attempt_id, "1"),
             ),
             dependency_facts=(),
+            dropped_item_ids=frozenset(),
         )
         project = expect_success(
             available_actions(

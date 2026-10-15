@@ -157,6 +157,7 @@ def _preparer_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory
             or command is None
             or item.state != work_models.WorkState.READY
             or not _replacement_resolved(snapshot, item.work_item_id)
+            or any(dependency in snapshot.unsatisfied_dependency_ids for dependency in item.depends_on)
         ):
             continue
         subject_revision = _subject_revision(snapshot, item.work_item_id)
@@ -322,7 +323,7 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
                 )
             )
         )
-        if not context.live_dependencies and context.replacement_resolved:
+        if not context.unsatisfied_dependencies and context.replacement_resolved:
             item_actions.append(
                 decision_models.ResumeAction(
                     factory.make(
@@ -331,7 +332,7 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
                 )
             )
     elif context.item_state == work_models.WorkState.BLOCKED:
-        if not context.live_dependencies and context.replacement_resolved:
+        if not context.unsatisfied_dependencies and context.replacement_resolved:
             item_actions.append(
                 decision_models.ResumeAction(
                     factory.make(
@@ -350,7 +351,6 @@ def _project_attempt_context(
 ) -> work_models.ProjectAttemptActionContext | None:
     if item.attempt is None:
         return None
-    live_items = snapshot.work_items_by_id()
     definition = snapshot.definition(item.work_item_id)
     replacement = snapshot.current_replacement(item.work_item_id)
     return work_models.ProjectAttemptActionContext(
@@ -362,7 +362,7 @@ def _project_attempt_context(
         snapshot.attempt(item.attempt),
         None if definition is None else definition.revision,
         None if definition is None else definition.digest,
-        tuple(dependency for dependency in item.depends_on if dependency in live_items),
+        tuple(dependency for dependency in item.depends_on if dependency in snapshot.unsatisfied_dependency_ids),
         revision_available,
         None if replacement is None else replacement.relation_revision,
         _replacement_resolved(snapshot, item.work_item_id),
@@ -390,8 +390,10 @@ def _item_actions(
                 close,
             )
         case work_models.WorkState.PAUSED | work_models.WorkState.BLOCKED:
-            dependencies_live = any(dependency in snapshot.work_items_by_id() for dependency in item.depends_on)
-            if not dependencies_live and _replacement_resolved(snapshot, item.work_item_id):
+            dependencies_unsatisfied = any(
+                dependency in snapshot.unsatisfied_dependency_ids for dependency in item.depends_on
+            )
+            if not dependencies_unsatisfied and _replacement_resolved(snapshot, item.work_item_id):
                 return (
                     decision_models.ResumeAction(
                         factory.make(item.work_item_id, f"Return {item.work_item_id} to ready", subject_revision)
@@ -436,6 +438,15 @@ def _project_role_actions(
         for action in group.attempt_actions
     ]
     for item in snapshot.items:
+        result.append(
+            decision_models.CancelAction(
+                factory.make(
+                    item.work_item_id,
+                    f"Cancel {item.work_item_id} only at the human's request after preview and separate confirmation",
+                    _subject_revision(snapshot, item.work_item_id),
+                )
+            )
+        )
         if item.state == work_models.WorkState.REVIEW and item.attempt is None:
             # Human-owned PR review has no implementation attempt or worker route.
             result.append(
@@ -665,6 +676,10 @@ def _activate(
     if item.state != work_models.WorkState.READY:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.work_item_id}' is not ready for activation.", None
+        )
+    if any(dependency in snapshot.unsatisfied_dependency_ids for dependency in item.depends_on):
+        return DecisionFailure(
+            DecisionFailureCode.DEPENDENCY_NOT_SATISFIED, "Activation has unsatisfied prerequisites.", None
         )
     preparation = action.capability.preparation_authority
     definition = snapshot.definition(item.work_item_id)
@@ -898,11 +913,11 @@ def _close(
             "revision and rebind.",
             None,
         )
-    if value.outcome == work_models.CloseOutcome.DROPPED and any(
-        item.work_item_id in candidate.depends_on for candidate in snapshot.items
-    ):
+    if value.outcome == work_models.CloseOutcome.DROPPED:
         return DecisionFailure(
-            DecisionFailureCode.LIVE_DEPENDENTS, f"Item '{item.work_item_id}' still has live dependents.", None
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            f"Dropping '{item.work_item_id}' requires a fresh cancellation preview and separate exact-item human confirmation; ordinary close records successful completion only.",
+            None,
         )
     if item.work_item_id in snapshot.history_items:
         return DecisionFailure(
@@ -933,10 +948,10 @@ def _resume(
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.work_item_id}' is not paused or blocked.", None
         )
-    if any(dependency in snapshot.work_items_by_id() for dependency in item.depends_on):
+    if any(dependency in snapshot.unsatisfied_dependency_ids for dependency in item.depends_on):
         return DecisionFailure(
             DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
-            f"Item '{item.work_item_id}' still has a live dependency.",
+            f"Item '{item.work_item_id}' still has an unsatisfied prerequisite.",
             None,
         )
     if not _replacement_resolved(snapshot, item.work_item_id):

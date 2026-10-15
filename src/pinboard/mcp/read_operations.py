@@ -1336,7 +1336,12 @@ def _mcp_attempt_continuation(
     )
     match continuation:
         case query_models.TerminalAttemptContinuation():
-            return contracts.TerminalAttemptContinuation(
+            constructor = (
+                contracts.CancelledAttemptContinuation
+                if isinstance(continuation, query_models.CancelledAttemptContinuation)
+                else contracts.TerminalAttemptContinuation
+            )
+            return constructor(
                 *common,
                 None,
                 True,

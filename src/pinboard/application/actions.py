@@ -45,6 +45,7 @@ def action_subject_ids(
         case (
             decision_models.ActivateAction(capability=capability)
             | decision_models.BlockWorkItemAction(capability=capability)
+            | decision_models.CancelAction(capability=capability)
             | decision_models.CloseAction(capability=capability)
             | decision_models.DeferAction(capability=capability)
             | decision_models.ReopenAction(capability=capability)
@@ -154,7 +155,7 @@ def select_current_actions(
     """Read the minimum current facts and select an optional exact legal action."""
 
     if role == decision_models.Role.OBSERVER:
-        snapshot = LedgerSnapshot("", (), dependency_facts=())
+        snapshot = LedgerSnapshot("", (), dependency_facts=(), dropped_item_ids=frozenset())
     elif action_id is not None:
         scope = action_identity_scope(action_id)
         if scope is None:
@@ -169,7 +170,7 @@ def select_current_actions(
     elif lease_id is not None and generation is not None:
         snapshot = reader.read_leased_action_snapshot(role, lease_id, generation, observed_at)
     else:
-        snapshot = LedgerSnapshot("", (), dependency_facts=())
+        snapshot = LedgerSnapshot("", (), dependency_facts=(), dropped_item_ids=frozenset())
     discovered = discover_current_actions(snapshot, role, lease_id=lease_id, generation=generation)
     if isinstance(discovered, DecisionFailure) or action_id is None:
         return discovered
@@ -268,7 +269,7 @@ def completion_input_contract(
 
 
 def encoded_action_input_schema(kind: decision_models.ActionKind) -> bytes | None:
-    """Return the canonical strict payload schema, or no payload for advisory actions."""
+    """Return the canonical strict payload schema, or no generic transition payload for a separately owned operation."""
 
     schema = action_models.action_payload_schema(kind)
     return None if schema is None else msgspec.json.encode(schema, order="sorted")

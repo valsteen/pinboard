@@ -59,6 +59,9 @@ from pinboard.mcp.contracts import (
     BriefSourcesRejected,
     BriefUnchanged,
     BriefUnchangedWithWarning,
+    CancellationCommitted,
+    CancellationPreviewResult,
+    CancellationRejected,
     CandidateObservationRejected,
     CandidateObserved,
     CandidateRestoreFailed,
@@ -714,6 +717,16 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         msgspec.convert(content, type=TracePreflightResult if status == "rejected" else ExecutorBusyResult, strict=True)
     elif tool_name == "pinboard_fixture_review":
         msgspec.convert(content, type=FixtureReviewRejected if status == "rejected" else FixtureReviewPage, strict=True)
+    elif tool_name == "pinboard_cancel":
+        msgspec.convert(
+            content,
+            type=CancellationRejected
+            if status == "rejected"
+            else CancellationPreviewResult
+            if status == "ok"
+            else CancellationCommitted,
+            strict=True,
+        )
     elif tool_name == "pinboard_order":
         msgspec.convert(content, type=OrderRejected if status == "rejected" else OrderCommitted, strict=True)
     elif tool_name == "pinboard_pr_review":
@@ -842,7 +855,9 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     elif tool_name == "pinboard_attempt_inspect" and status == "ok":
         continuation = content.get("continuation")
         state = continuation.get("state") if isinstance(continuation, dict) else None
-        result_type = TerminalAttemptInspectionSuccess if state == "done" else NonterminalAttemptInspectionSuccess
+        result_type = (
+            TerminalAttemptInspectionSuccess if state in {"done", "dropped"} else NonterminalAttemptInspectionSuccess
+        )
         msgspec.convert(content, type=result_type, strict=True)
     elif tool_name == "pinboard_correction_context":
         msgspec.convert(

@@ -381,10 +381,10 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                     f"Item '{item}' has an unresolved planned replacement.",
                     None,
                 )
-            if any(dependency in snapshot.work_items_by_id() for dependency in item_value.depends_on):
+            if any(dependency in snapshot.unsatisfied_dependency_ids for dependency in item_value.depends_on):
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE,
-                    f"Item '{item}' has live dependencies.",
+                    f"Item '{item}' has unsatisfied prerequisites.",
                     None,
                 )
             if definition is None:
@@ -470,7 +470,7 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 item_value is None
                 or item_value.state != work_models.WorkState.READY
                 or snapshot.unresolved_replacement(retained.work_item_id) is not None
-                or any(dependency in snapshot.work_items_by_id() for dependency in item_value.depends_on)
+                or any(dependency in snapshot.unsatisfied_dependency_ids for dependency in item_value.depends_on)
                 or definition is None
                 or expires_at <= acquired_at
             ):

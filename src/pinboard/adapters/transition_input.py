@@ -288,7 +288,8 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                 action, work_models.SubmitReviewInput(CandidateId(payload.candidate))
             )
         case (
-            decision_models.ContinueAction()
+            decision_models.CancelAction()
+            | decision_models.ContinueAction()
             | decision_models.DispatchAction()
             | decision_models.InspectAction()
             | decision_models.ReportBlockerAction()

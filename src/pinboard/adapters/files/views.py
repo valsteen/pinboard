@@ -181,6 +181,7 @@ def _render_item(
 
 def _render_attempt(
     attempt: stored_state.StoredAttempt,
+    item_state: stored_state.StoredWorkItemState,
     attempt_briefs: Mapping[AttemptId, bytes],
 ) -> bytes:
     if (brief := attempt_briefs.get(attempt.attempt_id)) is not None:
@@ -189,7 +190,7 @@ def _render_attempt(
         _render_header("work-attempt-view")
         + f"# Attempt {attempt.attempt_id}\n\n"
         + f"- Item: {attempt.item_id}\n"
-        + f"- State: {attempt.state.value}\n"
+        + f"- State: {'cancelled (item dropped)' if item_state == stored_state.StoredWorkItemState.DROPPED else attempt.state.value}\n"
         + f"- Branch: {attempt.branch}\n"
         + f"- Base revision: {attempt.base_revision}\n"
         + f"- Candidate revision: {attempt.candidate_revision or 'none'}\n"
@@ -295,24 +296,21 @@ def _markdown_link_text(value: str) -> str:
     return value.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
 
 
-def _live_dependencies(
-    item: query_models.BoardItem, live_ids: frozenset[str]
-) -> tuple[query_models.DependencyReason, ...]:
-    """Name the dependencies that still apply: the ones that are live items on the board."""
+def _unsatisfied_dependencies(item: query_models.BoardItem) -> tuple[query_models.DependencyReason, ...]:
+    """Name the live or dropped prerequisites whose obligations still apply."""
 
-    return tuple(value for value in item.overview.dependency_reasons if value.item_id in live_ids)
+    return tuple(
+        value for value in item.overview.dependency_reasons if value.item_id in item.overview.unsatisfied_dependencies
+    )
 
 
 def _render_board_markdown(board: query_models.BoardPortfolio) -> bytes:
-    live_ids = frozenset(value.overview.item_id for value in board.items)
     sections: list[str] = []
     for group, grouped in _board_groups(board.items):
         entries = "".join(
             f"- [{_markdown_link_text(item.overview.label)}](items/{item.overview.item_id}.md) "
             + f"`{item.overview.item_id}` ({item.overview.state.value}), changed {_utc_label(item.updated_at)}\n"
-            + "".join(
-                f"  - Depends on {value.item_id}: {value.reason}\n" for value in _live_dependencies(item, live_ids)
-            )
+            + "".join(f"  - Depends on {value.item_id}: {value.reason}\n" for value in _unsatisfied_dependencies(item))
             for item in grouped
         )
         sections.append(f"## {group.value}\n\n{entries or '- None.\n'}\n")
@@ -334,6 +332,7 @@ class _BoardPageDependency(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     item_id: str
     reason: str
     on_board: bool
+    unsatisfied: bool
 
 
 class _BoardPageCondition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -474,11 +473,11 @@ class _BoardPage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     items: tuple[_BoardPageItem, ...]
 
 
-def _live_first(dependencies: tuple[_BoardPageDependency, ...]) -> tuple[_BoardPageDependency, ...]:
+def _unsatisfied_first(dependencies: tuple[_BoardPageDependency, ...]) -> tuple[_BoardPageDependency, ...]:
     """List dependencies that still apply before solved ones, keeping stored order within each group."""
 
-    return tuple(value for value in dependencies if value.on_board) + tuple(
-        value for value in dependencies if not value.on_board
+    return tuple(value for value in dependencies if value.unsatisfied) + tuple(
+        value for value in dependencies if not value.unsatisfied
     )
 
 
@@ -734,7 +733,7 @@ def _page_scope(item: query_models.BoardItem) -> _BoardPageScope:
     )
 
 
-def _board_page_item(value: query_models.BoardItem, live_ids: frozenset[str]) -> _BoardPageItem:
+def _board_page_item(value: query_models.BoardItem, live_item_ids: frozenset[str]) -> _BoardPageItem:
     item = value.overview
     return _BoardPageItem(
         item.item_id,
@@ -744,9 +743,14 @@ def _board_page_item(value: query_models.BoardItem, live_ids: frozenset[str]) ->
         _utc_instant(value.updated_at),
         item.effect,
         item.unlock,
-        _live_first(
+        _unsatisfied_first(
             tuple(
-                _BoardPageDependency(dependency.item_id, dependency.reason, dependency.item_id in live_ids)
+                _BoardPageDependency(
+                    dependency.item_id,
+                    dependency.reason,
+                    dependency.item_id in live_item_ids,
+                    dependency.item_id in item.unsatisfied_dependencies,
+                )
                 for dependency in item.dependency_reasons
             )
         ),
@@ -761,14 +765,14 @@ def _board_page_item(value: query_models.BoardItem, live_ids: frozenset[str]) ->
 def _board_page_data(board: query_models.BoardPortfolio) -> bytes:
     """Encode page data as JSON that cannot close its script element or break a JavaScript string."""
 
-    live_ids = frozenset(value.overview.item_id for value in board.items)
+    live_item_ids = frozenset(item.overview.item_id for item in board.items)
     page = _BoardPage(
         "pinboard-board-page/v2",
         NOTICE,
         None if board.updated_at is None else _utc_instant(board.updated_at),
         tuple(group.value for group in _BoardGroup),
         tuple(state.value for group in _BoardGroup for state in work_models.WorkState if _board_group(state) is group),
-        tuple(_board_page_item(value, live_ids) for value in board.items),
+        tuple(_board_page_item(value, live_item_ids) for value in board.items),
     )
     return (
         msgspec.json.encode(page)
@@ -1181,7 +1185,7 @@ _BOARD_PAGE_TAIL = """</script>
     meta.appendChild(stamp("stamp item-time", item.updated_at, "Item record changed"));
     summary.appendChild(meta);
     standingLine(summary, item.standing);
-    var applying = item.dependencies.filter(function (value) { return value.on_board; });
+    var applying = item.dependencies.filter(function (value) { return value.unsatisfied; });
     if (applying.length) {
       summary.appendChild(node("span", "deps", "Depends on " + applying.map(function (value) {
         return value.item_id;
@@ -1204,7 +1208,8 @@ _BOARD_PAGE_TAIL = """</script>
           link.addEventListener("click", function () { document.getElementById(link.hash.slice(1)).open = true; });
           entry.appendChild(link);
         } else {
-          entry.appendChild(document.createTextNode(value.item_id + " (no longer live)"));
+          entry.appendChild(document.createTextNode(value.item_id +
+            (value.unsatisfied ? " (unsatisfied; no longer live)" : " (no longer live)")));
         }
         entry.appendChild(document.createTextNode(": " + value.reason));
         list.appendChild(entry);
@@ -1386,7 +1391,9 @@ def _write_facts(
         attempt_root = ensure_child_directory(view_root, "attempts")
         for selected in facts.attempts:
             attempt = selected.attempt
-            atomic_replace(attempt_root / f"{attempt.attempt_id}.md", _render_attempt(attempt, attempt_briefs))
+            atomic_replace(
+                attempt_root / f"{attempt.attempt_id}.md", _render_attempt(attempt, selected.item_state, attempt_briefs)
+            )
     if facts.receipts:
         history_root = ensure_child_directory(view_root, "history")
         for receipt in facts.receipts:
@@ -1478,7 +1485,14 @@ def derive_expected_view_bytes(
             pause_reason,
         )
     expected_views.update(
-        (f"attempts/{attempt.attempt_id}.md", _render_attempt(attempt, attempt_briefs))
+        (
+            f"attempts/{attempt.attempt_id}.md",
+            _render_attempt(
+                attempt,
+                next(item.state for item in state.lifecycle.work_items if item.item_id == attempt.item_id),
+                attempt_briefs,
+            ),
+        )
         for attempt in state.lifecycle.attempts
     )
     expected_views.update(

@@ -16,7 +16,7 @@ from pinboard.adapters.sqlite.database import decode_row, open_database, read_op
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import move_item_state_count, read_current_definition
 from pinboard.adapters.sqlite.models import OpenMode
-from pinboard.application import pr_reviews, stored_state
+from pinboard.application import cancellation_models, pr_reviews, stored_state
 from pinboard.domain import decision_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import WorkItemId
@@ -64,6 +64,7 @@ class EvidenceRow:
         | pr_reviews.HeadObservation
         | pr_reviews.ReviewRound
         | pr_reviews.ReviewClose
+        | cancellation_models.CancellationRecord
     )
 
 
@@ -139,7 +140,7 @@ def _load(connection: sqlite3.Connection, item_id: WorkItemId) -> ReviewState | 
     for raw_history in connection.execute(
         """SELECT history_id, action_kind, input_json FROM transition_history
            WHERE subject_id = ? AND action_kind IN
-           ('start-pr-review', 'review-pr-brief', 'observe-pr-head', 'record-pr-round', 'close-pr-review')
+           ('start-pr-review', 'review-pr-brief', 'observe-pr-head', 'record-pr-round', 'close-pr-review', 'cancel')
            ORDER BY history_id""",
         (item_id,),
     ).fetchall():
@@ -157,6 +158,8 @@ def _load(connection: sqlite3.Connection, item_id: WorkItemId) -> ReviewState | 
                 payload = msgspec.json.decode(raw, type=pr_reviews.ReviewRound, strict=True)
             case decision_models.ActionKind.CLOSE_PR_REVIEW:
                 payload = msgspec.json.decode(raw, type=pr_reviews.ReviewClose, strict=True)
+            case decision_models.ActionKind.CANCEL:
+                payload = msgspec.json.decode(raw, type=cancellation_models.CancellationRecord, strict=True)
             case _ as unreachable:
                 raise ValueError(f"Unsupported PR review history action: {unreachable.value}")
         evidence.append(EvidenceRow(history.history_id, kind, payload))
@@ -215,7 +218,12 @@ def validate_review_history(  # noqa: C901, PLR0912, PLR0915
             closed = False
             expected_state = stored_state.StoredWorkItemState.REVIEW
             for row in state.evidence:
-                if closed or row.payload.item_id != item_id:
+                recorded_item_id = (
+                    row.payload.preview.item_id
+                    if isinstance(row.payload, cancellation_models.CancellationRecord)
+                    else row.payload.item_id
+                )
+                if closed or recorded_item_id != item_id:
                     raise StorageError(
                         StorageErrorCode.INVALID_STATE, "Review evidence is out of order or names another item."
                     )
@@ -312,6 +320,17 @@ def validate_review_history(  # noqa: C901, PLR0912, PLR0915
                             if row.payload.outcome == "accepted"
                             else stored_state.StoredWorkItemState.DROPPED
                         )
+                    case cancellation_models.CancellationRecord():
+                        if (
+                            brief_id is None
+                            or row.payload.preview.state != stored_state.StoredWorkItemState.REVIEW
+                            or row.payload.preview.attempt is not None
+                        ):
+                            raise StorageError(
+                                StorageErrorCode.INVALID_STATE, "Cancellation does not terminate a human-owned review."
+                            )
+                        closed = True
+                        expected_state = stored_state.StoredWorkItemState.DROPPED
                     case _ as unreachable:
                         assert_never(unreachable)
             if state.item_state != expected_state:

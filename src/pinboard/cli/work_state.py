@@ -21,6 +21,7 @@ from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
 from pinboard.application import (
     action_models,
+    cancellation,
     candidate_snapshots,
     checkpoint_packages,
     history_archives,
@@ -582,6 +583,12 @@ def validate_loaded_work_state(
         for receipt in state.transition_receipts
         if receipt.action_kind == decision_models.ActionKind.CLOSE
         and (message := _close_decision_failure(receipt)) is not None
+    )
+    diagnostics.extend(
+        _error_diagnostic(ValidationDiagnosticCode.TRANSITION_RECEIPT_DAMAGED.value, work_root, message)
+        for receipt in state.transition_receipts
+        if receipt.action_kind == decision_models.ActionKind.CANCEL
+        and (message := cancellation.receipt_failure(receipt)) is not None
     )
     view_root = work_root / "views"
     expected_views = derive_expected_view_bytes(state, all_attempt_briefs, board_history, now=now)

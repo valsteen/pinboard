@@ -698,8 +698,8 @@ class McpTransportTest(unittest.TestCase):
                 for item_id, code in (
                     ("work-c", None),
                     ("intake-work", None),
-                    ("zz-proposal-a", "dependency-live"),
-                    ("work-a", "dependency-live"),
+                    ("zz-proposal-a", "dependency-unsatisfied"),
+                    ("work-a", "dependency-unsatisfied"),
                 ):
                     with self.subTest(item=item_id):
                         result = mcp_reads._parallel_preview(
@@ -775,21 +775,21 @@ class McpTransportTest(unittest.TestCase):
                     ready,
                     state=work_models.WorkState.BLOCKED,
                     preparation=live_preparation,
-                    live_dependencies=(WorkItemId("work-a"),),
+                    unsatisfied_dependencies=(WorkItemId("work-a"),),
                 ),
                 query_models.ParallelReasonCode.STATE_NOT_LAUNCHABLE,
             ),
             (
-                replace(ready, preparation=live_preparation, live_dependencies=(WorkItemId("work-a"),)),
+                replace(ready, preparation=live_preparation, unsatisfied_dependencies=(WorkItemId("work-a"),)),
                 query_models.ParallelReasonCode.PREPARATION_OWNED,
             ),
             (
                 replace(
                     ready,
                     preparation=replace(live_preparation, expires_at=SQLITE_NOW),
-                    live_dependencies=(WorkItemId("work-a"),),
+                    unsatisfied_dependencies=(WorkItemId("work-a"),),
                 ),
-                query_models.ParallelReasonCode.DEPENDENCY_LIVE,
+                query_models.ParallelReasonCode.DEPENDENCY_UNSATISFIED,
             ),
             (
                 replace(ready, state=work_models.WorkState.ACTIVE, attempt=owned_attempt),
@@ -4788,6 +4788,7 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.ATTEMPT_AUTHORITY_TOOL,
                 mcp_server.TRANSITION_TOOL,
                 mcp_server.CLOSE_TOOL,
+                mcp_server.CANCEL_TOOL,
                 mcp_server.DISPATCH_TOOL,
                 mcp_server.REVIEW_JOB_TOOL,
                 mcp_server.CANDIDATE_RESTORE_TOOL,

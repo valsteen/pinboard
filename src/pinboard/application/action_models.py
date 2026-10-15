@@ -247,7 +247,8 @@ def action_input_model(kind: decision_models.ActionKind) -> InputModel | None:  
         case decision_models.ActionKind.SUBMIT_REVIEW:
             return SubmitReviewInputPayload
         case (
-            decision_models.ActionKind.COMPLETE
+            decision_models.ActionKind.CANCEL
+            | decision_models.ActionKind.COMPLETE
             | decision_models.ActionKind.CONTINUE
             | decision_models.ActionKind.DISPATCH
             | decision_models.ActionKind.INSPECT

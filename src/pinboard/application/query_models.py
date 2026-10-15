@@ -108,7 +108,7 @@ class ItemProjectionFacts:
 @dataclass(frozen=True, slots=True)
 class ItemOverviewFacts:
     work_item: work_models.WorkItem
-    dependency_liveness: tuple[tuple[WorkItemId, bool], ...]
+    dependency_unsatisfied: tuple[tuple[WorkItemId, bool], ...]
     definition: work_models.DefinitionAnchor
     proposals: tuple[stored_state.StoredProposal, ...]
     preparation: PreparationAuthorityStatus | None
@@ -119,6 +119,7 @@ class ItemOverviewFacts:
 @dataclass(frozen=True, slots=True)
 class AttemptProjectionFacts:
     attempt: stored_state.StoredAttempt
+    item_state: stored_state.StoredWorkItemState
     brief_reference: artifacts.BriefArtifactRef | None
     archive: tuple[stored_state.ArtifactReference, stored_state.ArchiveHistoryFacts] | None
 
@@ -433,6 +434,12 @@ class TerminalAttemptContinuation(
             raise ValueError("an attempt continuation requires the exact forbidden routes")
 
 
+class CancelledAttemptContinuation(
+    TerminalAttemptContinuation, tag="dropped", tag_field="state", frozen=True, forbid_unknown_fields=True
+):
+    """Terminal retained attempt whose parent was dropped, without a completion claim."""
+
+
 class NonterminalAttemptContinuationBase(AttemptContinuationIdentity, frozen=True, forbid_unknown_fields=True):
     owner_task_id: str
     terminal: bool
@@ -593,7 +600,7 @@ class BlockedAttemptContinuation(
 type NonterminalAttemptContinuation = (
     ActiveAttemptContinuation | ReviewAttemptContinuation | PausedAttemptContinuation | BlockedAttemptContinuation
 )
-type AttemptContinuation = TerminalAttemptContinuation | NonterminalAttemptContinuation
+type AttemptContinuation = TerminalAttemptContinuation | CancelledAttemptContinuation | NonterminalAttemptContinuation
 
 
 type NonterminalItemState = Literal[
@@ -611,7 +618,7 @@ class AttemptContextItemFacts:
     state: NonterminalItemState
     current_definition_revision: int
     current_definition_digest: str
-    live_dependencies: tuple[WorkItemId, ...]
+    unsatisfied_dependencies: tuple[WorkItemId, ...]
     current_replacement_revision: int | None
     replacement_resolved: bool
 
@@ -621,6 +628,7 @@ class TerminalAttemptContextFacts:
     project_revision: int
     attempt_id: AttemptId
     work_item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
 
 
 @dataclass(frozen=True, slots=True)
@@ -910,6 +918,7 @@ type ReviewVerdict = (
 
 
 class ItemClosureAction(Enum):
+    CANCEL = "cancel"
     COMPLETE = "complete"
     CLOSE = "close"
     MERGE_PROPOSAL = "merge-proposal"
@@ -988,7 +997,7 @@ class BranchOwner(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: str
     item_state: stored_state.StoredWorkItemState
     attempt_id: str
-    attempt_state: work_models.AttemptState
+    attempt_state: Annotated[str, msgspec.Meta(pattern=r"\A(?:active|paused|blocked|review|done|cancelled)\z")]
 
 
 class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1150,7 +1159,7 @@ class ParallelSelection(Enum):
 
 class ParallelReasonCode(DescribedCode):
     ATTEMPT_OWNED = ("attempt-owned", "Another worker currently owns the item's attempt.")
-    DEPENDENCY_LIVE = ("dependency-live", "A required dependency item is still live.")
+    DEPENDENCY_UNSATISFIED = ("dependency-unsatisfied", "A required dependency is live or dropped.")
     STATE_NOT_LAUNCHABLE = ("state-not-launchable", "The item's current lifecycle state does not permit a new launch.")
     PREPARATION_OWNED = ("preparation-owned", "Another preparer currently owns this item's preparation.")
 
@@ -1179,7 +1188,7 @@ class ParallelPreviewItemFacts:
     work_item_id: WorkItemId
     label: str
     state: work_models.WorkState
-    live_dependencies: tuple[WorkItemId, ...]
+    unsatisfied_dependencies: tuple[WorkItemId, ...]
     preparation: ParallelPreparationFacts | None
     attempt: ParallelAttemptFacts | None
 
@@ -1222,6 +1231,7 @@ class OverviewItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     eligible: bool
     timing: str | None
     depends_on: tuple[str, ...]
+    unsatisfied_dependencies: tuple[str, ...]
     dependency_reasons: tuple[DependencyReason, ...]
     proposal_origin: ProposalOrigin | None
     attempt_id: str | None
@@ -1585,7 +1595,7 @@ class BoardPortfolio:
 
 class NextUnstarted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: str
-    live_dependencies: tuple[str, ...]
+    unsatisfied_dependencies: tuple[str, ...]
 
 
 class WorkOverview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

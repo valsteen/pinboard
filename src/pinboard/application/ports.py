@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pinboard.application import query_models, stored_state
+from pinboard.application import cancellation_models, query_models, stored_state
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.mutation_models import (
     CheckpointMutationAllocation,
@@ -34,6 +34,8 @@ class ArtifactReferenceAcceptance:
 
 
 class WorkTransaction(Protocol):
+    def read_cancellation_preview(self, item_id: WorkItemId) -> cancellation_models.CancellationPreview | None: ...
+
     def read_decision_facts(self, scope: query_models.DecisionScope, now: datetime) -> query_models.DecisionFacts: ...
 
     def read_mutation_allocation(self) -> MutationAllocation: ...
@@ -62,6 +64,8 @@ class WorkTransaction(Protocol):
 
 
 class WorkStore(Protocol):
+    def read_cancellation_preview(self, item_id: WorkItemId) -> cancellation_models.CancellationPreview | None: ...
+
     def validated_snapshot(self) -> stored_state.StoredWorkState: ...
 
     def write(self) -> AbstractContextManager[WorkTransaction]: ...

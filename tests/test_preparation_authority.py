@@ -227,6 +227,55 @@ class PreparationAuthorityTest(unittest.TestCase):
         self.assertLess(rejected.message.index("rebind"), rejected.message.index("resume"))
         self.assertEqual(before, SQLiteWorkStore(database_path).validated_snapshot())
 
+    def test_active_item_with_revoked_preparation_explains_attempt_continuation_unchanged(self) -> None:
+        state = complete_sqlite_state()
+        definition = next(
+            value for value in state.lifecycle.definition_revisions if value.item_id == WorkItemId("work-a")
+        )
+        revoked = replace(
+            state,
+            authority=replace(
+                state.authority,
+                preparation_counters=(stored_state.PreparationLeaseCounter(WorkItemId("work-a"), 1),),
+                preparation_generations=(
+                    stored_state.PreparationLeaseGeneration(
+                        WorkItemId("work-a"), 1, LeaseId("old-preparation"), TaskId("old-preparer"), HostId("host-a")
+                    ),
+                ),
+                preparation_leases=(
+                    stored_state.StoredPreparationLease(
+                        WorkItemId("work-a"),
+                        1,
+                        definition.revision,
+                        definition.digest,
+                        SQLITE_NOW - timedelta(minutes=2),
+                        SQLITE_NOW - timedelta(minutes=1),
+                        authority_models.PreparationLeaseStatus.REVOKED,
+                    ),
+                ),
+            ),
+        )
+        store, database_path = self._store(revoked)
+        before = store.validated_snapshot()
+
+        rejected = service.start_preparation(
+            store,
+            work_item_id=WorkItemId("work-a"),
+            task_id=TaskId("new-preparer"),
+            host_id=HostId("host-b"),
+            lease_id=LeaseId("new-preparation"),
+            acquired_at=SQLITE_NOW,
+            expires_at=SQLITE_NOW + timedelta(minutes=1),
+        )
+
+        self.assertIsInstance(rejected, DecisionFailure)
+        assert isinstance(rejected, DecisionFailure)
+        self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, rejected.code)
+        self.assertIn("active attempt", rejected.message)
+        self.assertIn("continuation", rejected.message)
+        self.assertLess(rejected.message.index("replacement brief"), rejected.message.index("rebind-attempt"))
+        self.assertEqual(before, SQLiteWorkStore(database_path).validated_snapshot())
+
     def test_initial_acquisition_pins_ready_item_definition_and_keeps_item_ready(self) -> None:
         snapshot = project_decision_snapshot(complete_sqlite_state(), SQLITE_NOW)
         item = snapshot.work_item(WorkItemId("work-c"))
@@ -701,6 +750,20 @@ class PreparationAuthorityTest(unittest.TestCase):
         self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, rejected.code)
         self.assertIn("paused", rejected.message)
         self.assertIn("resume", rejected.message)
+        active = replace(
+            snapshot,
+            items=tuple(
+                replace(value, state=work_models.WorkState.ACTIVE) if value.work_item_id == item.work_item_id else value
+                for value in snapshot.items
+            ),
+        )
+        rejected_active = decide_preparation_authority(retained, 2, request, active, SQLITE_NOW)
+        self.assertIsInstance(rejected_active, DecisionFailure)
+        assert isinstance(rejected_active, DecisionFailure)
+        self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, rejected_active.code)
+        self.assertIn("active attempt", rejected_active.message)
+        self.assertIn("continuation", rejected_active.message)
+        self.assertLess(rejected_active.message.index("replacement brief"), rejected_active.message.index("rebind"))
         revoked = decide_preparation_authority(
             transferred.proposed_replacement,
             transferred.counter_after,

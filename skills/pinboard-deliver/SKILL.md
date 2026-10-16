@@ -37,6 +37,12 @@ When reacquiring an attempt returned from review, require the correction-dispatc
 
 If a replacement brief superseded an outstanding correction, follow the coordination skill's [replacement-brief review recovery](../pinboard/references/review-and-disposition.md#coordinate-review-responsibility-and-checkout-use). A worker launched by its completed correction dispatch does not replay the coordinator's pre-edit recovery.
 
+## Keep the attempt lease live
+
+The acquired lease expires at its returned `expires_at`; nothing renews it for you, and a long model turn, build, test run, or wait on a helper agent can outlast it. Renew it through `pinboard_attempt_authority` operation `renew` with exact roots, the attempt, your current lease and generation, and the dispatched TTL before beginning any step that could outlast the remaining time, and again whenever roughly half the TTL has passed during continuous work. Renewal keeps the same lease and generation, so current action receipts stay valid.
+
+If a lease-protected call rejects with `ATTEMPT_LEASE_EXPIRED`, nothing changed. Call attempt `status`. When it shows your own lease as expired, call `acquire` with your own trusted task, host and the dispatched TTL, re-inspect the attempt through `pinboard_attempt_inspect`, discover a fresh action through `pinboard_actions` with the new lease and generation, and continue from your checkout's current work. When another owner now holds live authority, or the lease was released or revoked, stop and report under the [contention-reporting rule](../pinboard/SKILL.md#match-detail-to-the-question); never revoke it or reuse the old lease.
+
 ## Stay inside the attempt
 
 - Edit only what the attempt requires.

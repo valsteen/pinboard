@@ -32,7 +32,7 @@ from pinboard.adapters import candidate_evidence, lifecycle_artifacts
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
-from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
+from pinboard.adapters.files.models import AffectedViews, UnavailableViewRefresh, ViewRefreshResult, ViewWarning
 from pinboard.adapters.files.views import board_pages
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -1189,6 +1189,10 @@ class McpTransportTest(unittest.TestCase):
             self.assertEqual(msgspec.json.decode(needs_correction_review(brief)), found["review"])
             self.assertEqual(published["reference"], found["reference"])
             after = SQLiteWorkStore(roots.database_path).validated_snapshot()
+            self.assertIn(
+                f"snapshot revision {after.lifecycle.project.revision}",
+                (roots.work_root / "views" / "roadmap.html").read_text(),
+            )
             self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
             self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
             self.assertEqual(before.authority, after.authority)
@@ -3521,7 +3525,7 @@ class McpTransportTest(unittest.TestCase):
         overview_content = overview.structured_content
         assert isinstance(overview_content, dict)
         self.assertEqual("pinboard-overview/v7", overview_content["schema"])
-        self.assertEqual("sqlite-v7", overview_content["authority"])
+        self.assertEqual("sqlite-v8", overview_content["authority"])
         self.assertEqual(["work-a-1"], overview_content["active_attempts"])
         observer_content = observer.structured_content
         assert isinstance(observer_content, dict)
@@ -4148,7 +4152,7 @@ class McpTransportTest(unittest.TestCase):
             store: SQLiteWorkStore,
             affected: AffectedViews,
             now: datetime,
-        ) -> ViewRefreshResult:
+        ) -> ViewRefreshResult | UnavailableViewRefresh:
             result = original_refresh(durable, store, affected, now)
             committed.set()
             if not release.wait(2):
@@ -4801,6 +4805,7 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.TRANSITION_TOOL,
                 mcp_server.CLOSE_TOOL,
                 mcp_server.CANCEL_TOOL,
+                mcp_server.INITIATIVE_TOOL,
                 mcp_server.DISPATCH_TOOL,
                 mcp_server.REVIEW_JOB_TOOL,
                 mcp_server.CANDIDATE_RESTORE_TOOL,

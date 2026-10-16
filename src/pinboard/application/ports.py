@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pinboard.application import cancellation_models, query_models, stored_state
+from pinboard.application import cancellation_models, query_models, roadmap, stored_state
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.mutation_models import (
     CheckpointMutationAllocation,
@@ -64,6 +64,8 @@ class WorkTransaction(Protocol):
 
 
 class WorkStore(Protocol):
+    def read_roadmap(self) -> roadmap.Projection: ...
+
     def read_cancellation_preview(self, item_id: WorkItemId) -> cancellation_models.CancellationPreview | None: ...
 
     def validated_snapshot(self) -> stored_state.StoredWorkState: ...
@@ -245,10 +247,14 @@ class CandidateReviewReferenceReader(Protocol):
 
 
 class BoardStore(BoardRecordReader, CandidateReviewReferenceReader, Protocol):
+    def read_roadmap(self) -> roadmap.Projection: ...
+
     """The SQLite reads a composed board refresh needs: its selected records, then keyed ready-review references."""
 
 
 class BoardReader(Protocol):
+    def read_roadmap(self) -> roadmap.Projection: ...
+
     """Read the composed board for one refresh; called under the board lock."""
 
     def read_board(self, now: datetime) -> query_models.BoardPortfolio: ...

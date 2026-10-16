@@ -3,7 +3,7 @@
 This module reads and writes SQLite but never commits, rolls back, closes the
 connection, calls callbacks, reads the filesystem, or obtains time. SQLite and
 persisted-invariant failures remain exceptional; the transaction owner stays in
-``store``.
+``persistence``.
 """
 
 import hashlib
@@ -15,6 +15,7 @@ from types import MappingProxyType
 
 import msgspec
 
+from pinboard.adapters.sqlite import initiatives
 from pinboard.adapters.sqlite.artifacts import read_artifacts
 from pinboard.adapters.sqlite.authority import read_authority, validate_attempt_authority
 from pinboard.adapters.sqlite.database import decode_row, select_by_ids
@@ -371,7 +372,9 @@ def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
         read_artifacts(connection),
         read_authority(connection),
         _read_history(connection),
+        initiatives.read_all(connection),
     )
+    initiatives.validate_all(connection, state.initiatives, project.revision)
     _validate_current_state(state, StorageErrorCode.INVALID_STATE)
     validate_review_history(connection, None)
     _validate_item_state_counts(connection, state.lifecycle.work_items)
@@ -390,12 +393,15 @@ def read_project_export_state(connection: sqlite3.Connection) -> project_export.
         {value.item_id for value in lifecycle.work_items},
         StorageErrorCode.INVALID_STATE,
     )
+    initiative_values = initiatives.read_all(connection)
+    initiatives.validate_all(connection, initiative_values, project.revision)
     return project_export.ProjectExportState(
         lifecycle,
         read_pending_proposals(connection),
         replacements,
         read_artifacts(connection),
         _read_history(connection),
+        initiative_values,
     )
 
 

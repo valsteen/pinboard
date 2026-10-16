@@ -20,10 +20,11 @@ from typing import Literal, assert_never
 
 import msgspec
 
+from pinboard.adapters.files import roadmap as roadmap_files
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
-from pinboard.application import definition_compatibility, ports, pr_reviews, query_models, stored_state
+from pinboard.application import definition_compatibility, ports, pr_reviews, query_models, roadmap, stored_state
 from pinboard.application.queries import (
     damaged_receipt_message,
     damaged_receipt_recovery,
@@ -41,7 +42,7 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
 
 
 def _render_header(kind: str) -> str:
-    return f"---\nkind: {kind}\nauthority: sqlite-v7\n---\n\n> {NOTICE}\n\n"
+    return f"---\nkind: {kind}\nauthority: sqlite-v8\n---\n\n> {NOTICE}\n\n"
 
 
 def _bullets(values: tuple[str, ...]) -> str:
@@ -853,6 +854,7 @@ a { color: var(--accent); }
 </style>
 </head>
 <body>
+<nav><a href="roadmap.html">Open the initiative roadmap</a></nav>
 <header>
 <h1>Pinboard board</h1>
 <p class="notice">Generated projection; SQLite is authoritative. This page is read-only.</p>
@@ -1324,6 +1326,9 @@ def _write_board(view_root: Path, board_reader: ports.BoardReader, now: datetime
 
     with _board_lock(view_root):
         board = board_reader.read_board(now)
+        roadmap_markdown, roadmap_html = roadmap_files.render(board_reader.read_roadmap())
+        atomic_replace(view_root / "roadmap.md", roadmap_markdown)
+        atomic_replace(view_root / "roadmap.html", roadmap_html)
         atomic_replace(view_root / BOARD_MARKDOWN, _render_board_markdown(board))
         atomic_replace(view_root / BOARD_HTML, _render_board_html(board))
 
@@ -1340,7 +1345,7 @@ def refresh_facts(
     try:
         damaged = _write_facts(facts, work_root, attempt_briefs)
         _write_board(ensure_child_directory(work_root, "views"), board_reader, now)
-    except FileIOError as error:
+    except (FileIOError, ports.WorkStoreError) as error:
         return ViewRefreshResult(
             facts.project_revision,
             ViewWarning(
@@ -1414,7 +1419,7 @@ def rebuild_facts(
         view_root = ensure_child_directory(work_root, "views")
         damaged = _write_facts(facts, work_root, attempt_briefs)
         _write_board(view_root, board_reader, now)
-    except FileIOError as error:
+    except (FileIOError, ports.WorkStoreError) as error:
         return ViewRefreshResult(
             facts.project_revision,
             ViewWarning(
@@ -1498,6 +1503,9 @@ def derive_expected_view_bytes(
     expected_views.update(
         (f"history/{receipt.history_id}.md", _render_history(receipt)) for receipt in state.transition_receipts
     )
+    roadmap_markdown, roadmap_html = roadmap_files.render(roadmap.from_state(state))
+    expected_views["roadmap.md"] = roadmap_markdown
+    expected_views["roadmap.html"] = roadmap_html
     expected_views[BOARD_MARKDOWN] = _render_board_markdown(view_inputs.board)
     expected_views[BOARD_HTML] = _render_board_html(view_inputs.board)
     return ExpectedViews(MappingProxyType(expected_views), tuple(damaged))

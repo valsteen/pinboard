@@ -14,7 +14,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult
+from pinboard.adapters.files.models import AffectedViews, UnavailableViewRefresh, ViewRefreshResult
 from pinboard.adapters.files.views import board_pages
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -198,7 +198,7 @@ class ItemLifecycleSupport(CheckpointPackageSupport):
 
         def damage_then_refresh(
             durable: DurableRoots, store: GeneratedViewReader, affected: AffectedViews, now: datetime
-        ) -> ViewRefreshResult:
+        ) -> ViewRefreshResult | UnavailableViewRefresh:
             self.update_receipt(fixture, history_id, **columns)
             return refresh(durable, store, affected, now)
 

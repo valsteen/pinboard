@@ -8,8 +8,9 @@ from typing import Literal, assert_never
 
 import msgspec
 
-from pinboard.application import query_models, released_v6_compatibility, stored_state
+from pinboard.application import initiative_records, query_models, released_v6_compatibility, stored_state
 from pinboard.domain import decision_models, work_models
+from pinboard.domain import initiatives as initiative_models
 from pinboard.domain.identifiers import ProposalId
 
 
@@ -20,7 +21,7 @@ class ContentEncoding(Enum):
 
 class ProjectExportProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[7]
+    schema_version: Literal[8]
     created_at: str
     updated_at: str
 
@@ -385,8 +386,8 @@ class ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_u
 
 
 class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-project-export/v1"]
-    authority: Literal["sqlite-v7"]
+    schema: Literal["pinboard-project-export/v2"]
+    authority: Literal["sqlite-v8"]
     revision: int
     project: ProjectExportProject
     work_items: tuple[ProjectExportWorkItem, ...]
@@ -403,6 +404,7 @@ class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     artifact_contents: tuple[ProjectExportArtifactContent, ...]
     checkpoint_packages: tuple[ProjectExportCheckpointPackageV3, ...]
     completion_packages: tuple[ProjectExportCompletionReviewPackage, ...]
+    initiatives: tuple[initiative_records.InitiativeRecord, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +416,7 @@ class ProjectExportState:
     replacements: stored_state.ReplacementRecords
     artifact_references: tuple[stored_state.ArtifactReference, ...]
     transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...]
+    initiatives: tuple[initiative_models.Initiative, ...]
 
 
 def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> ProjectExportState:
@@ -429,6 +432,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
     replacements = first.replacements
     artifact_references = list(first.artifact_references)
     transition_receipts = list(first.transition_receipts)
+    initiatives = list(first.initiatives)
     work_items = list(lifecycle.work_items)
     dependencies = list(lifecycle.dependencies)
     attempts = list(lifecycle.attempts)
@@ -452,6 +456,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
         replacement_dispositions.extend(batch.replacements.dispositions)
         artifact_references.extend(batch.artifact_references)
         transition_receipts.extend(batch.transition_receipts)
+        initiatives.extend(batch.initiatives)
     return ProjectExportState(
         stored_state.LifecycleRecords(
             lifecycle.project,
@@ -464,6 +469,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
         stored_state.ReplacementRecords(tuple(planned_replacements), tuple(replacement_dispositions)),
         tuple(artifact_references),
         tuple(transition_receipts),
+        tuple(initiatives),
     )
 
 
@@ -559,8 +565,8 @@ def project_export_from_state(
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
     return ProjectExport(
-        "pinboard-project-export/v1",
-        "sqlite-v7",
+        "pinboard-project-export/v2",
+        "sqlite-v8",
         state.lifecycle.project.revision,
         ProjectExportProject(
             state.lifecycle.project.application,
@@ -691,4 +697,5 @@ def project_export_from_state(
         artifact_contents,
         checkpoint_packages,
         completion_packages,
+        tuple(initiative_records.initiative_record(value) for value in state.initiatives),
     )

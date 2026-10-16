@@ -829,10 +829,20 @@ def _brief_review(raw: Mapping[str, JsonValue], token: execution.CancellationTok
                 *(["immutable-artifact"] if publication.artifact_created else []),
                 *(["accepted-artifact-reference", "ledger"] if publication.ledger_changed else []),
             ]
+            view_warning = (
+                common._refresh_affected_views(durable, store, AffectedViews((), (), ()), datetime.now(UTC)).warning
+                if publication.ledger_changed
+                else None
+            )
             return execution.OperationResult(
                 {
                     "schema": schema,
-                    "status": "committed" if surfaces else "unchanged",
+                    "status": ("committed" if view_warning is None else "committed-with-warning")
+                    if surfaces
+                    else "unchanged",
+                    "warning": None
+                    if view_warning is None
+                    else {"message": view_warning.message, "recovery": view_warning.repair},
                     "reference": common._artifact_reference_json(publication.reference),
                     "correction": correction,
                     "state_changed": bool(surfaces),

@@ -26,6 +26,7 @@ from pinboard.adapters.files.root import resolve_shared_repository_root, resolve
 from pinboard.application import (
     actions,
     dispatch_models,
+    ports,
     queries,
     query_models,
 )
@@ -425,17 +426,20 @@ def _dispatch_job(  # noqa: C901, PLR0912 - distinct readiness publication and w
             preparation_choice,
         )
     if isinstance(publication, dispatch_operations.DispatchFailure):
+        refresh_warning = common._refresh_published_ledger(durable, store, publication.details, datetime.now(UTC))
         return _job_failure(
             project_root,
             str(durable.work_root),
             schema,
             attempt_id,
             publication.code.value,
-            publication.message,
+            publication.message
+            + ("" if refresh_warning is None else f" {refresh_warning.message} {refresh_warning.repair}"),
             publication.details,
             False,
         )
     if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+        refresh_warning = common._refresh_published_ledger(durable, store, publication.details, datetime.now(UTC))
         return _job_failure(
             project_root,
             str(durable.work_root),
@@ -444,11 +448,13 @@ def _dispatch_job(  # noqa: C901, PLR0912 - distinct readiness publication and w
             "ARTIFACT_ACCEPTANCE_FAILED"
             if isinstance(publication, ArtifactAcceptanceFailure)
             else "ARTIFACT_PUBLICATION_FAILED",
-            str(publication.cause),
+            str(publication.cause)
+            + ("" if refresh_warning is None else f" {refresh_warning.message} {refresh_warning.repair}"),
             publication.details,
             True,
         )
     surfaces = _job_publication_surfaces(publication.changed_surfaces)
+    view_warning = _job_publication_warning(durable, store, surfaces, datetime.now(UTC))
     if isinstance(publication, dispatch_operations.ReplacementReadiness):
         content = msgspec.to_builtins(
             contracts.ReplacementReadinessReady(
@@ -469,6 +475,7 @@ def _dispatch_job(  # noqa: C901, PLR0912 - distinct readiness publication and w
                 "committed" if surfaces else "unchanged",
                 "do-not-retry" if surfaces else "safe-to-repeat",
                 surfaces,
+                view_warning,
             )
         )
         assert isinstance(content, dict)
@@ -494,6 +501,7 @@ def _dispatch_job(  # noqa: C901, PLR0912 - distinct readiness publication and w
             "committed" if surfaces else "unchanged",
             "do-not-retry" if surfaces else "safe-to-repeat",
             surfaces,
+            view_warning,
             schema,
             attempt_id,
             choice.checkpoint_id,
@@ -539,19 +547,22 @@ def _review_job(
         correction_history_id,
     )
     if isinstance(prepared, DecisionFailure):
+        refresh_warning = common._refresh_published_ledger(durable, store, prepared.details, datetime.now(UTC))
         return _job_failure(
             project_root,
             str(durable.work_root),
             schema,
             choice.attempt_id,
             prepared.code.value,
-            prepared.message,
+            prepared.message
+            + ("" if refresh_warning is None else f" {refresh_warning.message} {refresh_warning.repair}"),
             prepared.details,
             False,
         )
     if isinstance(prepared, review_operations.ReviewPromptPublicationFailure):
         raise prepared.cause
     if isinstance(prepared, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+        refresh_warning = common._refresh_published_ledger(durable, store, prepared.details, datetime.now(UTC))
         return _job_failure(
             project_root,
             str(durable.work_root),
@@ -560,7 +571,8 @@ def _review_job(
             "ARTIFACT_ACCEPTANCE_FAILED"
             if isinstance(prepared, ArtifactAcceptanceFailure)
             else "ARTIFACT_PUBLICATION_FAILED",
-            str(prepared.cause),
+            str(prepared.cause)
+            + ("" if refresh_warning is None else f" {refresh_warning.message} {refresh_warning.repair}"),
             prepared.details,
             True,
         )
@@ -569,6 +581,7 @@ def _review_job(
     reference = prepared.brief_reference
     brief = prepared.brief
     surfaces = _job_publication_surfaces(publication.changed_surfaces)
+    view_warning = _job_publication_warning(durable, store, surfaces, datetime.now(UTC))
     content = msgspec.to_builtins(
         contracts.ReviewJobReady(
             "ready",
@@ -587,6 +600,7 @@ def _review_job(
             "committed" if surfaces else "unchanged",
             "do-not-retry" if surfaces else "safe-to-repeat",
             surfaces,
+            view_warning,
             schema,
             choice.attempt_id,
             choice.candidate_revision,
@@ -768,3 +782,16 @@ def _candidate_restore(
     )
     assert isinstance(content, dict)
     return execution.OperationResult(content, "committed" if restored.changed else "unchanged", None)
+
+
+def _job_publication_warning(
+    durable: DurableRoots,
+    store: ports.GeneratedViewReader,
+    surfaces: tuple[contracts.JobPublicationSurface, ...],
+    now: datetime,
+) -> contracts.WarningResult | None:
+    """Refresh a job's committed ledger reference and convert its repair warning once."""
+    if "ledger" not in surfaces:
+        return None
+    warning = common._refresh_affected_views(durable, store, AffectedViews((), (), ()), now).warning
+    return None if warning is None else contracts.WarningResult(warning.message, warning.repair)

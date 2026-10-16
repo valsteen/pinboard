@@ -893,6 +893,10 @@ class DispatchTest(unittest.TestCase):
             prompt_failure["changed_surfaces"],
         )
         self.assertEqual("do-not-retry", prompt_failure["retry"])
+        self.assertIn(
+            f"snapshot revision {store.read_project_status().project_revision}",
+            (roots.work_root / "views" / "roadmap.html").read_text(),
+        )
 
         accepted = expect_dispatch_success(
             prepare_dispatch(
@@ -1097,6 +1101,10 @@ class DispatchTest(unittest.TestCase):
         reference = ready["prompt_reference"]
         assert isinstance(reference, dict)
         prompt = (roots.work_root / str(reference["selector"])).read_text()
+        self.assertIn(
+            f"snapshot revision {reference['accepted_revision']}",
+            (roots.work_root / "views" / "roadmap.html").read_text(),
+        )
         self.assertNotIn("Correction context:", prompt)
         verified = self.native_dispatch(
             project,

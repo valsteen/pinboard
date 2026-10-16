@@ -7,7 +7,7 @@ but never opens or closes the connection and never classifies typed results.
 ``read_operation`` similarly owns one deferred read transaction so every query
 observes one SQLite snapshot, then rolls it back without permitting writes.
 Runtime store writes instead own their complete connection and transaction
-lifecycle in ``store.py``. This module never obtains time or invokes callbacks.
+lifecycle in ``persistence.py``. This module never obtains time or invokes callbacks.
 """
 
 import os
@@ -32,8 +32,8 @@ from pinboard.application import stored_state
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 
 APPLICATION: Final = "pinboard"
-SCHEMA_VERSION: Final = 7
-SCHEMA_ID = "sqlite-v7"
+SCHEMA_VERSION: Final = 8
+SCHEMA_ID = "sqlite-v8"
 BUSY_TIMEOUT_MS = 2_000
 
 
@@ -112,7 +112,7 @@ def _configure_writes(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA synchronous = FULL")
 
 
-def _read_required_metadata(connection: sqlite3.Connection) -> tuple[str, int]:
+def _read_pinboard_schema_version(connection: sqlite3.Connection) -> int:
     try:
         table = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_meta'"
@@ -128,7 +128,11 @@ def _read_required_metadata(connection: sqlite3.Connection) -> tuple[str, int]:
         application, version = msgspec.convert(tuple(rows[0]), type=tuple[str, int], strict=True)
     except msgspec.ValidationError as error:
         raise StorageError(StorageErrorCode.INVALID_STATE, "The database metadata types are invalid.") from error
-    return application, version
+    if application != APPLICATION:
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE, f"The database belongs to application {application!r}, not {APPLICATION!r}."
+        )
+    return version
 
 
 def _read_schema_signature(connection: sqlite3.Connection) -> tuple[tuple[str, str, str, str | None], ...]:
@@ -178,14 +182,33 @@ def _build_v6_schema_signature() -> tuple[tuple[str, str, str, str | None], ...]
         connection.close()
 
 
+@cache
+def _build_v7_schema_signature() -> tuple[tuple[str, str, str, str | None], ...]:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(Path(__file__).with_name("schema_compatibility_v7.sql").read_text(encoding="utf-8"))
+        return _read_schema_signature(connection)
+    finally:
+        connection.close()
+
+
+def _verify_v7_schema(connection: sqlite3.Connection) -> None:
+    if (
+        _read_pinboard_schema_version(connection) != 7
+        or _read_schema_signature(connection) != _build_v7_schema_signature()
+    ):
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v7 schema.")
+
+
 def _verify_current_schema(connection: sqlite3.Connection) -> None:
-    application, version = _read_required_metadata(connection)
-    if application != APPLICATION:
-        raise StorageError(
-            StorageErrorCode.INVALID_STATE,
-            f"The database belongs to application {application!r}, not {APPLICATION!r}.",
-        )
+    version = _read_pinboard_schema_version(connection)
     if version != SCHEMA_VERSION:
+        if version == 7:
+            _verify_v7_schema(connection)
+            raise StorageError(
+                StorageErrorCode.SCHEMA_UNSUPPORTED,
+                "Schema sqlite-v7 requires a 'pinboard migrate-schema' preview and 'migrate-schema --apply <plan-id>' with the same project and work roots before ordinary commands can open it.",
+            )
         if version == 6:
             if _read_schema_signature(connection) != _build_v6_schema_signature():
                 raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v6 schema.")
@@ -440,11 +463,9 @@ def open_database(path: Path, mode: OpenMode) -> sqlite3.Connection:
 def _upgrade_v6_connection(connection: sqlite3.Connection) -> bool:
     connection.execute("BEGIN EXCLUSIVE")
     try:
-        application, version = _read_required_metadata(connection)
-        if application != APPLICATION:
-            raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not belong to Pinboard.")
-        if version == SCHEMA_VERSION:
-            _verify_current_schema(connection)
+        version = _read_pinboard_schema_version(connection)
+        if version == 7:
+            _verify_v7_schema(connection)
             connection.rollback()
             return False
         if version != 6:
@@ -476,7 +497,7 @@ def _upgrade_v6_connection(connection: sqlite3.Connection) -> bool:
 ON transition_history(subject_id, history_id)
 WHERE outcome_schema = 'checkpoint-acceptance/v2'"""
         )
-        _verify_current_schema(connection)
+        _verify_v7_schema(connection)
         verify_database_integrity(connection)
         connection.commit()
         return True
@@ -505,11 +526,9 @@ def inspect_schema_migration(path: Path) -> tuple[int, str, str | None]:
             sqlite3.connect(_build_database_uri(path, OpenMode.READ_ONLY), uri=True, isolation_level=None)
         ) as connection:
             _configure_connection(connection)
-            application, version = _read_required_metadata(connection)
-            if application != APPLICATION:
-                raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not belong to Pinboard.")
-            if version == SCHEMA_VERSION:
-                _verify_current_schema(connection)
+            version = _read_pinboard_schema_version(connection)
+            if version == 7:
+                _verify_v7_schema(connection)
                 verify_database_integrity(connection)
                 return version, source_digest, None
             if version != 6:
@@ -531,12 +550,21 @@ def inspect_schema_migration(path: Path) -> tuple[int, str, str | None]:
 
 
 def current_schema_logical_digest(path: Path) -> str:
-    connection = open_database(path, OpenMode.READ_ONLY)
+    """Hash a verified current or retained v7 postimage without changing its plan meaning."""
     try:
-        verify_database_integrity(connection)
-        return schema_logical_digest(connection)
-    finally:
-        connection.close()
+        with closing(
+            sqlite3.connect(_build_database_uri(path, OpenMode.READ_ONLY), uri=True, isolation_level=None)
+        ) as connection:
+            _configure_connection(connection)
+            version = _read_pinboard_schema_version(connection)
+            if version == 7:
+                _verify_v7_schema(connection)
+            else:
+                _verify_current_schema(connection)
+            verify_database_integrity(connection)
+            return schema_logical_digest(connection)
+    except sqlite3.Error as error:
+        raise translate_database_error(error, opening=True).with_database_path(path) from error
 
 
 def migrate_v6_database(path: Path) -> bool:
@@ -596,3 +624,80 @@ def write_transaction(connection: sqlite3.Connection) -> Generator[sqlite3.Conne
             raise translate_database_error(error) from error
     except sqlite3.Error as error:
         raise translate_database_error(error) from error
+
+
+def _upgrade_v7_connection(connection: sqlite3.Connection) -> bool:
+    """Advance exact v7 to current schema atomically, preserving every predecessor row."""
+    with write_transaction(connection):
+        version = _read_pinboard_schema_version(connection)
+        if version == SCHEMA_VERSION:
+            _verify_current_schema(connection)
+            return False
+        _verify_v7_schema(connection)
+        verify_database_integrity(connection)
+        connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v7")
+        statement = ""
+        for line in read_schema_bytes().decode("utf-8").splitlines(keepends=True):
+            statement += line
+            if not sqlite3.complete_statement(statement):
+                continue
+            sql = "\n".join(part for part in statement.splitlines() if not part.lstrip().startswith("--")).strip()
+            if sql.startswith(
+                (
+                    "CREATE TABLE project_meta",
+                    "CREATE TABLE initiative",
+                    "CREATE UNIQUE INDEX initiative",
+                    "CREATE INDEX initiative",
+                )
+            ):
+                connection.execute(sql)
+            statement = ""
+        connection.execute(
+            "INSERT INTO project_meta SELECT singleton, application, 8, revision, host_epoch, created_at, updated_at FROM project_meta_v7"
+        )
+        connection.execute("DROP TABLE project_meta_v7")
+        _verify_current_schema(connection)
+        verify_database_integrity(connection)
+    return True
+
+
+def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
+    """Observe exact v7/current identities and predict current output without effects."""
+    try:
+        source = sha256(path.read_bytes()).hexdigest()
+        with closing(
+            sqlite3.connect(_build_database_uri(path, OpenMode.READ_ONLY), uri=True, isolation_level=None)
+        ) as connection:
+            _configure_connection(connection)
+            version = _read_pinboard_schema_version(connection)
+            if version == 6:
+                return inspect_schema_migration(path)
+            if version == SCHEMA_VERSION:
+                _verify_current_schema(connection)
+                verify_database_integrity(connection)
+                return version, source, None
+            _verify_v7_schema(connection)
+            verify_database_integrity(connection)
+            with closing(sqlite3.connect(":memory:", isolation_level=None)) as simulation:
+                connection.backup(simulation)
+                _configure_connection(simulation)
+                _upgrade_v7_connection(simulation)
+                return version, source, schema_logical_digest(simulation)
+    except OSError as error:
+        raise StorageError(
+            StorageErrorCode.IO_ERROR, "The current schema migration could not read the database."
+        ) from error
+    except sqlite3.Error as error:
+        raise translate_database_error(error, opening=True).with_database_path(path) from error
+
+
+def migrate_v7_database(path: Path) -> bool:
+    try:
+        with closing(
+            sqlite3.connect(_build_database_uri(path, OpenMode.READ_WRITE), uri=True, isolation_level=None)
+        ) as connection:
+            _configure_connection(connection)
+            connection.execute("PRAGMA synchronous = FULL")
+            return _upgrade_v7_connection(connection)
+    except sqlite3.Error as error:
+        raise translate_database_error(error).with_database_path(path) from error

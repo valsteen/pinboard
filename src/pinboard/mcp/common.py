@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from pinboard.adapters import review_operations
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
-from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
+from pinboard.adapters.files.models import AffectedViews, UnavailableViewRefresh, ViewRefreshResult, ViewWarning
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.files.views import refresh_facts
+from pinboard.adapters.generated_views import ComposedBoardReader
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     candidate_snapshots,
+    ports,
     queries,
     query_models,
     stored_state,
@@ -24,7 +24,7 @@ from pinboard.application import (
 )
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.mutation_models import CommittedEffect
-from pinboard.application.ports import BoardStore, GeneratedViewReader
+from pinboard.application.ports import GeneratedViewReader
 from pinboard.domain.errors import (
     ChangedSurface,
     EffectDisposition,
@@ -248,31 +248,35 @@ def _refresh_affected_views(
     store: GeneratedViewReader,
     affected: AffectedViews,
     now: datetime,
-) -> ViewRefreshResult:
-    facts = store.read_generated_view_facts(affected.items, affected.attempts, affected.history_receipts, now)
-    briefs = work_briefs.build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(durable))
-    if isinstance(briefs, work_brief_models.WorkBriefFailure):
-        return ViewRefreshResult(
-            facts.project_revision,
+) -> ViewRefreshResult | UnavailableViewRefresh:
+    try:
+        facts = store.read_generated_view_facts(affected.items, affected.attempts, affected.history_receipts, now)
+        briefs = work_briefs.build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(durable))
+        if isinstance(briefs, work_brief_models.WorkBriefFailure):
+            return ViewRefreshResult(
+                facts.project_revision,
+                ViewWarning(
+                    f"The SQLite mutation succeeded, but generated views need repair: {briefs}",
+                    "Run 'pinboard views rebuild'.",
+                ),
+            )
+        return refresh_facts(facts, durable.work_root, briefs, ComposedBoardReader(durable, store), now)
+    except ports.WorkStoreError as error:
+        return UnavailableViewRefresh(
             ViewWarning(
-                f"The SQLite mutation succeeded, but generated views need repair: {briefs}",
-                "Run 'pinboard views rebuild'.",
-            ),
+                f"The ledger change committed, but generated views under '{durable.work_root}' could not read current projection facts: {error}",
+                "Repair the named database condition, then run 'pinboard views rebuild'; do not replay the committed mutation.",
+            )
         )
-    return refresh_facts(facts, durable.work_root, briefs, _ComposedBoardReader(durable, store), now)
 
 
-@dataclass(frozen=True, slots=True)
-class _ComposedBoardReader:
-    """Compose the board read under the board lock: SQLite records, then outer file reads and keyed ready reviews."""
-
-    durable: DurableRoots
-    store: BoardStore
-
-    def read_board(self, now: datetime) -> query_models.BoardPortfolio:
-        live = self.store.read_board_records(now)
-        history = review_operations.read_board_history(self.durable, self.store, live.records)
-        return queries.project_live_portfolio(live.portfolio, history, now)
+def _refresh_published_ledger(
+    durable: DurableRoots, store: GeneratedViewReader, details: FailureDetails | None, now: datetime
+) -> ViewWarning | None:
+    """Refresh an earlier confirmed ledger commit even when later publication failed."""
+    if details is None or ChangedSurface.LEDGER not in details.changed_surfaces:
+        return None
+    return _refresh_affected_views(durable, store, AffectedViews((), (), ()), now).warning
 
 
 def _artifact_reference_json(reference: stored_state.ArtifactReference) -> dict[str, JsonValue]:

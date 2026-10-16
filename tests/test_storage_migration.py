@@ -29,6 +29,15 @@ from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initial
 class StorageMigrationTests(unittest.TestCase):
     def downgrade_schema(self, database_path: Path) -> None:
         with contextlib.closing(sqlite3.connect(database_path)) as connection, connection:
+            for table in (
+                "initiative_assessments",
+                "initiative_decisions",
+                "initiative_memberships",
+                "initiative_revisions",
+                "initiative_contexts",
+                "initiatives",
+            ):
+                connection.execute(f"DROP TABLE {table}")
             connection.execute("DROP INDEX checkpoint_history_by_subject")
             connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v7")
             connection.execute(
@@ -99,10 +108,12 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(0, migration_code, migration)
             self.assertEqual("migrated", migration["status"])
             self.assertEqual("sqlite-v7", migration["authority"])
-            self.assertEqual(expected, SQLiteWorkStore(path).validated_snapshot())
             repeated_code, repeated = self.run_cli(project, "migrate-schema", "--apply", plan_id)
             self.assertEqual(0, repeated_code, repeated)
             self.assertEqual("unchanged", repeated["status"])
+            current_id = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
+            self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current_id)[0])
+            self.assertEqual(expected, SQLiteWorkStore(path).validated_snapshot())
 
     def test_schema_apply_reports_committed_effect_without_a_second_database_read(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -113,7 +124,7 @@ class StorageMigrationTests(unittest.TestCase):
             self.downgrade_schema(path)
             plan_id = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
             with patch(
-                "pinboard.cli.schema_migration.inspect_schema_migration",
+                "pinboard.cli.schema_migration.inspect_current_schema_migration",
                 side_effect=StorageError(StorageErrorCode.IO_ERROR, "post-commit read denied"),
             ):
                 code, result = self.run_cli(project, "migrate-schema", "--apply", plan_id)
@@ -180,14 +191,14 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(migrated_bytes, database.read_bytes())
             self.assertEqual(before, backup.read_bytes())
             self.assertFalse((project / ".pinboard" / "migration" / f"{reverse['plan_id']}.json").exists())
-            self.assertEqual(0, self.run_cli(project, "status")[0])
+            self.assertEqual(12, self.run_cli(project, "status")[0])
             with sqlite3.connect(database) as connection:
                 connection.execute("UPDATE project_meta SET revision = revision + 1")
             code, refused = self.run_cli(project, "migrate-schema", "--apply", str(reverse["plan_id"]))
             self.assertEqual(11, code, refused)
             self.assertEqual([], refused["changed_surfaces"])
             self.assertEqual(before, backup.read_bytes())
-            self.assertEqual(0, self.run_cli(project, "status")[0])
+            self.assertEqual(12, self.run_cli(project, "status")[0])
 
     def test_published_schema_plan_reports_its_effect_after_sync_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -232,12 +243,13 @@ class StorageMigrationTests(unittest.TestCase):
             original = roots.database_path.read_bytes()
             forward_id = str(self.run_cli(project, *args, "migrate-schema")[1]["plan_id"])
             self.assertEqual(0, self.run_cli(project, *args, "migrate-schema", "--apply", forward_id)[0])
-            self.assertEqual(expected, SQLiteWorkStore(roots.database_path).validated_snapshot())
             reverse_id = str(self.run_cli(project, *args, "migrate-schema", "--reverse", forward_id)[1]["plan_id"])
             self.assertEqual(0, self.run_cli(project, *args, "migrate-schema", "--apply", reverse_id)[0])
             self.assertEqual(original, roots.database_path.read_bytes())
             self.assertEqual(original, (selected / "migration" / f"{forward_id}.v6").read_bytes())
             self.assertEqual(0, self.run_cli(project, *args, "migrate-schema", "--apply", forward_id)[0])
+            current_id = str(self.run_cli(project, *args, "migrate-schema")[1]["plan_id"])
+            self.assertEqual(0, self.run_cli(project, *args, "migrate-schema", "--apply", current_id)[0])
             self.assertEqual(expected, SQLiteWorkStore(roots.database_path).validated_snapshot())
             self.assertFalse((project / ".pinboard").exists())
 

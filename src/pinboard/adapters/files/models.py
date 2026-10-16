@@ -16,6 +16,13 @@ class ViewRefreshResult:
 
 
 @dataclass(frozen=True, slots=True)
+class UnavailableViewRefresh:
+    """A committed mutation could not obtain projection facts; no revision is invented."""
+
+    warning: ViewWarning
+
+
+@dataclass(frozen=True, slots=True)
 class AffectedViews:
     items: tuple[WorkItemId, ...]
     attempts: tuple[AttemptId, ...]

@@ -68,3 +68,11 @@ Do not turn that ordering into a score. A recommendation remains an explanation,
 
 
 A dropped item is cancelled work, not successful completion. It is absent from the live queue but retains its definition, attempt and evidence. Exact item status names its `cancel` closure; exact retained-attempt inspection presents `dropped` with no executable continuation, and branch-owner output says `cancelled`. Live dependents keep `unsatisfied_dependencies`, including dropped prerequisites. Report the retained repository disposition separately; cancellation proves neither absorption nor integration.
+
+## Initiatives and the roadmap
+
+For an initiative question, use `pinboard_initiative` operation `read` with exact roots and `initiative_id`. For the complete project roadmap, use operation `roadmap` with roots only. This deliberate aggregate read includes complete initiative history, current and terminal members, unassigned live work and relevant external prerequisite context; ordinary quick status still uses the focused routes above.
+
+The same tool exposes strict `create`, `revise`, `member-add`, `member-remove`, `decision` and `assess` leaves. Discover their exact schema before constructing a change. Writes retain `human`, supplied `date`, `reason`, and actor task/host attribution. Existing-initiative writes compare `expected_revision`; assessments also name the current `evaluation_context`. A goal or success-signal edit creates a fresh unassessed context, while unrelated metadata preserves it. General decisions are separate from goal assessments.
+
+Membership and wave placement grant no lifecycle or execution authority. Delivered means successful item completion; cancelled, superseded and removed memberships earn no delivery credit. Read the page's explicit totals selection and snapshot revision. Every ledger commit regenerates the roadmap, including artifact-only and unrelated changes; complete selected history grows the offline page and per-commit work. Reload the file after regeneration. A committed view warning requires the supported `pinboard views rebuild` repair, never replay of the mutation. Revisit the history/refresh policy only for measured material delays.

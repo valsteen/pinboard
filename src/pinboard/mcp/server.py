@@ -26,6 +26,8 @@ from pinboard.mcp import (
     contract_schemas,
     contracts,
     execution,
+    initiative_contracts,
+    initiative_operations,
     job_operations,
     mutation_operations,
     pr_review_operations,
@@ -49,6 +51,7 @@ from pinboard.mcp.tool_names import (
     CORRECTION_CONTEXT_TOOL,
     DISPATCH_TOOL,
     FIXTURE_REVIEW_TOOL,
+    INITIATIVE_TOOL,
     ITEM_DEFINITION_TOOL,
     ITEM_STATUS_TOOL,
     ORDER_TOOL,
@@ -844,6 +847,23 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             capture=None if request.get("operation") == "preview" else capture,
         )
 
+    @server.tool(
+        name=INITIATIVE_TOOL,
+        description="Read or revise ledger-owned initiatives, dated membership episodes, human decisions and goal assessments; read the global offline roadmap. Initiative membership and dependency waves grant no execution authority.",
+    )
+    async def initiative(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        arguments: dict[str, JsonValue] = {"request": request}
+        return await execution._run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            INITIATIVE_TOOL,
+            str(request.get("project_root", "")),
+            partial(initiative_operations.operate, arguments),
+            arguments=arguments,
+            capture=capture,
+        )
+
     _install_boundary_contracts(server)
     return server
 
@@ -851,6 +871,19 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 def _install_boundary_contracts(server: MCPServer) -> None:
     """Install exact schemas through the pinned SDK's mutable tool metadata seam."""
     definitions = (
+        (
+            INITIATIVE_TOOL,
+            contract_schemas.schema_for(initiative_contracts.Envelope),
+            contract_schemas.union_schema_for(
+                (
+                    initiative_contracts.ReadResult,
+                    initiative_contracts.RoadmapResult,
+                    initiative_contracts.Committed,
+                    initiative_contracts.Rejected,
+                    contracts.ExecutorBusyResult,
+                )
+            ),
+        ),
         (
             CANCEL_TOOL,
             contract_schemas.schema_for(contracts.CancellationEnvelope),

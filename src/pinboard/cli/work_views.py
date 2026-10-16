@@ -13,27 +13,22 @@ from datetime import datetime
 from pinboard.adapters import review_operations
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.adapters.files.models import AffectedViews, ViewRefreshResult, ViewWarning
+from pinboard.adapters.files.models import AffectedViews, UnavailableViewRefresh, ViewRefreshResult, ViewWarning
 from pinboard.adapters.files.views import rebuild_facts as rebuild_file_views
 from pinboard.adapters.files.views import refresh_facts as refresh_file_views
-from pinboard.application import history_archives, ports, queries, query_models, stored_state, work_brief_models
+from pinboard.adapters.generated_views import ComposedBoardReader
+from pinboard.application import (
+    history_archives,
+    ports,
+    queries,
+    query_models,
+    stored_state,
+    work_brief_models,
+)
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.work_briefs import build_attempt_brief_views, build_selected_attempt_brief_views
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId
-
-
-@dataclass(frozen=True, slots=True)
-class ComposedBoardReader:
-    """Compose the board read under the board lock: SQLite records, then outer file reads and keyed ready reviews."""
-
-    durable: DurableRoots
-    store: ports.BoardStore
-
-    def read_board(self, now: datetime) -> query_models.BoardPortfolio:
-        live = self.store.read_board_records(now)
-        history = review_operations.read_board_history(self.durable, self.store, live.records)
-        return queries.project_live_portfolio(live.portfolio, history, now)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,30 +71,40 @@ def refresh(
     store: ports.GeneratedViewReader,
     affected: AffectedViews,
     now: datetime,
-) -> ViewRefreshResult:
-    facts = store.read_generated_view_facts(affected.items, affected.attempts, affected.history_receipts, now)
-    attempt_briefs = build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(durable))
-    if isinstance(attempt_briefs, work_brief_models.WorkBriefFailure):
-        return ViewRefreshResult(
-            facts.project_revision,
+) -> ViewRefreshResult | UnavailableViewRefresh:
+    try:
+        facts = store.read_generated_view_facts(affected.items, affected.attempts, affected.history_receipts, now)
+        attempt_briefs = build_selected_attempt_brief_views(facts.attempts, ArtifactRepository(durable))
+        if isinstance(attempt_briefs, work_brief_models.WorkBriefFailure):
+            return ViewRefreshResult(
+                facts.project_revision,
+                ViewWarning(
+                    f"The SQLite transition succeeded, but generated views need repair: {attempt_briefs} "
+                    "Run 'pinboard views rebuild'.",
+                    "Run 'pinboard views rebuild'.",
+                ),
+            )
+        archives = archive_attempt_views(facts, ArtifactRepository(durable), attempt_briefs)
+        if isinstance(archives, work_brief_models.WorkBriefFailure):
+            return ViewRefreshResult(
+                facts.project_revision,
+                ViewWarning(
+                    archives.message, "Resolve the historical archive mismatch and run 'pinboard views rebuild'."
+                ),
+            )
+        return refresh_file_views(facts, durable.work_root, archives, ComposedBoardReader(durable, store), now)
+    except ports.WorkStoreError as error:
+        return UnavailableViewRefresh(
             ViewWarning(
-                f"The SQLite transition succeeded, but generated views need repair: {attempt_briefs} "
-                "Run 'pinboard views rebuild'.",
-                "Run 'pinboard views rebuild'.",
-            ),
+                f"The ledger change committed, but generated views under '{durable.work_root}' could not read current projection facts: {error}",
+                "Repair the named database condition, then run 'pinboard views rebuild'; do not replay the committed mutation.",
+            )
         )
-    archives = archive_attempt_views(facts, ArtifactRepository(durable), attempt_briefs)
-    if isinstance(archives, work_brief_models.WorkBriefFailure):
-        return ViewRefreshResult(
-            facts.project_revision,
-            ViewWarning(archives.message, "Resolve the historical archive mismatch and run 'pinboard views rebuild'."),
-        )
-    return refresh_file_views(facts, durable.work_root, archives, ComposedBoardReader(durable, store), now)
 
 
 def refresh_effect(
     durable: DurableRoots, store: ports.GeneratedViewReader, effect: CommittedEffect, now: datetime
-) -> ViewRefreshResult:
+) -> ViewRefreshResult | UnavailableViewRefresh:
     return refresh(
         durable,
         store,

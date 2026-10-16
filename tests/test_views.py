@@ -77,10 +77,18 @@ class GeneratedViewsTest(unittest.TestCase):
             state,
             lifecycle=replace(state.lifecycle, project=replace(state.lifecycle.project, revision=13)),
         )
+        original_views = derive_expected_view_bytes(
+            state, {}, loaded_board_history(work_root, state), now=SQLITE_NOW
+        ).views
+        advanced_views = derive_expected_view_bytes(
+            advanced, {}, loaded_board_history(work_root, advanced), now=SQLITE_NOW
+        ).views
         self.assertEqual(
-            derive_expected_view_bytes(state, {}, loaded_board_history(work_root, state), now=SQLITE_NOW).views,
-            derive_expected_view_bytes(advanced, {}, loaded_board_history(work_root, advanced), now=SQLITE_NOW).views,
+            {name: value for name, value in original_views.items() if name not in {"roadmap.md", "roadmap.html"}},
+            {name: value for name, value in advanced_views.items() if name not in {"roadmap.md", "roadmap.html"}},
         )
+        for name in ("roadmap.md", "roadmap.html"):
+            self.assertNotEqual(original_views[name], advanced_views[name])
 
     def test_item_view_labels_allowed_deferral(self) -> None:
         work_root, store = self._state()

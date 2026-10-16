@@ -8,6 +8,7 @@ Use [the coding-agent runtime adapters](runtime-adapters.md) for trusted identit
 - [Leases and revocation](#leases-and-revocation)
 - [Invalid state](#invalid-state)
 - [Interrupted tasks](#interrupted-tasks)
+- [Inherited sessions](#inherited-sessions)
 
 ## Authoritative state
 
@@ -77,3 +78,14 @@ For a task interrupted around a mutation:
 6. Resume from the authoritative item and attempt state. Never reconstruct ownership from the stopped task's prose, generated views, archived files, or temporary payloads.
 
 The observable transaction contract remains binary: the previous valid revision or one complete new revision. Report any counterexample as a current SQLite defect rather than routing around it.
+
+## Inherited sessions
+
+A session can inherit saved work from another session of the same runtime, for example a forked or resumed Codex thread that carries the original conversation. When the human asks the inheriting session to continue that work and the original session is unavailable, meaning it ended, was closed, or cannot be reached from the current runtime, the inheriting session becomes the outcome owner. A recorded `owner_task_id` that names the original session is the attempt's activation provenance, not a routing gate; continuation needs no matching owner and no reassignment.
+
+1. Obtain this session's own trusted task and host identity through the [runtime adapters](runtime-adapters.md). Never reuse the original session's task or host from inherited conversation, generated views, or earlier tool arguments, and never present its retained receipts, leases, or worker handles as your own.
+2. Treat inherited conversation as context, not state. Follow the [interrupted-task](#interrupted-tasks) steps from current authority: validate, read item status, inspect the named attempt, and follow its returned continuation.
+3. Read preparation or attempt authority `status` before claiming work. An expired or released claim transfers through the ordinary `start` or `acquire` with this session's identity. A live claim held by the original session or one of its workers stays fenced: wait for it to lapse, or ask the human for forced revocation under [leases and revocation](#leases-and-revocation) when its holder demonstrably cannot release it.
+4. The original session's native worker and reviewer handles are unavailable. Do not attempt same-worker continuation through them. When the continuation selects worker or review work, launch a fresh worker or reviewer from this session through the returned dispatch or review job.
+
+While the original session remains available, it keeps outcome ownership. Continue there, or ask the human which session owns the work when both remain in use; inheriting the conversation alone does not move ownership.

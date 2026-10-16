@@ -40,7 +40,7 @@ Use only the phase needed now. A reference supplies concrete mechanics; this cor
 | Combine saved items | [Consolidation](references/consolidation.md) |
 | Preview or launch independent work | [Parallel work](references/parallel-work.md) |
 | Exact capture or consequential invocation anomaly | [Invocation evidence](references/invocation-evidence.md) |
-| Lease revocation, invalid state or interrupted transition | [State and recovery](references/state-and-recovery.md) |
+| Lease revocation, invalid state, interrupted transition or work inherited from an unavailable session | [State and recovery](references/state-and-recovery.md) |
 
 Plain merge requests remain repository actions on the existing change, not new intake. The selected review phase preserves its review and authority requirements. Paused work stays pending on its recorded decision until the human answers with a recommendation beside the question.
 
@@ -230,4 +230,4 @@ Qualify every other ending claim by the fact that actually ended—implementatio
 
 Do not manufacture follow-up work when the honest result is no follow-up.
 
-Read `references/state-and-recovery.md` only for lease revocation, invalid SQLite state, or interrupted transitions.
+Read `references/state-and-recovery.md` only for lease revocation, invalid SQLite state, interrupted transitions, or work inherited from an unavailable session.

@@ -89,3 +89,5 @@ A session can inherit saved work from another session of the same runtime, for e
 4. The original session's native worker and reviewer handles are unavailable. Do not attempt same-worker continuation through them. When the continuation selects worker or review work, launch a fresh worker or reviewer from this session through the returned dispatch or review job.
 
 While the original session remains available, it keeps outcome ownership. Continue there, or ask the human which session owns the work when both remain in use; inheriting the conversation alone does not move ownership.
+
+Tell the human the outcome in plain words: whether you are continuing the earlier session's work or why you cannot yet, where its partial work lives and whether it reached the integration target, and the one decision you need, such as stopping the other window or overriding an unfinished worker that cannot be confirmed gone. Keep task identities, claims, leases, worker names and native handles out of the reply.

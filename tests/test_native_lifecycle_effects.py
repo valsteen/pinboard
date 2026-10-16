@@ -1,6 +1,7 @@
 """Current native transition receipts, view repair and bounded follow-up reads."""
 
 import contextlib
+import dataclasses
 import sqlite3
 import subprocess
 from collections.abc import Callable
@@ -28,12 +29,20 @@ from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
-from tests.native_support import call_advertised_tool, call_native_tool
+from tests.native_support import native_tools
 from tests.support import SQLITE_NOW, JsonObject
 from tests.work_brief_support import work_c_brief
 
 
 class NativeLifecycleEffectsTest(CheckpointPackageSupport):
+    def native_fixture[T: CheckpointFixture](self, fixture: T) -> T:
+        native = self.enterContext(native_tools())
+        return dataclasses.replace(
+            fixture,
+            call_native_tool=native.call_native_tool,
+            call_advertised_tool=native.call_advertised_tool,
+        )
+
     def accept_execution_brief(
         self,
         fixture: CheckpointFixture,
@@ -73,8 +82,8 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
     def test_activation_rebind_and_revised_resume_reject_legacy_and_checkout_mismatch_unchanged(self) -> None:
         for invalidity in ("legacy", "checkout-mismatch"):
             with self.subTest(route="activate", invalidity=invalidity):
-                fixture = self.active_fixture()
-                prepared = call_native_tool(
+                fixture = self.native_fixture(self.active_fixture())
+                prepared = fixture.call_native_tool(
                     mcp_server.PREPARATION_AUTHORITY_TOOL,
                     {
                         "request": {
@@ -124,7 +133,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                     lease=self.json_object(prepared),
                 )
                 before = fixture.store.validated_snapshot()
-                result = call_native_tool(
+                result = fixture.call_native_tool(
                     mcp_server.TRANSITION_TOOL,
                     {
                         "request": {
@@ -147,7 +156,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
 
             for route in ("rebind", "resume"):
                 with self.subTest(route=route, invalidity=invalidity):
-                    fixture = self.active_fixture()
+                    fixture = self.native_fixture(self.active_fixture())
                     brief = replace_struct(
                         fixture.brief,
                         artifact_revision=2,
@@ -263,7 +272,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assertEqual(committed, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
 
     def test_paused_attempt_close_returns_review_recovery_without_an_escape_action(self) -> None:
-        fixture = self.active_fixture()
+        fixture = self.native_fixture(self.active_fixture())
         pause = self.project_action(fixture, "pause:work-a-1")
         paused = self.transition_result(fixture, pause, {"reason": "Preserve the accepted attempt."})
         self.assertEqual("committed", paused["status"])
@@ -293,12 +302,12 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
 
     def assert_pause_reason(self, fixture: CheckpointFixture, expected: str | None) -> None:
         roots = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
-        status = call_advertised_tool(
+        status = fixture.call_advertised_tool(
             mcp_server.ITEM_STATUS_TOOL, {"request": {**roots, "operation": "item", "item_id": "work-a"}}
         )
         (status_attempt,) = self.json_array(status["attempts"])
         self.assertEqual(expected, self.json_object(status_attempt)["pause_reason"])
-        inspected = call_advertised_tool(
+        inspected = fixture.call_advertised_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL, {**roots, "attempt_id": "work-a-1", "reconciliation": None}
         )
         self.assertEqual("ok", inspected["status"], inspected)
@@ -318,7 +327,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assertEqual(0, validated, f"{stdout}\n{stderr}")
 
     def test_pause_reason_stays_readable_through_paused_rebind_and_reload_until_resume(self) -> None:
-        fixture = self.active_fixture()
+        fixture = self.native_fixture(self.active_fixture())
         closed, stdout, stderr = self.run_cli(
             *fixture.common,
             "close",
@@ -343,7 +352,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assert_pause_reason(fixture, reason)
 
         brief = replace_struct(fixture.brief, artifact_revision=2)
-        published = call_native_tool(
+        published = fixture.call_native_tool(
             mcp_server.BRIEF_PUBLISH_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -381,9 +390,9 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assertEqual((before.next_action, before.notes), (after.next_action, after.notes))
 
     def test_active_rebind_carries_no_pause_reason(self) -> None:
-        fixture = self.active_fixture()
+        fixture = self.native_fixture(self.active_fixture())
         brief = replace_struct(fixture.brief, artifact_revision=2)
-        published = call_native_tool(
+        published = fixture.call_native_tool(
             mcp_server.BRIEF_PUBLISH_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -411,7 +420,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assert_pause_reason(fixture, None)
 
     def test_checkpoint_pause_presents_remaining_work_without_a_pause_reason(self) -> None:
-        fixture = self.accepted_package_fixture()
+        fixture = self.native_fixture(self.accepted_package_fixture())
         attempt = next(
             value
             for value in fixture.store.validated_snapshot().lifecycle.attempts
@@ -421,7 +430,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assert_pause_reason(fixture, None)
 
     def test_retained_human_close_rejects_selected_subject_change_under_shared_lock(self) -> None:
-        fixture = self.active_fixture()
+        fixture = self.native_fixture(self.active_fixture())
         competing = self.project_action(fixture, "defer:work-c")
         before = fixture.store.validated_snapshot()
         commit = lifecycle_operations.service.decide_and_commit_transition
@@ -498,7 +507,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         )
 
     def test_revised_brief_resume_reloads_exact_scope_and_reference_atomically(self) -> None:
-        fixture = self.active_fixture()
+        fixture = self.native_fixture(self.active_fixture())
         closed, stdout, stderr = self.run_cli(
             *fixture.common,
             "close",
@@ -517,7 +526,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assertEqual(
             "committed", self.transition_result(fixture, pause, {"reason": "Accept revised scope."})["status"]
         )
-        current = call_native_tool(
+        current = fixture.call_native_tool(
             mcp_server.ITEM_DEFINITION_TOOL,
             {
                 "request": {
@@ -567,7 +576,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             ),
         )
         payload = self.json_object(msgspec.json.decode(msgspec.json.encode(brief)))
-        published = call_native_tool(
+        published = fixture.call_native_tool(
             mcp_server.BRIEF_PUBLISH_TOOL,
             {"project_root": str(fixture.project), "work_root": str(fixture.work), "brief": payload},
         )
@@ -594,11 +603,11 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
     def test_successive_native_replacement_proposals_reload_live_and_terminal_relation_revisions(self) -> None:
         for target in ("work-c", "work-b"):
             with self.subTest(target=target):
-                fixture = self.active_fixture()
+                fixture = self.native_fixture(self.active_fixture())
                 before = fixture.store.validated_snapshot()
                 for expected_revision in (1, 2):
                     proposal_id = f"replacement-{expected_revision}"
-                    result = call_native_tool(
+                    result = fixture.call_native_tool(
                         mcp_server.PROPOSAL_CREATE_TOOL,
                         {
                             "project_root": str(fixture.project),
@@ -656,13 +665,13 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
     def test_native_proposal_creation_refreshes_the_same_items_as_full_rebuild(self) -> None:
         for kind in ("independent", "prerequisite"):
             with self.subTest(kind=kind):
-                fixture = self.active_fixture()
+                fixture = self.native_fixture(self.active_fixture())
                 rebuilt, stdout, stderr = self.run_cli(*fixture.common, "views", "rebuild")
                 self.assertEqual(0, rebuilt, f"{stdout}\n{stderr}")
                 item_ids = ("new-proposal",) if kind == "independent" else ("new-proposal", "work-c")
                 if kind == "prerequisite":
                     (fixture.work / "views" / "items" / "work-c.md").write_bytes(b"stale projection\n")
-                result = call_native_tool(
+                result = fixture.call_native_tool(
                     mcp_server.PROPOSAL_CREATE_TOOL,
                     {
                         "project_root": str(fixture.project),
@@ -715,7 +724,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         )
         for kind, payload in cases:
             with self.subTest(kind=kind):
-                fixture = self.active_fixture()
+                fixture = self.native_fixture(self.active_fixture())
                 rebuilt, stdout, stderr = self.run_cli(*fixture.common, "views", "rebuild")
                 self.assertEqual(0, rebuilt, f"{stdout}\n{stderr}")
                 item_view = fixture.work / "views" / "items" / "zz-proposal-a.md"
@@ -729,7 +738,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                 self.assertEqual(partial, item_view.read_bytes())
 
     def test_blocked_attempt_preserves_accepted_dependencies_and_resumes_after_human_closure(self) -> None:
-        fixture = self.active_fixture()
+        fixture = self.native_fixture(self.active_fixture())
         before = fixture.store.validated_snapshot()
         action = self.project_action(fixture, "block:work-a-1")
         result = self.transition_result(
@@ -774,9 +783,9 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         )
 
     def test_native_renewal_preserves_unchanged_generated_file_identity(self) -> None:
-        fixture = self.active_fixture()
+        fixture = self.native_fixture(self.active_fixture())
         common: JsonObject = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
-        lease = call_native_tool(
+        lease = fixture.call_native_tool(
             mcp_server.ATTEMPT_AUTHORITY_TOOL,
             {
                 "request": {
@@ -804,7 +813,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             )
             for selector in selectors
         }
-        renewed = call_native_tool(
+        renewed = fixture.call_native_tool(
             mcp_server.ATTEMPT_AUTHORITY_TOOL,
             {
                 "request": {
@@ -860,6 +869,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                 self.assert_interleaved_receipt(stage)
 
     def assert_interleaved_receipt(self, stage: str) -> None:
+        # The callback starts a competing native request while the outer executor is occupied.
         fixture = self.active_fixture()
         action = self.project_action(fixture, "pause:work-a-1")
         competing = self.project_action(fixture, "defer:work-c")
@@ -921,7 +931,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assertEqual("deferred", work_c.state.value)
 
     def test_post_commit_view_failure_reports_warning_and_repairs_without_replay(self) -> None:
-        fixture = self.active_fixture()
+        fixture = self.native_fixture(self.active_fixture())
         action = self.project_action(fixture, "pause:work-a-1")
         before = fixture.store.validated_snapshot()
         with patch(
@@ -939,7 +949,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assertEqual(committed, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
 
     def test_unexpected_projection_exception_preserves_committed_transition_for_fresh_read(self) -> None:
-        fixture = self.active_fixture()
+        fixture = self.native_fixture(self.active_fixture())
         action = self.project_action(fixture, "pause:work-a-1")
         before = fixture.store.validated_snapshot()
         error = RuntimeError("controlled unexpected projection exception")
@@ -956,7 +966,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assertEqual(decision_models.ActionKind.PAUSE, reloaded.transition_receipts[-1].action_kind)
 
     def test_follow_up_inspection_cannot_load_complete_state_after_view_refresh(self) -> None:
-        fixture = self.active_fixture()
+        fixture = self.native_fixture(self.active_fixture())
         action = self.project_action(fixture, "pause:work-a-1")
         original_refresh = mcp_common._refresh_affected_views
         with patch.object(mcp_common, "_refresh_affected_views", wraps=original_refresh) as refreshed:
@@ -967,7 +977,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("Complete snapshot used")),
             patch.object(sqlite_state, "read_state", side_effect=AssertionError("Complete state assembly used")),
         ):
-            inspected = call_native_tool(
+            inspected = fixture.call_native_tool(
                 mcp_server.ATTEMPT_INSPECT_TOOL,
                 {
                     "project_root": str(fixture.project),
@@ -980,7 +990,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assertEqual("paused", continuation["state"])
 
     def test_dependency_corruption_rejects_native_discovery_and_transition_without_writes(self) -> None:
-        fixture = self.active_fixture()
+        fixture = self.native_fixture(self.active_fixture())
         action = self.project_action(fixture, "pause:work-a-1")
         database = fixture.work / "state.sqlite3"
         with contextlib.closing(sqlite3.connect(database)) as connection, connection:

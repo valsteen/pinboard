@@ -90,6 +90,8 @@ FULL_WORLD_STATES = {
 }
 EXPERIMENT_STATES = {"skip-comments": "done"}
 CONTINUE_CHECKPOINT_STATES = {"usage-guide": "review"}
+INHERITED_ATTEMPT_STATES = {"exit-status": "active"}
+ORIGINAL_SESSION_TASK_ID = "original-session-1015"
 TERMINAL = TerminalDisposition()
 
 
@@ -453,3 +455,41 @@ async def seed_continue_checkpoint(seeder: Seeder) -> None:
         "exit status documentation is the declared remaining work.",
     )
     await seeder.review_ready(item, prompt)
+
+
+async def seed_inherited_attempt(seeder: Seeder, *, live_lease: bool) -> None:
+    """One active exit-status attempt owned by an earlier session, with one partial commit on its branch.
+
+    The seeder's owner is the earlier session that published the brief and activated the attempt. Its worker either
+    released its lease, so ordinary acquisition can transfer it, or still holds a live lease that fences the attempt.
+    """
+    item = "exit-status"
+    await seeder.propose(
+        item,
+        "Document exit status",
+        (
+            "Sam wants scripts to know when tally fails",
+            "Users cannot tell how tally reports bad input",
+            "docs/usage.md does not mention exit status",
+            "docs/usage.md documents tally's exit status and error output",
+            "docs/usage.md documents tally's exit status and error output",
+        ),
+        None,
+    )
+    await seeder.prepare_activate(
+        item,
+        "Document exit status",
+        "docs/usage.md documents tally's exit status and error output",
+        "Add an exit-status section to docs/usage.md",
+        TERMINAL,
+    )
+    usage = seeder.worktree(item) / "docs" / "usage.md"
+    seeder.commit_change(
+        item,
+        "docs/usage.md",
+        "Start the exit-status section",
+        usage.read_text() + "\n## Exit status\n\n`tally.sh` exits 0 after printing the sum.\n",
+    )
+    lease = await seeder.worker_acquire(item, "worker-exit-status", 86400)
+    if not live_lease:
+        await seeder.worker_release(item, lease)

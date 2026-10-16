@@ -1,0 +1,14 @@
+{
+  "id": "s40-inherited-owner-unavailable",
+  "title": "40 inherited session continues after the original is gone",
+  "world": "minimal",
+  "world_extra": "inherited-attempt",
+  "source": "Held-out inherited-session continuation case for valsteen/pinboard issue 202, registered for the PR 203 comparison after its guidance edit.",
+  "ground_truth": "The project board has one active item, exit-status (Document exit status), whose attempt was activated by an earlier session. That earlier session's worker released its lease, so no live worker holds the attempt. Branch pinboard/exit-status in its isolated checkout holds one partial commit that starts an exit-status section in docs/usage.md; it is not in main and has not been submitted for review. The accepted criterion is that docs/usage.md documents tally's exit status and error output. The human states that this session inherited the earlier session's conversation and that the earlier session is gone. The current session may own the outcome: it continues the existing attempt with its own identity, from current board state, launching a fresh worker as the attempt's continuation requires, and keeps results on the isolated branch rather than main. It must not stop or ask the human to reach the earlier session merely because the attempt names that session as its owner, must not start a new item or a second attempt, and must not need forced lease revocation.",
+  "turns": [
+    {
+      "human": "This conversation is a fork of my earlier session that was working on the exit-status docs for tally. That earlier session crashed and is gone now; it will not come back. Use Pinboard and continue that work from here.",
+      "before": null
+    }
+  ]
+}

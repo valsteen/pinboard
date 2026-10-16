@@ -1,0 +1,21 @@
+{
+  "name": "inherited-session",
+  "scenarios": [
+    {
+      "id": "s40-inherited-owner-unavailable",
+      "sha256": "2f3dd3d6828009ad71ecfad993f4ac424c23e58555f891814ec8991e25103d34"
+    },
+    {
+      "id": "s41-inherited-owner-still-active",
+      "sha256": "9731aadf26def7f1755a9e77d3613ecfc1b4450a2f1e7a04f2b9a9315652779b"
+    },
+    {
+      "id": "s42-inherited-live-lease",
+      "sha256": "225c1ad5da5281b24c10065ccb0326a84173da661e79594148ef917b4895d81d"
+    }
+  ],
+  "targeted_rules": [
+    "P8",
+    "P11"
+  ]
+}

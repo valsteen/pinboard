@@ -23,8 +23,11 @@ from evals.behavioral.world_content import (
     CONTINUE_CHECKPOINT_STATES,
     EXPERIMENT_STATES,
     FULL_WORLD_STATES,
+    INHERITED_ATTEMPT_STATES,
+    ORIGINAL_SESSION_TASK_ID,
     seed_continue_checkpoint,
     seed_full_world,
+    seed_inherited_attempt,
     seed_merge_change,
     seed_skip_comments_experiment,
 )
@@ -117,6 +120,16 @@ def build_world(
         case WorldExtra.CONTINUE_CHECKPOINT_REVIEW:
             asyncio.run(_seed_project(world, owner, seed_continue_checkpoint))
             seeded += verify_seed(world, "project", world.work_root, CONTINUE_CHECKPOINT_STATES)
+        case WorldExtra.INHERITED_ATTEMPT | WorldExtra.INHERITED_ATTEMPT_LIVE_LEASE:
+            live_lease = scenario.world_extra is WorldExtra.INHERITED_ATTEMPT_LIVE_LEASE
+            asyncio.run(
+                _seed_project(
+                    world,
+                    ORIGINAL_SESSION_TASK_ID,
+                    lambda seeder: seed_inherited_attempt(seeder, live_lease=live_lease),
+                )
+            )
+            seeded += verify_seed(world, "project", world.work_root, INHERITED_ATTEMPT_STATES)
         case _ as unreachable:
             raise AssertionError(unreachable)
     return world, seeded

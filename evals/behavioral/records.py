@@ -35,6 +35,8 @@ class WorldExtra(Enum):
     REVIEWED_CHANGE = "reviewed-change"
     UNREVIEWED_CHANGE = "unreviewed-change"
     CONTINUE_CHECKPOINT_REVIEW = "continue-checkpoint-review"
+    INHERITED_ATTEMPT = "inherited-attempt"
+    INHERITED_ATTEMPT_LIVE_LEASE = "inherited-attempt-live-lease"
 
 
 class Hook(Enum):

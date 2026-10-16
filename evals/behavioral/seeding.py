@@ -237,14 +237,17 @@ class Seeder:
             Status,
         )
         require(submitted.status, ("committed",), f"submit {item}")
+        await self.worker_release(item, lease)
+
+    async def worker_release(self, item: str, lease: Lease) -> None:
         released = await self.board.call(
             "pinboard_attempt_authority",
             AuthorityEnvelope(
                 request=AuthorityRelease(
                     operation="release",
-                    project_root=str(worktree),
+                    project_root=str(self.worktree(item)),
                     work_root=str(self.work_root),
-                    attempt_id=attempt,
+                    attempt_id=f"{item}-1",
                     lease_id=lease.lease_id,
                     generation=lease.generation,
                 )

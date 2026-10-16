@@ -15,6 +15,7 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters import candidate_evidence, dispatch_operations, review_operations
+from pinboard.adapters.files import root as files_root
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, ImmutableFilePublishedError, RootError
@@ -101,7 +102,7 @@ class _AttemptReviewEvidence:
 def _branch_owner_not_found(branch: str, work_root: Path) -> execution.OperationResult:
     return execution.OperationResult(
         {
-            "schema": "pinboard-mcp-item-status-result/v2",
+            "schema": "pinboard-mcp-item-status-result/v3",
             "status": "rejected",
             "code": "BRANCH_OWNER_NOT_FOUND",
             "message": f"No retained attempt in work root {work_root} records branch '{branch}'.",
@@ -144,19 +145,110 @@ def _read_item_status(raw: Mapping[str, JsonValue], token: execution.Cancellatio
             if isinstance(projected, DecisionFailure):
                 return common._item_status_failure(projected.code.value, projected.message, projected.details)
             if isinstance(projected, query_models.DamagedTransitionReceipt):
-                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v2", projected)
+                return common._damaged_receipt_failure("pinboard-mcp-item-status-result/v3", projected)
             selected: query_models.ItemStatus | query_models.BranchOwners = projected
         case contracts.ItemStatusBranchRequest():
             owners = queries.project_branch_owners(store, request.branch)
             if owners is None:
                 return _branch_owner_not_found(request.branch, durable.work_root)
             selected = owners
+        case contracts.ItemStatusIntegrationRequest():
+            return _read_item_integration(request, durable, store)
         case _ as unreachable:
             assert_never(unreachable)
     token.checkpoint()
     content = msgspec.to_builtins(selected)
     assert isinstance(content, dict)
     return execution.OperationResult(content, "ok", selected.revision)
+
+
+def _read_item_integration(
+    request: contracts.ItemStatusIntegrationRequest, durable: DurableRoots, store: WorkStore
+) -> execution.OperationResult:
+    selected_candidate = queries.select_item_integration_candidate(store, WorkItemId(request.item_id))
+    if isinstance(selected_candidate, DecisionFailure):
+        return common._item_status_failure(
+            selected_candidate.code.value, selected_candidate.message, selected_candidate.details
+        )
+    if selected_candidate.candidate is None:
+        return _integration_failure(
+            "INTEGRATION_CANDIDATE_UNAVAILABLE",
+            f"Item '{request.item_id}' has no reviewed candidate with accepted snapshot bytes: "
+            f"{selected_candidate.unavailable_reason}.",
+            (("item_id", request.item_id), ("item_state", selected_candidate.item_state.value)),
+            "correct-input",
+            "Read the item status leaf for this item before selecting an integration target.",
+        )
+    try:
+        compared = candidate_evidence.compare_integration_candidate(
+            files_root.resolve_source_checkout_root(Path(request.project_root)),
+            durable.work_root,
+            selected_candidate.candidate,
+            request.target,
+        )
+    except candidate_evidence.IntegrationCandidateEvidenceInvalid as error:
+        return _integration_failure(
+            "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",
+            str(error),
+            (("attempt_id", str(selected_candidate.candidate.attempt_id)), ("target", request.target)),
+            "do-not-retry",
+            "Run 'pinboard validate --json'; Pinboard does not repair accepted evidence.",
+        )
+    except RootError as error:
+        return _integration_failure(
+            error.code.value,
+            str(error),
+            (("project_root", request.project_root), ("target", request.target)),
+            "correct-input",
+            "Correct the local checkout, then retry the status read.",
+        )
+    if isinstance(compared, files_root.IntegrationTargetUnresolved):
+        return _integration_failure(
+            "INTEGRATION_TARGET_UNRESOLVED",
+            f"Integration target '{request.target}' cannot be resolved in the local repository.",
+            (("target", request.target), ("project_root", request.project_root)),
+            "correct-input",
+            "Name an existing local branch, remote-tracking ref, tag, or full commit, and fetch it outside Pinboard first when remote freshness matters.",
+        )
+    integration = query_models.ItemIntegration(
+        "pinboard-item-integration/v1",
+        "sqlite-v7",
+        str(selected_candidate.project_revision),
+        request.item_id,
+        request.target,
+        compared.target_revision,
+        queries.project_item_integration_source(selected_candidate.candidate, compared.compared_from),
+        compared.presence,
+    )
+    content = msgspec.to_builtins(integration)
+    assert isinstance(content, dict)
+    return execution.OperationResult(content, "ok", integration.revision)
+
+
+def _integration_failure(
+    code: str,
+    message: str,
+    observed: tuple[tuple[str, str], ...],
+    retry: str,
+    recovery: str,
+) -> execution.OperationResult:
+    return execution.OperationResult(
+        {
+            "schema": "pinboard-mcp-item-status-result/v3",
+            "status": "rejected",
+            "code": code,
+            "message": message,
+            "state_changed": False,
+            "effect": "unchanged",
+            "retry": retry,
+            "changed_surfaces": [],
+            "observed": [{"field": field, "value": value} for field, value in observed],
+            "mismatches": [],
+            "recovery": recovery,
+        },
+        "rejected",
+        None,
+    )
 
 
 def _read_correction_context(

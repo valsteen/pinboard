@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -52,6 +54,26 @@ class CandidateRestoreRejection:
 
 
 type CandidateRestoreResult = CandidateRestoreSuccess | CandidateRestoreRejection
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationContentPresent:
+    target_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationContentNotPresent:
+    target_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationTargetUnresolved:
+    target: str
+
+
+type IntegrationContentObservation = (
+    IntegrationContentPresent | IntegrationContentNotPresent | IntegrationTargetUnresolved
+)
 
 
 class CandidateRestoreAfterMutationError(RootError):
@@ -243,6 +265,89 @@ def read_current_head_candidate(
         unavailable_message=f"Cannot compare candidate '{candidate_revision}' with comparison revision '{comparison_revision}'.",
     )
     return CurrentHeadCandidate(candidate_revision, diff)
+
+
+def check_diff_content_at_target(cwd: Path, target: str, diff: bytes) -> IntegrationContentObservation:
+    """Check whether an accepted binary diff reverse-applies to a named target tree.
+
+    The temporary index is the sole mutable resource.  The repository index,
+    worktree, refs, and object database stay untouched.
+    """
+
+    resolved = resolve_integration_target(cwd, target)
+    if isinstance(resolved, IntegrationTargetUnresolved):
+        return resolved
+    target_revision = resolved
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as temporary_directory:
+        environment = os.environ | {
+            "GIT_INDEX_FILE": str(Path(temporary_directory) / "index"),
+            "GIT_OPTIONAL_LOCKS": "0",
+        }
+        loaded = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", target_revision],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+        if loaded.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                loaded.stderr.decode(errors="replace").strip()
+                or f"Cannot load integration target '{target}' into a temporary index.",
+            )
+        checked = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "apply.whitespace=nowarn",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "-",
+            ],
+            cwd=cwd,
+            env=environment,
+            input=diff,
+            capture_output=True,
+            check=False,
+        )
+    if checked.returncode == 0:
+        return IntegrationContentPresent(target_revision)
+    if checked.returncode == 1:
+        return IntegrationContentNotPresent(target_revision)
+    raise RootError(
+        RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+        checked.stderr.decode(errors="replace").strip()
+        or f"Cannot compare accepted candidate content with integration target '{target}'.",
+    )
+
+
+def resolve_integration_target(cwd: Path, target: str) -> str | IntegrationTargetUnresolved:
+    """Resolve a caller-named target without updating the local repository."""
+
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if resolved.returncode != 0:
+        # Preserve the adapter's ordinary checkout failure for a non-Git path,
+        # while an otherwise valid checkout can truthfully name an absent ref.
+        _git_text(cwd, "rev-parse", "--show-toplevel")
+        return IntegrationTargetUnresolved(target)
+    target_revision = resolved.stdout.strip()
+    if not target_revision:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            f"Git did not resolve integration target '{target}' at '{cwd}'.",
+        )
+    return target_revision
 
 
 def _working_tree_status(cwd: Path) -> bytes:

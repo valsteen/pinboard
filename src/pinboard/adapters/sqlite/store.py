@@ -95,6 +95,132 @@ class _SelectedAttemptLinkRow(msgspec.Struct, frozen=True, forbid_unknown_fields
     subject_revision: int
 
 
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+class _IntegrationClosureRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    action_kind: decision_models.ActionKind
+    subject_id: str
+
+
+class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+
+
+class _IntegrationCheckpointRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: HistoryId
+
+
+def _integration_unavailable(
+    project_revision: int,
+    work_item_id: WorkItemId,
+    item_state: stored_state.StoredWorkItemState,
+    reason: str,
+) -> query_models.IntegrationFacts:
+    return query_models.IntegrationFacts(project_revision, work_item_id, item_state, None, reason)
+
+
+def _read_completion_integration(
+    connection: sqlite3.Connection,
+    project_revision: int,
+    work_item_id: WorkItemId,
+    item_state: stored_state.StoredWorkItemState,
+    subject_revision: int,
+) -> query_models.IntegrationFacts:
+    closure = connection.execute(
+        "SELECT action_kind, subject_id FROM transition_history WHERE project_revision = ?", (subject_revision,)
+    ).fetchone()
+    if closure is None:
+        return _integration_unavailable(
+            project_revision, work_item_id, item_state, "the item closed without a completion candidate"
+        )
+    closing = decode_row(closure, _IntegrationClosureRow)
+    if closing.action_kind != decision_models.ActionKind.COMPLETE:
+        return _integration_unavailable(
+            project_revision, work_item_id, item_state, "the item closed without a completion candidate"
+        )
+    attempt_id = AttemptId(closing.subject_id)
+    context = _read_candidate_snapshot_context_facts(connection, attempt_id)
+    if context is None or context.candidate_revision is None:
+        return _integration_unavailable(
+            project_revision, work_item_id, item_state, "the closing attempt has no accepted snapshot"
+        )
+    candidate = query_models.IntegrationCandidateFacts(
+        "completion", attempt_id, context.candidate_revision, context.reference, None
+    )
+    return query_models.IntegrationFacts(project_revision, work_item_id, item_state, candidate, None)
+
+
+def _read_nonterminal_integration(
+    connection: sqlite3.Connection,
+    project_revision: int,
+    work_item_id: WorkItemId,
+    item_state: stored_state.StoredWorkItemState,
+) -> query_models.IntegrationFacts:
+    attempt_row = connection.execute(
+        """SELECT attempt_id, state FROM attempts INDEXED BY one_live_attempt_per_item
+           WHERE item_id = ? AND state != 'done'""",
+        (work_item_id,),
+    ).fetchone()
+    if attempt_row is None:
+        return _integration_unavailable(project_revision, work_item_id, item_state, "the item has no current attempt")
+    attempt = decode_row(attempt_row, _IntegrationAttemptRow)
+    context = _read_candidate_snapshot_context_facts(connection, attempt.attempt_id)
+    if (
+        attempt.state == work_models.AttemptState.REVIEW
+        and context is not None
+        and context.candidate_revision is not None
+    ):
+        candidate = query_models.IntegrationCandidateFacts(
+            "protected-review", attempt.attempt_id, context.candidate_revision, context.reference, None
+        )
+        return query_models.IntegrationFacts(project_revision, work_item_id, item_state, candidate, None)
+    return _read_checkpoint_integration(connection, project_revision, work_item_id, item_state, attempt.attempt_id)
+
+
+def _read_checkpoint_integration(
+    connection: sqlite3.Connection,
+    project_revision: int,
+    work_item_id: WorkItemId,
+    item_state: stored_state.StoredWorkItemState,
+    attempt_id: AttemptId,
+) -> query_models.IntegrationFacts:
+    checkpoint_row = connection.execute(
+        """SELECT history_id FROM transition_history INDEXED BY checkpoint_history_by_subject
+           WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+           ORDER BY history_id DESC LIMIT 1""",
+        (attempt_id,),
+    ).fetchone()
+    if checkpoint_row is None:
+        return _integration_unavailable(
+            project_revision, work_item_id, item_state, "the current attempt has no accepted checkpoint candidate"
+        )
+    checkpoint = decode_row(checkpoint_row, _IntegrationCheckpointRow)
+    receipt = sqlite_state.read_history_receipt(connection, checkpoint.history_id)
+    if receipt is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Checkpoint acceptance receipt is missing.")
+    try:
+        outcome = msgspec.json.decode(
+            bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True
+        )
+    except msgspec.DecodeError as error:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Checkpoint acceptance outcome is invalid.") from error
+    reference = read_artifact_reference(
+        connection, work_models.ArtifactKind.EVIDENCE, f"{attempt_id}-{outcome.checkpoint}-candidate", 1
+    )
+    if reference is None:
+        return _integration_unavailable(
+            project_revision, work_item_id, item_state, "the checkpoint package has no candidate snapshot reference"
+        )
+    candidate = query_models.IntegrationCandidateFacts(
+        "accepted-checkpoint", attempt_id, outcome.candidate, reference, outcome.checkpoint
+    )
+    return query_models.IntegrationFacts(project_revision, work_item_id, item_state, candidate, None)
+
+
 def _read_generated_view_facts(
     connection: sqlite3.Connection,
     item_ids: tuple[WorkItemId, ...],
@@ -717,6 +843,30 @@ class SQLiteWorkStore:
                     lifecycle.closure,
                     preparation,
                 )
+        finally:
+            connection.close()
+
+    def read_item_integration(self, work_item_id: WorkItemId) -> query_models.IntegrationFacts | None:
+        """Read only the keyed candidate evidence eligible for the integration leaf."""
+
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+                item_row = connection.execute(
+                    "SELECT state, subject_revision FROM work_items WHERE item_id = ?", (work_item_id,)
+                ).fetchone()
+                if revision_row is None:
+                    raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+                if item_row is None:
+                    return None
+                project_revision = decode_row(revision_row, ProjectRevisionRow).revision
+                item = decode_row(item_row, _IntegrationItemRow)
+                if item.state == stored_state.StoredWorkItemState.DONE:
+                    return _read_completion_integration(
+                        connection, project_revision, work_item_id, item.state, item.subject_revision
+                    )
+                return _read_nonterminal_integration(connection, project_revision, work_item_id, item.state)
         finally:
             connection.close()
 

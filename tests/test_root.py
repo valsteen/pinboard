@@ -14,6 +14,10 @@ from unittest.mock import patch
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
+    IntegrationContentNotPresent,
+    IntegrationContentPresent,
+    IntegrationTargetUnresolved,
+    check_diff_content_at_target,
     classify_checkout,
     ensure_default_git_exclude,
     observe_checkout_identity,
@@ -224,6 +228,36 @@ class RootResolutionTest(unittest.TestCase):
         )
         self.assertEqual("pinboard-brief-source-plan/v1", source_result["schema"])
         self.assertFalse(unused_work_root.exists())
+
+    def test_integration_content_check_uses_a_private_index(self) -> None:
+        repository = Path(tempfile.mkdtemp()).resolve()
+        self.run_git(repository, "init", "-b", "main")
+        tracked = repository / "tracked.txt"
+        tracked.write_text("base\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
+        base = self.run_git(repository, "rev-parse", "HEAD").strip()
+        tracked.write_text("candidate\n", encoding="utf-8")
+        candidate_diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD"], cwd=repository, check=True, capture_output=True
+        ).stdout
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(
+            repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "candidate"
+        )
+        candidate = self.run_git(repository, "rev-parse", "HEAD").strip()
+        index = (repository / ".git" / "index").read_bytes()
+
+        self.assertEqual(
+            IntegrationContentNotPresent(base), check_diff_content_at_target(repository, base, candidate_diff)
+        )
+        self.assertEqual(
+            IntegrationContentPresent(candidate), check_diff_content_at_target(repository, candidate, candidate_diff)
+        )
+        self.assertEqual(
+            IntegrationTargetUnresolved("missing"), check_diff_content_at_target(repository, "missing", candidate_diff)
+        )
+        self.assertEqual(index, (repository / ".git" / "index").read_bytes())
 
 
 if __name__ == "__main__":

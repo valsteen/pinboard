@@ -921,6 +921,73 @@ class ItemStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 @dataclass(frozen=True, slots=True)
+class IntegrationCandidateFacts:
+    """The one accepted candidate selected by focused item facts."""
+
+    source: Literal["protected-review", "accepted-checkpoint", "completion"]
+    attempt_id: AttemptId
+    candidate_revision: str
+    snapshot_reference: stored_state.ArtifactReference
+    checkpoint_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationFacts:
+    project_revision: int
+    work_item_id: WorkItemId
+    item_state: stored_state.StoredWorkItemState
+    candidate: IntegrationCandidateFacts | None
+    unavailable_reason: str | None
+
+
+class IntegrationPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+class ProtectedReviewIntegrationSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class AcceptedCheckpointIntegrationSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+    checkpoint_id: str
+
+
+class CompletionIntegrationSource(
+    msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type ItemIntegrationSource = (
+    ProtectedReviewIntegrationSource | AcceptedCheckpointIntegrationSource | CompletionIntegrationSource
+)
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-item-integration/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    target_revision: str
+    source: ItemIntegrationSource
+    presence: IntegrationPresence
+
+
+@dataclass(frozen=True, slots=True)
 class BranchOwnerFacts:
     work_item_id: WorkItemId
     item_state: stored_state.StoredWorkItemState

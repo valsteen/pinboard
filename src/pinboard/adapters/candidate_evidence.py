@@ -4,8 +4,12 @@ Restoration can change the source checkout, never the ledger or authority.
 Post-mutation verification failures retain that actual effect and forbid replay.
 """
 
+import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
+
+import msgspec
 
 from pinboard.adapters.files import candidate_compatibility, root
 from pinboard.adapters.files.artifacts import read_reference
@@ -23,6 +27,17 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 from pinboard.domain.identifiers import AttemptId
+
+
+class IntegrationCandidateEvidenceInvalid(ValueError):
+    """An accepted candidate reference cannot supply the promised snapshot."""
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationContentObservation:
+    target_revision: str
+    presence: query_models.IntegrationPresence
+    compared_from: str
 
 
 def read_candidate_evidence(
@@ -51,6 +66,87 @@ def read_candidate_evidence_from_context(
         return candidate_snapshots.verify_candidate_snapshot_context(context, candidate, encoded)
     except (ArtifactError, ValueError) as error:
         return DecisionFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
+
+
+def compare_integration_candidate(
+    source_checkout: Path,
+    work_root: Path,
+    candidate: query_models.IntegrationCandidateFacts,
+    target: str,
+) -> IntegrationContentObservation | root.IntegrationTargetUnresolved:
+    """Combine verified snapshot bytes with the Git adapter's read-only content check."""
+
+    snapshot = _verified_integration_snapshot(work_root, candidate)
+    compared_from = _integration_compared_from(snapshot)
+    return _observe_integration_content(source_checkout, target, snapshot.diff, compared_from)
+
+
+def _verified_integration_snapshot(
+    work_root: Path, candidate: query_models.IntegrationCandidateFacts
+) -> candidate_snapshots.CandidateSnapshot:
+
+    try:
+        encoded = read_reference(work_root, candidate.snapshot_reference)
+    except ArtifactError as error:
+        raise IntegrationCandidateEvidenceInvalid(str(error)) from error
+    if (
+        len(encoded) != candidate.snapshot_reference.size_bytes
+        or hashlib.sha256(encoded).hexdigest() != candidate.snapshot_reference.content_sha256
+    ):
+        raise IntegrationCandidateEvidenceInvalid("Candidate snapshot bytes differ from the accepted reference.")
+    try:
+        snapshot = candidate_snapshots.decode_candidate_snapshot(encoded)
+    except (msgspec.DecodeError, ValueError) as error:
+        raise IntegrationCandidateEvidenceInvalid(f"Candidate snapshot does not decode: {error}") from error
+    if snapshot.attempt_id != str(candidate.attempt_id) or snapshot.candidate != candidate.candidate_revision:
+        raise IntegrationCandidateEvidenceInvalid("Candidate snapshot does not match the selected source.")
+    return snapshot
+
+
+def _integration_compared_from(snapshot: candidate_snapshots.CandidateSnapshot) -> str:
+    compared_from = snapshot.preimage_revision
+    match snapshot:
+        case candidate_snapshots.CommitCandidateSnapshot() | candidate_snapshots.DeclaredCommitCandidateSnapshot():
+            compared_from = snapshot.accepted_base_revision
+        case (
+            candidate_snapshots.WorkingTreeCandidateSnapshot()
+            | candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot()
+            | candidate_snapshot_compatibility_models.WorkingTreeCandidateSnapshot()
+        ):
+            pass
+        case _ as unreachable:
+            assert_never(unreachable)
+    return compared_from
+
+
+def _observe_integration_content(
+    source_checkout: Path, target: str, diff: bytes, compared_from: str
+) -> IntegrationContentObservation | root.IntegrationTargetUnresolved:
+    if not diff:
+        resolved = root.resolve_integration_target(source_checkout, target)
+        match resolved:
+            case root.IntegrationTargetUnresolved():
+                return resolved
+            case str() as target_revision:
+                return IntegrationContentObservation(
+                    target_revision, query_models.IntegrationPresence.NO_CHANGE, compared_from
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+    observed = root.check_diff_content_at_target(source_checkout, target, diff)
+    match observed:
+        case root.IntegrationTargetUnresolved():
+            return observed
+        case root.IntegrationContentPresent():
+            return IntegrationContentObservation(
+                observed.target_revision, query_models.IntegrationPresence.CONTENT_PRESENT, compared_from
+            )
+        case root.IntegrationContentNotPresent():
+            return IntegrationContentObservation(
+                observed.target_revision, query_models.IntegrationPresence.CONTENT_NOT_PRESENT, compared_from
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def observe_candidate_lineage(

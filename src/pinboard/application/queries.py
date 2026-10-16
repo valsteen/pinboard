@@ -1182,6 +1182,42 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
     )
 
 
+def select_item_integration_candidate(
+    reader: ports.ItemIntegrationReader, work_item_id: WorkItemId
+) -> DecisionResult[query_models.IntegrationFacts]:
+    """Select the focused reviewed candidate without deriving repository relations."""
+
+    facts = reader.read_item_integration(work_item_id)
+    if facts is None:
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' was not found.", None)
+    return facts
+
+
+def project_item_integration_source(
+    candidate: query_models.IntegrationCandidateFacts,
+    compared_from_revision: str,
+) -> query_models.ItemIntegrationSource:
+    match candidate.source:
+        case "protected-review":
+            return query_models.ProtectedReviewIntegrationSource(
+                str(candidate.attempt_id), candidate.candidate_revision, compared_from_revision
+            )
+        case "accepted-checkpoint":
+            assert candidate.checkpoint_id is not None
+            return query_models.AcceptedCheckpointIntegrationSource(
+                str(candidate.attempt_id),
+                candidate.candidate_revision,
+                compared_from_revision,
+                candidate.checkpoint_id,
+            )
+        case "completion":
+            return query_models.CompletionIntegrationSource(
+                str(candidate.attempt_id), candidate.candidate_revision, compared_from_revision
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:
     return query_models.WorkItemDefinitionView(
         "pinboard-work-item-definition/v2",

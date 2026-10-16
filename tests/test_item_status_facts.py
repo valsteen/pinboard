@@ -47,6 +47,12 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
             {"request": {**self.roots(fixture), "operation": "branch", "branch": branch}},
         )
 
+    def integration_leaf(self, fixture: CheckpointFixture, target: str, item_id: str = "work-a") -> JsonObject:
+        return call_advertised_tool(
+            mcp_server.ITEM_STATUS_TOOL,
+            {"request": {**self.roots(fixture), "operation": "integration", "item_id": item_id, "target": target}},
+        )
+
     def inspection(self, fixture: CheckpointFixture) -> JsonObject:
         return call_advertised_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL, {**self.roots(fixture), "attempt_id": "work-a-1", "reconciliation": None}
@@ -418,7 +424,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                     self.update_receipt(fixture, damaged_history, **columns)
 
                     status = self.item_leaf(fixture)
-                    self.assertEqual("pinboard-mcp-item-status-result/v2", status["schema"])
+                    self.assertEqual("pinboard-mcp-item-status-result/v3", status["schema"])
                     named = self.named_receipt(status, receipt)
                     self.assertEqual((AttemptId("work-a-1"), damaged_history), (named.attempt_id, named.history_id))
                     self.assertEqual(diagnosis, queries.damaged_receipt_diagnosis(receipt))
@@ -615,3 +621,30 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         fixture = self.checkpoint_fixture()
         with self.assertRaises(ToolError):
             call_native_tool(mcp_server.ITEM_STATUS_TOOL, {**self.roots(fixture), "item_id": "work-a"})
+
+    def test_integration_leaf_compares_the_protected_candidate_to_a_named_target(self) -> None:
+        fixture = self.checkpoint_fixture()
+        base = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=fixture.project, check=True, text=True, capture_output=True
+        ).stdout.strip()
+        self.return_for_review(fixture, "Exercise a replacement reviewed candidate.")
+        candidate = self.submit_candidate(fixture, "integrated")
+
+        absent = self.integration_leaf(fixture, base)
+        self.assertEqual("pinboard-item-integration/v1", absent["schema"], absent)
+        self.assertEqual("content-not-present", absent["presence"])
+        self.assertEqual(base, absent["target_revision"])
+        source = self.json_object(absent["source"])
+        self.assertEqual(("protected-review", candidate), (source["kind"], source["candidate_revision"]))
+
+        self.commit_all(fixture.project, "integrated candidate")
+        target = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=fixture.project, check=True, text=True, capture_output=True
+        ).stdout.strip()
+        present = self.integration_leaf(fixture, target)
+        self.assertEqual("content-present", present["presence"])
+        self.assertEqual(target, present["target_revision"])
+
+        unresolved = self.integration_leaf(fixture, "missing-target")
+        self.assertEqual("INTEGRATION_TARGET_UNRESOLVED", unresolved["code"])
+        self.assertEqual(("unchanged", "correct-input"), (unresolved["effect"], unresolved["retry"]))

@@ -663,23 +663,43 @@ class PluginPackagingTests(unittest.TestCase):
                 ),
             ),
         )
-        for relative, content in changes:
-            with self.subTest(relative=relative, content=content), tempfile.TemporaryDirectory() as directory:
-                plugin = Path(directory)
-                copied_repository_payload(ROOT, plugin)
+        with tempfile.TemporaryDirectory() as directory:
+            plugin = Path(directory)
+            copied_repository_payload(ROOT, plugin)
+            pristine = tree_fingerprint(plugin)
+            for relative, content in changes:
+                self.assertEqual(pristine, tree_fingerprint(plugin), "metadata case precondition")
                 target = plugin / relative
-                if content is None:
-                    target.unlink()
-                else:
-                    target.write_text(content, encoding="utf-8")
-                result = subprocess.run(
-                    [sys.executable, str(plugin / "scripts" / "validate-metadata.py")],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                self.assertNotEqual(0, result.returncode)
-                self.assertEqual("", result.stdout)
+                self.assertFalse(target.is_symlink())
+                original = (target.read_bytes(), stat.S_IMODE(target.stat().st_mode)) if target.exists() else None
+                isolated = restored = False
+                with self.subTest(relative=relative, content=content):
+                    try:
+                        if content is None:
+                            target.unlink()
+                        else:
+                            target.write_text(content, encoding="utf-8")
+                        damaged = tree_fingerprint(plugin)
+                        result = subprocess.run(
+                            [sys.executable, str(plugin / "scripts" / "validate-metadata.py")],
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        self.assertEqual(damaged, tree_fingerprint(plugin), "validator changed plugin payload")
+                        isolated = True
+                        self.assertNotEqual(0, result.returncode)
+                        self.assertEqual("", result.stdout)
+                    finally:
+                        target.unlink(missing_ok=True)
+                        if original is not None:
+                            target.write_bytes(original[0])
+                            target.chmod(original[1])
+                        self.assertEqual(pristine, tree_fingerprint(plugin), "metadata case restoration")
+                        restored = True
+                # subTest records guard failures without raising outside its context.
+                if not isolated or not restored:
+                    return
 
     def test_copy_and_fingerprint_cover_only_tracked_payload_entry_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

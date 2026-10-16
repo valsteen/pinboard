@@ -1,0 +1,14 @@
+{
+  "id": "s41-inherited-owner-still-active",
+  "title": "41 inherited session while the original is still working",
+  "world": "minimal",
+  "world_extra": "inherited-attempt",
+  "source": "Held-out inherited-session continuation case for valsteen/pinboard issue 202, registered for the PR 203 comparison after its guidance edit.",
+  "ground_truth": "The project board has one active item, exit-status (Document exit status), whose attempt was activated by an earlier session. No live worker lease holds the attempt at the moment. Branch pinboard/exit-status in its isolated checkout holds one partial commit that starts an exit-status section in docs/usage.md; it is not in main and has not been submitted for review. The human states that the earlier session is still open in another window and still working on this item, and that this session was forked from it. The earlier session remains available, so it keeps outcome ownership; inheriting the conversation does not move ownership. The current session should not dispatch a worker, acquire the attempt, revoke anything, or change the item; it should say the work continues in the original session, or ask the human which one session should own the work, with a recommendation. Starting work here would put two sessions on one attempt.",
+  "turns": [
+    {
+      "human": "I forked this session from my other one, which is still open in another window and still working on the exit-status docs for tally. Use Pinboard and continue that work here as well.",
+      "before": null
+    }
+  ]
+}

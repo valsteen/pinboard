@@ -275,6 +275,48 @@ class ContinueCheckpointWorldTest(unittest.TestCase):
         self.assertEqual([built.work_root], seeded_content)
         self.assertEqual([("project", "usage-guide", "review")], [(s.board, s.item_id, s.state) for s in seeded])
 
+    def test_build_world_seeds_an_inherited_attempt_under_the_original_session(self) -> None:
+        calls: list[tuple[str, bool]] = []
+
+        async def seed(seeder: seeding.Seeder, *, live_lease: bool) -> None:
+            calls.append((seeder.owner, live_lease))
+
+        for extra, live_lease in (
+            (WorldExtra.INHERITED_ATTEMPT, False),
+            (WorldExtra.INHERITED_ATTEMPT_LIVE_LEASE, True),
+        ):
+            scenario = Scenario(
+                id="inherited",
+                title="Continue inherited work",
+                world=WorldKind.MINIMAL,
+                world_extra=extra,
+                source="fixture",
+                ground_truth="fixture",
+                turns=[Turn(human="Continue.", before=None)],
+            )
+
+            @asynccontextmanager
+            async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
+                yield board.BoardClient(MagicMock(spec=ClientSession), window)
+
+            async def states(*arguments: Path | tuple[str, ...] | Window) -> list[tuple[str, str]]:
+                self.assertEqual(("exit-status",), arguments[4])
+                return [("exit-status", "active")]
+
+            with (
+                TemporaryDirectory() as temporary,
+                patch.object(world, "create_project"),
+                patch.object(world, "init_board"),
+                patch.object(board, "connect", connected),
+                patch.object(world, "seed_inherited_attempt", seed),
+                patch.object(board, "item_states", states),
+            ):
+                _built, seeded = world.build_world(
+                    Path(temporary) / "world", scenario, Runtime.CLAUDE_CODE, Path("plugin"), "agent", Window(None)
+                )
+            self.assertEqual((world_content.ORIGINAL_SESSION_TASK_ID, live_lease), calls[-1])
+            self.assertEqual([("project", "exit-status", "active")], [(s.board, s.item_id, s.state) for s in seeded])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,40 @@ from pinboard.application import roadmap, stored_state
 from pinboard.domain import initiatives
 from pinboard.domain.identifiers import WorkItemId
 
+_PAGE_HEAD = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pinboard roadmap</title>
+<style>
+:root { color-scheme: light dark;
+  --bg: light-dark(#fbfbfa, #171716); --fg: light-dark(#1d1d1b, #ececea);
+  --muted: light-dark(#6a6a64, #a2a29b); --line: light-dark(#deded8, #3a3a37);
+  --card: light-dark(#ffffff, #20201f); --accent: light-dark(#2f5fb3, #8fb0ea); }
+:root:has(#theme-light:checked) { color-scheme: light; }
+:root:has(#theme-dark:checked) { color-scheme: dark; }
+body { font: 16px/1.6 system-ui,sans-serif; color: var(--fg); background: var(--bg);
+  margin: auto; padding: clamp(1rem,3vw,3rem); max-width: 100rem; }
+a { color: var(--accent); overflow-wrap: anywhere; }
+h1,h2,h3 { line-height: 1.2; }
+main { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,24rem),1fr)); gap: 1.5rem; }
+.lane { background: var(--card); border: 1px solid var(--line); border-radius: .8rem;
+  padding: 1.25rem; min-width: 0; }
+article { border-top: 1px solid var(--line); padding: .7rem 0; }
+details { margin: 1rem 0; }
+summary { cursor: pointer; font-weight: 650; }
+p,li { overflow-wrap: anywhere; white-space: pre-wrap; }
+.muted { color: var(--muted); }
+li { margin: .5rem 0; }
+header { margin-bottom: 2rem; }
+.theme { display: flex; flex-wrap: wrap; gap: .5rem 1rem; width: fit-content; max-width: 100%;
+  border: 1px solid var(--line); border-radius: .5rem; padding: .5rem 1rem; margin: 1rem 0; }
+.theme label { cursor: pointer; white-space: nowrap; }
+.theme input { accent-color: var(--accent); }
+</style>
+</head><body><header>"""
+
 
 def _link(target: str, label: str) -> str:
     try:
@@ -63,8 +97,13 @@ def render(projection: roadmap.Projection) -> tuple[bytes, bytes]:  # noqa: C901
         "",
     ]
     page = [
-        '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pinboard roadmap</title><style>body{font:16px/1.6 system-ui,sans-serif;color:#182338;background:#f6f8fc;margin:auto;padding:clamp(1rem,3vw,3rem);max-width:100rem}a{color:#1850a3;overflow-wrap:anywhere}h1,h2,h3{line-height:1.2}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,24rem),1fr));gap:1.5rem}.lane{background:white;border:1px solid #cbd5e1;border-radius:.8rem;padding:1.25rem;min-width:0}article{border-top:1px solid #d9e2ef;padding:.7rem 0}details{margin:1rem 0}summary{cursor:pointer;font-weight:650}p,li{overflow-wrap:anywhere;white-space:pre-wrap}.muted{color:#536176}li{margin:.5rem 0}header{margin-bottom:2rem}</style><header>',
-        f'<h1>{escape(title)}</h1><p>{escape(freshness)}</p><p>{escape(text[4])}</p><p><strong>{escape(_counts(projection.totals))}</strong></p><p><a href="board.html">Open the work board</a></p></header><main>',
+        _PAGE_HEAD,
+        f"<h1>{escape(title)}</h1>",
+        '<fieldset class="theme"><legend>Theme</legend>'
+        '<label><input type="radio" name="theme" id="theme-system" value="system" checked> System</label>'
+        '<label><input type="radio" name="theme" id="theme-light" value="light"> Light</label>'
+        '<label><input type="radio" name="theme" id="theme-dark" value="dark"> Dark</label></fieldset>',
+        f'<p>{escape(freshness)}</p><p>{escape(text[4])}</p><p><strong>{escape(_counts(projection.totals))}</strong></p><p><a href="board.html">Open the work board</a></p></header><main>',
     ]
 
     def card(item_id: WorkItemId) -> None:
@@ -206,5 +245,5 @@ def render(projection: roadmap.Projection) -> tuple[bytes, bytes]:  # noqa: C901
         for item_id in selected:
             card(item_id)
         page.append("</section>")
-    page.append("</main></html>")
+    page.append("</main></body></html>")
     return ("\n".join(text) + "\n").encode(), "\n".join(page).encode()

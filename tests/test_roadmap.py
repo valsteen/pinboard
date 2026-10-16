@@ -4,6 +4,7 @@ The grouping is hypothetical; the original read-only Bitwig observations were at
 revision 1084. These scenarios never open that project or claim its current state.
 """
 
+import re
 import unittest
 from dataclasses import replace
 
@@ -99,6 +100,28 @@ class RoadmapTest(unittest.TestCase):
                 self.assertIn(b"Not assessed", html)
                 self.assertTrue(all(not lane.assessments for lane in facts.initiatives))
                 self.assertEqual(stored_state.StoredWorkItemState.BLOCKED, facts.items[-1].state)
+
+    def test_offline_theme_choices_default_to_system_and_keep_content_escaped(self) -> None:
+        facts = self.facts(frozenset())
+        unsafe = replace(facts.items[0], title='</style><script>alert("title")</script>')
+        html = renderer.render(roadmap.project(replace(facts, items=(unsafe, *facts.items[1:]))))[1].decode()
+        controls = re.findall(r"<label>(<input[^>]+>) (System|Light|Dark)</label>", html)
+        self.assertEqual(["System", "Light", "Dark"], [label for _, label in controls])
+        self.assertIn('<fieldset class="theme"><legend>Theme</legend>', html)
+        for control, label in controls:
+            with self.subTest(theme=label):
+                self.assertIn('type="radio"', control)
+                self.assertIn('name="theme"', control)
+                self.assertIn(f'id="theme-{label.lower()}"', control)
+                self.assertEqual(label == "System", " checked" in control)
+        self.assertIn(":root { color-scheme: light dark;", html)
+        self.assertIn(":root:has(#theme-light:checked) { color-scheme: light; }", html)
+        self.assertIn(":root:has(#theme-dark:checked) { color-scheme: dark; }", html)
+        self.assertIn("light-dark(", html)
+        self.assertIn("&lt;/style&gt;&lt;script&gt;", html)
+        self.assertNotIn("<script", html)
+        self.assertNotRegex(html, r"<(?:link|script|iframe)\b|url\(")
+        self.assertIn('href="items/o.md"', html)
 
     def test_supersession_satisfies_without_delivery_and_dropped_paths_stay_blocked(self) -> None:
         facts = self.facts(frozenset())

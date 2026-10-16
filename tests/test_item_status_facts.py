@@ -5,6 +5,7 @@ import hashlib
 import json
 import sqlite3
 import subprocess
+from collections.abc import Generator
 from datetime import UTC, datetime
 from typing import assert_never
 from unittest.mock import patch
@@ -377,6 +378,43 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
             AttemptId(attempt_id), HistoryId(history_id), datetime.fromisoformat(committed_at), action_kind, defect
         )
 
+    def receipt_probe_state(self, fixture: CheckpointFixture) -> tuple[str, dict[str, bytes]]:
+        """Compare logical SQLite contents and work-root files, excluding SQLite's physical bookkeeping."""
+
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+            ledger = "\n".join(connection.iterdump())
+        files = {
+            str(path.relative_to(fixture.work)): path.read_bytes()
+            for path in fixture.work.rglob("*")
+            if path.is_file()
+            and path.name not in ("state.sqlite3", "state.sqlite3-wal", "state.sqlite3-shm", "state.sqlite3-journal")
+        }
+        return ledger, files
+
+    @contextlib.contextmanager
+    def damaged_receipt_probe(
+        self, fixture: CheckpointFixture, history_id: int, columns: dict[str, str], clean: tuple[str, dict[str, bytes]]
+    ) -> Generator[tuple[str, dict[str, bytes]]]:
+        """Commit one damage form and restore only its original receipt values, including on failure."""
+
+        self.assertEqual(clean, self.receipt_probe_state(fixture))
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+            schema, body = connection.execute(
+                "SELECT outcome_schema, outcome_json FROM transition_history WHERE history_id = ?", (history_id,)
+            ).fetchone()
+        assert isinstance(schema, str) and isinstance(body, str)
+        try:
+            self.update_receipt(fixture, history_id, **columns)
+            with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+                damaged = connection.execute(
+                    "SELECT outcome_schema, outcome_json FROM transition_history WHERE history_id = ?", (history_id,)
+                ).fetchone()
+            self.assertEqual((columns.get("outcome_schema", schema), columns.get("outcome_json", body)), damaged)
+            yield self.receipt_probe_state(fixture)
+        finally:
+            self.update_receipt(fixture, history_id, outcome_schema=schema, outcome_json=body)
+            self.assertEqual(clean, self.receipt_probe_state(fixture))
+
     def test_damaged_consumed_receipts_are_named_by_status_reads(self) -> None:
         damage = (
             ("outcome-schema", {"outcome_schema": "transition-receipt/v9"}),
@@ -393,43 +431,55 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
             (decision_models.ActionKind.ACCEPT_CHECKPOINT, human),
         )
         for receipt, diagnosis in receipts:
+            fixture = self.damaged_receipt_fixture(receipt)
+            damaged_history = self.latest_history_id(fixture)
+            clean_state = self.receipt_probe_state(fixture)
             for label, columns in damage:
+                completed = False
                 with self.subTest(receipt=receipt.value, damage=label):
-                    fixture = self.damaged_receipt_fixture(receipt)
                     if receipt == decision_models.ActionKind.ACCEPT_CHECKPOINT and label == "outcome-schema":
                         columns = {"outcome_schema": "checkpoint-acceptance/v9"}
-                    damaged_history = self.latest_history_id(fixture)
-                    self.update_receipt(fixture, damaged_history, **columns)
-
-                    status = self.item_leaf(fixture)
-                    self.assertEqual("pinboard-mcp-item-status-result/v3", status["schema"])
-                    named = self.named_receipt(status, receipt)
-                    self.assertEqual((AttemptId("work-a-1"), damaged_history), (named.attempt_id, named.history_id))
-                    self.assertEqual(diagnosis, queries.damaged_receipt_diagnosis(receipt))
-                    self.assertEqual(queries.damaged_receipt_recovery(named), status["recovery"])
-                    if diagnosis == query_models.DamagedReceiptDiagnosis.HUMAN:
-                        self.assertIn(
-                            f"{named.defect.rstrip('.')}. Pinboard does not repair receipts", str(status["recovery"])
-                        )
-                    inspected = self.inspection(fixture)
-                    validated, stdout, _stderr = self.run_cli(*fixture.common, "validate", "--json")
-                    codes = {
-                        self.json_object(value)["code"]
-                        for value in self.json_array(self.json_object(json.loads(stdout))["diagnostics"])
-                    }
-                    match diagnosis:
-                        case query_models.DamagedReceiptDiagnosis.VALIDATION:
-                            self.assertEqual(named, self.named_receipt(inspected, receipt))
-                            self.assertEqual(status["recovery"], inspected["recovery"])
-                            self.assertEqual(10, validated, stdout)
+                    with self.damaged_receipt_probe(fixture, damaged_history, columns, clean_state) as damaged_state:
+                        status = self.item_leaf(fixture)
+                        observed_state = self.receipt_probe_state(fixture)
+                        self.assertEqual(damaged_state, observed_state)
+                        self.assertEqual("pinboard-mcp-item-status-result/v3", status["schema"])
+                        named = self.named_receipt(status, receipt)
+                        self.assertEqual((AttemptId("work-a-1"), damaged_history), (named.attempt_id, named.history_id))
+                        self.assertEqual(diagnosis, queries.damaged_receipt_diagnosis(receipt))
+                        self.assertEqual(queries.damaged_receipt_recovery(named), status["recovery"])
+                        if diagnosis == query_models.DamagedReceiptDiagnosis.HUMAN:
                             self.assertIn(
-                                "WORK_STATE_INVALID" if label == "outcome-json" else "TRANSITION_RECEIPT_DAMAGED", codes
+                                f"{named.defect.rstrip('.')}. Pinboard does not repair receipts",
+                                str(status["recovery"]),
                             )
-                        case query_models.DamagedReceiptDiagnosis.HUMAN:
-                            self.assertEqual("ok", inspected["status"], inspected)
-                            self.assertNotIn("TRANSITION_RECEIPT_DAMAGED", codes)
-                        case _ as unreachable:
-                            assert_never(unreachable)
+                        inspected = self.inspection(fixture)
+                        observed_state = self.receipt_probe_state(fixture)
+                        self.assertEqual(damaged_state, observed_state)
+                        validated, stdout, _stderr = self.run_cli(*fixture.common, "validate", "--json")
+                        observed_state = self.receipt_probe_state(fixture)
+                        self.assertEqual(damaged_state, observed_state)
+                        codes = {
+                            self.json_object(value)["code"]
+                            for value in self.json_array(self.json_object(json.loads(stdout))["diagnostics"])
+                        }
+                        match diagnosis:
+                            case query_models.DamagedReceiptDiagnosis.VALIDATION:
+                                self.assertEqual(named, self.named_receipt(inspected, receipt))
+                                self.assertEqual(status["recovery"], inspected["recovery"])
+                                self.assertEqual(10, validated, stdout)
+                                self.assertIn(
+                                    "WORK_STATE_INVALID" if label == "outcome-json" else "TRANSITION_RECEIPT_DAMAGED",
+                                    codes,
+                                )
+                            case query_models.DamagedReceiptDiagnosis.HUMAN:
+                                self.assertEqual("ok", inspected["status"], inspected)
+                                self.assertNotIn("TRANSITION_RECEIPT_DAMAGED", codes)
+                            case _ as unreachable:
+                                assert_never(unreachable)
+                    completed = True
+                if not completed:
+                    return
 
     def test_damaged_pause_receipt_is_named_by_view_generation(self) -> None:
         for label, columns in (

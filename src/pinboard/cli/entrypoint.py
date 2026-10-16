@@ -64,6 +64,7 @@ def _dispatch(  # noqa: C901, PLR0912 - keep the installed command routes visibl
     if isinstance(invocation.command, cli_commands.RootCommand):
         return work_state_commands.show_roots(roots, invocation.command)
     durable = work_state_commands.resolve_durable_layout(roots)
+    store = work_state_commands.compose_store(durable)
     if isinstance(
         invocation.command,
         (
@@ -72,8 +73,7 @@ def _dispatch(  # noqa: C901, PLR0912 - keep the installed command routes visibl
             cli_commands.MigrateSchemaReverseCommand,
         ),
     ):
-        return schema_migration.migrate_schema(durable, invocation.command)
-    store = work_state_commands.compose_store(durable)
+        return schema_migration.migrate_schema(durable, store, invocation.command)
     match invocation.command:
         case cli_commands.ValidateCommand() as command:
             return work_state_commands.validate_state(roots, durable, store, command)

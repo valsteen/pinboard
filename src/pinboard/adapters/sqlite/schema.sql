@@ -1,10 +1,10 @@
--- SQLite authority schema version 7.
+-- SQLite authority schema version 8.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE project_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     application TEXT NOT NULL CHECK (application = 'pinboard'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 7),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 8),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
     created_at TEXT NOT NULL,
@@ -280,3 +280,58 @@ CREATE TABLE transition_history (
 CREATE INDEX checkpoint_history_by_subject
 ON transition_history(subject_id, history_id)
 WHERE outcome_schema = 'checkpoint-acceptance/v2';
+
+CREATE TABLE initiatives (
+    initiative_id TEXT PRIMARY KEY,
+    subject_revision INTEGER NOT NULL CHECK (subject_revision >= 1)
+) STRICT;
+
+CREATE TABLE initiative_contexts (
+    initiative_id TEXT NOT NULL REFERENCES initiatives(initiative_id),
+    evaluation_context INTEGER NOT NULL CHECK (evaluation_context >= 1),
+    goal TEXT NOT NULL CHECK (length(goal) >= 1),
+    success_signal TEXT NOT NULL CHECK (length(success_signal) >= 1),
+    PRIMARY KEY (initiative_id, evaluation_context)
+) STRICT;
+
+CREATE TABLE initiative_revisions (
+    initiative_id TEXT NOT NULL REFERENCES initiatives(initiative_id),
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    evaluation_context INTEGER NOT NULL,
+    definition_json BLOB NOT NULL,
+    provenance_json BLOB NOT NULL,
+    PRIMARY KEY (initiative_id, revision),
+    FOREIGN KEY (initiative_id, evaluation_context) REFERENCES initiative_contexts(initiative_id, evaluation_context)
+) STRICT;
+
+CREATE TABLE initiative_memberships (
+    initiative_id TEXT NOT NULL REFERENCES initiatives(initiative_id),
+    item_id TEXT NOT NULL REFERENCES work_items(item_id),
+    episode INTEGER NOT NULL CHECK (episode >= 1),
+    added_json BLOB NOT NULL,
+    removed_json BLOB,
+    PRIMARY KEY (initiative_id, item_id, episode)
+) STRICT;
+
+CREATE UNIQUE INDEX initiative_active_member ON initiative_memberships(initiative_id, item_id) WHERE removed_json IS NULL;
+CREATE INDEX initiative_memberships_by_item ON initiative_memberships(item_id, initiative_id);
+
+CREATE TABLE initiative_decisions (
+    initiative_id TEXT NOT NULL REFERENCES initiatives(initiative_id),
+    project_revision INTEGER NOT NULL CHECK (project_revision >= 1),
+    decision TEXT NOT NULL CHECK (length(decision) >= 1),
+    links_json BLOB NOT NULL,
+    provenance_json BLOB NOT NULL,
+    PRIMARY KEY (initiative_id, project_revision)
+) STRICT;
+
+CREATE TABLE initiative_assessments (
+    initiative_id TEXT NOT NULL REFERENCES initiatives(initiative_id),
+    project_revision INTEGER NOT NULL CHECK (project_revision >= 1),
+    evaluation_context INTEGER NOT NULL,
+    judgment TEXT NOT NULL CHECK (judgment IN ('met', 'not-met')),
+    links_json BLOB NOT NULL,
+    provenance_json BLOB NOT NULL,
+    PRIMARY KEY (initiative_id, project_revision),
+    FOREIGN KEY (initiative_id, evaluation_context) REFERENCES initiative_contexts(initiative_id, evaluation_context)
+) STRICT;

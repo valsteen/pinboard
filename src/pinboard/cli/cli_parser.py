@@ -80,7 +80,9 @@ def build_parser() -> argparse.ArgumentParser:
     initialize = commands.add_parser("init", help="Create an empty current SQLite work state.")
     initialize.add_argument("--json", action="store_true")
     _select_command(initialize, cli_commands.InitializeCommand)
-    migrate_schema = commands.add_parser("migrate-schema", help="Upgrade a verified v6 ledger to v7 explicitly.")
+    migrate_schema = commands.add_parser(
+        "migrate-schema", help="Advance a verified predecessor ledger explicitly; retained v6 plans still produce v7."
+    )
     migrate_schema.add_argument("--json", action="store_true")
     schema_action = migrate_schema.add_mutually_exclusive_group()
     schema_action.add_argument("--apply", metavar="PLAN_ID")

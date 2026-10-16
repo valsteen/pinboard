@@ -8,6 +8,7 @@ from pinboard.adapters import dispatch_operations
 from pinboard.application import action_models, brief_source_models, dispatch_models, query_models, work_brief_contract
 from pinboard.domain import decision_models
 from pinboard.domain.errors import DecisionFailureCode
+from pinboard.mcp import initiative_contracts
 from pinboard.mcp.contracts import (
     _ACTIVE_CONTINUATION_ACTION_KINDS,
     _BLOCKED_CONTINUATION_ACTION_KINDS,
@@ -717,6 +718,18 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         msgspec.convert(content, type=TracePreflightResult if status == "rejected" else ExecutorBusyResult, strict=True)
     elif tool_name == "pinboard_fixture_review":
         msgspec.convert(content, type=FixtureReviewRejected if status == "rejected" else FixtureReviewPage, strict=True)
+    elif tool_name == "pinboard_initiative" and schema == "pinboard-roadmap-result/v1":
+        msgspec.convert(content, type=initiative_contracts.RoadmapResult, strict=True)
+    elif tool_name == "pinboard_initiative":
+        msgspec.convert(
+            content,
+            type=initiative_contracts.Rejected
+            if status == "rejected"
+            else initiative_contracts.ReadResult
+            if status == "ok"
+            else initiative_contracts.Committed,
+            strict=True,
+        )
     elif tool_name == "pinboard_cancel":
         msgspec.convert(
             content,
@@ -755,7 +768,7 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
                 type=BriefReviewNeedsCorrection,
                 strict=True,
             )
-        elif status == "committed":
+        elif status in {"committed", "committed-with-warning"}:
             msgspec.convert(content, type=BriefReviewCommitted, strict=True)
         elif status == "unchanged":
             msgspec.convert(content, type=BriefReviewUnchanged, strict=True)

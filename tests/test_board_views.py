@@ -32,6 +32,7 @@ from pinboard.application import (
     ports,
     queries,
     query_models,
+    roadmap,
     stored_state,
     work_brief_models,
 )
@@ -324,6 +325,9 @@ class _GatedBoard:
         self.read = read
         self.release = release
 
+    def read_roadmap(self) -> roadmap.Projection:
+        return self.board.read_roadmap()
+
     def read_board(self, now: datetime) -> query_models.BoardPortfolio:
         facts = self.board.read_board(now)
         self.read.set()
@@ -333,6 +337,9 @@ class _GatedBoard:
 
 
 class _FixedBoard:
+    def read_roadmap(self) -> roadmap.Projection:
+        return roadmap.project(roadmap.Facts(0, (), ()))
+
     """A board reader returning one already projected board, for presentation tests."""
 
     def __init__(self, board: query_models.BoardPortfolio) -> None:
@@ -516,7 +523,7 @@ class BoardProjectionTest(unittest.TestCase):
         self.assertIsNone(_page_data(html)["updated_at"])
         self.assertEqual([], _page_items(html))
 
-    def test_artifact_only_commit_leaves_derived_board_bytes_and_validation_unchanged(self) -> None:
+    def test_artifact_only_commit_preserves_board_and_requires_revision_labelled_roadmap_refresh(self) -> None:
         project, roots, store = self._ledger(_validatable_state())
         common = ("--project-root", str(project), "--work-root", str(roots.work_root))
         self._rebuild(roots, store)
@@ -535,6 +542,11 @@ class BoardProjectionTest(unittest.TestCase):
         ).views
         self.assertEqual(before, {name: expected[name] for name in BOARD_FILES})
         self.assertEqual(before, {name: (view_root / name).read_bytes() for name in BOARD_FILES})
+        result, stdout, stderr = self._run_cli(*common, "validate")
+        self.assertEqual(0, result, stderr)
+        self.assertIn("VIEW_REFRESH_REQUIRED", stdout)
+        self.assertIn("roadmap.html", stdout)
+        self._rebuild(roots, store)
         result, stdout, stderr = self._run_cli(*common, "validate")
         self.assertEqual(0, result, stderr)
         self.assertNotIn("VIEW_REFRESH_REQUIRED", stdout)

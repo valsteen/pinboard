@@ -21,6 +21,7 @@ from pinboard.application import (
 from pinboard.domain import authority_models, decision_models, ordering
 from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
 from pinboard.domain.history import RecordText
+from pinboard.mcp import initiative_contracts
 
 type JsonScalar = bool | int | float | str | None
 
@@ -2674,13 +2675,15 @@ class BriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
 
 class BriefReviewCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
-    status: Literal["committed"]
+    status: Literal["committed", "committed-with-warning"]
     reference: ReviewEvidenceReference
     state_changed: bool
     effect: Literal["committed"]
     retry: Literal["do-not-retry"]
     changed_surfaces: Annotated[tuple[JobPublicationSurface, ...], msgspec.Meta(min_length=1)]
     correction: BriefReviewCorrection
+
+    warning: WarningResult | None
 
     def __post_init__(self) -> None:
         _require_fixed_state_changed(self)
@@ -2696,6 +2699,8 @@ class BriefReviewUnchanged(_UnchangedResult, msgspec.Struct, frozen=True, forbid
     retry: Literal["retry-same-input"]
     changed_surfaces: Empty
     correction: BriefReviewCorrection
+
+    warning: WarningResult | None
 
 
 class BriefReviewRejected(RejectedReadResult, frozen=True):
@@ -2751,6 +2756,8 @@ class PublishedJobReady(_VariableStateChangedResult, msgspec.Struct, frozen=True
     retry: Literal["safe-to-repeat", "do-not-retry"]
     changed_surfaces: tuple[JobPublicationSurface, ...]
 
+    warning: WarningResult | None
+
     def __post_init__(self) -> None:
         surfaces = self.changed_surfaces
         _require_job_publication(surfaces, self.state_changed, self.effect, self.retry)
@@ -2780,6 +2787,8 @@ class ReplacementReadinessReady(msgspec.Struct, frozen=True, forbid_unknown_fiel
     effect: Literal["unchanged", "committed"]
     retry: Literal["safe-to-repeat", "do-not-retry"]
     changed_surfaces: tuple[JobPublicationSurface, ...]
+
+    warning: WarningResult | None
 
     def __post_init__(self) -> None:
         _require_job_publication(self.changed_surfaces, self.state_changed, self.effect, self.retry)
@@ -3170,7 +3179,8 @@ FIXTURE_REVIEW_RESULT_TYPES = (FixtureReviewPage, FixtureReviewRejected, Executo
 
 
 type RequestBoundary = (
-    type[FixtureReviewEnvelope]
+    type[initiative_contracts.Envelope]
+    | type[FixtureReviewEnvelope]
     | type[BriefContractEnvelope]
     | type[BriefSourcesEnvelope]
     | type[ItemStatusEnvelope]
@@ -3195,7 +3205,11 @@ type RequestBoundary = (
     | type[ParallelPreviewEnvelope]
 )
 type ResultBoundary = (
-    type[FixtureReviewPage]
+    type[initiative_contracts.RoadmapResult]
+    | type[initiative_contracts.ReadResult]
+    | type[initiative_contracts.Committed]
+    | type[initiative_contracts.Rejected]
+    | type[FixtureReviewPage]
     | type[FixtureReviewRejected]
     | type[work_brief_contract.WorkBriefContract]
     | type[work_brief_contract.WorkBriefStarterContract]

@@ -6,7 +6,7 @@ from typing import Literal, assert_never
 import msgspec
 
 from pinboard.application import definition_compatibility, released_v6_compatibility
-from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain import authority_models, decision_models, initiatives, work_models
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.history import (
     WorkItemDefinitionPayload,
@@ -143,7 +143,7 @@ def stored_close_outcome(value: work_models.CloseOutcome) -> StoredWorkItemState
 @dataclass(frozen=True, slots=True)
 class ProjectRecord:
     application: Literal["pinboard"]
-    schema_version: Literal[7]
+    schema_version: Literal[8]
     revision: int
     host_epoch: int
     created_at: datetime
@@ -380,6 +380,7 @@ class StoredWorkState:
     artifact_references: tuple[ArtifactReference, ...]
     authority: AuthorityRecords
     transition_receipts: tuple[StoredTransitionReceipt, ...]
+    initiatives: tuple[initiatives.Initiative, ...]
 
 
 @dataclass(frozen=True, slots=True)

@@ -171,27 +171,27 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
             postcondition = "Return work_root, resumed state, and optional next guidance; default initialization also owns its exact local Git exclusion."
             retry = "inspect-current-state-before-retry"
         case "migrate-schema":
-            purpose = "Preview an exact v6-to-v7 upgrade or current-v7 no-op."
+            purpose = "Preview exact v7-to-v8 advancement, retained v6-to-v7 upgrade, or current-schema no-op."
             mutation = "read-only"
             scope = "explicit-project-wide"
             roles = ("local-caller",)
             authority = "read-access-and-quiescent-ledger"
             subject = "ledger"
-            precondition = "exact-v6-or-v7-schema-with-no-concurrent-users"
+            precondition = "exact-supported-predecessor-or-current-schema-with-no-concurrent-users"
             postcondition = "Return one canonical plan and digest without changing files or Git metadata."
             retry = "safe-to-repeat"
         case "migrate-schema/apply":
-            purpose = "Apply or resume only the named schema plan with an exact v6 backup."
+            purpose = "Apply or resume only the named schema plan with its exact predecessor backup."
             mutation = "mutates-ledger"
             scope = "explicit-project-wide"
             roles = ("local-caller",)
             authority = "filesystem-access-and-quiescent-ledger"
             subject = "ledger"
             precondition = "matching-preview-or-persisted-plan-with-unchanged-authoritative-database"
-            postcondition = "Retain verified v6 bytes and atomically upgrade or restore the selected database."
+            postcondition = "Retain verified predecessor bytes and atomically advance or restore the selected database."
             retry = "resume-only-the-same-plan-after-inspecting-effects"
         case "migrate-schema/reverse":
-            purpose = "Preview exact v6 restoration while the migrated v7 ledger is unchanged."
+            purpose = "Preview exact predecessor restoration while the selected migrated postimage is unchanged."
             mutation = "read-only"
             scope = "explicit-project-wide"
             roles = ("local-caller",)

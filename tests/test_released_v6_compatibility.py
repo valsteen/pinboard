@@ -12,7 +12,7 @@ from contextlib import closing, redirect_stdout
 from datetime import timedelta
 from pathlib import Path
 
-from pinboard.adapters.sqlite.database import migrate_v6_database
+from pinboard.adapters.sqlite.database import migrate_v6_database, migrate_v7_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import queries, query_models, service, stored_state
@@ -39,6 +39,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
     def _copy_fixture(self, name: str, destination: Path) -> SQLiteWorkStore:
         shutil.copyfile(FIXTURE_ROOT / f"{name}.sqlite3", destination)
         assert migrate_v6_database(destination)
+        assert migrate_v7_database(destination)
         return SQLiteWorkStore(destination)
 
     def _raw_counts(self, database: Path) -> dict[str, int]:

@@ -28,3 +28,5 @@ ORDER_TOOL = "pinboard_order"
 PARALLEL_PREVIEW_TOOL = "pinboard_parallel_preview"
 
 FIXTURE_REVIEW_TOOL = "pinboard_fixture_review"
+
+INITIATIVE_TOOL = "pinboard_initiative"

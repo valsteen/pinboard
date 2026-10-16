@@ -437,4 +437,5 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
         (brief, requirements, evidence),
         authority,
         transition_receipts,
+        (),
     )

@@ -14,6 +14,7 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters.sqlite import cancellation, pr_review
+from pinboard.adapters.sqlite import initiatives as initiative_storage
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
     read_artifact_reference,
@@ -86,6 +87,7 @@ from pinboard.application import (
     history_archives,
     queries,
     query_models,
+    roadmap,
     stored_state,
     work_briefs,
 )
@@ -93,6 +95,7 @@ from pinboard.application.artifacts import ArtifactRef, BriefArtifactRef
 from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.application.project_export import ProjectExportState
 from pinboard.domain import decision_models, history, work_models
+from pinboard.domain import initiatives as initiative_models
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, LeaseId, ProposalId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
@@ -731,6 +734,23 @@ def _read_integration_facts(
 
 
 class SQLiteWorkStore:
+    def read_roadmap(self) -> roadmap.Projection:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return roadmap.project(initiative_storage.read_roadmap(connection))
+        finally:
+            connection.close()
+
+    def read_initiative(self, initiative_id: initiative_models.InitiativeId) -> initiative_models.Initiative | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                selected = initiative_storage.read_selected(connection, (initiative_id,))
+                return selected[0] if selected else None
+        finally:
+            connection.close()
+
     def read_cancellation_preview(self, item_id: WorkItemId) -> cancellation_models.CancellationPreview | None:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:

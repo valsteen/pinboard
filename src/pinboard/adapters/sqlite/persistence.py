@@ -10,6 +10,7 @@ from typing import Literal, Self, assert_never
 
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.sqlite import cancellation
+from pinboard.adapters.sqlite import initiatives as initiative_storage
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
     accept_artifact_reference as write_artifact_reference,
@@ -75,6 +76,7 @@ from pinboard.application.mutation_models import (
 from pinboard.application.mutations import stored_transition_receipt
 from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.domain import decision_models, work_models
+from pinboard.domain import initiatives as initiative_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, WorkItemId
@@ -922,6 +924,27 @@ def _persist(
 
 
 class SQLiteWorkTransaction:
+    def read_initiative_facts(
+        self, initiative_id: initiative_models.InitiativeId
+    ) -> initiative_models.CurrentFacts | None:
+        return initiative_storage.read_current(self.connection, initiative_id)
+
+    def read_membership_condition(
+        self,
+        initiative_id: initiative_models.InitiativeId,
+        change: initiative_models.AddMember | initiative_models.RemoveMember,
+    ) -> tuple[bool, bool]:
+        return initiative_storage.membership_condition(self.connection, initiative_id, change)
+
+    def commit_initiative(
+        self,
+        initiative_id: initiative_models.InitiativeId,
+        change: initiative_models.Change,
+        accepted: initiative_models.Accepted,
+        provenance: initiative_models.Provenance,
+    ) -> int:
+        return initiative_storage.persist(self.connection, initiative_id, change, accepted, provenance)
+
     def __init__(self, path: Path) -> None:
         self._path = path
         self._connection: sqlite3.Connection | None = None

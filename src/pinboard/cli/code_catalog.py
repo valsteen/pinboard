@@ -16,7 +16,7 @@ from pinboard.cli import cli_commands
 from pinboard.cli.cli_output import write_json
 from pinboard.cli.errors import CliErrorCode, CommandFailure, CommandResult
 from pinboard.cli.work_state_models import ValidationDiagnosticCode
-from pinboard.domain import decision_models
+from pinboard.domain import decision_models, initiatives
 from pinboard.domain.errors import (
     CodeMeanings,
     DecisionFailureCode,
@@ -30,6 +30,7 @@ from pinboard.domain.errors import (
 
 _FAILURE_ENUMS: tuple[type[DescribedCode], ...] = (
     DecisionFailureCode,
+    initiatives.RejectionCode,
     BriefSourceErrorCode,
     work_brief_models.WorkBriefErrorCode,
     DispatchRejectionCode,

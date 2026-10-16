@@ -28,14 +28,27 @@ uv run --locked ruff format --check .
 uv run --locked ruff check .
 uv run --locked pyrefly check
 uv run --locked pyrefly coverage check src --strict --fail-under 100
-uv run --locked coverage run -m unittest discover -v
-uv run --locked coverage report
+uv run --locked python -m tests.runner --coverage
 uv run --locked python scripts/validate-metadata.py
 ```
 
 The pyrefly configuration deliberately ignores Git ignore files and pyrefly's default exclusion heuristics so that linked worktrees under `.claude/worktrees/` check the same files as the main checkout; a `No Python files matched patterns` result from `pyrefly check` is a misconfiguration, not a pass.
 
 The repository uses `unittest`. The metadata validator is the supported check for plugin and skill discovery consistency. `HOW_IT_WORKS.md` and its diagrams are generated from `docs/how_it_works/`; update their sources and rerun the renderer instead of editing the generated guide directly.
+
+## Design tests around coherent behavior
+
+Design a test around one behavior or coherent journey, with multiple useful assertions that explain its outcome. Use named cases and `subTest` labels when they improve diagnosis. Keep unrelated behaviors separate; fewer test methods is not a goal. A failed prerequisite or failed restoration must stop dependent checks rather than let them run against an invalid world.
+
+Before adding or refactoring tests, inspect existing support and choose the smallest safe fixture, server and session lifetime. Reuse setup within a coherent scenario when its contract allows it, and register deterministic cleanup with context managers or `unittest` cleanup support. Existing patterns include:
+
+- [`native_tools`](tests/native_support.py) owns one fixture's server and executor and shuts the executor down in `finally`. Its advertised calls create a fresh real SDK client and validate the advertised output schema on every call; its direct native calls exercise a different boundary.
+- [`CheckpointFixture`](tests/checkpoint_support.py) carries explicit native and advertised call capabilities. The per-world binding in [`test_item_status_facts.py`](tests/test_item_status_facts.py) and [`test_correction_source_review.py`](tests/test_correction_source_review.py) reuses server setup without sharing ledgers between independent worlds.
+- The paging journey in [`test_brief_sources.py`](tests/test_brief_sources.py) keeps one real SDK session per isolated source case, checks every page and rejection, and closes the session before executor shutdown. Preserve fresh-process, stdio and fresh-client coverage wherever startup or isolation is the guarantee being tested.
+
+Keep independent committed, rejection and failure worlds independent. Reuse a mutable world only when each case proves its clean precondition, restores the exact relevant state even on failure, and verifies restoration before another case starts. Do not default to state shared across tests or combine unrelated tests to save setup. Retain every relevant behavior, assertion, rejection, recovery and integration check; a faster direct call or schema shortcut cannot replace required SDK or stdio evidence.
+
+Match verification to the change. Ordinary test additions need the relevant behavioral checks, not a new benchmark ritual. For a material setup or performance refactor, compare the same scenarios and checks before and after under matching awake, instrumentation and concurrency conditions, and compare exact production line and branch coverage. Explain any difference rather than relying on a coverage percentage. Report focused timings separately from parallel full-suite timings; a focused improvement does not establish a suite-wide speedup. Keep elapsed-time measurements out of unit-test assertions, and use deterministic clocks and controlled coordination for behavior tests.
 
 ## Diagnose Pinboard invocations during contributor work
 

@@ -1,6 +1,7 @@
 """Item-status leaves report review verdicts, branch owners, closure facts, and damaged receipts."""
 
 import contextlib
+import dataclasses
 import hashlib
 import json
 import sqlite3
@@ -26,7 +27,7 @@ from pinboard.domain.identifiers import AttemptId, HistoryId, WorkItemId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
-from tests.native_support import call_advertised_tool, call_native_tool
+from tests.native_support import native_tools
 from tests.support import JsonObject, NoReadyCandidateReviews
 
 CLOSED_AT = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
@@ -40,19 +41,19 @@ class ItemLifecycleSupport(CheckpointPackageSupport):
         return {"project_root": str(fixture.project), "work_root": str(fixture.work)}
 
     def item_leaf(self, fixture: CheckpointFixture, item_id: str = "work-a") -> JsonObject:
-        return call_advertised_tool(
+        return fixture.call_advertised_tool(
             mcp_server.ITEM_STATUS_TOOL,
             {"request": {**self.roots(fixture), "operation": "item", "item_id": item_id}},
         )
 
     def branch_leaf(self, fixture: CheckpointFixture, branch: str) -> JsonObject:
-        return call_advertised_tool(
+        return fixture.call_advertised_tool(
             mcp_server.ITEM_STATUS_TOOL,
             {"request": {**self.roots(fixture), "operation": "branch", "branch": branch}},
         )
 
     def inspection(self, fixture: CheckpointFixture) -> JsonObject:
-        return call_advertised_tool(
+        return fixture.call_advertised_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL, {**self.roots(fixture), "attempt_id": "work-a-1", "reconciliation": None}
         )
 
@@ -108,7 +109,7 @@ class ItemLifecycleSupport(CheckpointPackageSupport):
 
     def rebind(self, fixture: CheckpointFixture, branch: str, revision: int) -> None:
         brief = replace_struct(fixture.brief, artifact_revision=revision, branch=branch)
-        published = call_native_tool(
+        published = fixture.call_native_tool(
             mcp_server.BRIEF_PUBLISH_TOOL,
             {**self.roots(fixture), "brief": self.json_object(msgspec.json.decode(msgspec.json.encode(brief)))},
         )
@@ -126,7 +127,7 @@ class ItemLifecycleSupport(CheckpointPackageSupport):
 
     def submit_candidate(self, fixture: CheckpointFixture, label: str) -> str:
         (fixture.project / "tracked.txt").write_text(f"{label}\n", encoding="utf-8")
-        observed = call_native_tool(
+        observed = fixture.call_native_tool(
             mcp_server.CANDIDATE_OBSERVE_TOOL, {**self.roots(fixture), "attempt_id": "work-a-1"}
         )
         candidate = observed["candidate"]
@@ -162,7 +163,7 @@ class ItemLifecycleSupport(CheckpointPackageSupport):
             )
 
     def revise_title(self, fixture: CheckpointFixture, title: str) -> JsonObject:
-        definition = call_native_tool(
+        definition = fixture.call_native_tool(
             mcp_server.ITEM_DEFINITION_TOOL,
             {"request": {**self.roots(fixture), "operation": "current", "item_id": "work-a"}},
         )
@@ -182,7 +183,7 @@ class ItemLifecycleSupport(CheckpointPackageSupport):
     def item_leaf_after_repair_title(self, fixture: CheckpointFixture) -> str:
         """Read the committed definition title, which a damaged pause receipt does not affect."""
 
-        definition = call_native_tool(
+        definition = fixture.call_native_tool(
             mcp_server.ITEM_DEFINITION_TOOL,
             {"request": {**self.roots(fixture), "operation": "current", "item_id": "work-a"}},
         )
@@ -222,11 +223,19 @@ class ItemLifecycleSupport(CheckpointPackageSupport):
 
 
 class ItemStatusFactsTest(ItemLifecycleSupport):
+    def native_fixture[T: CheckpointFixture](self, fixture: T) -> T:
+        native = self.enterContext(native_tools())
+        return dataclasses.replace(
+            fixture,
+            call_native_tool=native.call_native_tool,
+            call_advertised_tool=native.call_advertised_tool,
+        )
+
     def test_returned_verdict_survives_pause_block_resume_and_rebind_until_resubmission(self) -> None:
         reason = "Criterion 2 lacks behavior evidence."
         for route in ("pause", "block", "rebind"):
             with self.subTest(route=route):
-                fixture = self.checkpoint_fixture()
+                fixture = self.native_fixture(self.checkpoint_fixture())
                 history_id = self.return_for_review(fixture, reason)
                 returned = {
                     "kind": "returned-for-correction",
@@ -235,7 +244,7 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
                     "rebound_since_return": False,
                 }
                 self.assertEqual(returned, self.verdict(fixture))
-                context = call_advertised_tool(
+                context = fixture.call_advertised_tool(
                     mcp_server.CORRECTION_CONTEXT_TOOL,
                     {**self.roots(fixture), "attempt_id": "work-a-1", "correction_history_id": history_id},
                 )
@@ -265,7 +274,7 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
                 self.assert_valid(fixture)
 
     def test_ready_verdict_follows_the_current_record_ready_review(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         self.return_for_review(fixture, "Rework the candidate.")
         candidate = self.submit_candidate(fixture, "reviewed")
         self.assertEqual({"kind": "none"}, self.verdict(fixture))
@@ -287,7 +296,7 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
         self.assertEqual({"kind": "none"}, self.verdict(fixture))
 
     def test_acceptance_verdicts_carry_their_evidence_and_checkpoint(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         self.transition(
             fixture,
             "accept-review-and-continue:work-a-1",
@@ -296,7 +305,7 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
         self.assertEqual(
             {"kind": "accepted-and-continued", "evidence": "Accepted; continue the attempt."}, self.verdict(fixture)
         )
-        fixture = self.accepted_package_fixture()
+        fixture = self.native_fixture(self.accepted_package_fixture())
         self.assertEqual(
             {"kind": "checkpoint-accepted", "checkpoint": fixture.brief.checkpoint.checkpoint_id},
             self.verdict(fixture),
@@ -307,7 +316,7 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
     def test_retained_decision_v1_return_reports_its_evidence_without_failure(self) -> None:
         for evidence in ("Retained reason.", None):
             with self.subTest(evidence=evidence):
-                fixture = self.checkpoint_fixture()
+                fixture = self.native_fixture(self.checkpoint_fixture())
                 history_id = self.return_for_review(fixture, "Current reason.")
                 outcome = {"evidence": evidence, "outcome": "return-for-correction"}
                 self.update_receipt(
@@ -334,9 +343,9 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
 
         match receipt:
             case decision_models.ActionKind.ACCEPT_CHECKPOINT:
-                return self.accepted_package_fixture()
+                return self.native_fixture(self.accepted_package_fixture())
             case decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE:
-                fixture = self.checkpoint_fixture()
+                fixture = self.native_fixture(self.checkpoint_fixture())
                 self.transition(
                     fixture,
                     "accept-review-and-continue:work-a-1",
@@ -344,7 +353,7 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
                 )
                 return fixture
             case decision_models.ActionKind.RETURN_FOR_CORRECTION:
-                fixture = self.checkpoint_fixture()
+                fixture = self.native_fixture(self.checkpoint_fixture())
                 self.return_for_review(fixture, "Rework the candidate.")
                 return fixture
             case decision_models.ActionKind.PAUSE:
@@ -488,7 +497,7 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
             ("outcome-json", {"outcome_json": "not json"}),
         ):
             with self.subTest(damage=label):
-                fixture = self.checkpoint_fixture()
+                fixture = self.native_fixture(self.checkpoint_fixture())
                 self.return_for_review(fixture, "Rework the candidate.")
                 self.transition(fixture, "pause:work-a-1", {"reason": "Wait for the maintainer."})
                 history_id = self.latest_history_id(fixture)
@@ -523,7 +532,7 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
                 self.assertIn(f"Transition receipt {history_id} ", f"{stdout}{stderr}")
 
     def test_item_leaf_reports_closure_by_completion_and_direct_close(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         with patch("pinboard.cli.transitions.datetime") as clock:
             clock.now.return_value = CLOSED_AT
             self.close_prerequisite(fixture)
@@ -578,7 +587,7 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
         self.assertIsNone(self.item_leaf(fixture, "work-c")["closure"])
 
     def test_branch_leaf_maps_live_kept_reused_and_rebound_branches(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         branch = fixture.brief.branch
         owners = self.branch_leaf(fixture, branch)
         self.assertEqual("pinboard-branch-owners/v1", owners["schema"], owners)
@@ -621,7 +630,7 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
         )
 
     def test_scratch_board_location_is_found_from_the_kept_branch(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         scratch = fixture.project.parent / "experiment-scratch" / ".pinboard"
         self.complete(fixture, f"Kept the experiment's changes; its scratch board is at {scratch}.")
         owners = self.json_array(self.branch_leaf(fixture, fixture.brief.branch)["owners"])
@@ -632,7 +641,7 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
         self.assertEqual("complete", self.json_object(status["closure"])["action"])
 
     def test_intake_text_is_labeled_original_context_after_revision_and_start(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         self.revise_title(fixture, "Revised work")
         status = self.item_leaf(fixture)
         self.assertNotIn("next_action", status)
@@ -654,6 +663,6 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
         self.assertIn(stored.notes or "none", intake_sections[0])
 
     def test_old_flat_item_status_arguments_are_rejected(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         with self.assertRaises(ToolError):
-            call_native_tool(mcp_server.ITEM_STATUS_TOOL, {**self.roots(fixture), "item_id": "work-a"})
+            fixture.call_native_tool(mcp_server.ITEM_STATUS_TOOL, {**self.roots(fixture), "item_id": "work-a"})

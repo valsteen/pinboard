@@ -14,7 +14,15 @@ import msgspec
 from pinboard.adapters.files import candidate_compatibility, root
 from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.files.errors import ArtifactError, RootError
-from pinboard.application import candidate_snapshot_compatibility_models, candidate_snapshots, ports, query_models
+from pinboard.application import (
+    candidate_snapshot_compatibility_models,
+    candidate_snapshots,
+    checkpoint_compatibility_models,
+    ports,
+    query_models,
+    work_brief_models,
+    work_briefs,
+)
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -29,8 +37,11 @@ from pinboard.domain.errors import (
 from pinboard.domain.identifiers import AttemptId
 
 
-class IntegrationCandidateEvidenceInvalid(ValueError):
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateEvidenceInvalid:
     """An accepted candidate reference cannot supply the promised snapshot."""
+
+    message: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,34 +84,74 @@ def compare_integration_candidate(
     work_root: Path,
     candidate: query_models.IntegrationCandidateFacts,
     target: str,
-) -> IntegrationContentObservation | root.IntegrationTargetUnresolved:
+) -> IntegrationContentObservation | IntegrationCandidateEvidenceInvalid | root.IntegrationTargetUnresolved:
     """Combine verified snapshot bytes with the Git adapter's read-only content check."""
 
     snapshot = _verified_integration_snapshot(work_root, candidate)
+    if isinstance(snapshot, IntegrationCandidateEvidenceInvalid):
+        return snapshot
     compared_from = _integration_compared_from(snapshot)
     return _observe_integration_content(source_checkout, target, snapshot.diff, compared_from)
 
 
 def _verified_integration_snapshot(
     work_root: Path, candidate: query_models.IntegrationCandidateFacts
-) -> candidate_snapshots.CandidateSnapshot:
-
+) -> candidate_snapshots.CandidateSnapshot | IntegrationCandidateEvidenceInvalid:
     try:
         encoded = read_reference(work_root, candidate.snapshot_reference)
     except ArtifactError as error:
-        raise IntegrationCandidateEvidenceInvalid(str(error)) from error
+        return IntegrationCandidateEvidenceInvalid(str(error))
     if (
         len(encoded) != candidate.snapshot_reference.size_bytes
         or hashlib.sha256(encoded).hexdigest() != candidate.snapshot_reference.content_sha256
     ):
-        raise IntegrationCandidateEvidenceInvalid("Candidate snapshot bytes differ from the accepted reference.")
+        return IntegrationCandidateEvidenceInvalid("Candidate snapshot bytes differ from the accepted reference.")
     try:
         snapshot = candidate_snapshots.decode_candidate_snapshot(encoded)
     except (msgspec.DecodeError, ValueError) as error:
-        raise IntegrationCandidateEvidenceInvalid(f"Candidate snapshot does not decode: {error}") from error
+        return IntegrationCandidateEvidenceInvalid(f"Candidate snapshot does not decode: {error}")
     if snapshot.attempt_id != str(candidate.attempt_id) or snapshot.candidate != candidate.candidate_revision:
-        raise IntegrationCandidateEvidenceInvalid("Candidate snapshot does not match the selected source.")
+        return IntegrationCandidateEvidenceInvalid("Candidate snapshot does not match the selected source.")
+    if candidate.source == "accepted-checkpoint":
+        package_failure = _validate_checkpoint_integration_snapshot(work_root, candidate)
+        if package_failure is not None:
+            return package_failure
     return snapshot
+
+
+def _validate_checkpoint_integration_snapshot(
+    work_root: Path, candidate: query_models.IntegrationCandidateFacts
+) -> IntegrationCandidateEvidenceInvalid | None:
+    if candidate.checkpoint_package_reference is None:
+        return IntegrationCandidateEvidenceInvalid("Checkpoint acceptance has no linked package reference.")
+    try:
+        package_bytes = read_reference(work_root, candidate.checkpoint_package_reference)
+    except ArtifactError as error:
+        return IntegrationCandidateEvidenceInvalid(str(error))
+    package = work_briefs.decode_canonical_checkpoint_review_package(package_bytes)
+    match package:
+        case work_brief_models.WorkBriefFailure():
+            return IntegrationCandidateEvidenceInvalid(f"Checkpoint package is invalid: {package.message}")
+        case (
+            work_brief_models.CheckpointReviewPackageV3() | checkpoint_compatibility_models.CheckpointReviewPackageV2()
+        ):
+            portable = package.candidate_snapshot
+        case checkpoint_compatibility_models.CheckpointReviewPackage():
+            return IntegrationCandidateEvidenceInvalid("Checkpoint package has no candidate snapshot reference.")
+        case _ as unreachable:
+            assert_never(unreachable)
+    reference = candidate.snapshot_reference
+    if (
+        package.candidate != candidate.candidate_revision
+        or portable.kind != reference.kind.value
+        or portable.key != reference.key
+        or portable.revision != reference.revision
+        or portable.selector != reference.selector
+        or portable.content_sha256 != reference.content_sha256
+        or portable.size_bytes != reference.size_bytes
+    ):
+        return IntegrationCandidateEvidenceInvalid("Checkpoint package does not bind the selected candidate snapshot.")
+    return None
 
 
 def _integration_compared_from(snapshot: candidate_snapshots.CandidateSnapshot) -> str:

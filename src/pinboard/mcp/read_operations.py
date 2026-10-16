@@ -186,14 +186,6 @@ def _read_item_integration(
             selected_candidate.candidate,
             request.target,
         )
-    except candidate_evidence.IntegrationCandidateEvidenceInvalid as error:
-        return _integration_failure(
-            "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",
-            str(error),
-            (("attempt_id", str(selected_candidate.candidate.attempt_id)), ("target", request.target)),
-            "do-not-retry",
-            "Run 'pinboard validate --json'; Pinboard does not repair accepted evidence.",
-        )
     except RootError as error:
         return _integration_failure(
             error.code.value,
@@ -201,6 +193,14 @@ def _read_item_integration(
             (("project_root", request.project_root), ("target", request.target)),
             "correct-input",
             "Correct the local checkout, then retry the status read.",
+        )
+    if isinstance(compared, candidate_evidence.IntegrationCandidateEvidenceInvalid):
+        return _integration_failure(
+            "INTEGRATION_CANDIDATE_EVIDENCE_INVALID",
+            compared.message,
+            (("attempt_id", str(selected_candidate.candidate.attempt_id)), ("target", request.target)),
+            "do-not-retry",
+            "Run 'pinboard validate --json'; Pinboard does not repair accepted evidence.",
         )
     if isinstance(compared, files_root.IntegrationTargetUnresolved):
         return _integration_failure(

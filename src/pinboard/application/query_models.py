@@ -929,6 +929,7 @@ class IntegrationCandidateFacts:
     candidate_revision: str
     snapshot_reference: stored_state.ArtifactReference
     checkpoint_id: str | None
+    checkpoint_package_reference: stored_state.ArtifactReference | None
 
 
 @dataclass(frozen=True, slots=True)

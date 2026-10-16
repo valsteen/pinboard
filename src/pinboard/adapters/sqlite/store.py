@@ -149,7 +149,7 @@ def _read_completion_integration(
             project_revision, work_item_id, item_state, "the closing attempt has no accepted snapshot"
         )
     candidate = query_models.IntegrationCandidateFacts(
-        "completion", attempt_id, context.candidate_revision, context.reference, None
+        "completion", attempt_id, context.candidate_revision, context.reference, None, None
     )
     return query_models.IntegrationFacts(project_revision, work_item_id, item_state, candidate, None)
 
@@ -175,7 +175,7 @@ def _read_nonterminal_integration(
         and context.candidate_revision is not None
     ):
         candidate = query_models.IntegrationCandidateFacts(
-            "protected-review", attempt.attempt_id, context.candidate_revision, context.reference, None
+            "protected-review", attempt.attempt_id, context.candidate_revision, context.reference, None, None
         )
         return query_models.IntegrationFacts(project_revision, work_item_id, item_state, candidate, None)
     return _read_checkpoint_integration(connection, project_revision, work_item_id, item_state, attempt.attempt_id)
@@ -202,6 +202,15 @@ def _read_checkpoint_integration(
     receipt = sqlite_state.read_history_receipt(connection, checkpoint.history_id)
     if receipt is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Checkpoint acceptance receipt is missing.")
+    if receipt.artifact_ref_id is None:
+        return _integration_unavailable(
+            project_revision, work_item_id, item_state, "the checkpoint package has no candidate snapshot reference"
+        )
+    package_reference = read_artifact_reference_by_id(connection, receipt.artifact_ref_id)
+    if package_reference is None:
+        return _integration_unavailable(
+            project_revision, work_item_id, item_state, "the checkpoint package has no candidate snapshot reference"
+        )
     try:
         outcome = msgspec.json.decode(
             bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome, strict=True
@@ -216,7 +225,7 @@ def _read_checkpoint_integration(
             project_revision, work_item_id, item_state, "the checkpoint package has no candidate snapshot reference"
         )
     candidate = query_models.IntegrationCandidateFacts(
-        "accepted-checkpoint", attempt_id, outcome.candidate, reference, outcome.checkpoint
+        "accepted-checkpoint", attempt_id, outcome.candidate, reference, outcome.checkpoint, package_reference
     )
     return query_models.IntegrationFacts(project_revision, work_item_id, item_state, candidate, None)
 

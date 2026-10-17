@@ -108,6 +108,12 @@ scripts/pinboard --help
 
 The build produces the installed application and plugin command. Pinboard is not a supported Python library, so internal modules and package exports are not public extension APIs.
 
+## Publish plugin builds
+
+Give each changed distributed build a fresh manifest version: `.codex-plugin/plugin.json` for Codex and `.claude-plugin/plugin.json` for Claude Code. Keep each target's existing version format. The manifest version identifies plugin code; SQLite schema versions belong to the storage contract and advance only when that contract changes.
+
+Publishing a version, refreshing an installation, preparing its runtime and migrating a selected project ledger are separate operations. Follow [installed-plugin upgrades](INSTALL.md#upgrade-an-installed-plugin) for refresh, reconnect and explicitly authorized migration. A version bump does not guarantee a running MCP service survives refresh.
+
 ## Match verification to the change
 
 Run the checks that own the surfaces you changed. In particular, run the metadata validator after plugin or skill changes, and run the duplication scan after production Python changes. Do not add a second Python dependency manager, test runner, formatter, linter, type checker, or global npm dependency without an accepted repository decision.

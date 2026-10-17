@@ -4796,6 +4796,7 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.ITEM_STATUS_TOOL,
                 mcp_server.PROPOSAL_CREATE_TOOL,
                 mcp_server.BRIEF_PUBLISH_TOOL,
+                mcp_server.BRIEF_LOOKUP_TOOL,
                 mcp_server.OVERVIEW_TOOL,
                 mcp_server.ACTIONS_TOOL,
                 mcp_server.ATTEMPT_INSPECT_TOOL,
@@ -4928,6 +4929,239 @@ class McpTransportTest(unittest.TestCase):
         self.assertNotIn("work-a", stderr)
         self.assertIn("classification=ok", stderr)
         self.assertEqual([], transport_errors)
+
+    def test_brief_lookup_recovers_unbound_correction_and_preserves_all_work_bytes(self) -> None:  # noqa: PLR0915 - one receipt recovery journey and fault matrix
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        corrected = replace_struct(work_a_brief(project), artifact_revision=2)
+        published = work_briefs.publish_work_brief(
+            SQLiteWorkStore(roots.database_path), ArtifactRepository(roots), corrected, SQLITE_NOW
+        )
+        self.assertNotIsInstance(published, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure))
+        reopened = SQLiteWorkStore(roots.database_path)
+        reference = reopened.read_artifact_reference(work_models.ArtifactKind.BRIEF, corrected.attempt_id, 2)
+        assert reference is not None
+        state = reopened.validated_snapshot()
+        self.assertNotEqual(reference.artifact_ref_id, state.lifecycle.attempts[0].brief_artifact_ref_id)
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        server = mcp_server.create_server(
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
+            mcp_execution.AutomaticCapture(mcp_common.select_capture_item),
+        )
+        request: dict[str, contracts.JsonValue] = {
+            "project_root": str(project),
+            "work_root": str(roots.work_root),
+            "attempt_id": corrected.attempt_id,
+            "artifact_revision": 2,
+        }
+
+        def work_bytes() -> dict[str, bytes]:
+            return {
+                str(path.relative_to(roots.work_root)): path.read_bytes()
+                for path in roots.work_root.rglob("*")
+                if path.is_file()
+            }
+
+        async def call(arguments: dict[str, contracts.JsonValue]) -> dict[str, contracts.JsonValue]:
+            response = await server.call_tool(mcp_server.BRIEF_LOOKUP_TOOL, arguments)
+            assert isinstance(response, CallToolResult)
+            self.assertFalse(response.is_error)
+            content = response.structured_content
+            assert isinstance(content, dict)
+            contract_schemas.validate_result(mcp_server.BRIEF_LOOKUP_TOOL, content)
+            self.assertEqual("unchanged", content["effect"])
+            self.assertFalse(content["state_changed"])
+            self.assertEqual([], content["changed_surfaces"])
+            return content
+
+        async def scenario() -> None:
+            tools = await server.list_tools()
+            lookup = next(tool for tool in tools if tool.name == mcp_server.BRIEF_LOOKUP_TOOL)
+            assert lookup.annotations is not None
+            self.assertTrue(lookup.annotations.read_only_hint)
+            for tracing in ("unset", "on"):
+                if tracing == "on":
+                    (roots.work_root / "contributor-traces.config").write_text(
+                        '[pinboard "unsafe_persist_exact_pinboard_traces"]\nmode = on\n'
+                    )
+                before = work_bytes()
+                with (
+                    patch.object(
+                        SQLiteWorkStore, "read_project_export_batches", side_effect=AssertionError("full export")
+                    ),
+                    patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("full state")),
+                    patch.object(
+                        SQLiteWorkStore, "_read_current_project_snapshot", side_effect=AssertionError("full snapshot")
+                    ),
+                    patch.object(mcp_execution.AutomaticCapture, "resolve", side_effect=AssertionError("capture")),
+                ):
+                    first = await call(request)
+                    self.assertEqual(first, await call(request))
+                    self.assertEqual("pinboard-verified-artifact-reference/v1", first["schema"])
+                    self.assertEqual(int(reference.artifact_ref_id), first["artifact_ref_id"])
+                    self.assertEqual(reference.selector, first["selector"])
+                    self.assertEqual(sha256(canonical_work_brief_bytes(corrected)).hexdigest(), first["sha256"])
+                    self.assertEqual(len(canonical_work_brief_bytes(corrected)), first["size_bytes"])
+                    self.assertEqual("safe-to-repeat", first["retry"])
+                    missing = await call(request | {"artifact_revision": 3})
+                    self.assertEqual("BRIEF_NOT_FOUND", missing["code"])
+                    self.assertEqual("correct-input", missing["retry"])
+                    for field, value in (
+                        ("attempt_id", ""),
+                        ("attempt_id", "../other"),
+                        ("artifact_revision", 0),
+                        ("artifact_revision", True),
+                        ("project_root", str(project / "unavailable-checkout")),
+                        ("work_root", str(project / "uninitialized-board")),
+                    ):
+                        invalid = await call(request | {field: value})
+                        self.assertEqual("BRIEF_LOOKUP_INVALID", invalid["code"])
+                    other = await call(request | {"attempt_id": "missing-attempt"})
+                    self.assertEqual("BRIEF_NOT_FOUND", other["code"])
+                    path = roots.work_root / reference.selector
+                    accepted = path.read_bytes()
+                    for damaged in (b"corrupt", None):
+                        if damaged is None:
+                            path.unlink()
+                        else:
+                            path.write_bytes(damaged)
+                        damaged_before = work_bytes()
+                        rejected = await call(request)
+                        self.assertEqual("ARTIFACT_BYTES_INVALID", rejected["code"])
+                        self.assertEqual("do-not-retry", rejected["retry"])
+                        self.assertIn(str(path), str(rejected["message"]))
+                        self.assertEqual(damaged_before, work_bytes())
+                        path.write_bytes(accepted)
+                self.assertEqual(before, work_bytes())
+                self.assertEqual(state, SQLiteWorkStore(roots.database_path).validated_snapshot())
+
+        _run_async(scenario())
+
+    def test_sdk_stdio_large_brief_corrections_and_stale_scope_preserve_publication_contract(self) -> None:  # noqa: PLR0915 - one installed publication journey
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        explicit_roots = {"project_root": str(project), "work_root": str(roots.work_root)}
+        brief = work_a_brief(project)
+
+        async def scenario(diagnostics: io.TextIOWrapper) -> None:  # noqa: PLR0915 - one installed publication journey
+            parameters = StdioServerParameters(command=sys.executable, args=["-m", "pinboard.mcp"], cwd=Path.cwd())
+            async with (
+                stdio_client(parameters, errlog=diagnostics) as streams,
+                ClientSession(*streams) as session,
+            ):
+                await session.initialize()
+
+                async def call(tool: str, arguments: dict[str, contracts.JsonValue]) -> dict[str, contracts.JsonValue]:
+                    result = await session.call_tool(tool, arguments)
+                    self.assertFalse(result.is_error)
+                    content = result.structured_content
+                    assert isinstance(content, dict)
+                    self.assertEqual(1, len(result.content))
+                    text = result.content[0]
+                    assert isinstance(text, TextContent)
+                    self.assertEqual(content, msgspec.json.decode(text.text))
+                    return content
+
+                reviewed = await call(
+                    mcp_server.BRIEF_REVIEW_TOOL,
+                    {
+                        "request": {
+                            **explicit_roots,
+                            "operation": "publish",
+                            "brief_artifact_ref_id": 1,
+                            "review": msgspec.json.decode(needs_correction_review(brief)),
+                        }
+                    },
+                )
+                self.assertEqual("committed", reviewed["status"])
+                context = await call(
+                    mcp_server.BRIEF_REVIEW_TOOL,
+                    {"request": {**explicit_roots, "operation": "status", "brief_artifact_ref_id": 1}},
+                )
+                self.assertEqual("needs-correction", context["status"])
+                for revision, size in ((2, 70_000), (3, 61_000)):
+                    with self.subTest(size=size):
+                        corrected = replace_struct(brief, artifact_revision=revision)
+                        padding = size - len(canonical_work_brief_bytes(corrected))
+                        corrected = replace_struct(
+                            corrected,
+                            product_decision_and_provenance=corrected.product_decision_and_provenance + "x" * padding,
+                        )
+                        expected_bytes = canonical_work_brief_bytes(corrected)
+                        self.assertEqual(size, len(expected_bytes))
+                        before = SQLiteWorkStore(roots.database_path).validated_snapshot()
+                        published = await call(
+                            mcp_server.BRIEF_PUBLISH_TOOL,
+                            {**explicit_roots, "brief": msgspec.to_builtins(corrected)},
+                        )
+                        self.assertEqual("committed", published["status"])
+                        self.assertTrue(published["state_changed"])
+                        self.assertEqual("committed", published["effect"])
+                        self.assertEqual("do-not-retry", published["retry"])
+                        self.assertEqual(
+                            ["immutable-artifact", "accepted-artifact-reference", "ledger"],
+                            published["changed_surfaces"],
+                        )
+                        reference_value = published["reference"]
+                        assert isinstance(reference_value, dict) and isinstance(reference_value["artifact_ref_id"], int)
+                        reopened = SQLiteWorkStore(roots.database_path)
+                        reference = reopened.read_artifact_reference_by_id(
+                            ArtifactRefId(reference_value["artifact_ref_id"])
+                        )
+                        assert reference is not None
+                        self.assertEqual(expected_bytes, ArtifactRepository(roots).read(reference))
+                        self.assertEqual(
+                            before.artifact_references, reopened.validated_snapshot().artifact_references[:-1]
+                        )
+
+                current = await call(
+                    mcp_server.ITEM_DEFINITION_TOOL,
+                    {"request": {**explicit_roots, "operation": "current", "item_id": "work-a"}},
+                )
+                definition = current["definition"]
+                assert isinstance(definition, dict)
+                revised = await call(
+                    mcp_server.TRANSITION_TOOL,
+                    {
+                        "request": {
+                            **explicit_roots,
+                            "role": "project",
+                            "actor_task_id": "revision-owner",
+                            "actor_host_id": "local",
+                            "receipt": {
+                                "action_id": {"kind": "revise-item", "subject": "work-a"},
+                                "subject_revision": str(current["item_subject_revision"]),
+                            },
+                            "payload": {
+                                "schema": "pinboard-item-revision/v1",
+                                "expected_revision": current["definition_revision"],
+                                "expected_digest": current["definition_digest"],
+                                "source_task": "revision-owner",
+                                "reason": "Clarify the accepted outcome.",
+                                "definition": {**definition, "objective": "Revised observable outcome."},
+                            },
+                        }
+                    },
+                )
+                self.assertEqual("committed", revised["status"])
+                before = SQLiteWorkStore(roots.database_path).validated_snapshot()
+                stale = replace_struct(brief, artifact_revision=4)
+                rejected = await call(
+                    mcp_server.BRIEF_PUBLISH_TOOL, {**explicit_roots, "brief": msgspec.to_builtins(stale)}
+                )
+                self.assertEqual("rejected", rejected["status"])
+                self.assertEqual("WORK_BRIEF_INVALID", rejected["code"])
+                self.assertFalse(rejected["state_changed"])
+                self.assertEqual("unchanged", rejected["effect"])
+                self.assertEqual("correct-input", rejected["retry"])
+                self.assertEqual([], rejected["changed_surfaces"])
+                self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+                self.assertFalse((roots.artifacts_root / "briefs" / brief.attempt_id / "4.json").exists())
+
+        with tempfile.TemporaryFile(mode="w+") as diagnostics:
+            _run_async(scenario(diagnostics))
 
     def test_sdk_stdio_creates_proposal_and_publishes_idempotent_brief(self) -> None:  # noqa: PLR0915 - one installed transport journey
         temporary, project, roots = self._project()

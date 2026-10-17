@@ -149,6 +149,16 @@ type ArtifactVerificationInvalidCode = Annotated[
     CodeMeanings(((0, "The artifact-verification request could not be decoded or validated."),)),
 ]
 
+type BriefLookupInvalidCode = Annotated[
+    Literal["BRIEF_LOOKUP_INVALID"],
+    CodeMeanings(((0, "The exact brief lookup request or roots could not be validated."),)),
+]
+
+type BriefNotFoundCode = Annotated[
+    Literal["BRIEF_NOT_FOUND"],
+    CodeMeanings(((0, "No accepted brief reference matches the requested attempt and artifact revision."),)),
+]
+
 type ArtifactReferenceMismatchCode = Annotated[
     Literal["ARTIFACT_REFERENCE_MISMATCH"],
     CodeMeanings(((0, "The requested artifact identity differs from its accepted reference."),)),

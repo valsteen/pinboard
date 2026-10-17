@@ -40,6 +40,7 @@ from pinboard.mcp.tool_names import (
     ATTEMPT_AUTHORITY_TOOL,
     ATTEMPT_INSPECT_TOOL,
     BRIEF_CONTRACT_TOOL,
+    BRIEF_LOOKUP_TOOL,
     BRIEF_PUBLISH_TOOL,
     BRIEF_REVIEW_TOOL,
     BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
@@ -74,7 +75,7 @@ LOCAL_AUTHORITY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
     openWorldHint=False,
 )
 # Full-invocation read-only hints exclude auxiliary settings and trace writes.
-# Selected-file source tools bypass capture; ordinary ledger reads may use it.
+# Source and exact brief lookup tools bypass capture; ordinary ledger reads may use it.
 READ_ONLY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
     readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
 )
@@ -539,6 +540,36 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         )
 
     @server.tool(
+        name=BRIEF_LOOKUP_TOOL,
+        description=(
+            "Recover the verified accepted brief receipt for the original exact attempt_id and artifact_revision. "
+            "Read-only, including when optional tracing is enabled; does not publish, bind or certify readiness."
+        ),
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    async def brief_lookup(
+        project_root: str,
+        work_root: str,
+        attempt_id: str,
+        artifact_revision: IntegerBoundaryValue,
+    ) -> dict[str, JsonValue]:
+        return await execution._run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            BRIEF_LOOKUP_TOOL,
+            project_root,
+            partial(read_operations._lookup_brief, project_root, work_root, attempt_id, artifact_revision),
+            arguments={
+                "project_root": project_root,
+                "work_root": work_root,
+                "attempt_id": attempt_id,
+                "artifact_revision": artifact_revision,
+            },
+            capture=None,
+        )
+
+    @server.tool(
         name=ARTIFACT_VERIFY_TOOL,
         description="Verify an exact accepted Pinboard artifact reference and its immutable bytes.",
     )
@@ -978,6 +1009,11 @@ def _install_boundary_contracts(server: MCPServer) -> None:
             ARTIFACT_VERIFY_TOOL,
             contract_schemas.schema_for(contracts.ArtifactVerifyRequest),
             contract_schemas.union_schema_for(contracts.ARTIFACT_VERIFICATION_RESULT_TYPES),
+        ),
+        (
+            BRIEF_LOOKUP_TOOL,
+            contract_schemas.schema_for(contracts.BriefLookupRequest),
+            contract_schemas.union_schema_for(contracts.BRIEF_LOOKUP_RESULT_TYPES),
         ),
         (
             PREPARATION_AUTHORITY_TOOL,

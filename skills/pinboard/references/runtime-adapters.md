@@ -43,7 +43,11 @@ If the exact recipe cannot launch because its Codex task name was consumed by an
 
 ## Claude confined evidence-write recovery
 
-A Claude session that entered a managed worktree with `EnterWorktree` is confined to it, and a write to an exact attempt `result.md`, `blocker.md`, or `review.md` path under the shared work root can be refused. Use only this recovery; do not relocate attempt evidence, edit saved permission policy, remove the checkout, or retry through another path.
+A `PreToolUse:Write` refusal that names the isolated worktree and says the attempt path is in the base repo checkout comes from Claude Code's built-in worktree guard. [Claude's isolation documentation](https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation) describes location-based checks that block `Edit`, `Write`, and `NotebookEdit` in the main checkout, including for subagents of an isolated session. Pinboard's separate PreToolUse hook matches only `mcp__plugin_pinboard_pinboard__.*` and emits `allow`; it does not govern `Write`.
+
+Ignored `.pinboard` files under the main checkout are still in that checkout, so the guard can refuse the exact shared-work-root `result.md`, `blocker.md`, or `review.md` destination. Keep that destination: the refusal's suggested worktree-local `.pinboard` path is not the shared board and would not record its evidence. Human authorization for the evidence write does not disable the guard; Claude documents that it cannot be turned off.
+
+Use the existing recovery below for this refusal; do not relocate attempt evidence, edit saved permission policy, remove the checkout, or retry through another path.
 
 - **Confined worker.** Write the complete intended file to your own session scratchpad. Return to the owning task naming the refused exact attempt path and the scratch path, and state that the evidence is not yet recorded.
 - **Owning session in its launch directory.** Copy those exact bytes to the named attempt path with one approved command, such as `cp <scratch-path> <attempt-path>`, and verify that both files have the same SHA-256. Then continue the same worker through its native handle so it can finish from the recorded evidence.

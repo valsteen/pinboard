@@ -150,7 +150,7 @@ A whole-repository result includes one separate disposition receipt for each sem
 3. Duplicated mode, route, effect, or presentation selection.
 4. Equivalent closed-family branches.
 5. Defaults, fallbacks, optional handlers, and inherited behavior.
-6. Test-only public roots and their private helper chains.
+6. Fixture-only production behavior and test coupling, using [the test-seam distinction](../../slop-cleanup/references/structural-consolidation.md#choose-explicit-test-seams) to preserve ordinary explicit substitution and inspect indirect access.
 7. Base and composite protocol overlap.
 8. Archaeological names, defaults, versions, and capability labels.
 

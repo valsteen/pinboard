@@ -51,6 +51,7 @@ If a lease-protected call rejects with `ATTEMPT_LEASE_EXPIRED`, nothing changed.
 - Preserve unrelated user changes.
 - Follow the repository's own testing, formatting, lint, documentation, and safety guidance.
 - Treat a stale instruction as an instruction defect before reshaping working code around it.
+- Apply [the test-seam distinction](../slop-cleanup/references/structural-consolidation.md#choose-explicit-test-seams) when selecting test access. Use ordinary permitted dependency substitution autonomously, even when only tests supply alternatives. Surface materially intrusive workarounds and actual instruction/scope conflicts before choosing them; do not hide coupling or manufacture preconditions to appear compliant. Return an unresolved conflict through the existing scope route, stopping only its affected work.
 - Do not edit generated views, SQLite authority, preparation or attempt leases, or another item's lifecycle state outside the executable workflow.
 - Do not accept or complete your own item.
 - Prepare the stable candidate for independent review, then follow the current ownership and review-return rules below. `pinboard_dispatch` prepares the exact launch prompt but does not create the worker task.

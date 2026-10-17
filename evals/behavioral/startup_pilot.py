@@ -24,6 +24,7 @@ from evals.behavioral.scenarios import RegisteredSet, load_set
 
 MODEL = "gpt-5.6-terra"
 EFFORT = "high"
+DESCRIPTIVE_MODEL = "claude-sonnet-5-5"
 
 
 class PilotWindow(Record, frozen=True):
@@ -145,11 +146,11 @@ def run(source: Path, baseline: str, candidate: str, scenario_set: Path, out: Pa
                 if not isinstance(record.outcome, Completed):
                     raise ValueError(f"{key.display()} did not complete; inspect retained evidence")
                 for pending in layout.scorer_inputs():
-                    if pending.run.display() not in scoring.valid_score_counts(layout) and not isinstance(
-                        scoring.ScoringRun(layout, budget).score(pending), Scored
-                    ):
+                    if pending.run.display() not in scoring.valid_score_counts(
+                        layout, DESCRIPTIVE_MODEL
+                    ) and not isinstance(scoring.ScoringRun(layout, budget, DESCRIPTIVE_MODEL).score(pending), Scored):
                         raise ValueError("scoring unavailable or incomplete")
-                if substance.assess(layout, budget) or any(
+                if substance.assess(layout, budget, DESCRIPTIVE_MODEL) or any(
                     isinstance(a.outcome, AssessmentFailure) for a in layout.assessments()
                 ):
                     raise ValueError("assessment unavailable or incomplete")

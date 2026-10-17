@@ -890,7 +890,7 @@ class PaidInterruptionTest(unittest.TestCase):
                     start.return_value = child
                     with self.assertRaises(processes.ProcessIncomplete):
                         if owner == "scorer":
-                            scoring.ScoringRun(layout, budget).score(source)
+                            scoring.ScoringRun(layout, budget, scoring.SCORER_MODEL).score(source)
                         else:
                             record = MagicMock(spec=RunRecord)
                             record.run = key
@@ -898,7 +898,9 @@ class PaidInterruptionTest(unittest.TestCase):
                                 patch.object(substance, "prompt", return_value="prompt"),
                                 patch.object(substance, "turn_words", return_value=[]),
                             ):
-                                substance.assess_run(record, layout.assessment_directory(key), budget.window)
+                                substance.assess_run(
+                                    record, layout.assessment_directory(key), budget.window, substance.ASSESSOR_MODEL
+                                )
                 self.assertTrue(spend.main_usage_unknown(layout))
                 self.assertEqual(0, spend.total(spend.items(layout)))
                 self.assertIsNone(budget.reserve(spend.Category.SCORER))
@@ -931,7 +933,7 @@ class PaidInterruptionTest(unittest.TestCase):
                         self.assertRaises(processes.CleanupUnconfirmed) as failure,
                     ):
                         if owner == "scorer":
-                            scoring.ScoringRun(layout, budget).score(source)
+                            scoring.ScoringRun(layout, budget, scoring.SCORER_MODEL).score(source)
                         else:
                             record = MagicMock(spec=RunRecord)
                             record.run = key
@@ -939,7 +941,9 @@ class PaidInterruptionTest(unittest.TestCase):
                                 patch.object(substance, "prompt", return_value="prompt"),
                                 patch.object(substance, "turn_words", return_value=[]),
                             ):
-                                substance.assess_run(record, layout.assessment_directory(key), budget.window)
+                                substance.assess_run(
+                                    record, layout.assessment_directory(key), budget.window, substance.ASSESSOR_MODEL
+                                )
                     self.assertIs(cause, failure.exception.__cause__)
                     self.assertEqual("paid partial", next(layout.root.rglob("raw.json")).read_text())
                     records = list(layout.scorer_sessions()) if owner == "scorer" else list(layout.assessments())
@@ -977,7 +981,7 @@ class PaidInterruptionTest(unittest.TestCase):
                         self.assertRaises(processes.ProcessIncomplete) as failure,
                     ):
                         if owner == "scorer":
-                            scoring.ScoringRun(layout, budget).score(source)
+                            scoring.ScoringRun(layout, budget, scoring.SCORER_MODEL).score(source)
                         else:
                             record = MagicMock(spec=RunRecord)
                             record.run = key
@@ -985,7 +989,9 @@ class PaidInterruptionTest(unittest.TestCase):
                                 patch.object(substance, "prompt", return_value="prompt"),
                                 patch.object(substance, "turn_words", return_value=[]),
                             ):
-                                substance.assess_run(record, layout.assessment_directory(key), budget.window)
+                                substance.assess_run(
+                                    record, layout.assessment_directory(key), budget.window, substance.ASSESSOR_MODEL
+                                )
                     self.assertIs(cause, failure.exception.__cause__)
                     self.assertEqual(output.decode(), next(layout.root.rglob("raw.json")).read_text())
                     records = list(layout.scorer_sessions()) if owner == "scorer" else list(layout.assessments())
@@ -1020,7 +1026,7 @@ class PaidInterruptionTest(unittest.TestCase):
                     self.assertRaises(processes.ProcessIncomplete) as failure,
                 ):
                     if owner == "scorer":
-                        scoring.ScoringRun(layout, budget).score(source)
+                        scoring.ScoringRun(layout, budget, scoring.SCORER_MODEL).score(source)
                     else:
                         record = MagicMock(spec=RunRecord)
                         record.run = key
@@ -1028,7 +1034,9 @@ class PaidInterruptionTest(unittest.TestCase):
                             patch.object(substance, "prompt", return_value="prompt"),
                             patch.object(substance, "turn_words", return_value=[]),
                         ):
-                            substance.assess_run(record, layout.assessment_directory(key), budget.window)
+                            substance.assess_run(
+                                record, layout.assessment_directory(key), budget.window, substance.ASSESSOR_MODEL
+                            )
                 self.assertIs(primary, failure.exception)
                 self.assertIs(secondary, failure.exception.__cause__)
                 self.assertIs(primary_cause, secondary.__cause__)
@@ -1057,7 +1065,7 @@ class PaidInterruptionTest(unittest.TestCase):
                     self.assertRaises(processes.ProcessIncomplete) as failure,
                 ):
                     if owner == "scorer":
-                        scoring.ScoringRun(layout, budget).score(source)
+                        scoring.ScoringRun(layout, budget, scoring.SCORER_MODEL).score(source)
                     else:
                         record = MagicMock(spec=RunRecord)
                         record.run, record.turns = key, [MagicMock()]
@@ -1065,7 +1073,9 @@ class PaidInterruptionTest(unittest.TestCase):
                             patch.object(substance, "prompt", return_value="prompt"),
                             patch.object(substance, "turn_words", return_value=[]),
                         ):
-                            substance.assess_run(record, layout.assessment_directory(key), budget.window)
+                            substance.assess_run(
+                                record, layout.assessment_directory(key), budget.window, substance.ASSESSOR_MODEL
+                            )
                 self.assertIs(cause, failure.exception.__cause__)
                 self.assertEqual("retained paid result", next(layout.root.rglob("raw.json")).read_text())
                 records = list(layout.scorer_sessions()) if owner == "scorer" else list(layout.assessments())
@@ -1085,7 +1095,7 @@ class PaidInterruptionTest(unittest.TestCase):
                 patch.object(oneshot, "ask", side_effect=TimeoutError("expired before process start")),
                 self.assertRaises(TimeoutError),
             ):
-                scoring.ScoringRun(layout, budget).score(source)
+                scoring.ScoringRun(layout, budget, scoring.SCORER_MODEL).score(source)
             self.assertEqual([], list(layout.scorer_sessions()))
             self.assertFalse(spend.main_usage_unknown(layout))
 
@@ -1311,7 +1321,8 @@ class CoverageDeadlineTest(unittest.TestCase):
             write_new(session.layout.score_directory("T1") / "score.json", decoded)
             return Scored()
 
-        def assess(layout: Layout, budget: spend.Budget) -> list[str]:
+        def assess(layout: Layout, budget: spend.Budget, model: str) -> list[str]:
+            self.assertEqual(substance.ASSESSOR_MODEL, model)
             stages.append("assess")
             windows.append(budget.window)
             record = next(layout.run_records())

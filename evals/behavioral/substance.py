@@ -71,7 +71,7 @@ def decode_answer(text: str | None, label: str, turns: int) -> SubstanceAnswer |
     return answer
 
 
-def assess(layout: Layout, budget: Budget) -> list[str]:
+def assess(layout: Layout, budget: Budget, model: str) -> list[str]:
     """Assess every completed or stopped Codex run with at least one recorded turn and no assessment yet.
 
     A run stopped for a human decision is not scored, but its recorded turns still show where its substance went.
@@ -89,13 +89,13 @@ def assess(layout: Layout, budget: Budget) -> list[str]:
             skipped.append(record.run.display())
             continue
         try:
-            assess_run(record, directory, budget.window)
+            assess_run(record, directory, budget.window, model)
         finally:
             budget.release(projected)
     return skipped
 
 
-def assess_run(record: RunRecord, directory: Path, window: processes.Window) -> None:
+def assess_run(record: RunRecord, directory: Path, window: processes.Window, model: str) -> None:
     label = f"S{secrets.token_hex(4)}"
     directory.mkdir(parents=True)
     text = prompt(record, label)
@@ -104,7 +104,7 @@ def assess_run(record: RunRecord, directory: Path, window: processes.Window) -> 
     interrupted: processes.ProcessIncomplete | processes.CleanupUnconfirmed | None = None
     outcome: AssessmentOutcome = AssessmentFailure(reason="started assessor failed before publishing a result")
     try:
-        answer = oneshot.ask(text, ASSESSOR_MODEL, window)
+        answer = oneshot.ask(text, model, window)
         (directory / "raw.json").write_text(answer.stdout)
         decoded = (
             decode_answer(answer.text, label, len(record.turns))
@@ -134,7 +134,7 @@ def assess_run(record: RunRecord, directory: Path, window: processes.Window) -> 
                 AssessmentRecord(
                     schema="pinboard-behavioral-substance/v1",
                     run=record.run,
-                    assessor_model=ASSESSOR_MODEL,
+                    assessor_model=model,
                     cost_usd=None if answer is None else answer.cost_usd,
                     words=turn_words(record),
                     outcome=outcome,

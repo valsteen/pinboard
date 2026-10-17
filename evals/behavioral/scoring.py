@@ -1,10 +1,11 @@
 """Blind scoring of recorded runs with the frozen checklist.
 
-A fresh-context scorer (``oneshot``) with the pinned ``SCORER_MODEL`` receives only the digest-verified checklist,
+A fresh-context scorer (``oneshot``) receives only the digest-verified checklist,
 the scenario's ground truth and world facts, the redacted observed state and hooks log, and the human-visible
 transcript under a random label. Runtime, skills revision and variant are withheld; local absolute paths are
 redacted; the label-to-run map is stored apart from the scores. A malformed answer is recorded as a
-``ScoringFailure`` and never counted as a score.
+``ScoringFailure`` and never counted as a score. Callers select the model explicitly; formal comparison entrypoints
+require the pinned ``SCORER_MODEL``, while descriptive pilots keep their selected model in session provenance.
 """
 
 import hashlib
@@ -101,6 +102,7 @@ def decode_score(text: str | None, label: str, turns: int) -> ScoreRecord | Scor
 class ScoringRun:
     layout: Layout
     budget: Budget
+    model: str
 
     def score(self, source: ScorerInput) -> ScoringOutcome | None:
         """Score one run once; return None when the cap leaves no room for another scorer session."""
@@ -118,7 +120,7 @@ class ScoringRun:
             interrupted: processes.ProcessIncomplete | processes.CleanupUnconfirmed | None = None
             outcome: ScoringOutcome = ScoringFailure(reason="started scorer failed before publishing a result")
             try:
-                answer = oneshot.ask(text, SCORER_MODEL, self.budget.window)
+                answer = oneshot.ask(text, self.model, self.budget.window)
                 (directory / "raw.json").write_text(answer.stdout)
                 decoded = (
                     decode_score(answer.text, label, len(scenario.turns))
@@ -156,7 +158,7 @@ class ScoringRun:
                         ScorerSession(
                             schema="pinboard-behavioral-scorer-session/v1",
                             label=label,
-                            scorer_model=SCORER_MODEL,
+                            scorer_model=self.model,
                             checklist_sha256=CHECKLIST_SHA256,
                             cost_usd=None if answer is None else answer.cost_usd,
                             outcome=outcome,
@@ -182,9 +184,11 @@ class IneligibleScore:
     reason: str
 
 
-def eligibility(session: ScorerSession, mapping: LabelMapping, score: ScoreRecord, run: RunRecord | None) -> str | None:
+def eligibility(
+    session: ScorerSession, mapping: LabelMapping, score: ScoreRecord, run: RunRecord | None, scorer_model: str
+) -> str | None:
     """Score-level eligibility does not depend on aggregate identity or spending completeness."""
-    if session.scorer_model != SCORER_MODEL:
+    if session.scorer_model != scorer_model:
         return "scorer model differs from the pinned scorer"
     if session.checklist_sha256 != CHECKLIST_SHA256:
         return "scorer checklist digest differs from the frozen checklist"
@@ -199,7 +203,7 @@ def eligibility(session: ScorerSession, mapping: LabelMapping, score: ScoreRecor
     return None
 
 
-def score_evidence(layout: Layout) -> Iterator[EligibleScore | IneligibleScore]:
+def score_evidence(layout: Layout, scorer_model: str) -> Iterator[EligibleScore | IneligibleScore]:
     mappings: dict[str, list[LabelMapping]] = {}
     for mapping in layout.labels():
         mappings.setdefault(mapping.label, []).append(mapping)
@@ -216,7 +220,7 @@ def score_evidence(layout: Layout) -> Iterator[EligibleScore | IneligibleScore]:
         mapping = linked[0]
         try:
             score = layout.score(session.label)
-            reason = eligibility(session, mapping, score, layout.run_record(mapping.run))
+            reason = eligibility(session, mapping, score, layout.run_record(mapping.run), scorer_model)
         except (OSError, msgspec.DecodeError, ValueError) as error:
             yield IneligibleScore(mapping.run, f"linked score/run evidence is unavailable: {error}")
             continue
@@ -242,10 +246,10 @@ def scoring_scenario(layout: Layout, source: ScorerInput) -> Scenario:
     return scenario
 
 
-def valid_score_counts(layout: Layout) -> dict[str, int]:
-    """Eligible score counts shared by pending-work selection and descriptive reports."""
+def valid_score_counts(layout: Layout, scorer_model: str) -> dict[str, int]:
+    """Count valid scores from the selected model for pending-work selection and reports."""
     counts: dict[str, int] = {}
-    for evidence in score_evidence(layout):
+    for evidence in score_evidence(layout, scorer_model):
         if isinstance(evidence, EligibleScore):
             name = evidence.run.display()
             counts[name] = counts.get(name, 0) + 1

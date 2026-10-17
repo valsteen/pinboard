@@ -532,7 +532,11 @@ def dispatch(command: Command) -> int:  # noqa: C901, PLR0912
             report_skipped(score(c))
         case Assess() as c:
             report_skipped(
-                substance.assess(Layout(c.out), spend.Budget(Layout(c.out), c.cap_usd, processes.Window(None), False))
+                substance.assess(
+                    Layout(c.out),
+                    spend.Budget(Layout(c.out), c.cap_usd, processes.Window(None), False),
+                    substance.ASSESSOR_MODEL,
+                )
             )
             print(substance.summarize(Layout(c.out)), end="")
         case Compare() as c:
@@ -717,8 +721,10 @@ def probe_codex(command: ProbeCodex) -> int:
 
 def score(command: Score) -> list[str]:
     layout = Layout(command.out)
-    session = scoring.ScoringRun(layout, spend.Budget(layout, command.cap_usd, processes.Window(None), False))
-    counts = scoring.valid_score_counts(layout)
+    session = scoring.ScoringRun(
+        layout, spend.Budget(layout, command.cap_usd, processes.Window(None), False), scoring.SCORER_MODEL
+    )
+    counts = scoring.valid_score_counts(layout, scoring.SCORER_MODEL)
     skipped: list[str] = []
     pending: list[ScorerInput] = [
         source for source in layout.scorer_inputs() if not command.variants or source.run.variant in command.variants
@@ -805,14 +811,14 @@ def coverage_codex(c: CoverageCodex) -> int:
                 print(
                     f"recorded {scenario.id}/{c.variant}-{index}; "
                     f"completed {sum(isinstance(r.outcome, Completed) for r in layout.run_records())}; "
-                    f"scored {len(scoring.valid_score_counts(layout))}; "
+                    f"scored {len(scoring.valid_score_counts(layout, scoring.SCORER_MODEL))}; "
                     f"assessed {sum(isinstance(a.outcome, Assessed) for a in layout.assessments())}; "
                     f"known-priced USD {spend.total(spend.items(layout)):.4f}",
                     flush=True,
                 )
                 if spend.main_usage_unknown(layout):
                     raise ValueError("a started session has unreported usage; no further paid work starts")
-        counts = scoring.valid_score_counts(layout)
+        counts = scoring.valid_score_counts(layout, scoring.SCORER_MODEL)
         covered = {
             r.run.scenario_id
             for r in layout.run_records()
@@ -842,7 +848,7 @@ def coverage_codex(c: CoverageCodex) -> int:
                 status=status,
                 reason=reason,
                 completed_runs=[r.run.display() for r in layout.run_records() if isinstance(r.outcome, Completed)],
-                scored_runs=sorted(scoring.valid_score_counts(layout)),
+                scored_runs=sorted(scoring.valid_score_counts(layout, scoring.SCORER_MODEL)),
                 assessed_runs=[a.run.display() for a in layout.assessments() if isinstance(a.outcome, Assessed)],
                 known_cost_usd=spend.total(spend.items(layout)),
                 unreported_main_usage=spend.main_usage_unknown(layout),
@@ -856,11 +862,11 @@ def coverage_codex(c: CoverageCodex) -> int:
 
 def score_pending(layout: Layout, budget: spend.Budget) -> None:
     """Blind-score each recorded run once before the next target starts."""
-    counts = scoring.valid_score_counts(layout)
+    counts = scoring.valid_score_counts(layout, scoring.SCORER_MODEL)
     for source in layout.scorer_inputs():
         if source.run.display() in counts:
             continue
-        outcome = scoring.ScoringRun(layout, budget).score(source)
+        outcome = scoring.ScoringRun(layout, budget, scoring.SCORER_MODEL).score(source)
         if outcome is None:
             raise ValueError("cap or unreported usage prevents blind scoring")
         if not isinstance(outcome, Scored):
@@ -868,7 +874,7 @@ def score_pending(layout: Layout, budget: spend.Budget) -> None:
 
 
 def assess_pending(layout: Layout, budget: spend.Budget) -> None:
-    if substance.assess(layout, budget):
+    if substance.assess(layout, budget, substance.ASSESSOR_MODEL):
         raise ValueError("cap or unreported usage prevents substance assessment")
     if any(isinstance(a.outcome, AssessmentFailure) for a in layout.assessments()):
         raise ValueError("substance assessment failed; retained outcome is incomplete")

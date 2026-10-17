@@ -12,7 +12,7 @@ import msgspec
 
 from evals.behavioral import codex_driver, oneshot, processes, runner, scenarios, scoring, spend, startup_pilot
 from evals.behavioral.layout import Layout
-from evals.behavioral.records import ChecklistItem, ExportRecord, Runtime, encode
+from evals.behavioral.records import ChecklistItem, CodexAccounting, ExportRecord, Runtime, encode, write_new
 from tests.test_behavioral_decision import fixture_set, record_score
 from tests.test_behavioral_scoring import answer
 
@@ -36,6 +36,10 @@ class StartupPilotTest(unittest.TestCase):
                     encode(msgspec.structs.replace(record, runtime=Runtime.CODEX))
                 )
                 (layout.run_directory(key) / "rollout.jsonl").write_text("")
+                write_new(
+                    layout.run_directory(key) / "accounting.json",
+                    CodexAccounting("pinboard-behavioral-codex-accounting/v1", 0.01, True, [], None),
+                )
                 return []
 
             def respond(text: str, model: str, _window: processes.Window) -> oneshot.Answer:
@@ -80,6 +84,71 @@ class StartupPilotTest(unittest.TestCase):
             self.assertEqual(["claude-sonnet-5-5"] * 4, [call.args[1] for call in paid.call_args_list])
             self.assertEqual(2, len(scoring.valid_score_counts(Layout(out), "claude-sonnet-5-5")))
             self.assertEqual({"claude-sonnet-5-5"}, {record.assessor_model for record in Layout(out).assessments()})
+
+    def test_unpriced_approval_reviewer_stops_before_actor_matching_or_another_paid_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            out = root / "out"
+            selected = fixture_set(["s1"], 1, (ChecklistItem.P9,))
+            exported = ExportRecord("pinboard-behavioral-export/v1", "0" * 40, "0" * 64, str(root))
+
+            def run(plan: runner.CodexPlan, _budget: spend.Budget) -> list[str]:
+                directory = Layout(out).run_directory(plan.run.planned()[0][1])
+                directory.mkdir(parents=True)
+                (directory / "rollout.jsonl").write_text("")
+                return []
+
+            with (
+                patch.object(startup_pilot, "load_set", return_value=selected),
+                patch.object(startup_pilot.runner, "require_codex_world_location"),
+                patch.object(startup_pilot.export, "export_revision", return_value=exported),
+                patch.object(startup_pilot.probe, "probe_codex", return_value=Mock(passed=True)),
+                patch.object(startup_pilot.runner, "run_codex", side_effect=run) as running,
+                patch.object(
+                    startup_pilot,
+                    "observe",
+                    return_value=startup_pilot.WorkflowObservation(
+                        "pinboard-native-workflow-observation/v1",
+                        [
+                            startup_pilot.TurnConfiguration("owner", "gpt-5.6-terra", "high"),
+                            startup_pilot.TurnConfiguration("approval", "codex-auto-review", "low"),
+                        ],
+                        [],
+                        "observed-calls-only",
+                    ),
+                ),
+                patch.object(
+                    startup_pilot.spend,
+                    "comparison_reasons",
+                    return_value=["comparison reviewer dollar cost is unknown"],
+                ),
+                patch.object(oneshot, "ask") as paid,
+            ):
+                self.assertEqual(2, startup_pilot.run(root, "a", "b", root / "set.json", out, root / "worlds"))
+            self.assertEqual(1, running.call_count)
+            paid.assert_not_called()
+            result = msgspec.json.decode((out / "pilot.json").read_bytes(), type=startup_pilot.PilotResult)
+            self.assertEqual("comparison reviewer dollar cost is unknown", result.reason)
+
+    def test_task_matching_keeps_auxiliary_approval_context_visible_and_distinct(self) -> None:
+        owner = startup_pilot.TurnConfiguration("owner", "gpt-5.6-terra", "high")
+        approval = startup_pilot.TurnConfiguration("approval", "codex-auto-review", "low")
+        for contexts, matches in (
+            ([owner, approval], True),
+            ([approval], False),
+            ([msgspec.structs.replace(owner, effort="low"), approval], False),
+        ):
+            with self.subTest(contexts=contexts):
+                observation = startup_pilot.WorkflowObservation(
+                    "pinboard-native-workflow-observation/v1", contexts, [], "observed-calls-only"
+                )
+                with tempfile.TemporaryDirectory() as temporary:
+                    if matches:
+                        startup_pilot.validate_workflow(Layout(Path(temporary)), observation)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "task actor configuration"):
+                            startup_pilot.validate_workflow(Layout(Path(temporary)), observation)
+                self.assertEqual(contexts, observation.configurations)
 
     def private_set(self, root: Path) -> Path:
         original = scenarios.DATA / "scenario-sets" / "review-after-merge.json"

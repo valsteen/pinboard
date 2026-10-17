@@ -364,6 +364,34 @@ class CompareTest(unittest.TestCase):
 
 
 class QualificationTest(unittest.TestCase):
+    def test_descriptive_sonnet_scores_are_reused_but_ineligible_for_formal_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            layout = Layout(Path(directory))
+            self.prepare(layout)
+            source = next(layout.scorer_inputs())
+            with (
+                patch.object(scoring.secrets, "token_hex", return_value="sonnet"),
+                patch.object(
+                    scoring.oneshot, "ask", return_value=oneshot.Answer(0.03, answer("Tsonnet", [1]), "{}", None)
+                ) as paid,
+            ):
+                outcome = scoring.ScoringRun(
+                    layout, spend.Budget(layout, 120, processes.Window(None), False), "claude-sonnet-5-5"
+                ).score(source)
+            self.assertIsInstance(outcome, Scored)
+            self.assertEqual("claude-sonnet-5-5", paid.call_args.args[1])
+            session = next(s for s in Layout(layout.root).scorer_sessions() if s.label == "Tsonnet")
+            self.assertEqual("claude-sonnet-5-5", session.scorer_model)
+            self.assertEqual(
+                1, scoring.valid_score_counts(Layout(layout.root), "claude-sonnet-5-5")[source.run.display()]
+            )
+            self.assertTrue(
+                any(
+                    isinstance(s, scoring.IneligibleScore) and "pinned scorer" in s.reason
+                    for s in scoring.score_evidence(Layout(layout.root), scoring.SCORER_MODEL)
+                )
+            )
+
     def prepare(self, layout: Layout) -> ScenarioSet:
         ids = [f"s{number}" for number in range(1, 6)]
         for name in ids:
@@ -462,7 +490,9 @@ class QualificationTest(unittest.TestCase):
                 else:
                     self.assertEqual([], spend.comparison_reasons(fresh))
                     self.assertIn("decision: no worse", decision.compare(fresh, registration, "base", "cand"))
-                self.assertEqual(1, scoring.valid_score_counts(Layout(layout.root))[first.run.display()])
+                self.assertEqual(
+                    1, scoring.valid_score_counts(Layout(layout.root), scoring.SCORER_MODEL)[first.run.display()]
+                )
 
     def test_each_qualification_defect_alone_is_inconclusive_with_its_reason(self) -> None:  # noqa: C901, PLR0912, PLR0915
         # The explicit matrix keeps each independently varied qualification failure visible.
@@ -560,7 +590,7 @@ class QualificationTest(unittest.TestCase):
                         (path / "raw.json").write_text("partial paid answer")
                     case "repeated-score":
                         record_score(layout, "second", key, [set()], True)
-                        self.assertEqual(2, scoring.valid_score_counts(layout)[key.display()])
+                        self.assertEqual(2, scoring.valid_score_counts(layout, scoring.SCORER_MODEL)[key.display()])
                     case _:
                         raise AssertionError(defect)
                 output = decision.compare(Layout(layout.root), registration, "base", "cand")
@@ -578,18 +608,25 @@ class QualificationTest(unittest.TestCase):
             scored_answer = answer("Tfixture", [1])
             with (
                 patch.object(scoring.secrets, "token_hex", return_value="fixture"),
-                patch.object(scoring.oneshot, "ask", return_value=oneshot.Answer(0.03, scored_answer, "{}", None)),
+                patch.object(
+                    scoring.oneshot, "ask", return_value=oneshot.Answer(0.03, scored_answer, "{}", None)
+                ) as paid,
             ):
                 outcome = scoring.ScoringRun(
-                    Layout(layout.root), spend.Budget(layout, 120, processes.Window(None), False)
+                    Layout(layout.root), spend.Budget(layout, 120, processes.Window(None), False), scoring.SCORER_MODEL
                 ).score(source)
             self.assertIsInstance(outcome, Scored)
             self.assertIn("controlled answer", (layout.score_directory("Tfixture") / "prompt.txt").read_text())
-            self.assertEqual(2, scoring.valid_score_counts(Layout(layout.root))[source.run.display()])
+            self.assertEqual("claude-opus-5-5", paid.call_args.args[1])
+            self.assertEqual(
+                2, scoring.valid_score_counts(Layout(layout.root), scoring.SCORER_MODEL)[source.run.display()]
+            )
             path = layout.run_directory(source.run) / "scenario.json"
             path.write_bytes(path.read_bytes() + b"\n")
             with patch.object(scoring.oneshot, "ask") as paid, self.assertRaises(DataIntegrityError):
-                scoring.ScoringRun(layout, spend.Budget(layout, 120, processes.Window(None), False)).score(source)
+                scoring.ScoringRun(
+                    layout, spend.Budget(layout, 120, processes.Window(None), False), scoring.SCORER_MODEL
+                ).score(source)
             paid.assert_not_called()
 
     def test_current_records_decode_strictly_through_selected_and_enumerated_reads(self) -> None:
@@ -631,7 +668,9 @@ class QualificationTest(unittest.TestCase):
                     self.assertRaises(DataIntegrityError if missing == "run.json" else FileNotFoundError),
                 ):
                     scoring.ScoringRun(
-                        Layout(layout.root), spend.Budget(layout, 120, processes.Window(None), False)
+                        Layout(layout.root),
+                        spend.Budget(layout, 120, processes.Window(None), False),
+                        scoring.SCORER_MODEL,
                     ).score(source)
                 paid.assert_not_called()
 
@@ -661,7 +700,10 @@ class QualificationTest(unittest.TestCase):
                 ):
                     fresh = Layout(layout.root)
                     self.assertEqual(
-                        [], substance.assess(fresh, spend.Budget(fresh, 120, processes.Window(None), False))
+                        [],
+                        substance.assess(
+                            fresh, spend.Budget(fresh, 120, processes.Window(None), False), substance.ASSESSOR_MODEL
+                        ),
                     )
                 assessments = list(Layout(layout.root).assessments())
                 if isinstance(outcome, Failed):

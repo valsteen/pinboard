@@ -112,7 +112,7 @@ class RunFailures:
 
 def collect(layout: Layout, scenario_ids: frozenset[str], variant: str) -> list[RunFailures]:
     by_run: dict[str, tuple[RunKey, list[dict[ChecklistItem, int]]]] = {}
-    for evidence in scoring.score_evidence(layout):
+    for evidence in scoring.score_evidence(layout, scoring.SCORER_MODEL):
         if not isinstance(evidence, scoring.EligibleScore):
             continue
         run = evidence.run
@@ -327,7 +327,7 @@ def qualification(
     selected_variants = {baseline, candidate}
     if baseline == candidate:
         reasons.append("baseline and candidate identify the same variant")
-    for evidence in scoring.score_evidence(layout):
+    for evidence in scoring.score_evidence(layout, scoring.SCORER_MODEL):
         if isinstance(evidence, scoring.IneligibleScore) and (
             evidence.run is None
             or (evidence.run.variant in selected_variants and evidence.run.scenario_id in scenario_ids)

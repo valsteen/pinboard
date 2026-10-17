@@ -121,6 +121,8 @@ from pinboard.mcp.contracts import (
     ReviewJobInvalid,
     ReviewJobReady,
     ReviewJobRejected,
+    StartupTextPage,
+    StartupTextRejected,
     TerminalAttemptInspectionSuccess,
     TracePreflightResult,
     TransitionCommitted,
@@ -718,6 +720,8 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     surfaces = content.get("changed_surfaces")
     if schema == "pinboard-mcp-execution-result/v1":
         msgspec.convert(content, type=TracePreflightResult if status == "rejected" else ExecutorBusyResult, strict=True)
+    elif tool_name == "pinboard_startup_text":
+        msgspec.convert(content, type=StartupTextRejected if status == "rejected" else StartupTextPage, strict=True)
     elif tool_name == "pinboard_fixture_review":
         msgspec.convert(content, type=FixtureReviewRejected if status == "rejected" else FixtureReviewPage, strict=True)
     elif tool_name == "pinboard_initiative" and schema == "pinboard-roadmap-result/v1":

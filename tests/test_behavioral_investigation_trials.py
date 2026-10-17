@@ -401,6 +401,8 @@ class InvestigationTrialTests(unittest.TestCase):
                     codex_driver.write_config(home, plugin, "gpt-6-luna", "high", reviewer, processes.Window(None))
                     config = tomllib.loads((home / "config.toml").read_text())
                     self.assertEqual(reviewer, config["approvals_reviewer"])
+                    self.assertEqual("gpt-6-luna", config["agents"]["default_subagent_model"])
+                    self.assertEqual("high", config["agents"]["default_subagent_reasoning_effort"])
 
     def test_luna_pricing_uses_the_conservative_long_context_tier(self) -> None:
         for offset, rates in ((0, codex_driver.price("gpt-6-luna")), (1, codex_driver.LUNA_LONG_CONTEXT)):

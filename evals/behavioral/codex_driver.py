@@ -44,7 +44,10 @@ PRICE_SOURCE = (
     "checked 2026-10-02): gpt-6-luna short-context input 0.10, cached 0.01, cache writes 0.125, output 0.50 USD; "
     "prompts above 272K input tokens cost twice the input/cache rates and 1.5 times output. "
     "A turn above that threshold uses the long-context rates for all its tokens as a conservative upper bound. "
-    "gpt-6-sol retains its recorded short-context prices. Output includes reasoning tokens."
+    "gpt-6-sol retains its recorded short-context prices. GPT-5.6 Terra standard prices checked 2026-10-17 "
+    "at https://developers.openai.com/api/docs/pricing and /models/gpt-5.6-terra: short input 2.00, cached 0.20, "
+    "cache writes 2.50, output 12.00; above 272K input 4.00, cached 0.40, cache writes 5.00, output 18.00. "
+    "Output includes reasoning tokens."
 )
 DENIAL_PATTERN = re.compile(r"Operation not permitted|Read-only file system|Permission denied|sandbox", re.IGNORECASE)
 GIT_PATTERN = re.compile(
@@ -61,9 +64,11 @@ class Price:
 
 
 PRICES_PER_MILLION = {
+    "gpt-5.6-terra": Price(uncached_input=2.00, cache_write=2.50, cached_input=0.20, output=12.00),
     "gpt-6-sol": Price(uncached_input=2.00, cache_write=2.50, cached_input=0.20, output=10.00),
     "gpt-6-luna": Price(uncached_input=0.10, cache_write=0.125, cached_input=0.01, output=0.50),
 }
+TERRA_LONG_CONTEXT = Price(uncached_input=4.00, cache_write=5.00, cached_input=0.40, output=18.00)
 LUNA_LONG_CONTEXT = Price(uncached_input=0.20, cache_write=0.25, cached_input=0.02, output=0.75)
 LUNA_SHORT_CONTEXT_MAX_INPUT = 272_000
 
@@ -243,6 +248,10 @@ extends = ":workspace"
 [permissions.{PERMISSION_PROFILE}.filesystem.":workspace_roots"]
 ".pinboard" = "write"
 
+[agents]
+default_subagent_model = {toml_string(model)}
+default_subagent_reasoning_effort = {toml_string(reasoning_effort)}
+
 [features]
 memories = false
 apps = false
@@ -311,6 +320,8 @@ def turn_cost(model: str, usage: Usage) -> float:
     rates = price(model)
     if model == "gpt-6-luna" and usage.input_tokens > LUNA_SHORT_CONTEXT_MAX_INPUT:
         rates = LUNA_LONG_CONTEXT
+    if model == "gpt-5.6-terra" and usage.input_tokens > 272_000:
+        rates = TERRA_LONG_CONTEXT
     return (
         usage.uncached_input_tokens * rates.uncached_input
         + usage.cache_write_input_tokens * rates.cache_write
@@ -716,7 +727,12 @@ def rollout_accounting(text: str, model: str, complete: bool) -> CodexAccounting
     return CodexAccounting(
         schema="pinboard-behavioral-codex-accounting/v1",
         main_known_cost_usd=known,
-        main_usage_complete=complete and main_observed,
+        main_usage_complete=complete
+        and main_observed
+        and set(turns)
+        <= {
+            msgspec.json.decode(r.payload, type=UsageRecord).turn_id for r in records if r.type == "token_usage_record"
+        },
         reviewer_usage=reviewers,
         reviewer_price_usd=None,
     )

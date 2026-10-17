@@ -65,7 +65,7 @@ def load_set(path: Path) -> RegisteredSet:
     scenarios = []
     sources = []
     for member in scenario_set.scenarios:
-        file = DATA / "scenarios" / f"{member.id}.json"
+        file = path.parent.parent / "scenarios" / f"{member.id}.json"
         content = file.read_bytes()
         actual = hashlib.sha256(content).hexdigest()
         if actual != member.sha256:

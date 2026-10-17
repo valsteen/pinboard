@@ -41,6 +41,12 @@ type ItemStatusGitCode = Literal[
     "PROJECT_GIT_ROOT_UNAVAILABLE",
 ]
 
+type StartupTextRejectedCode = Annotated[
+    Literal["STARTUP_TEXT_INVALID"],
+    CodeMeanings(((0, "The selected startup source, request or continuation could not be verified."),)),
+]
+
+
 type FixtureReviewRejectedCode = Annotated[
     Literal["FIXTURE_REVIEW_INVALID"],
     CodeMeanings(((0, "The selected fixture, repetition recipe or bound review page could not be verified."),)),

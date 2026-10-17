@@ -384,6 +384,92 @@ class BriefSourcePlanOutputEnvelope(msgspec.Struct, frozen=True, forbid_unknown_
     request: BriefSourcesPlanToFileRequest
 
 
+class StartupArtifactSource(msgspec.Struct, tag="artifact", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    artifact_ref_id: PositiveInt
+    selector: NonEmptyText
+    sha256: Sha256
+    size_bytes: PositiveInt
+
+
+class StartupFileSource(msgspec.Struct, tag="file", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    path: RootPath
+    sha256: Sha256
+    size_bytes: NonNegativeInt
+
+
+type StartupSource = StartupArtifactSource | StartupFileSource
+type StartupBudget = Annotated[int, msgspec.Meta(ge=1, le=8000)]
+
+
+class StartupArtifactStart(
+    msgspec.Struct, tag="artifact-start", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    source: StartupArtifactSource
+    max_batch_bytes: StartupBudget
+
+
+class StartupFileStart(
+    msgspec.Struct, tag="file-start", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    path: RootPath
+    max_batch_bytes: StartupBudget
+
+
+class StartupContinue(msgspec.Struct, tag="continue", tag_field="operation", frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    source: StartupSource
+    start_character: PositiveInt
+    max_batch_bytes: StartupBudget
+
+
+class StartupTextEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: StartupArtifactStart | StartupFileStart | StartupContinue
+
+
+class StartupTextPage(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-startup-text-page/v1"]
+    status: Literal["ok"]
+    source: StartupSource
+    start_character: NonNegativeInt
+    end_character: NonNegativeInt
+    text: str
+    max_batch_bytes: StartupBudget
+    continuation: StartupContinue | None
+    authority: Literal["delivery-only"]
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        if self.end_character - self.start_character != len(self.text):
+            raise ValueError("Character range must identify exactly the returned text.")
+        if self.continuation is not None and (
+            self.continuation.source != self.source
+            or self.continuation.start_character != self.end_character
+            or self.continuation.max_batch_bytes != self.max_batch_bytes
+        ):
+            raise ValueError("Continuation must preserve source, budget and next character.")
+
+
+class StartupTextRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-startup-text-result/v1"]
+    status: Literal["rejected"]
+    code: diagnostic_codes.StartupTextRejectedCode
+    resource: NonEmptyText
+    message: NonEmptyText
+    recovery: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input"]
+    changed_surfaces: Empty
+
+
 class FixtureSource(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     path: RootPath
     sha256: Sha256
@@ -3205,11 +3291,13 @@ TRANSITION_RESULT_TYPES = (
     TransitionFailedAfterPublication,
     ExecutorBusyResult,
 )
+STARTUP_TEXT_RESULT_TYPES = (StartupTextPage, StartupTextRejected, ExecutorBusyResult)
 FIXTURE_REVIEW_RESULT_TYPES = (FixtureReviewPage, FixtureReviewRejected, ExecutorBusyResult)
 
 
 type RequestBoundary = (
     type[initiative_contracts.Envelope]
+    | type[StartupTextEnvelope]
     | type[FixtureReviewEnvelope]
     | type[BriefContractEnvelope]
     | type[BriefSourcesEnvelope]
@@ -3240,6 +3328,8 @@ type ResultBoundary = (
     | type[initiative_contracts.ReadResult]
     | type[initiative_contracts.Committed]
     | type[initiative_contracts.Rejected]
+    | type[StartupTextPage]
+    | type[StartupTextRejected]
     | type[FixtureReviewPage]
     | type[FixtureReviewRejected]
     | type[work_brief_contract.WorkBriefContract]

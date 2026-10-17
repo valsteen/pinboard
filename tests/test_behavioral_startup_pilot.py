@@ -56,6 +56,52 @@ class ExpiredDateTime(datetime.datetime):
 
 
 class StartupPilotTest(unittest.TestCase):
+    def test_continuation_refuses_an_assessment_from_another_model_before_any_purchase(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected, digest = self.retained(root)
+            layout = Layout(root)
+            budget = spend.Budget(layout, 30, processes.Window(None), True)
+            for arm in ("baseline", "candidate"):
+                plan = runner.RunPlan(
+                    layout,
+                    root / "worlds",
+                    export.load_export(root / "exports" / arm),
+                    arm,
+                    selected,
+                    1,
+                    1,
+                    startup_pilot.MODEL,
+                    processes.Window(None),
+                )
+                self.record_task(runner.CodexPlan(plan, "high", root), budget)
+            with patch.object(oneshot, "ask", side_effect=self.response):
+                for pending in layout.scorer_inputs():
+                    scoring.ScoringRun(layout, budget, startup_pilot.DESCRIPTIVE_MODEL).score(pending)
+                self.assertEqual([], startup_pilot.substance.assess(layout, budget, startup_pilot.DESCRIPTIVE_MODEL))
+            assessment = next(layout.assessments())
+            path = layout.assessment_directory(assessment.run) / "assessment.json"
+            path.write_bytes(encode(msgspec.structs.replace(assessment, assessor_model="claude-opus-5-5")))
+            originals = {file: file.read_bytes() for file in root.rglob("*") if file.is_file()}
+            with (
+                patch.object(startup_pilot, "load_set", return_value=selected),
+                patch.object(startup_pilot.runner, "require_codex_world_location"),
+                patch.object(startup_pilot.datetime, "datetime", FixedDateTime),
+                patch.object(startup_pilot.time, "monotonic", return_value=100),
+                patch.object(startup_pilot.runner, "run_codex") as running,
+                patch.object(oneshot, "ask") as paid,
+            ):
+                self.assertEqual(
+                    2, startup_pilot.continue_run(root, "a" * 40, "b" * 40, root / "set", root, root / "worlds", digest)
+                )
+            running.assert_not_called()
+            paid.assert_not_called()
+            result = msgspec.json.decode((root / "continuation.json").read_bytes(), type=startup_pilot.PilotResult)
+            self.assertIn("retained assessment model", result.reason)
+            self.assertIn(str(path), result.reason)
+            for file, content in originals.items():
+                self.assertEqual(content, file.read_bytes())
+
     def test_cli_selects_the_retained_pilot_route_and_exact_window(self) -> None:
         arguments = [
             "startup-pilot-continue",

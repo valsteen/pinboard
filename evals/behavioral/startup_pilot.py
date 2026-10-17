@@ -44,6 +44,18 @@ class PilotWindow(Record, frozen=True):
     scenarios: list[RegisteredScenario]
     targeted_rules: list[ChecklistItem]
 
+    def __post_init__(self) -> None:
+        started = datetime.datetime.fromisoformat(self.started_at)
+        deadline = datetime.datetime.fromisoformat(self.deadline_at)
+        if (
+            started.tzinfo is None
+            or deadline.tzinfo is None
+            or deadline - started != datetime.timedelta(seconds=7200)
+            or self.maximum_seconds != 7200
+            or self.admission_cap_usd != 30.0
+        ):
+            raise ValueError("pilot window must retain a timezone-aware two-hour interval and the 30 USD admission cap")
+
 
 class PilotResult(Record, frozen=True):
     schema: Literal["pinboard-startup-pilot-result/v1"]
@@ -148,15 +160,9 @@ def continue_run(
     if hashlib.sha256(window_bytes).hexdigest() != window_sha256:
         raise ValueError("retained window digest differs from the selected original; no session started")
     saved = msgspec.json.decode(window_bytes, type=PilotWindow)
-    started = datetime.datetime.fromisoformat(saved.started_at)
     deadline = datetime.datetime.fromisoformat(saved.deadline_at)
     if (
-        started.tzinfo is None
-        or deadline.tzinfo is None
-        or deadline - started != datetime.timedelta(seconds=7200)
-        or saved.maximum_seconds != 7200
-        or saved.admission_cap_usd != 30.0
-        or Path(saved.source).resolve() != source.resolve()
+        Path(saved.source).resolve() != source.resolve()
         or saved.baseline_revision != baseline
         or saved.candidate_revision != candidate
         or saved.scenarios != registered.registration.scenarios
@@ -179,6 +185,10 @@ def continue_run(
 
 
 def retained_exports(layout: Layout, baseline: str, candidate: str, registered: RegisteredSet) -> list[ExportRecord]:
+    for assessment in layout.assessments():
+        if assessment.assessor_model != DESCRIPTIVE_MODEL:
+            path = layout.assessment_directory(assessment.run) / "assessment.json"
+            raise ValueError(f"retained assessment model differs at {path}; inspect its provenance; no session started")
     exports: list[ExportRecord] = []
     for arm, revision in (("baseline", baseline), ("candidate", candidate)):
         evaluated = export.load_export(layout.root / "exports" / arm)

@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import dataclasses
 import hashlib
 import io
 import json
@@ -35,13 +36,23 @@ from pinboard.domain.identifiers import AttemptId, HostId, TaskId, WorkItemId
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import AcceptedPackageFixture, CheckpointFixture, CheckpointPackageSupport
-from tests.native_support import call_advertised_tool, call_native_tool
+from tests.native_support import call_advertised_tool, native_tools
 from tests.support import JsonObject, JsonValue
 
 HUMAN_WORDS = "Yes, close work-c as done: the parser rewrite already covers it."
 
 
-class HumanConfirmedCloseTest(CheckpointPackageSupport):
+class NativeFixtureSupport(CheckpointPackageSupport):
+    def native_fixture[T: CheckpointFixture](self, fixture: T) -> T:
+        native = self.enterContext(native_tools())
+        return dataclasses.replace(
+            fixture,
+            call_native_tool=native.call_native_tool,
+            call_advertised_tool=native.call_advertised_tool,
+        )
+
+
+class HumanConfirmedCloseTest(NativeFixtureSupport):
     def roots(self, fixture: CheckpointFixture) -> JsonObject:
         return {"project_root": str(fixture.project), "work_root": str(fixture.work)}
 
@@ -70,7 +81,7 @@ class HumanConfirmedCloseTest(CheckpointPackageSupport):
         }
 
     def test_close_without_the_human_decision_is_refused_unchanged_and_with_it_persists_the_exact_words(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         before = fixture.store.validated_snapshot()
         refusals: tuple[tuple[str, JsonObject], ...] = (
             ("missing", {"outcome": "done", "reason": "Covered elsewhere."}),
@@ -79,7 +90,9 @@ class HumanConfirmedCloseTest(CheckpointPackageSupport):
         )
         for label, payload in refusals:
             with self.subTest(human_decision=label):
-                refused = call_advertised_tool(mcp_server.CLOSE_TOOL, self.close_arguments(fixture, "work-c", payload))
+                refused = fixture.call_advertised_tool(
+                    mcp_server.CLOSE_TOOL, self.close_arguments(fixture, "work-c", payload)
+                )
                 self.assertEqual("rejected", refused["status"], refused)
                 self.assertEqual("TRANSITION_INPUT_INVALID", refused["code"])
                 self.assertEqual({"kind": "close", "subject": "work-c"}, refused["action_id"])
@@ -90,7 +103,7 @@ class HumanConfirmedCloseTest(CheckpointPackageSupport):
                 self.assertIs(False, self.observed(refused)["human_decision_valid"])
                 self.assertEqual(before, fixture.store.validated_snapshot())
 
-        committed = call_advertised_tool(
+        committed = fixture.call_advertised_tool(
             mcp_server.CLOSE_TOOL,
             self.close_arguments(
                 fixture, "work-c", {"outcome": "done", "reason": "Covered elsewhere.", "human_decision": HUMAN_WORDS}
@@ -119,9 +132,9 @@ class HumanConfirmedCloseTest(CheckpointPackageSupport):
         self.assertEqual(stored, msgspec.json.encode(msgspec.json.decode(bytes(exported_close.input)), order="sorted"))
 
     def test_validate_accepts_new_and_retained_close_inputs_and_rejects_a_malformed_decision(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         for item_id, reason in (("work-c", "Covered elsewhere."), ("zz-proposal-a", "No longer needed.")):
-            committed = call_native_tool(
+            committed = fixture.call_native_tool(
                 mcp_server.CLOSE_TOOL,
                 self.close_arguments(
                     fixture, item_id, {"outcome": "done", "reason": reason, "human_decision": HUMAN_WORDS}
@@ -175,7 +188,7 @@ class HumanConfirmedCloseTest(CheckpointPackageSupport):
                         )
 
     def test_human_decision_relaxes_no_close_condition_for_a_paused_item_with_an_accepted_attempt(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         returned = self.transition_result(
             fixture, self.project_action(fixture, "return-for-correction:work-a-1"), {"reason": "Continue it."}
         )
@@ -185,7 +198,7 @@ class HumanConfirmedCloseTest(CheckpointPackageSupport):
         actions = self.actions_result(fixture, {"role": "project", "action_id": {"kind": "close", "subject": "work-a"}})
         self.assertEqual("rejected", actions["status"], actions)
         before = fixture.store.validated_snapshot()
-        refused = call_advertised_tool(
+        refused = fixture.call_advertised_tool(
             mcp_server.CLOSE_TOOL,
             {
                 **self.roots(fixture),
@@ -204,10 +217,10 @@ class HumanConfirmedCloseTest(CheckpointPackageSupport):
         self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_transition_refuses_a_close_leaf_naming_the_close_tool_and_never_for_an_undecodable_identity(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         action = self.project_action(fixture, "close:work-c")
         before = fixture.store.validated_snapshot()
-        refused = call_advertised_tool(
+        refused = fixture.call_advertised_tool(
             mcp_server.TRANSITION_TOOL,
             self.native_transition_request(
                 fixture, action, {"outcome": "done", "reason": "Covered.", "human_decision": HUMAN_WORDS}
@@ -224,15 +237,15 @@ class HumanConfirmedCloseTest(CheckpointPackageSupport):
             inner = self.json_object(request["request"])
             inner["receipt"] = receipt
             with self.subTest(receipt=receipt):
-                generic = call_advertised_tool(mcp_server.TRANSITION_TOOL, request)
+                generic = fixture.call_advertised_tool(mcp_server.TRANSITION_TOOL, request)
                 self.assertEqual("TRANSITION_INPUT_INVALID", generic["code"])
                 self.assertNotEqual("close", self.json_object(generic["action_id"])["kind"])
                 self.assertNotIn("close_tool", self.observed(generic))
         self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_discovered_close_contract_requires_the_decision_without_naming_a_tool(self) -> None:
-        fixture = self.checkpoint_fixture()
-        discovered = call_advertised_tool(
+        fixture = self.native_fixture(self.checkpoint_fixture())
+        discovered = fixture.call_advertised_tool(
             mcp_server.ACTIONS_TOOL,
             {
                 "request": {
@@ -274,7 +287,7 @@ class HumanConfirmedCloseTest(CheckpointPackageSupport):
         self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
 
 
-class SubmittedCandidateSupport(CheckpointPackageSupport):
+class SubmittedCandidateSupport(NativeFixtureSupport):
     def observed(self, result: JsonObject) -> dict[str, JsonValue]:
         return {
             str(self.json_object(row)["field"]): self.json_object(row)["value"]
@@ -282,7 +295,7 @@ class SubmittedCandidateSupport(CheckpointPackageSupport):
         }
 
     def review_fixture(self) -> tuple[AcceptedPackageFixture, str]:
-        fixture = self.accepted_package_fixture(local=True, candidate_form="current-head")
+        fixture = self.native_fixture(self.accepted_package_fixture(local=True, candidate_form="current-head"))
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             connection.execute("UPDATE work_items SET state = 'active' WHERE item_id = 'work-a'")
             connection.execute("UPDATE attempts SET state = 'active' WHERE attempt_id = 'work-a-1'")
@@ -328,7 +341,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
             "pinboard.adapters.lifecycle_artifacts.ArtifactRepository.publish",
             side_effect=AssertionError("completion published evidence before its review gate"),
         ):
-            refused = call_advertised_tool(
+            refused = fixture.call_advertised_tool(
                 mcp_server.TRANSITION_TOOL,
                 self.native_transition_request(fixture, self.project_action(fixture, "complete:work-a-1"), payload),
             )
@@ -347,7 +360,9 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         self.assertNotIn("completion_reinspection_tool", observed)
         encoded = observed["completion_inspection_input"]
         assert isinstance(encoded, str)
-        inspection = call_advertised_tool(mcp_server.ATTEMPT_INSPECT_TOOL, self.json_object(json.loads(encoded)))
+        inspection = fixture.call_advertised_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL, self.json_object(json.loads(encoded))
+        )
         self.assertEqual("review", self.json_object(inspection["continuation"])["state"])
         self.assertEqual(before, fixture.store.validated_snapshot())
         return refused
@@ -374,7 +389,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
                     side_effect=AssertionError("completion published without a current human decision"),
                 ),
             ):
-                refused = call_advertised_tool(
+                refused = fixture.call_advertised_tool(
                     mcp_server.TRANSITION_TOOL,
                     self.native_transition_request(
                         fixture, self.project_action(fixture, "complete:work-a-1"), rejected_payload
@@ -399,7 +414,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
                 payload = self.completion_payload(fixture, candidate, "commissioned-reviewer") | {
                     "human_decision": words
                 }
-                committed = call_advertised_tool(
+                committed = fixture.call_advertised_tool(
                     mcp_server.TRANSITION_TOOL,
                     self.native_transition_request(fixture, self.project_action(fixture, "complete:work-a-1"), payload),
                 )
@@ -545,7 +560,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         recorded_reviewer = self.observed(refused)["recorded_reviewer_task_id"]
         assert isinstance(recorded_reviewer, str)
         reviewed = payload | {"reviewer_task_id": recorded_reviewer}
-        committed = call_advertised_tool(
+        committed = fixture.call_advertised_tool(
             mcp_server.TRANSITION_TOOL,
             self.native_transition_request(fixture, self.project_action(fixture, "complete:work-a-1"), reviewed),
         )
@@ -557,7 +572,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         fixture = self.terminalize_brief(fixture)
         self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
         reviewed = self.completion_payload(fixture, candidate, "commissioned-reviewer")
-        committed = call_advertised_tool(
+        committed = fixture.call_advertised_tool(
             mcp_server.TRANSITION_TOOL,
             self.native_transition_request(fixture, self.project_action(fixture, "complete:work-a-1"), reviewed),
         )
@@ -566,7 +581,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         self.assertEqual("pinboard-reviewed-completion/v3", receipt.input_schema)
 
     def test_unchanged_reviewed_work_keeps_review_after_private_settlement_note_and_commit(self) -> None:
-        fixture = self.terminalize_brief(self.checkpoint_fixture())
+        fixture = self.terminalize_brief(self.native_fixture(self.checkpoint_fixture()))
         candidate = fixture.candidate_revision
         self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
         before = fixture.store.validated_snapshot()
@@ -575,7 +590,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
             "Investigation settles existing scope; retained as accepted.\n", encoding="utf-8"
         )
         self.commit_all(fixture.project, "Reviewed content unchanged")
-        inspection = call_advertised_tool(
+        inspection = fixture.call_advertised_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -677,7 +692,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         # Continue-disposition discovery withholds complete, so build its exact receipt from a sibling action.
         action = self.project_action(fixture, "return-for-correction:work-a-1")
         action["action_id"] = {"kind": "complete", "subject": "work-a-1"}
-        refused = call_advertised_tool(
+        refused = fixture.call_advertised_tool(
             mcp_server.TRANSITION_TOOL, self.native_transition_request(fixture, action, payload)
         )
         self.assertEqual("TRANSITION_INPUT_INVALID", refused["code"], refused)
@@ -687,7 +702,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
 
 class RecordReadyCommissionTest(SubmittedCandidateSupport):
     def record(self, fixture: CheckpointFixture, candidate: str, prompt: str) -> JsonObject:
-        return call_advertised_tool(
+        return fixture.call_advertised_tool(
             mcp_server.REVIEW_JOB_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -708,7 +723,7 @@ class RecordReadyCommissionTest(SubmittedCandidateSupport):
         return published.reference.sha256
 
     def test_record_ready_requires_the_prompt_the_review_job_published_for_the_exact_subject(self) -> None:
-        fixture = self.checkpoint_fixture(candidate_form="current-head")
+        fixture = self.native_fixture(self.checkpoint_fixture(candidate_form="current-head"))
         candidate = fixture.candidate_revision
         store = SQLiteWorkStore(fixture.work / "state.sqlite3")
         snapshot = store.read_candidate_snapshot_context(AttemptId("work-a-1"))
@@ -834,13 +849,13 @@ class RecordReadyCommissionTest(SubmittedCandidateSupport):
         )
         self.assertIsInstance(published, AcceptedArtifactPublication)
         roots = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
-        status = call_advertised_tool(
+        status = fixture.call_advertised_tool(
             mcp_server.ITEM_STATUS_TOOL, {"request": {**roots, "operation": "item", "item_id": "work-a"}}
         )
         self.assertEqual({"kind": "none"}, status["review_verdict"])
         prepared = self.review_result(fixture, {"kind": "initial", "candidate_revision": candidate})
         self.assertEqual("ready", prepared["status"], prepared)
-        inspected = call_advertised_tool(
+        inspected = fixture.call_advertised_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL, {**roots, "attempt_id": "work-a-1", "reconciliation": None}
         )
         self.assertEqual({"kind": "absent"}, inspected["candidate_review"])
@@ -851,7 +866,7 @@ class RecordReadyCommissionTest(SubmittedCandidateSupport):
         assert isinstance(prompt, str)
         recorded = self.record(fixture, candidate, prompt)
         self.assertEqual(("recorded", "committed"), (recorded["status"], recorded["effect"]), recorded)
-        status = call_advertised_tool(
+        status = fixture.call_advertised_tool(
             mcp_server.ITEM_STATUS_TOOL, {"request": {**roots, "operation": "item", "item_id": "work-a"}}
         )
         self.assertEqual("ready", self.json_object(status["review_verdict"])["kind"])

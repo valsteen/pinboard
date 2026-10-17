@@ -71,10 +71,10 @@ from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import read_operations as mcp_reads
 from pinboard.mcp import server as mcp_server
-from tests.checkpoint_support import CheckpointPackageSupport
+from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.decision_support import BOARD
 from tests.domain_support import action
-from tests.native_support import call_advertised_tool, call_native_tool
+from tests.native_support import call_native_tool, native_tools
 from tests.support import SQLITE_NOW, NoReadyCandidateReviews, complete_sqlite_state, initialize_store
 from tests.test_proposals import proposal as proposal_input
 from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
@@ -5029,8 +5029,16 @@ class McpTransportTest(unittest.TestCase):
 
 
 class ResumedReviewReconciliationTest(CheckpointPackageSupport):
+    def native_fixture(self, fixture: CheckpointFixture) -> CheckpointFixture:
+        native = self.enterContext(native_tools())
+        return replace(
+            fixture,
+            call_native_tool=native.call_native_tool,
+            call_advertised_tool=native.call_advertised_tool,
+        )
+
     def test_malformed_verifier_digest_recovers_from_original_review_response(self) -> None:
-        fixture = self.checkpoint_fixture(review_condition="missing")
+        fixture = self.native_fixture(self.checkpoint_fixture(review_condition="missing"))
         job = self.review_result(fixture, {"kind": "initial", "candidate_revision": fixture.candidate_revision})
         self.assertEqual("ready", job["status"], job)
         reference = self.json_object(job["prompt_reference"])
@@ -5047,7 +5055,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         before = fixture.store.validated_snapshot()
         prompt_path = fixture.work / str(reference["selector"])
         prompt_bytes = prompt_path.read_bytes()
-        rejected = call_advertised_tool(mcp_server.ARTIFACT_VERIFY_TOOL, verification | {"sha256": digest[:-1]})
+        rejected = fixture.call_advertised_tool(mcp_server.ARTIFACT_VERIFY_TOOL, verification | {"sha256": digest[:-1]})
         self.assertEqual("ARTIFACT_VERIFY_INVALID", rejected["code"])
         self.assertEqual(
             (False, "unchanged", "correct-input", []),
@@ -5068,7 +5076,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
             "human/coordinator",
         ):
             self.assertIn(required, message)
-        recovered = call_advertised_tool(mcp_server.ARTIFACT_VERIFY_TOOL, verification)
+        recovered = fixture.call_advertised_tool(mcp_server.ARTIFACT_VERIFY_TOOL, verification)
         self.assertEqual("pinboard-verified-artifact-reference/v1", recovered["schema"])
         self.assertTrue(recovered["verified"])
         self.assertEqual(reference["sha256"], recovered["sha256"])
@@ -5076,7 +5084,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         self.assertEqual(prompt_bytes, prompt_path.read_bytes())
 
     def test_equivalent_commit_reuses_review_only_while_review_identity_is_current(self) -> None:
-        fixture = self.checkpoint_fixture(candidate_form="working-tree", committed_context=True)
+        fixture = self.native_fixture(self.checkpoint_fixture(candidate_form="working-tree", committed_context=True))
         snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
         attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
         assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
@@ -5099,10 +5107,10 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
             **common,
             "review": review | {"accepted_brief_sha256": "0" * 64},
         }
-        stale = call_native_tool(mcp_server.REVIEW_JOB_TOOL, stale_request)
+        stale = fixture.call_native_tool(mcp_server.REVIEW_JOB_TOOL, stale_request)
         self.assertEqual("rejected", stale["status"], stale)
         current_request: dict[str, contracts.JsonValue] = {**common, "review": review}
-        recorded = call_native_tool(mcp_server.REVIEW_JOB_TOOL, current_request)
+        recorded = fixture.call_native_tool(mcp_server.REVIEW_JOB_TOOL, current_request)
         self.assertEqual("recorded", recorded["status"], recorded)
         reconciliation: dict[str, contracts.JsonValue] = {
             "target_revision": "accepted-target",
@@ -5116,7 +5124,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         }
 
         def next_operation() -> dict[str, contracts.JsonValue]:
-            inspected = call_native_tool(
+            inspected = fixture.call_native_tool(
                 mcp_server.ATTEMPT_INSPECT_TOOL,
                 {
                     "project_root": str(fixture.project),
@@ -5146,7 +5154,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         self.assertEqual("review-subagent", next_operation()["kind"])
 
     def test_recorded_ready_review_resumes_at_git_metadata_recovery_without_launch(self) -> None:  # noqa: PLR0915 - exercises the complete resumed-review sequence
-        fixture = self.checkpoint_fixture(candidate_form="current-head")
+        fixture = self.native_fixture(self.checkpoint_fixture(candidate_form="current-head"))
         snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
         attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
         assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
@@ -5175,7 +5183,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
             ("verdict", "not-ready"),
             ("runtime", "codex"),
         ):
-            rejected = call_native_tool(
+            rejected = fixture.call_native_tool(
                 mcp_server.REVIEW_JOB_TOOL,
                 {
                     "project_root": str(fixture.project),
@@ -5188,7 +5196,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
                 self.assertFalse(rejected["state_changed"])
                 self.assertEqual([], rejected["changed_surfaces"])
 
-        recorded = call_native_tool(
+        recorded = fixture.call_native_tool(
             mcp_server.REVIEW_JOB_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -5199,7 +5207,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         self.assertEqual("recorded", recorded["status"], recorded)
         self.assertNotIn("native_launch", recorded)
         self.assertEqual("present", self.json_object(recorded["candidate_review"])["kind"])
-        repeated = call_native_tool(
+        repeated = fixture.call_native_tool(
             mcp_server.REVIEW_JOB_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -5210,7 +5218,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         self.assertEqual("recorded", repeated["status"], repeated)
         self.assertFalse(repeated["state_changed"])
 
-        relaunch = call_native_tool(
+        relaunch = fixture.call_native_tool(
             mcp_server.REVIEW_JOB_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -5233,7 +5241,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         self.assertIn("repository reconciliation", relaunch_message)
         self.assertNotIn("requires the current review attempt", relaunch_message)
 
-        unreconciled = call_advertised_tool(
+        unreconciled = fixture.call_advertised_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -5262,7 +5270,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
                 {"effect": "git-metadata", "status": "denied"},
             ],
         }
-        inspected = call_native_tool(
+        inspected = fixture.call_native_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -5289,7 +5297,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
             "pinboard.adapters.candidate_evidence.root.observe_candidate_checkout_identity",
             side_effect=RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "git unavailable"),
         ):
-            permission_first = call_native_tool(
+            permission_first = fixture.call_native_tool(
                 mcp_server.ATTEMPT_INSPECT_TOOL,
                 {
                     "project_root": str(fixture.project),
@@ -5315,7 +5323,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
             "pinboard.adapters.candidate_evidence.root.observe_candidate_checkout_identity",
             side_effect=RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "git unavailable"),
         ):
-            refresh_first = call_native_tool(
+            refresh_first = fixture.call_native_tool(
                 mcp_server.ATTEMPT_INSPECT_TOOL,
                 {
                     "project_root": str(fixture.project),
@@ -5337,7 +5345,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
                 {"effect": "git-metadata", "status": "allowed"},
             ],
         }
-        ready_inspected = call_native_tool(
+        ready_inspected = fixture.call_native_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -5353,7 +5361,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
             "pinboard.adapters.candidate_evidence.root.observe_candidate_checkout_identity",
             side_effect=RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "git unavailable"),
         ):
-            failed = call_native_tool(
+            failed = fixture.call_native_tool(
                 mcp_server.ATTEMPT_INSPECT_TOOL,
                 {
                     "project_root": str(fixture.project),
@@ -5366,7 +5374,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         self.assertEqual("ATTEMPT_BRIEF_INVALID", failed["code"])
 
         subprocess.run(["git", "switch", "--detach", "HEAD"], cwd=fixture.project, check=True, capture_output=True)
-        detached = call_native_tool(
+        detached = fixture.call_native_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -5382,7 +5390,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
 
         tracked = fixture.project / "tracked.txt"
         tracked.write_text("changed after review\n", encoding="utf-8")
-        drifted = call_native_tool(
+        drifted = fixture.call_native_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -5407,7 +5415,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
 
         stale = dict(review)
         stale["result_sha256"] = "0" * 64
-        rejected = call_native_tool(
+        rejected = fixture.call_native_tool(
             mcp_server.REVIEW_JOB_TOOL,
             {
                 "project_root": str(fixture.project),
@@ -5420,7 +5428,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         self.assertEqual([], rejected["changed_surfaces"])
 
         (attempt_root / "review.md").write_text("changed review bytes\n", encoding="utf-8")
-        changed = call_native_tool(
+        changed = fixture.call_native_tool(
             mcp_server.ATTEMPT_INSPECT_TOOL,
             {
                 "project_root": str(fixture.project),

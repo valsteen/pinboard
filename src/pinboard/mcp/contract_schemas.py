@@ -40,6 +40,8 @@ from pinboard.mcp.contracts import (
     BriefCommitted,
     BriefCommittedWithWarning,
     BriefContractRejected,
+    BriefLookupInvalid,
+    BriefNotFound,
     BriefPublicationInfrastructureFailure,
     BriefPublicationInfrastructureUnchangedFailure,
     BriefPublishedRejection,
@@ -878,8 +880,17 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         )
     elif tool_name == "pinboard_return_context":
         msgspec.convert(content, type=ReturnContextReady if status == "ready" else ReturnContextRejected, strict=True)
-    elif tool_name == "pinboard_artifact_verify" and schema == "pinboard-verified-artifact-reference/v1":
+    elif (
+        tool_name in {"pinboard_artifact_verify", "pinboard_brief_lookup"}
+        and schema == "pinboard-verified-artifact-reference/v1"
+    ):
         msgspec.convert(content, type=ArtifactVerified, strict=True)
+    elif tool_name == "pinboard_brief_lookup" and code == "BRIEF_LOOKUP_INVALID":
+        msgspec.convert(content, type=BriefLookupInvalid, strict=True)
+    elif tool_name == "pinboard_brief_lookup" and code == "BRIEF_NOT_FOUND":
+        msgspec.convert(content, type=BriefNotFound, strict=True)
+    elif tool_name == "pinboard_brief_lookup":
+        msgspec.convert(content, type=ArtifactBytesInvalid, strict=True)
     elif tool_name == "pinboard_overview":
         msgspec.convert(content, type=OverviewRejected, strict=True)
     elif tool_name == "pinboard_actions" and code == "ACTIONS_INVALID":

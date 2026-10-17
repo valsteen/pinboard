@@ -684,6 +684,13 @@ class ArtifactVerifyRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     size_bytes: PositiveInt
 
 
+class BriefLookupRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    attempt_id: PathComponent
+    artifact_revision: PositiveInt
+
+
 class TransitionActionIdentity[KindT](msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     kind: KindT
     subject: PathComponent
@@ -1379,6 +1386,22 @@ class ArtifactBytesInvalid(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-artifact-verification-result/v1"]
     code: diagnostic_codes.ArtifactBytesInvalidCode
     retry: Literal["do-not-retry"]
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
+    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
+
+
+class BriefLookupInvalid(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-brief-lookup-result/v1"]
+    code: diagnostic_codes.BriefLookupInvalidCode
+    retry: Literal["correct-input"]
+    observed: Empty
+    mismatches: Empty
+
+
+class BriefNotFound(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-brief-lookup-result/v1"]
+    code: diagnostic_codes.BriefNotFoundCode
+    retry: Literal["correct-input"]
     observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
     mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
 
@@ -3132,6 +3155,13 @@ ARTIFACT_VERIFICATION_RESULT_TYPES = (
     ArtifactBytesInvalid,
     ExecutorBusyResult,
 )
+BRIEF_LOOKUP_RESULT_TYPES = (
+    ArtifactVerified,
+    BriefLookupInvalid,
+    BriefNotFound,
+    ArtifactBytesInvalid,
+    ExecutorBusyResult,
+)
 PROPOSAL_RESULT_TYPES = (
     ProposalCommitted,
     ProposalCommittedWithWarning,
@@ -3193,6 +3223,7 @@ type RequestBoundary = (
     | type[CandidateObserveRequest]
     | type[CandidateRestoreRequest]
     | type[ArtifactVerifyRequest]
+    | type[BriefLookupRequest]
     | type[CloseRequest]
     | type[DispatchRequest]
     | type[ReviewJobRequest]
@@ -3262,6 +3293,8 @@ type ResultBoundary = (
     | type[ArtifactVerificationInvalid]
     | type[ArtifactReferenceMismatch]
     | type[ArtifactBytesInvalid]
+    | type[BriefLookupInvalid]
+    | type[BriefNotFound]
     | type[ActionsSuccess]
     | type[CompletionActionsSuccess]
     | type[TerminalAttemptInspectionSuccess]

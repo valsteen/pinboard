@@ -34,6 +34,7 @@ from pinboard.application import (
     queries,
     query_models,
     service,
+    stored_state,
     work_brief_contract,
     work_brief_models,
     work_briefs,
@@ -1977,13 +1978,86 @@ def _verify_artifact(
                 (),
             ),
         )
+    return _verify_artifact_reference(durable, reference, token)
+
+
+def _lookup_brief(
+    project_root: str,
+    work_root: str,
+    attempt_id: str,
+    artifact_revision: IntegerBoundaryValue,
+    token: execution.CancellationToken,
+) -> execution.OperationResult:
+    """Recover one accepted brief receipt without publication, binding, or capture effects."""
+    token.checkpoint()
+    try:
+        request = msgspec.convert(
+            {
+                "project_root": project_root,
+                "work_root": work_root,
+                "attempt_id": attempt_id,
+                "artifact_revision": artifact_revision,
+            },
+            type=contracts.BriefLookupRequest,
+            strict=True,
+        )
+        durable = common._resolve_durable(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError, RootError) as error:
+        return common._read_failure(
+            "pinboard-mcp-brief-lookup-result/v1",
+            "BRIEF_LOOKUP_INVALID",
+            f"Cannot look up brief for project_root={project_root!r}, work_root={work_root!r}, "
+            f"attempt_id={attempt_id!r}, artifact_revision={artifact_revision!r}: {error}. "
+            "Correct the named input or root condition, then repeat this read; do not replay publication.",
+            None,
+        )
+    reference = common.compose_store(durable).read_artifact_reference(
+        work_models.ArtifactKind.BRIEF, request.attempt_id, request.artifact_revision
+    )
+    if reference is None:
+        return common._read_failure(
+            "pinboard-mcp-brief-lookup-result/v1",
+            "BRIEF_NOT_FOUND",
+            f"No accepted brief matches attempt '{request.attempt_id}' revision {request.artifact_revision} "
+            f"under project_root '{request.project_root}', work_root '{request.work_root}'. "
+            "Confirm these original request values. Absence does not prove the original publication had no "
+            "partial immutable-file effect; report the lost publication and these values to the human for "
+            "diagnosis. Do not reconstruct bytes or blindly replay publication.",
+            FailureDetails(
+                observed=(
+                    FailureFact("project_root", request.project_root),
+                    FailureFact("work_root", request.work_root),
+                    FailureFact("attempt_id", request.attempt_id),
+                    FailureFact("artifact_revision", request.artifact_revision),
+                ),
+                mismatches=(FailureMismatch("accepted_brief_reference", "present", "absent"),),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    return _verify_artifact_reference(durable, reference, token)
+
+
+def _verify_artifact_reference(
+    durable: DurableRoots,
+    reference: stored_state.ArtifactReference,
+    token: execution.CancellationToken,
+) -> execution.OperationResult:
+    observations = (
+        FailureFact("artifact_ref_id", int(reference.artifact_ref_id)),
+        FailureFact("selector", reference.selector),
+        FailureFact("sha256", reference.content_sha256),
+        FailureFact("size_bytes", reference.size_bytes),
+    )
     try:
         read_reference(durable.work_root, reference)
     except ArtifactError as error:
         return common._read_failure(
             "pinboard-mcp-artifact-verification-result/v1",
             "ARTIFACT_BYTES_INVALID",
-            f"Accepted artifact {request.artifact_ref_id} at '{durable.work_root / reference.selector}' could not be verified: {error}. Report this exact reference and defect to the human; do not retry unchanged, reconstruct or overwrite accepted bytes.",
+            f"Accepted artifact {reference.artifact_ref_id} at '{durable.work_root / reference.selector}' could not be verified: {error}. Report this exact reference and defect to the human; do not retry unchanged, reconstruct or overwrite accepted bytes.",
             FailureDetails(
                 observations,
                 (
@@ -2001,7 +2075,7 @@ def _verify_artifact(
     content = msgspec.to_builtins(
         contracts.ArtifactVerified(
             "pinboard-verified-artifact-reference/v1",
-            request.artifact_ref_id,
+            int(reference.artifact_ref_id),
             reference.selector,
             reference.content_sha256,
             reference.size_bytes,

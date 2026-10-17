@@ -1492,6 +1492,13 @@ class BriefNotFound(RejectedReadResult, frozen=True):
     mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
 
 
+class NoPayloadInputContract(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Decode an omitted lifecycle schema before constructing the exact internal record."""
+
+    action_kind: decision_models.ActionKind
+    semantics: action_models.ActionSemanticsView
+
+
 class ActionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: ActionIdentity
     label: NonEmptyText

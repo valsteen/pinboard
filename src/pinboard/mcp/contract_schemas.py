@@ -95,6 +95,7 @@ from pinboard.mcp.contracts import (
     JsonSchemaValue,
     JsonValue,
     NonterminalAttemptInspectionSuccess,
+    NoPayloadInputContract,
     OrderCommitted,
     OrderRejected,
     OverviewRejected,
@@ -300,6 +301,11 @@ def _apply_action_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
     definition = definitions.get("ActionView")
     if not isinstance(definition, dict):
         return
+    input_contract = definitions["InputContractView"]
+    assert isinstance(input_contract, dict)
+    required = input_contract["required"]
+    assert isinstance(required, list)
+    input_contract["required"] = [field for field in required if field != "payload_schema"]
     authority_shapes: list[JsonSchemaValue] = [
         {
             "properties": {
@@ -345,6 +351,11 @@ def _apply_action_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
         semantics = decision_models.action_semantics(kind)
         semantic_constraint = _action_semantics_constraint(kind)
         payload_schema = action_models.action_payload_schema(kind)
+        payload_constraint: JsonSchemaValue = (
+            {"not": {"required": ["payload_schema"]}}
+            if payload_schema is None
+            else {"required": ["payload_schema"], "properties": {"payload_schema": {"const": payload_schema}}}
+        )
         correlations.append(
             {
                 "if": {
@@ -361,14 +372,38 @@ def _apply_action_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
                             "properties": {
                                 "action_kind": {"const": kind.value},
                                 "semantics": semantic_constraint,
-                                "payload_schema": {"const": payload_schema},
                             },
+                            "allOf": [payload_constraint],
                         },
                     }
                 },
             }
         )
     definition["allOf"] = correlations
+    completion = definitions.get("CompletionActionView")
+    if isinstance(completion, dict):
+        kind = decision_models.ActionKind.COMPLETE
+        semantics = decision_models.action_semantics(kind)
+        semantic_constraint = _action_semantics_constraint(kind)
+        completion["allOf"] = [
+            {"oneOf": authority_shapes},
+            {
+                "properties": {
+                    "action_id": {"properties": {"kind": {"const": kind.value}}},
+                    "authorization": {"enum": [role_authorities[role] for role in semantics.permitted_roles]},
+                    "semantics": semantic_constraint,
+                    "input_contract": {
+                        "properties": {
+                            "action_kind": {"const": kind.value},
+                            "semantics": semantic_constraint,
+                            "payload_schema": {
+                                "const": msgspec.json.schema(action_models.ReviewedCompleteInputPayload)
+                            },
+                        }
+                    },
+                }
+            },
+        ]
 
 
 def _apply_transition_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
@@ -710,6 +745,37 @@ def validate_brief_preparation_result(content: dict[str, JsonValue]) -> dict[str
     return content
 
 
+def _validate_actions_result(content: dict[str, JsonValue]) -> None:
+    action_values = content.get("actions")
+    focused_completion = (
+        isinstance(action_values, list)
+        and len(action_values) == 1
+        and isinstance(action_values[0], dict)
+        and isinstance(action_values[0].get("input_contract"), dict)
+        and "checkpoint_packages" in action_values[0]["input_contract"]
+    )
+    if focused_completion:
+        msgspec.convert(content, type=CompletionActionsSuccess, strict=True)
+        return
+    if not isinstance(action_values, list):
+        msgspec.convert(content, type=ActionsSuccess, strict=True)
+        return
+    prepared_actions: list[dict[str, JsonValue | action_models.InputContractView]] = []
+    for action in action_values:
+        if not isinstance(action, dict):
+            raise ValueError("Action discovery actions must be objects.")
+        prepared = dict[str, JsonValue | action_models.InputContractView](action)
+        contract = action.get("input_contract")
+        if isinstance(contract, dict) and "payload_schema" not in contract:
+            absent = msgspec.convert(contract, type=NoPayloadInputContract, strict=True)
+            # Exact typed instances preserve explicit UNSET without giving the internal record a default.
+            prepared["input_contract"] = action_models.InputContractView(
+                absent.action_kind, absent.semantics, msgspec.UNSET
+            )
+        prepared_actions.append(prepared)
+    msgspec.convert({**content, "actions": prepared_actions}, type=ActionsSuccess, strict=True)
+
+
 def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, JsonValue]:  # noqa: C901, PLR0912, PLR0915
     """Validate one emitted result against the exact alternative it claims."""
     if tool_name in {"pinboard_brief_contract", "pinboard_brief_sources", "pinboard_brief_source_plan_output"}:
@@ -859,18 +925,7 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     elif schema == "pinboard-overview/v7" and tool_name == "pinboard_overview":
         msgspec.convert(content, type=query_models.WorkOverview, strict=True)
     elif tool_name == "pinboard_actions" and status == "ok":
-        action_values = content.get("actions")
-        focused_completion = (
-            isinstance(action_values, list)
-            and len(action_values) == 1
-            and isinstance(action_values[0], dict)
-            and isinstance(action_values[0].get("input_contract"), dict)
-            and "checkpoint_packages" in action_values[0]["input_contract"]
-        )
-        if focused_completion:
-            msgspec.convert(content, type=CompletionActionsSuccess, strict=True)
-        else:
-            msgspec.convert(content, type=ActionsSuccess, strict=True)
+        _validate_actions_result(content)
     elif tool_name == "pinboard_attempt_inspect" and status == "ok":
         continuation = content.get("continuation")
         state = continuation.get("state") if isinstance(continuation, dict) else None

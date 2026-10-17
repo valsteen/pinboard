@@ -4,22 +4,25 @@ import hashlib
 import json
 import sqlite3
 import sys
+from copy import deepcopy
 from unittest.mock import patch
 
 import msgspec
+from mcp import Client
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp_types import CallToolResult
 
 from pinboard.adapters.files.root import read_working_tree_candidate
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import actions, query_models, stored_state, work_brief_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, WorkItemId
-from pinboard.mcp import contract_schemas
+from pinboard.mcp import contract_schemas, contracts
 from pinboard.mcp import server as mcp_server
 from pinboard.mcp.contracts import JsonValue
 from tests.checkpoint_support import CheckpointPackageSupport
-from tests.native_support import call_advertised_tool
+from tests.native_support import call_advertised_tool, native_tools
 from tests.support import JsonObject
 
 
@@ -171,6 +174,8 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 )
 
     def test_direct_and_covered_discovery_select_exact_input_without_mutation(self) -> None:
+        valid_results: list[JsonObject] = []
+        invalid_results: list[tuple[str, JsonObject]] = []
         for covered in (False, True):
             with self.subTest(covered=covered):
                 fixture = (
@@ -179,7 +184,23 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                     else self.terminalize_brief(self.checkpoint_fixture())
                 )
                 before = fixture.store.validated_snapshot()
-                action = self.project_action(fixture, "complete:work-a-1")
+                result = fixture.call_advertised_tool(
+                    mcp_server.ACTIONS_TOOL,
+                    {
+                        "request": {
+                            "project_root": str(fixture.project),
+                            "work_root": str(fixture.work),
+                            "role": "project",
+                            "action_id": {"kind": "complete", "subject": "work-a-1"},
+                        }
+                    },
+                )
+                original = deepcopy(result)
+                valid_results.append(result)
+                msgspec.convert(result, type=contracts.CompletionActionsSuccess, strict=True)
+                self.assertIs(result, contract_schemas.validate_result(mcp_server.ACTIONS_TOOL, result))
+                self.assertEqual(original, result)
+                action = self.json_object(self.json_array(result["actions"])[0])
                 contract = self.json_object(action["input_contract"])
                 schema = self.json_object(contract["payload_schema"])
                 self.assertNotIn("oneOf", schema)
@@ -189,6 +210,9 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 self.assertIn("human_decision", required)
                 self.assertNotIn("EvidenceInputPayload", definitions)
                 self.assertNotIn("CoveredCompleteInputPayload", definitions)
+                context = fixture.store.read_attempt_context(AttemptId("work-a-1"))
+                assert isinstance(context, query_models.NonterminalAttemptContextFacts)
+                self.assertEqual(context.candidate_revision, contract["candidate"])
                 packages = self.json_array(contract["checkpoint_packages"])
                 receipts = [
                     value for value in before.transition_receipts if value.outcome_schema == "checkpoint-acceptance/v2"
@@ -206,7 +230,38 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                     )
                     self.assertEqual(reference.content_sha256, row["package_sha256"])
                     self.assertEqual(reference.selector, row["selector"])
+                invalid_contracts: tuple[tuple[str, JsonObject], ...] = (
+                    ("absent", {key: value for key, value in contract.items() if key != "payload_schema"}),
+                    ("null", {**contract, "payload_schema": None}),
+                    ("wrong-schema", {**contract, "payload_schema": {"type": "object"}}),
+                    ("unknown-field", {**contract, "unknown": True}),
+                )
+                for label, invalid_contract in invalid_contracts:
+                    with self.subTest(covered=covered, rejection=label):
+                        invalid: JsonObject = {**result, "actions": [{**action, "input_contract": invalid_contract}]}
+                        invalid_results.append((f"covered={covered}:{label}", invalid))
+                        unchanged = deepcopy(invalid)
+                        with self.assertRaises((msgspec.ValidationError, ValueError)):
+                            msgspec.convert(invalid, type=contracts.CompletionActionsSuccess, strict=True)
+                        with self.assertRaises((msgspec.ValidationError, ValueError)):
+                            contract_schemas.validate_result(mcp_server.ACTIONS_TOOL, invalid)
+                        self.assertEqual(unchanged, invalid)
                 self.assertEqual(before, fixture.store.validated_snapshot())
+
+        async def advertised_schema_scenario() -> None:
+            async with Client(native.server) as client:
+                for valid in valid_results:
+                    await client.session.validate_tool_result(
+                        mcp_server.ACTIONS_TOOL, CallToolResult(content=[], structured_content=valid)
+                    )
+                for label, invalid in invalid_results:
+                    with self.subTest(advertised_rejection=label), self.assertRaises(RuntimeError):
+                        await client.session.validate_tool_result(
+                            mcp_server.ACTIONS_TOOL, CallToolResult(content=[], structured_content=invalid)
+                        )
+
+        with native_tools() as native:
+            asyncio.run(advertised_schema_scenario())
 
     def test_broad_native_discovery_omits_checkpoint_package_enumeration(self) -> None:
 

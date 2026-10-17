@@ -292,7 +292,7 @@ class ActionSemanticsView(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 class InputContractView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_kind: decision_models.ActionKind
     semantics: ActionSemanticsView
-    payload_schema: JsonSchema | None
+    payload_schema: JsonSchema | msgspec.UnsetType
 
     def __post_init__(self) -> None:
         expected = decision_models.action_semantics(self.action_kind)
@@ -305,9 +305,13 @@ class InputContractView(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
             expected.practical_result,
         ):
             raise ValueError("input contract semantics must match its action kind")
-        if msgspec.json.encode(self.payload_schema, order="sorted") != msgspec.json.encode(
-            action_payload_schema(self.action_kind), order="sorted"
-        ):
+        expected_schema = action_payload_schema(self.action_kind)
+        if expected_schema is None:
+            if self.payload_schema is not msgspec.UNSET:
+                raise ValueError("actions without a lifecycle payload must omit its schema")
+        elif self.payload_schema is msgspec.UNSET or msgspec.json.encode(
+            self.payload_schema, order="sorted"
+        ) != msgspec.json.encode(expected_schema, order="sorted"):
             raise ValueError("payload schema must match its action kind")
 
 
@@ -320,6 +324,7 @@ class CompletionPackageView(msgspec.Struct, frozen=True, forbid_unknown_fields=T
 
 
 class CompletionInputContractView(InputContractView, frozen=True, forbid_unknown_fields=True):
+    payload_schema: JsonSchema
     candidate: str | None
     checkpoint_packages: tuple[CompletionPackageView, ...]
 

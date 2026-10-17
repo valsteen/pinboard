@@ -85,6 +85,14 @@ def observe(rollout: str) -> WorkflowObservation:
     )
 
 
+def validate_workflow(layout: Layout, observation: WorkflowObservation) -> None:
+    if reasons := spend.comparison_reasons(layout):
+        raise ValueError("; ".join(reasons))
+    contexts = [context for context in observation.configurations if context.model != "codex-auto-review"]
+    if not contexts or any(context.model != MODEL or context.effort != EFFORT for context in contexts):
+        raise ValueError("native task actor configuration differs from the required Terra/high configuration")
+
+
 def run(source: Path, baseline: str, candidate: str, scenario_set: Path, out: Path, worlds: Path) -> int:
     registered = load_set(scenario_set)
     runner.require_codex_world_location(worlds)
@@ -138,10 +146,7 @@ def run(source: Path, baseline: str, candidate: str, scenario_set: Path, out: Pa
                 directory = layout.run_directory(key)
                 observation = observe((directory / "rollout.jsonl").read_text())
                 write_new(directory / "workflow.json", observation)
-                if not observation.configurations or any(
-                    c.model != MODEL or c.effort != EFFORT for c in observation.configurations
-                ):
-                    raise ValueError("native actor configuration differs from the required Terra/high configuration")
+                validate_workflow(layout, observation)
                 record = next(r for r in layout.run_records() if r.run == key)
                 if not isinstance(record.outcome, Completed):
                     raise ValueError(f"{key.display()} did not complete; inspect retained evidence")

@@ -1,6 +1,7 @@
 """The integration leaf reports whether a reviewed candidate's accepted diff reached a caller-named target."""
 
 import contextlib
+import dataclasses
 import hashlib
 import json
 import os
@@ -28,7 +29,7 @@ from pinboard.mcp import common as mcp_common
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
-from tests.native_support import call_advertised_tool, call_native_tool
+from tests.native_support import call_advertised_tool, native_tools
 from tests.support import JsonObject
 
 FIXED_GIT_DATE = "2030-01-01T00:00:00+00:00"
@@ -191,11 +192,19 @@ class TargetContentReadTest(FixedGitIdentity):
 
 
 class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
+    def native_fixture[T: CheckpointFixture](self, fixture: T) -> T:
+        native = self.enterContext(native_tools())
+        return dataclasses.replace(
+            fixture,
+            call_native_tool=native.call_native_tool,
+            call_advertised_tool=native.call_advertised_tool,
+        )
+
     def roots(self, fixture: CheckpointFixture) -> JsonObject:
         return {"project_root": str(fixture.project), "work_root": str(fixture.work)}
 
     def integration(self, fixture: CheckpointFixture, target: str, item_id: str = "work-a") -> JsonObject:
-        return call_advertised_tool(
+        return fixture.call_advertised_tool(
             mcp_server.ITEM_STATUS_TOOL,
             {"request": {**self.roots(fixture), "operation": "integration", "item_id": item_id, "target": target}},
         )
@@ -241,7 +250,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         self.transition(fixture, "return-for-correction:work-a-1", {"reason": "Rework the candidate."})
 
     def submit_working_tree(self, fixture: CheckpointFixture, worker: str) -> str:
-        observed = call_native_tool(
+        observed = fixture.call_native_tool(
             mcp_server.CANDIDATE_OBSERVE_TOOL, {**self.roots(fixture), "attempt_id": "work-a-1"}
         )
         candidate = observed["candidate"]
@@ -255,7 +264,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
     def multiline_candidate(self) -> tuple[CheckpointFixture, str, str]:
         """Resubmit a working-tree candidate that edits line 2 of a twelve-line file on a committed preimage."""
 
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         self.return_for_review(fixture)
         (fixture.project / "tracked.txt").write_text("base\n", encoding="utf-8")
         (fixture.project / "notes.txt").write_text(NOTES, encoding="utf-8")
@@ -282,7 +291,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
 
     def rebind(self, fixture: CheckpointFixture, revision: int) -> None:
         brief = replace_struct(fixture.brief, artifact_revision=revision)
-        published = call_native_tool(
+        published = fixture.call_native_tool(
             mcp_server.BRIEF_PUBLISH_TOOL,
             {**self.roots(fixture), "brief": self.json_object(msgspec.json.decode(msgspec.json.encode(brief)))},
         )
@@ -359,7 +368,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         self.presence(fixture, "origin/main", "content-present")
 
     def test_protected_commit_candidate_is_found_by_every_integration_style(self) -> None:
-        fixture = self.checkpoint_fixture(candidate_form="current-head")
+        fixture = self.native_fixture(self.checkpoint_fixture(candidate_form="current-head"))
         base = fixture.brief.base_revision
         candidate = fixture.candidate_revision
         target = self.target_worktree(fixture, base)
@@ -394,7 +403,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         )
 
     def test_accepted_checkpoint_source_survives_resume_rebind_and_return(self) -> None:
-        fixture = self.accepted_package_fixture()
+        fixture = self.native_fixture(self.accepted_package_fixture())
         checkpoint = fixture.brief.checkpoint.checkpoint_id
         target = self.target_worktree(fixture, fixture.brief.base_revision)
         (target / "tracked.txt").write_text("candidate\n", encoding="utf-8")
@@ -423,7 +432,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         self.assertEqual(expected, self.source(self.presence(fixture, "main", "content-present")))
 
     def test_completion_source_is_the_closing_candidate(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         self.complete(fixture)
         target = self.target_worktree(fixture, fixture.brief.base_revision)
         completed = self.presence(fixture, "main", "content-not-present")
@@ -439,7 +448,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         (target / "tracked.txt").write_text("candidate\n", encoding="utf-8")
         commit(target, "squash the completed change")
         self.assertEqual(self.source(completed), self.source(self.presence(fixture, "main", "content-present")))
-        item = call_advertised_tool(
+        item = fixture.call_advertised_tool(
             mcp_server.ITEM_STATUS_TOOL,
             {"request": {**self.roots(fixture), "operation": "item", "item_id": "work-a"}},
         )
@@ -456,7 +465,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         )
 
     def test_empty_recorded_diff_is_no_change_without_a_content_check(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         self.return_for_review(fixture)
         (fixture.project / "tracked.txt").write_text("base\n", encoding="utf-8")
         candidate = self.submit_working_tree(fixture, "worker-empty")
@@ -470,7 +479,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         )
 
     def test_candidates_without_accepted_snapshot_bytes_are_unavailable(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         git(fixture.project, "branch", "main", fixture.brief.base_revision)
         ready = self.rejection(self.integration(fixture, "main", "work-c"), "INTEGRATION_CANDIDATE_UNAVAILABLE")
         self.assertEqual(
@@ -500,7 +509,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         self.assertEqual(("unchanged", "correct-input"), (continued["effect"], continued["retry"]))
         self.assertIn("operation item", str(continued["recovery"]))
 
-        returned = self.checkpoint_fixture()
+        returned = self.native_fixture(self.checkpoint_fixture())
         self.return_for_review(returned)
         git(returned.project, "branch", "main", returned.brief.base_revision)
         self.assertEqual(
@@ -544,7 +553,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_target_and_request_rejections_are_typed(self) -> None:
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         unresolved = self.integration(fixture, "never-created")
         self.assertEqual(
             {"target": "never-created", "project_root": str(fixture.project)},
@@ -624,7 +633,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         self.assertEqual(("unchanged", "do-not-retry"), (result["effect"], result["retry"]))
         self.assertIn("pinboard validate", str(result["recovery"]))
 
-        accepted = self.accepted_package_fixture()
+        accepted = self.native_fixture(self.accepted_package_fixture())
         git(accepted.project, "branch", "main", accepted.brief.base_revision)
         package_artifact = accepted.work / accepted.package_reference.selector
         package_bytes = package_artifact.read_bytes()
@@ -663,13 +672,13 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         self.record_commissioned_review(fixture, fixture.candidate_revision, "independent-reviewer")
 
     def test_attempt_inspection_reconciliation_runs_no_integration_read(self) -> None:
-        fixture = self.checkpoint_fixture(candidate_form="current-head")
+        fixture = self.native_fixture(self.checkpoint_fixture(candidate_form="current-head"))
         self.record_ready(fixture)
         git(fixture.project, "branch", "main", fixture.candidate_revision)
         integrated = self.presence(fixture, "main", "content-present")
 
         def inspect(phase: str, effects: tuple[str, str, str]) -> JsonObject:
-            inspected = call_advertised_tool(
+            inspected = fixture.call_advertised_tool(
                 mcp_server.ATTEMPT_INSPECT_TOOL,
                 {
                     **self.roots(fixture),
@@ -696,8 +705,8 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         ):
             cleanup = inspect("cleanup", ("allowed", "not-required", "allowed"))
             terminal = inspect("terminal", ("not-required", "allowed", "not-required"))
-            overview = call_advertised_tool(mcp_server.OVERVIEW_TOOL, self.roots(fixture))
-            item = call_advertised_tool(
+            overview = fixture.call_advertised_tool(mcp_server.OVERVIEW_TOOL, self.roots(fixture))
+            item = fixture.call_advertised_tool(
                 mcp_server.ITEM_STATUS_TOOL,
                 {"request": {**self.roots(fixture), "operation": "item", "item_id": "work-a"}},
             )
@@ -707,7 +716,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         self.assertNotIn("presence", json.dumps(overview))
 
     def test_integration_reads_stay_keyed_as_retained_history_grows(self) -> None:
-        fixture = self.accepted_package_fixture()
+        fixture = self.native_fixture(self.accepted_package_fixture())
         git(fixture.project, "branch", "main", fixture.brief.base_revision)
         statements: list[str] = []
         original_open = sqlite_store.open_database

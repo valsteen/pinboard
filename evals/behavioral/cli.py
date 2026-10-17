@@ -192,6 +192,19 @@ class ContinueStartupPilot:
 
 
 @dataclass(frozen=True)
+class ContinueStoppedStartupPilot:
+    source: Path
+    baseline_revision: str
+    candidate_revision: str
+    scenario_set: Path
+    out: Path
+    worlds: Path
+    window_sha256: str
+    previous_result_sha256: str
+    result: Path
+
+
+@dataclass(frozen=True)
 class CoverageCodex:
     source: Path
     revision: str
@@ -221,6 +234,7 @@ type Command = (
     | CoverageCodex
     | StartupPilot
     | ContinueStartupPilot
+    | ContinueStoppedStartupPilot
     | InvestigationWorld
     | InvestigationCodex
     | InvestigationClaude
@@ -297,6 +311,7 @@ def parser() -> argparse.ArgumentParser:  # noqa: PLR0915
             "startup-pilot-continue",
             "continue retained pilot; accept unpriced auxiliary approval usage within original window",
         ),
+        ("startup-pilot-continue-stopped", "continue an exact stopped result into a fresh result destination"),
     ):
         pilot = commands.add_parser(name, help=help_text)
         pilot.add_argument("--source", type=Path, default=Path())
@@ -304,8 +319,11 @@ def parser() -> argparse.ArgumentParser:  # noqa: PLR0915
             pilot.add_argument(f"--{flag}", required=True)
         for flag in ("scenario-set", "out", "worlds"):
             pilot.add_argument(f"--{flag}", type=Path, required=True)
-        if name == "startup-pilot-continue":
+        if name in {"startup-pilot-continue", "startup-pilot-continue-stopped"}:
             pilot.add_argument("--window-sha256", required=True)
+        if name == "startup-pilot-continue-stopped":
+            pilot.add_argument("--previous-result-sha256", required=True)
+            pilot.add_argument("--result", type=Path, required=True)
 
     spending = commands.add_parser("spend", help="itemize and total recorded spend")
     spending.add_argument("--out", type=Path, required=True)
@@ -449,6 +467,18 @@ def decode(arguments: Sequence[str]) -> Command:  # noqa: C901, PLR0912
                 options.worlds,
                 options.window_sha256,
             )
+        case "startup-pilot-continue-stopped":
+            return ContinueStoppedStartupPilot(
+                options.source,
+                options.baseline_revision,
+                options.candidate_revision,
+                options.scenario_set,
+                options.out,
+                options.worlds,
+                options.window_sha256,
+                options.previous_result_sha256,
+                options.result,
+            )
         case "coverage-codex":
             if options.runs_per_target > 6 or options.maximum_seconds > 10800 or not 0 < options.cap_usd <= 120:
                 parser().error("coverage permits at most six runs per target, 10800 seconds and 120 known-priced USD")
@@ -581,6 +611,18 @@ def dispatch(command: Command) -> int:  # noqa: C901, PLR0912
         case ContinueStartupPilot() as c:
             return startup_pilot.continue_run(
                 c.source, c.baseline_revision, c.candidate_revision, c.scenario_set, c.out, c.worlds, c.window_sha256
+            )
+        case ContinueStoppedStartupPilot() as c:
+            return startup_pilot.continue_stopped_run(
+                c.source,
+                c.baseline_revision,
+                c.candidate_revision,
+                c.scenario_set,
+                c.out,
+                c.worlds,
+                c.window_sha256,
+                c.previous_result_sha256,
+                c.result,
             )
         case CoverageCodex() as c:
             return coverage_codex(c)

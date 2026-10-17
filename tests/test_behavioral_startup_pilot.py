@@ -38,7 +38,7 @@ from evals.behavioral.records import (
 )
 from tests.test_behavioral_decision import fixture_set, record_score
 from tests.test_behavioral_scoring import answer
-from tests.test_behavioral_spend import turn
+from tests.test_behavioral_spend import record_scorer, turn
 
 
 class FixedDateTime(datetime.datetime):
@@ -125,9 +125,26 @@ class StartupPilotTest(unittest.TestCase):
         with patch.object(startup_pilot, "continue_run", return_value=2) as continuing:
             self.assertEqual(2, cli.dispatch(command))
         self.assertEqual("c" * 64, continuing.call_args.args[-1])
+        stopped = cli.decode(
+            [
+                "startup-pilot-continue-stopped",
+                *arguments[1:],
+                "--previous-result-sha256",
+                "d" * 64,
+                "--result",
+                "/out/fresh.json",
+            ]
+        )
+        self.assertIsInstance(stopped, cli.ContinueStoppedStartupPilot)
+        with patch.object(startup_pilot, "continue_stopped_run", return_value=2) as continuing_stopped:
+            self.assertEqual(2, cli.dispatch(stopped))
+        self.assertEqual(("d" * 64, Path("/out/fresh.json")), continuing_stopped.call_args.args[-2:])
 
     def retained(self, root: Path) -> tuple[scenarios.RegisteredSet, str]:
-        selected = fixture_set(["s1"], 1, (ChecklistItem.P9,))
+        return self.retained_cases(root, ["s1"])
+
+    def retained_cases(self, root: Path, ids: list[str]) -> tuple[scenarios.RegisteredSet, str]:
+        selected = fixture_set(ids, 1, (ChecklistItem.P9,))
         for arm, revision in (("baseline", "a" * 40), ("candidate", "b" * 40)):
             directory = root / "exports" / arm
             plugin = directory / "plugin"
@@ -304,6 +321,136 @@ class StartupPilotTest(unittest.TestCase):
         if budget.reserve(spend.Category.CODEX_AGENT_RUN) is not None:
             self.fail("unexpected purchase")
         return ["not admitted"]
+
+    def stopped_result(self, root: Path) -> str:
+        layout = Layout(root)
+        write_new(
+            root / "continuation.json",
+            startup_pilot.PilotResult(
+                "pinboard-startup-pilot-result/v1",
+                "incomplete",
+                "projected fit refused",
+                spend.total(spend.items(layout)),
+                False,
+                any(a.reviewer_usage for _, a in layout.codex_accounting()),
+                [r.run.display() for r in layout.run_records() if isinstance(r.outcome, Completed)],
+                "inconclusive",
+            ),
+        )
+        return hashlib.sha256((root / "continuation.json").read_bytes()).hexdigest()
+
+    def test_stopped_continuation_reuses_six_runs_and_buys_only_four_missing_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected, digest = self.retained_cases(root, ["s1", "s2", "s3", "s4", "s5"])
+            layout = Layout(root)
+            budget = spend.PilotBudget(layout, 30, processes.Window(None), True)
+            for scenario in selected.scenarios[:3]:
+                for arm in ("baseline", "candidate"):
+                    plan = runner.RunPlan(
+                        layout,
+                        root / "worlds",
+                        export.load_export(root / "exports" / arm),
+                        arm,
+                        scenarios.RegisteredSet((scenario,), selected.registration, selected.scenario_sources),
+                        1,
+                        1,
+                        startup_pilot.MODEL,
+                        processes.Window(None),
+                    )
+                    self.record_task(runner.CodexPlan(plan, "high", root), budget)
+            with patch.object(oneshot, "ask", side_effect=self.response):
+                for pending in layout.scorer_inputs():
+                    scoring.ScoringRun(layout, budget, startup_pilot.DESCRIPTIVE_MODEL).score(pending)
+                self.assertEqual([], startup_pilot.substance.assess(layout, budget, startup_pilot.DESCRIPTIVE_MODEL))
+            previous = self.stopped_result(root)
+            originals = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+            with (
+                patch.object(startup_pilot, "load_set", return_value=selected),
+                patch.object(startup_pilot.runner, "require_codex_world_location"),
+                patch.object(startup_pilot.datetime, "datetime", FixedDateTime),
+                patch.object(startup_pilot.time, "monotonic", return_value=100),
+                patch.object(startup_pilot.export, "export_revision") as exporting,
+                patch.object(startup_pilot.probe, "probe_codex") as probing,
+                patch.object(startup_pilot.runner, "run_codex", side_effect=self.record_task) as running,
+                patch.object(oneshot, "ask", side_effect=self.response) as paid,
+            ):
+                self.assertEqual(
+                    0,
+                    startup_pilot.continue_stopped_run(
+                        root,
+                        "a" * 40,
+                        "b" * 40,
+                        root / "set",
+                        root,
+                        root / "worlds",
+                        digest,
+                        previous,
+                        root / "recorded-spend.json",
+                    ),
+                )
+            exporting.assert_not_called()
+            probing.assert_not_called()
+            self.assertEqual(4, running.call_count)
+            self.assertEqual(8, paid.call_count)
+            self.assertEqual(
+                {"s4", "s5"}, {call.args[0].run.scenarios.scenarios[0].id for call in running.call_args_list}
+            )
+            for path, content in originals.items():
+                self.assertEqual(content, path.read_bytes(), str(path))
+            outcome = msgspec.json.decode((root / "recorded-spend.json").read_bytes(), type=startup_pilot.PilotResult)
+            self.assertEqual("completed", outcome.status)
+            self.assertEqual(10, len(outcome.completed_runs))
+            self.assertFalse(outcome.unreported_usage)
+
+    def test_stopped_continuation_rejects_changed_predecessor_occupied_output_and_unknown_usage(self) -> None:
+        for defect in ("digest", "occupied", "accounting", "deadline", "scorer-model"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                selected, digest = self.retained(root)
+                previous = self.stopped_result(root)
+                destination = root / "new.json"
+                if defect == "digest":
+                    (root / "continuation.json").write_text("changed")
+                elif defect == "occupied":
+                    destination.write_text("existing")
+                elif defect == "accounting":
+                    write_new(
+                        Layout(root).probe_file("baseline").parent / "accounting.json",
+                        CodexAccounting("pinboard-behavioral-codex-accounting/v1", 0.01, False, [], None),
+                    )
+                elif defect == "scorer-model":
+                    record_scorer(Layout(root), "wrong", 0)
+                with (
+                    patch.object(startup_pilot, "load_set", return_value=selected),
+                    patch.object(startup_pilot.runner, "require_codex_world_location"),
+                    patch.object(
+                        startup_pilot.datetime, "datetime", ExpiredDateTime if defect == "deadline" else FixedDateTime
+                    ),
+                    patch.object(startup_pilot.time, "monotonic", return_value=100),
+                    patch.object(startup_pilot.runner, "run_codex") as running,
+                    patch.object(oneshot, "ask") as paid,
+                ):
+                    arguments = (
+                        root,
+                        "a" * 40,
+                        "b" * 40,
+                        root / "set",
+                        root,
+                        root / "worlds",
+                        digest,
+                        previous,
+                        destination,
+                    )
+                    if defect in {"digest", "occupied"}:
+                        with self.assertRaises(ValueError):
+                            startup_pilot.continue_stopped_run(*arguments)
+                    else:
+                        self.assertEqual(2, startup_pilot.continue_stopped_run(*arguments))
+                        outcome = msgspec.json.decode(destination.read_bytes(), type=startup_pilot.PilotResult)
+                        self.assertEqual("incomplete", outcome.status)
+                    running.assert_not_called()
+                    paid.assert_not_called()
 
     def test_continuation_rejects_identity_drift_unknown_main_and_expired_window_before_purchases(self) -> None:
         for defect in ("digest", "revision", "scenario", "export", "probe", "main", "deadline", "cap"):

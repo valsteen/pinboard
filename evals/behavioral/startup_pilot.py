@@ -2,6 +2,7 @@
 
 import datetime
 import hashlib
+import math
 import time
 from pathlib import Path
 from typing import Literal
@@ -143,17 +144,51 @@ def run(source: Path, baseline: str, candidate: str, scenario_set: Path, out: Pa
         ),
     )
     layout = Layout(out)
-    budget = spend.Budget(layout, 30.0, window, False)
+    budget = spend.PilotBudget(layout, 30.0, window, False)
     return execute(source, baseline, candidate, registered, layout, worlds, budget, out / "pilot.json", False)
 
 
 def continue_run(
     source: Path, baseline: str, candidate: str, scenario_set: Path, out: Path, worlds: Path, window_sha256: str
 ) -> int:
+    return continue_retained(
+        source, baseline, candidate, scenario_set, out, worlds, window_sha256, None, out / "continuation.json"
+    )
+
+
+def continue_stopped_run(
+    source: Path,
+    baseline: str,
+    candidate: str,
+    scenario_set: Path,
+    out: Path,
+    worlds: Path,
+    window_sha256: str,
+    previous_result_sha256: str,
+    result_path: Path,
+) -> int:
+    return continue_retained(
+        source, baseline, candidate, scenario_set, out, worlds, window_sha256, previous_result_sha256, result_path
+    )
+
+
+def continue_retained(
+    source: Path,
+    baseline: str,
+    candidate: str,
+    scenario_set: Path,
+    out: Path,
+    worlds: Path,
+    window_sha256: str,
+    previous_result_sha256: str | None,
+    result_path: Path,
+) -> int:
     """Reuse a retained pilot under explicit authority for unknown auxiliary approval-review dollars.
 
     Validation is read-only and precedes all further paid work. Original records are never replaced.
     """
+    if result_path.exists():
+        raise ValueError(f"continuation result already exists at {result_path}; inspect it before further work")
     registered = load_set(scenario_set)
     runner.require_codex_world_location(worlds)
     window_bytes = (out / "window.json").read_bytes()
@@ -174,21 +209,39 @@ def continue_run(
     completed = {record.run.display() for record in layout.run_records() if isinstance(record.outcome, Completed)}
     if not set(original.completed_runs) <= completed:
         raise ValueError("original completed task evidence is missing; no session started")
+    if previous_result_sha256 is not None:
+        previous_bytes = (out / "continuation.json").read_bytes()
+        if hashlib.sha256(previous_bytes).hexdigest() != previous_result_sha256:
+            raise ValueError("previous continuation digest differs; no session started")
+        previous = msgspec.json.decode(previous_bytes, type=PilotResult)
+        if (
+            previous.status != "incomplete"
+            or previous.unreported_usage
+            or len(previous.completed_runs) != len(completed)
+            or set(previous.completed_runs) != completed
+            or not math.isclose(previous.known_cost_usd, spend.total(spend.items(layout)), rel_tol=0, abs_tol=1e-9)
+        ):
+            raise ValueError("previous continuation tasks or accounting differ; no session started")
     # UTC is persisted across processes; the executor uses one monotonic deadline for the remaining interval.
     remaining = (deadline - datetime.datetime.now(datetime.UTC)).total_seconds()
     window = processes.Window(time.monotonic() + remaining)
-    result_path = out / "continuation.json"
-    if result_path.exists():
-        raise ValueError(f"continuation result already exists at {result_path}; inspect it before further work")
-    budget = spend.Budget(layout, saved.admission_cap_usd, window, True)
+    budget = spend.PilotBudget(layout, saved.admission_cap_usd, window, True)
     return execute(source, baseline, candidate, registered, layout, worlds, budget, result_path, True)
 
 
-def retained_exports(layout: Layout, baseline: str, candidate: str, registered: RegisteredSet) -> list[ExportRecord]:
+def validate_retained_models(layout: Layout) -> None:
+    for session in layout.scorer_sessions():
+        if session.scorer_model != DESCRIPTIVE_MODEL:
+            path = layout.score_directory(session.label) / "session.json"
+            raise ValueError(f"retained scorer model differs at {path}; inspect its provenance; no session started")
     for assessment in layout.assessments():
         if assessment.assessor_model != DESCRIPTIVE_MODEL:
             path = layout.assessment_directory(assessment.run) / "assessment.json"
             raise ValueError(f"retained assessment model differs at {path}; inspect its provenance; no session started")
+
+
+def retained_exports(layout: Layout, baseline: str, candidate: str, registered: RegisteredSet) -> list[ExportRecord]:
+    validate_retained_models(layout)
     exports: list[ExportRecord] = []
     for arm, revision in (("baseline", baseline), ("candidate", candidate)):
         evaluated = export.load_export(layout.root / "exports" / arm)

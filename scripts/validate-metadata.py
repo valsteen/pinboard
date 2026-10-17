@@ -120,6 +120,7 @@ class CodexMcpServer(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     command: Literal["sh"]
     args: tuple[str, ...]
     cwd: Literal["."]
+    tool_input_schema_max_bytes: Literal[65536]
 
     def __post_init__(self) -> None:
         if self.args != ("./scripts/pinboard", "--mcp"):

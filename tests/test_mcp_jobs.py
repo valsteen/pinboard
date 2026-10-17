@@ -228,17 +228,23 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertIsNotNone(tools[name].output_schema)
                 self.assertEqual(tools[name].input_schema["additionalProperties"], False)
             dispatch = tools["pinboard_dispatch"]
-            self.assertIn("ReuseCorrectionDispatchChoice", dispatch.input_schema["$defs"])
-            self.assertIn("CorrectionDispatchChoice", dispatch.input_schema["$defs"])
-            for review_type in (
-                "CorrectionSourceReview",
-                "ReusedCoverageCorrectionReview",
-                "LocalCorrectionSourceReview",
-            ):
-                with self.subTest(review_type=review_type):
-                    assessment = dispatch.input_schema["$defs"][review_type]["properties"]["assessment"]
-                    self.assertEqual("string", assessment["type"])
-                    self.assertEqual(1, assessment["minLength"])
+            canonical = contract_schemas.schema_for(contracts.DispatchRequest)
+            properties = canonical["properties"]
+            assert isinstance(properties, dict)
+            choice = properties["dispatch"]
+            assert isinstance(choice, dict)
+            discriminator = choice["discriminator"]
+            assert isinstance(discriminator, dict)
+            mapping = discriminator["mapping"]
+            assert isinstance(mapping, dict)
+            self.assertEqual(
+                set(mapping),
+                {
+                    leaf["properties"]["kind"]["enum"][0]
+                    for leaf in dispatch.input_schema["properties"]["dispatch"]["anyOf"]
+                },
+            )
+            self.assertNotIn("$defs", dispatch.input_schema)
             assert dispatch.description is not None
             self.assertIn("reuse-correction", dispatch.description)
             self.assertIn("pinboard-correction-source-review/v1", dispatch.description)
@@ -482,6 +488,8 @@ class McpJobsTest(CheckpointPackageSupport):
             {"correction_history_id": 1},
             {"environment": {"schema": "unknown"}},
             {"receipt": {"action_id": {"kind": "submit", "subject": "work-a-1"}, "subject_revision": 1}},
+            {"checkpoint_id": "checkpoint\n"},
+            {"kind": "unsupported"},
         )
         for change in invalid_changes:
             invalid = choice | change

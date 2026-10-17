@@ -5001,7 +5001,11 @@ class McpTransportTest(unittest.TestCase):
             self.assertEqual(1, tool.input_schema["properties"]["work_root"]["minLength"])
             self.assertIn("pattern", tool.input_schema["properties"]["project_root"])
             self.assertIn("pattern", tool.input_schema["properties"]["work_root"])
-            self.assertIn("$defs", tool.input_schema)
+            if tool_name == mcp_server.DISPATCH_TOOL:
+                self.assertNotIn("$defs", tool.input_schema)
+                self.assertIn("anyOf", tool.input_schema["properties"]["dispatch"])
+            else:
+                self.assertIn("$defs", tool.input_schema)
             self.assertIsNotNone(tool.output_schema)
             assert tool.output_schema is not None
             self.assertIn("anyOf", tool.output_schema)

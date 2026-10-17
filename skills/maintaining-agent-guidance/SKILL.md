@@ -93,6 +93,8 @@ When repeated agent failures come from discovering or recovering a mechanical op
 4. Preserve product vocabulary and useful distinctions; do not hide a product decision behind workflow terminology.
 5. Prefer no durable artifact when the evidence does not justify recurring guidance.
 
+For a prohibition, state the purpose and a positive compliant choice at its authoritative owner. Explain how to surface an actual conflict instead of encouraging hidden or disproportionate workarounds. Reconcile affected callers without requiring approval for routine authorized choices; for test access, use [the test-seam distinction](../slop-cleanup/references/structural-consolidation.md#choose-explicit-test-seams).
+
 When guidance repeatedly fails under an observed decision pressure, make the correction a falsifiable loop. Name the one future decision or output that must change, place that proposition at the smallest established owner, and replay a representative scenario that preserves the motivating pressure. Stop when the replay produces the intended decision without a new contradiction. If it does not, widen only to the earliest effective owner the replay demonstrates; widen to an executable interface specifically when the failure is discovering or recovering a mechanical operation.
 
 ## Validate proportionately

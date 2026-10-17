@@ -1,6 +1,6 @@
 ---
 name: slop-cleanup
-description: Remove code or features cleanly by finding and collapsing every orphaned production path, test-only API, stale variant, archaeological name, document, dependency, and tool. Use for any code cleanup that deletes behavior or structure, scaling from a local residue check to a repository-wide fixed-point pass. Do not use for additive work, formatting-only changes, routine prose corrections, or a general repository-readiness assessment.
+description: Remove code or features cleanly by finding and collapsing every orphaned production path, fixture-only product behavior, stale variant, archaeological name, document, dependency, and tool. Use for any code cleanup that deletes behavior or structure, scaling from a local residue check to a repository-wide fixed-point pass. Do not use for additive work, formatting-only changes, routine prose corrections, or a general repository-readiness assessment.
 ---
 
 # Clean repository slop recursively
@@ -150,7 +150,7 @@ After the last change, rerun the complete inventory from the production roots. F
 - every production definition is accounted for by a supported root, a verified dynamic mechanism, supported persisted data or protocol compatibility, or one exact retained exception;
 - every closed variant and branch has a real producer and consumer or an explicit boundary reason;
 - routes affected by removal contain no pass-through owner, duplicated decision, or obsolete alternative that existed only for the deleted family;
-- no production API exists only for tests, and no advertised entry point can only reject;
+- no unsupported fixture-only product behavior remains, and no advertised entry point can only reject; preserve ordinary dependency substitution under [the test-seam distinction](references/structural-consolidation.md#choose-explicit-test-seams), including when only tests supply alternatives;
 - surviving files and tests have meaningful, preferably symmetric conceptual ownership;
 - names, comments, docs, examples, diagrams, schema labels, and suppressions affected by the cleanup describe only current behavior;
 - every direct dependency and CI path has a named surviving consumer or assurance role, and regenerated lockfiles contain no packages retained solely by removed direct dependencies;

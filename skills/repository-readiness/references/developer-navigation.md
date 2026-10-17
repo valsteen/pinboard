@@ -62,9 +62,11 @@ Before closing this pass, sweep the complete production surface for several shap
 
 - methods or functions whose body only returns one attribute, reapplies a constructor, or delegates unchanged arguments;
 - the same effect, transition, or presentation choice selected independently by neighboring modes or routes;
-- a test-only public root and the private helper chain that exists only beneath it;
+- fixture-only production behavior and its private helper chain, distinguished from ordinary explicit dependency substitution;
 - base protocols plus composite protocols whose required members overlap without distinct substitution consumers;
 - defaults, version labels, compatibility names, and plural capability names that describe a predecessor rather than the supported product.
+
+For test coupling, inspect actual fixture construction and access paths, including string-named private access, runtime rewriting, and manufactured packaging preconditions. Counts can miss these relationships. Apply [the test-seam distinction](../../slop-cleanup/references/structural-consolidation.md#choose-explicit-test-seams) before disposition; one production implementation does not invalidate a required injected dependency, and a supported dynamic protocol is not a test evasion.
 
 For each shape, record the search or analyzer, scope, candidate selectors or zero result, and disposition in the compact ledger. A representative trace can validate a design, but one trace is not evidence that these other shapes were searched.
 
@@ -77,7 +79,7 @@ Before claiming a fixed point, include one separate receipt row for every catego
 | Duplicated mode, route, effect, or presentation selection | Complete production surface for each closed family |
 | Equivalent closed-family branches | Every branch over each inventoried closed family |
 | Defaults, fallbacks, optional handlers, and inherited behavior | Every closed dispatch mechanism and protocol implementation |
-| Test-only public roots and their private helper chains | Production definitions referenced from tests and their transitive callees |
+| Fixture-only production behavior and test coupling | Production definitions reached from tests, transitive callees, explicit dependency seams, and indirect test access |
 | Base and composite protocol overlap | All production protocols and their concrete substitution consumers |
 | Archaeological and misleading names, defaults, versions, identities, and capability labels | Every inventoried production, API, wire, schema, storage, history, generated, presentation, documentation, metadata, and tooling name |
 

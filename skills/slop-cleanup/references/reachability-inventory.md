@@ -54,6 +54,8 @@ Read every coverage receipt. `complete` means the named mechanical category comp
 
 For the semantic categories, the repository-specific pass must record exact selectors and apply the report's disposition method. Cover dynamic registration through the repository's actual entry-point and manifest owners. Cover stored and wire vocabularies through their actual codecs and readers. Cover compatibility through retained data and independent-consumer evidence. Cover speculative obligations through accepted authority or an observed supported-path consequence. A consequential unresolved selector blocks terminal acceptance rather than becoming an automatic retained exception.
 
+Inspect test coupling as part of the semantic pass. Trace how fixtures construct dependencies and how assertions reach production state, including string-named or indirect private access, runtime rewriting, and packaging or environment preconditions created only to satisfy a test. Textual-reference silence cannot establish clean coupling. Record the concrete access path and disposition using [the test-seam distinction](structural-consolidation.md#choose-explicit-test-seams); preserve ordinary explicit substitution and supported dynamic product mechanisms. This is manual semantic evidence, not an additional detector guarantee.
+
 ## Generic method
 
 1. Enumerate tracked production files and package contents separately from tests, examples, generated files, and prototypes.

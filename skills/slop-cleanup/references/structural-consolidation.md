@@ -17,7 +17,19 @@ After deletion changes the graph, search for structures that used to distinguish
 - parameters that appear used only through discard assignments such as `_ = value`, warning suppressions, or comments defending their presence; trace callers to remove orphaned transport and resource sampling, while retaining signatures required by verified interfaces;
 - empty or tiny files, modules, and test groups that no longer own a coherent concept.
 
-Regroup by current concepts. Separate declarations from logic when each side has a meaningful thematic role; merge them when separation would create ceremonial files. Make test organization mirror the surviving production concepts whenever practical. Test helpers belong in tests, not in production APIs created solely for fixtures.
+Regroup by current concepts. Separate declarations from logic when each side has a meaningful thematic role; merge them when separation would create ceremonial files. Make test organization mirror the surviving production concepts whenever practical. Keep fixture construction and test inspection helpers in tests. Apply the distinction below before removing a dependency seam.
+
+## Choose explicit test seams
+
+Keep production behavior useful to the supported product and make test dependencies visible. Prefer a narrow required dependency parameter, callback, or protocol that lets tests control an effect while the production path performs its ordinary work. Such a seam has a real substitution role even when only tests supply an alternative and production has one implementation. It needs neither a test-only label nor separate human approval within already authorized scope.
+
+Distinguish that composition from an accessor, flag, branch, or feature whose only behavior serves fixture setup or inspection. Trace what the production caller supplies and what the consumer does; neither a test reference nor the number of implementations settles the distinction. Keep the smallest seam that supports the required evidence without adding unused flexibility or fixture-specific product behavior.
+
+Inspect how tests actually reach the code, including indirect or string-named access that reference counts miss. Before choosing a materially intrusive or fragile workaround, expose its mechanism, hidden coupling, maintenance cost, and the constraint it is meant to satisfy. Private-state reflection, runtime rewriting, or manufactured packaging preconditions can conceal the same test dependency while making it harder to maintain; they are not evidence that a seam is unnecessary or a conflicting instruction was satisfied. Prefer an ordinary permitted seam. Judge a dynamic mechanism by its supported role and effects: reflection or generated code required by a real product protocol remains legitimate.
+
+An actual project prohibition remains binding. If no compliant path within accepted scope supplies the required evidence, stop only the affected work and name the exact conflict, consequence, and smallest recommended decision to the outcome owner. Do not manufacture a precondition or hide coupling to appear compliant. Routine permitted seam choices remain autonomous.
+
+## Reconcile the surviving structure
 
 Run an archaeology pass over names, comments, error codes, schema labels, help text, examples, documentation, and tests. Remove wording that describes a predecessor, migration phase, plural capability that is now singular, or behavior the code can no longer perform. Collapse documentation around the surviving concepts, remove pages, sections, examples, diagrams, badges, and setup instructions whose feature or workflow was removed, and keep parallel documents consistent rather than leaving one stale version behind. Every advertised feature must trace to a supported entry point or explicitly labeled current limitation; do not turn deleted or never-shipped implementation into present-tense documentation or an invented roadmap. Remove stale lint, warning, ignore, and coverage suppressions with the ecosystem’s unused-suppression check when available.
 

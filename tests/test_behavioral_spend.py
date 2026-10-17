@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import override
+from unittest.mock import patch
 
 from evals.behavioral import processes, runner, spend
 from evals.behavioral.layout import Layout
@@ -149,6 +150,33 @@ class SpendTest(unittest.TestCase):
         budget = Budget(self.layout, cap_usd=6.5, window=processes.Window(None), allow_unknown_reviewer_price=False)
         self.assertEqual(3.0, budget.reserve(Category.CLAUDE_AGENT_RUN))
         self.assertIsNone(budget.reserve(Category.CLAUDE_AGENT_RUN))
+
+    def test_serialized_pilot_admits_below_recorded_cap_and_keeps_real_reservations(self) -> None:
+        record_run(self.layout, RunKey("s1", "repeat", 1), [7.0232972])
+        record_probe(self.layout, "retained", 24.1149052 - 7.0232972)
+        formal = Budget(self.layout, 30, processes.Window(None), True)
+        pilot = spend.PilotBudget(self.layout, 30, processes.Window(None), True)
+        self.assertIsNone(formal.reserve(Category.CLAUDE_AGENT_RUN))
+        projected = pilot.reserve(Category.CLAUDE_AGENT_RUN)
+        self.assertEqual(7.0232972, projected)
+        assert projected is not None
+        self.assertEqual(projected, pilot.reserved)
+        pilot.release(projected)
+        self.assertEqual(0, pilot.reserved)
+        record_probe(self.layout, "finished", 30 - 24.1149052)
+        self.assertIsNone(pilot.reserve(Category.SCORER))
+
+    def test_pilot_spending_permission_does_not_relax_unknown_main_or_deadline(self) -> None:
+        budget = spend.PilotBudget(self.layout, 30, processes.Window(200), True)
+        with patch.object(processes.time, "monotonic", return_value=200), self.assertRaises(TimeoutError):
+            budget.reserve(Category.SCORER)
+        write_new(
+            self.layout.probe_file("interrupted").parent / "accounting.json",
+            CodexAccounting("pinboard-behavioral-codex-accounting/v1", 0.25, False, [], None),
+        )
+        with patch.object(processes.time, "monotonic", return_value=100):
+            self.assertIsNone(budget.reserve(Category.SCORER))
+        self.assertEqual(0, budget.reserved)
 
     def test_a_released_reservation_frees_room_and_recorded_spend_uses_it(self) -> None:
         record_run(self.layout, RunKey("s1", "repeat", 1), [3.0])

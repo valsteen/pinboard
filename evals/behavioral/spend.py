@@ -4,12 +4,15 @@ Spend is always recomputed from the recorded run, scorer, assessment and probe r
 Before a session starts, its projected cost (the largest recorded cost of that category in the directory, or a
 conservative default before any is recorded) plus the recorded spend and the projections of sessions already in
 flight must fit the caller's explicit cap; otherwise the session does not start.
+The serialized descriptive pilot instead admits below recorded spend, while retaining the same projections and
+deadline/accounting checks. Its explicitly accepted in-flight overshoot does not change formal admission.
 """
 
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
+from typing import override
 
 from evals.behavioral.layout import Layout
 from evals.behavioral.processes import Window
@@ -206,6 +209,9 @@ class Budget:
         self.lock = threading.Lock()
 
     def reserve(self, category: Category) -> float | None:
+        return self._reserve(category, True)
+
+    def _reserve(self, category: Category, require_projection_fit: bool) -> float | None:
         with self.lock:
             self.window.timeout(300)
             if main_usage_unknown(self.layout):
@@ -216,7 +222,11 @@ class Budget:
                 return None
             recorded = items(self.layout)
             projected = projection(category, recorded)
-            if total(recorded) + self.reserved + projected > self.cap_usd:
+            if (
+                total(recorded) + self.reserved + projected > self.cap_usd
+                if require_projection_fit
+                else total(recorded) >= self.cap_usd
+            ):
                 return None
             self.reserved += projected
             return projected
@@ -224,3 +234,11 @@ class Budget:
     def release(self, projected: float) -> None:
         with self.lock:
             self.reserved -= projected
+
+
+class PilotBudget(Budget):
+    """Serialized descriptive pilot admission uses recorded spend; reservations still retain real projections."""
+
+    @override
+    def reserve(self, category: Category) -> float | None:
+        return self._reserve(category, False)

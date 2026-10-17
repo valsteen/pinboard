@@ -1,5 +1,6 @@
 """Human-read record text keeps its line breaks from input through storage, reload and every projection."""
 
+import dataclasses
 import hashlib
 import json
 import re
@@ -17,7 +18,7 @@ from pinboard.domain import history
 from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture
-from tests.native_support import call_advertised_tool, call_native_tool
+from tests.native_support import native_tools
 from tests.support import JsonObject, JsonValue
 from tests.test_item_status_facts import ItemLifecycleSupport
 
@@ -55,8 +56,16 @@ MARKDOWN_LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
 
 class RecordTextSupport(ItemLifecycleSupport):
+    def native_fixture[T: CheckpointFixture](self, fixture: T) -> T:
+        native = self.enterContext(native_tools())
+        return dataclasses.replace(
+            fixture,
+            call_native_tool=native.call_native_tool,
+            call_advertised_tool=native.call_advertised_tool,
+        )
+
     def publish_brief(self, fixture: CheckpointFixture, brief: work_brief_models.WorkBrief) -> int:
-        published = call_native_tool(
+        published = fixture.call_native_tool(
             mcp_server.BRIEF_PUBLISH_TOOL,
             {**self.roots(fixture), "brief": self.json_object(msgspec.json.decode(msgspec.json.encode(brief)))},
         )
@@ -103,11 +112,11 @@ class RecordTextJourneyTest(RecordTextSupport):
         self.assertTrue(all(line == "" or line.startswith("  ") for line in bullet.split("\n")[1:]))
 
     def test_multiline_records_travel_from_input_through_reload_to_every_projection(self) -> None:  # noqa: PLR0915 - one ordered lifecycle journey
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         checkpoint_id = fixture.brief.checkpoint.checkpoint_id
 
         returned = self.return_for_review(fixture, RETURN_REASON)
-        context = call_advertised_tool(
+        context = fixture.call_advertised_tool(
             mcp_server.CORRECTION_CONTEXT_TOOL,
             {**self.roots(fixture), "attempt_id": "work-a-1", "correction_history_id": returned},
         )
@@ -148,7 +157,7 @@ class RecordTextJourneyTest(RecordTextSupport):
         self.assertEqual(PAUSE_REASON, self.condition_text(fixture))
         self.assert_item_view_pause_reason(fixture)
 
-        definition = call_native_tool(
+        definition = fixture.call_native_tool(
             mcp_server.ITEM_DEFINITION_TOOL,
             {"request": {**self.roots(fixture), "operation": "current", "item_id": "work-a"}},
         )
@@ -164,7 +173,7 @@ class RecordTextJourneyTest(RecordTextSupport):
                 "definition": {**self.json_object(definition["definition"]), "title": "Renamed item"},
             },
         )
-        revised = call_native_tool(
+        revised = fixture.call_native_tool(
             mcp_server.ITEM_DEFINITION_TOOL,
             {"request": {**self.roots(fixture), "operation": "current", "item_id": "work-a"}},
         )
@@ -338,7 +347,7 @@ class RecordTextProjectionTest(RecordTextSupport):
     def test_reviewer_prompt_keeps_a_multiline_correction_reason_inside_its_sentence(self) -> None:
         for reason in (RETURN_REASON, *CR_AND_CRLF_REASONS):
             with self.subTest(reason=reason):
-                fixture = self.checkpoint_fixture()
+                fixture = self.native_fixture(self.checkpoint_fixture())
                 returned = self.return_for_review(fixture, reason)
                 candidate = self.submit_candidate(fixture, "corrected")
                 job = self.review_result(
@@ -356,7 +365,7 @@ class RecordTextProjectionTest(RecordTextSupport):
     def test_item_view_keeps_a_cr_or_crlf_pause_reason_inside_its_bullet(self) -> None:
         for reason in CR_AND_CRLF_REASONS:
             with self.subTest(reason=reason):
-                fixture = self.checkpoint_fixture()
+                fixture = self.native_fixture(self.checkpoint_fixture())
                 self.return_for_review(fixture, "Rework the candidate.")
                 self.transition(fixture, "pause:work-a-1", {"reason": reason})
                 attempts = self.json_array(self.item_leaf(fixture)["attempts"])
@@ -367,7 +376,7 @@ class RecordTextProjectionTest(RecordTextSupport):
 
     def test_continuing_completion_refusal_carries_remaining_work_as_written(self) -> None:
         remaining = "Two pieces of work remain.\n\n1. Render the board.\n2. Update the guidance.\n\nReferences: a.md"
-        fixture = self.checkpoint_fixture()
+        fixture = self.native_fixture(self.checkpoint_fixture())
         self.return_for_review(fixture, "Continue the accepted work.")
         checkpoint = fixture.brief.checkpoint
         rebound = replace_struct(

@@ -11,7 +11,7 @@ from mcp_types import Tool
 
 from pinboard.application import action_models
 from pinboard.domain import decision_models
-from pinboard.mcp import contract_schemas, execution, server
+from pinboard.mcp import contract_schemas, contracts, execution, server
 from pinboard.mcp.contracts import JsonSchemaValue
 
 
@@ -34,11 +34,8 @@ def advertised_matches(field: dict[str, JsonSchemaValue], value: str) -> bool:
     assert isinstance(pattern, str)
     if re.search(pattern, value) is None:
         return False
-    guards = field.get("allOf", [])
-    assert isinstance(guards, list)
-    for guard in guards:
-        assert isinstance(guard, dict)
-        excluded = guard["not"]
+    excluded = field.get("not")
+    if excluded is not None:
         assert isinstance(excluded, dict)
         forbidden = excluded["pattern"]
         assert isinstance(forbidden, str)
@@ -72,6 +69,18 @@ def schema_field(schema: dict[str, JsonSchemaValue], definition: str, field: str
     return value
 
 
+def inline_records(schema: JsonSchemaValue, title: str) -> Iterator[dict[str, JsonSchemaValue]]:
+    if isinstance(schema, dict):
+        if schema.get("title") == title:
+            yield schema
+        for key, child in schema.items():
+            if key not in {"const", "enum", "default", "examples"}:
+                yield from inline_records(child, title)
+    elif isinstance(schema, list):
+        for child in schema:
+            yield from inline_records(child, title)
+
+
 def accepts_record_text(field: dict[str, JsonSchemaValue]) -> bool:
     """Decide JSON Schema acceptance of every record-text value for a field without a pattern."""
 
@@ -96,15 +105,23 @@ class McpSchemaProjectionTest(unittest.TestCase):
             (transition, "AcceptCheckpointInputPayload", "evidence"),
             (transition, "AcceptReviewAndContinueInputPayload", "evidence"),
             (transition, "ReviseItemInputPayload", "reason"),
-            (dispatch, "ReasonInputPayload", "reason"),
         ):
             with self.subTest(definition=definition, field=field):
                 self.assertTrue(accepts_record_text(schema_field(schema, definition, field)))
         for review in ("CorrectionSourceReview", "ReusedCoverageCorrectionReview", "LocalCorrectionSourceReview"):
             with self.subTest(review=review):
-                self.assertEqual(
-                    {"$ref": "#/$defs/ReasonInputPayload"}, schema_field(dispatch, review, "correction_input")
-                )
+                records = tuple(inline_records(dispatch, review))
+                self.assertTrue(records)
+                for record in records:
+                    properties = record["properties"]
+                    assert isinstance(properties, dict)
+                    correction = properties["correction_input"]
+                    assert isinstance(correction, dict)
+                    fields = correction["properties"]
+                    assert isinstance(fields, dict)
+                    reason = fields["reason"]
+                    assert isinstance(reason, dict)
+                    self.assertTrue(accepts_record_text(reason))
         for schema, definition, field in (
             (transition, "RejectProposalInputPayload", "reason"),
             (transition, "BlockInputPayload", "reason"),
@@ -129,6 +146,36 @@ class McpSchemaProjectionTest(unittest.TestCase):
                     transition, f"ProjectTransitionRequest_typing.Literal__{leaf}____{payload}_", "payload"
                 )
                 self.assertEqual({"$ref": f"#/$defs/{payload}"}, request)
+
+    def test_dispatch_inlines_the_complete_strict_contract_without_losing_metadata(self) -> None:
+        canonical = contract_schemas.schema_for(contracts.DispatchRequest)
+        contract_schemas.project_regex_patterns(canonical)
+        advertised = advertised_tools()[server.DISPATCH_TOOL].input_schema
+        definitions = canonical["$defs"]
+        assert isinstance(definitions, dict)
+
+        def compare(expected: JsonSchemaValue, actual: JsonSchemaValue) -> None:
+            if isinstance(expected, dict):
+                assert isinstance(actual, dict)
+                if "$ref" in expected:
+                    reference = expected["$ref"]
+                    assert isinstance(reference, str)
+                    self.assertEqual({"$ref"}, set(expected))
+                    compare(definitions[reference.removeprefix("#/$defs/")], actual)
+                else:
+                    keys = set(expected) - {"$defs", "discriminator"}
+                    self.assertEqual(keys, set(actual))
+                    for key in keys:
+                        compare(expected[key], actual[key])
+            elif isinstance(expected, list):
+                assert isinstance(actual, list)
+                self.assertEqual(len(expected), len(actual))
+                for first, second in zip(expected, actual, strict=True):
+                    compare(first, second)
+            else:
+                self.assertEqual(expected, actual)
+
+        compare(canonical, advertised)
 
     def test_actions_payload_schemas_accept_record_text_only_for_record_fields(self) -> None:
         for kind, field in (

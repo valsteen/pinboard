@@ -3,7 +3,8 @@
     "pinboard": {
       "command": "sh",
       "args": ["./scripts/pinboard", "--mcp"],
-      "cwd": "."
+      "cwd": ".",
+      "tool_input_schema_max_bytes": 65536
     }
   }
 }

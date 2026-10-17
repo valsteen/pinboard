@@ -765,6 +765,7 @@ class McpCaptureTest(unittest.TestCase):
                         server.BRIEF_SOURCES_TOOL,
                         server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
                         server.FIXTURE_REVIEW_TOOL,
+                        server.STARTUP_TEXT_TOOL,
                         server.BRIEF_LOOKUP_TOOL,
                     }
                     else globals_capture,

@@ -288,6 +288,11 @@ class AccountingTest(unittest.TestCase):
         self.assertIsNone(result.reviewer_price_usd)
         self.assertFalse(codex_driver.rollout_accounting("", "gpt-6-sol", True).main_usage_complete)
 
+    def test_terra_pricing_accounts_for_all_token_classes_and_long_context(self) -> None:
+        for tokens, expected in ((272_000, 0.555870), (272_001, 1.105744)):
+            usage = codex_driver.Usage(tokens, 100, 100, 1000, 40)
+            self.assertAlmostEqual(expected, codex_driver.turn_cost("gpt-5.6-terra", usage))
+
 
 class RecoveryRunTest(unittest.TestCase):
     def test_recovery_can_complete_while_independent_reviewer_rejection_stops(self) -> None:

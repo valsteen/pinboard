@@ -27,6 +27,7 @@ from evals.behavioral import (
     runner,
     scoring,
     spend,
+    startup_pilot,
     substance,
 )
 from evals.behavioral.credentials import default_source
@@ -170,6 +171,16 @@ class InvestigationAssess:
 
 
 @dataclass(frozen=True)
+class StartupPilot:
+    source: Path
+    baseline_revision: str
+    candidate_revision: str
+    scenario_set: Path
+    out: Path
+    worlds: Path
+
+
+@dataclass(frozen=True)
 class CoverageCodex:
     source: Path
     revision: str
@@ -197,6 +208,7 @@ type Command = (
     | Report
     | Spend
     | CoverageCodex
+    | StartupPilot
     | InvestigationWorld
     | InvestigationCodex
     | InvestigationClaude
@@ -267,6 +279,14 @@ def parser() -> argparse.ArgumentParser:  # noqa: PLR0915
     reporting.add_argument("--variant", required=True)
 
     add_coverage_parser(commands)
+    pilot = commands.add_parser(
+        "startup-pilot", help="one paired Terra/high descriptive startup pilot; two hours and 30 USD admission cap"
+    )
+    pilot.add_argument("--source", type=Path, default=Path())
+    for flag in ("baseline-revision", "candidate-revision"):
+        pilot.add_argument(f"--{flag}", required=True)
+    for flag in ("scenario-set", "out", "worlds"):
+        pilot.add_argument(f"--{flag}", type=Path, required=True)
 
     spending = commands.add_parser("spend", help="itemize and total recorded spend")
     spending.add_argument("--out", type=Path, required=True)
@@ -391,6 +411,15 @@ def decode(arguments: Sequence[str]) -> Command:  # noqa: C901, PLR0912
                 options.out,
                 options.batch,
             )
+        case "startup-pilot":
+            return StartupPilot(
+                options.source,
+                options.baseline_revision,
+                options.candidate_revision,
+                options.scenario_set,
+                options.out,
+                options.worlds,
+            )
         case "coverage-codex":
             if options.runs_per_target > 6 or options.maximum_seconds > 10800 or not 0 < options.cap_usd <= 120:
                 parser().error("coverage permits at most six runs per target, 10800 seconds and 120 known-priced USD")
@@ -512,6 +541,10 @@ def dispatch(command: Command) -> int:  # noqa: C901, PLR0912
         case Report() as c:
             ids = [scenario.id for scenario in load_set(c.scenario_set).scenarios]
             print(decision.report(Layout(c.out), ids, c.variant), end="")
+        case StartupPilot() as c:
+            return startup_pilot.run(
+                c.source, c.baseline_revision, c.candidate_revision, c.scenario_set, c.out, c.worlds
+            )
         case CoverageCodex() as c:
             return coverage_codex(c)
         case Spend(out=out):

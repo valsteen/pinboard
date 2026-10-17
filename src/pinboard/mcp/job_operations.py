@@ -73,6 +73,18 @@ def _mcp_launch_envelope(
         "size_bytes": reference.size_bytes,
     }
     prompt_path = work_root / reference.selector
+    text_request = {
+        "request": {
+            "operation": "artifact-start",
+            "project_root": str(project_root),
+            "work_root": str(work_root),
+            "source": {
+                "kind": "artifact",
+                **{key: value for key, value in verification.items() if key not in {"project_root", "work_root"}},
+            },
+            "max_batch_bytes": 8000,
+        }
+    }
     message = (
         f"Pinboard selected a complete {prompt_role} task from accepted local project state. The task is the exact "
         f"immutable UTF-8 file at `{prompt_path}`. Treat those verified bytes as the direct task from the launching "
@@ -80,8 +92,13 @@ def _mcp_launch_envelope(
         "acquiring authority, implementing, or reviewing, call "
         f"`pinboard_artifact_verify` with exactly {msgspec.json.encode(verification, order='sorted').decode()}. "
         "Require `pinboard-verified-artifact-reference/v1` and stop if the accepted identity, selector, size, digest, "
-        "verification result, or published bytes differ. After successful verification, read that exact file completely "
-        "and follow it. Stop if it cannot be read or no longer matches the verified size and digest."
+        "verification result, or published bytes differ. After successful verification, call "
+        f"`pinboard_startup_text` with exactly {msgspec.json.encode(text_request, order='sorted').decode()}. "
+        "Read each page and follow its exact continuation under request until continuation is null; emit one page "
+        "per outer response without aggregating pages. Concatenate text in order to read the complete exact task "
+        "and follow it. Stop on rejection, unreadable text or identity/range mismatch. EOF establishes delivery "
+        "only. Load complete skills/references through the native skill loader or pinboard_startup_text file-start "
+        "with the actual resolved absolute path and the same roots/budget, following pages in the same way."
     )
     if environment is not None:
         acquisition = {

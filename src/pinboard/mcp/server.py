@@ -32,6 +32,7 @@ from pinboard.mcp import (
     mutation_operations,
     pr_review_operations,
     read_operations,
+    startup_text,
 )
 from pinboard.mcp.contracts import JsonValue
 from pinboard.mcp.tool_names import (
@@ -63,6 +64,7 @@ from pinboard.mcp.tool_names import (
     PROPOSAL_CREATE_TOOL,
     RETURN_CONTEXT_TOOL,
     REVIEW_JOB_TOOL,
+    STARTUP_TEXT_TOOL,
     TRANSITION_TOOL,
 )
 
@@ -118,8 +120,8 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "own leases, dispatch, independent review and recovery.\n\n"
             "A project's saved work lives in its board at <project_root>/.pinboard. Before answering about or acting "
             "on saved work, including quick read-only status and planning, load the complete pinboard main skill "
-            "through this runtime's native skill loader, or read its actual resolved SKILL.md completely if no "
-            "loader is available. Then load only its reference for the requested phase; status uses status and "
+            "through this runtime's native skill loader, or use pinboard_startup_text file-start with its actual resolved absolute SKILL.md path if no "
+            "loader is available. Follow each exact continuation under request until null, one page per outer response without aggregation. EOF establishes delivery only. Then load only its reference for the requested phase; status uses status and "
             "selection. Read pinboard_overview; if no board exists, say that nothing was saved and offer "
             "Pinboard setup instead of claiming to remember. Before reading or editing source for a saved item, load "
             "the pinboard skill and follow its start, pause and review route; do not implement or commit a saved "
@@ -157,8 +159,8 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "asked of the human carries its own recommendation or default beside that question.\n\n"
             "For intake or coordination, load the complete existing workflow skill before constructing "
             "attributed calls: pinboard-intake for new work, or pinboard for coordination of existing work. "
-            "Use this runtime's advertised native skill loader; if unavailable, read that skill's actual "
-            "resolved SKILL.md completely. Follow that owner's sequencing and runtime identity instructions.\n\n"
+            "Use this runtime's advertised native skill loader; if unavailable, use pinboard_startup_text file-start with that skill's actual "
+            "resolved absolute SKILL.md path and follow pages as above. Follow that owner's sequencing and runtime identity instructions.\n\n"
             "For deferred tools, find the required Pinboard operation in this host's actual announced tool "
             "inventory. Select its full advertised callable name, including the connector prefix, not its "
             "short wire name. Resolve each host's names independently. If the full name is unknown, use "
@@ -236,6 +238,33 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             BRIEF_SOURCES_TOOL,
             str(request.get("project_root", "")),
             partial(read_operations._brief_sources, {"request": request}),
+            arguments={"request": request},
+            capture=None,
+        )
+
+    @server.tool(
+        name=STARTUP_TEXT_TOOL,
+        description=(
+            "Read one exact accepted startup artifact or caller-selected absolute skill/reference path in verified UTF-8 pages. "
+            "Use artifact-start with the producing response's exact artifact tuple, or file-start with the resolved path. "
+            "Each success binds complete source SHA-256/byte size and a character range. Follow continuation verbatim "
+            "under request until null; concatenate text in order. EOF establishes delivery only, never understanding, "
+            "readiness or authority. Every page rereads and verifies the complete selected input. max_batch_bytes "
+            "(up to 8000) includes the compact SDK text/structured tool-result envelope; arbitrary host wrappers and "
+            "aggregation remain outside that ceiling. Emit one page per outer response; never collect pages into "
+            "one unbounded output. Invalid input or a budget too small for metadata returns an explicit diagnosis. "
+            "No file discovery, source/ledger/artifact/settings writes or optional invocation capture."
+        ),
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    async def startup_read(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return await execution._run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            STARTUP_TEXT_TOOL,
+            str(request.get("project_root", "")),
+            partial(startup_text.read, {"request": request}),
             arguments={"request": request},
             capture=None,
         )
@@ -919,6 +948,11 @@ def _install_boundary_contracts(server: MCPServer) -> None:
             CANCEL_TOOL,
             contract_schemas.schema_for(contracts.CancellationEnvelope),
             contract_schemas.union_schema_for(contracts.CANCELLATION_RESULT_TYPES),
+        ),
+        (
+            STARTUP_TEXT_TOOL,
+            contract_schemas.schema_for(contracts.StartupTextEnvelope),
+            contract_schemas.union_schema_for(contracts.STARTUP_TEXT_RESULT_TYPES),
         ),
         (
             FIXTURE_REVIEW_TOOL,

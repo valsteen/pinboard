@@ -325,7 +325,7 @@ def project_action(
         action_models.InputContractView(
             action.kind,
             semantics,
-            None
+            msgspec.UNSET
             if (schema := encoded_action_input_schema(action.kind)) is None
             else msgspec.json.decode(schema, type=action_models.JsonSchema),
         ),

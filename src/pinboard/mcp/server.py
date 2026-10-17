@@ -740,6 +740,10 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         name=DISPATCH_TOOL,
         description=(
             "Publish verified Pinboard worker launch instructions or independently assessed replacement-brief readiness; creates no worker or worker authority. "
+            "If compact host type metadata shows unknown, read the complete construction fields below; "
+            "do not guess unspecified inputs or infer missing capability or a regression from that display. "
+            "Action discovery omits payload_schema for dispatch because it has no lifecycle-transition payload. "
+            "Construct its separate launch request from the fields below.\n"
             "Arguments are project_root, work_root and dispatch (no request wrapper). Unknown fields reject.\n"
             "The six worker-launch leaves require kind, receipt, checkpoint_id, environment and prompt; replacement-readiness has its distinct fields below. "
             "receipt contains ONLY action_id:{kind:'dispatch',subject:<attempt_id>} and subject_revision "

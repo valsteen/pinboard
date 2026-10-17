@@ -37,6 +37,8 @@ from pinboard.adapters.files.views import board_pages
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
+    action_models,
+    actions,
     authority_operations,
     queries,
     query_models,
@@ -2915,6 +2917,132 @@ class McpTransportTest(unittest.TestCase):
         if not isinstance(projected, query_models.ItemStatus):
             raise AssertionError(str(projected))
         return msgspec.json.encode(projected)
+
+    def test_action_discovery_omits_only_inapplicable_payload_schemas(self) -> None:  # noqa: PLR0915 - one producer/native/schema matrix
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        common = {"project_root": str(project), "work_root": str(roots.work_root)}
+        with native_tools() as native:
+            preparation = native.call_native_tool(
+                mcp_server.PREPARATION_AUTHORITY_TOOL,
+                {
+                    "request": {
+                        **common,
+                        "operation": "start",
+                        "item_id": "work-c",
+                        "task_id": "preparer",
+                        "host_id": "local",
+                        "ttl_seconds": 3600,
+                    }
+                },
+            )
+            self.assertEqual("committed", preparation["status"], preparation)
+            queries: tuple[dict[str, contracts.JsonValue], ...] = (
+                {"role": "project"},
+                {"role": "observer"},
+                {"role": "worker", "lease_id": "attempt-lease-a", "generation": 3},
+                {"role": "preparer", "lease_id": preparation["lease_id"], "generation": preparation["generation"]},
+            )
+            results = [
+                native.call_advertised_tool(mcp_server.ACTIONS_TOOL, {"request": {**common, **query}})
+                for query in queries
+            ]
+        result = results[0]
+        rows = result["actions"]
+        assert isinstance(rows, list)
+        dispatch = next(
+            row
+            for row in rows
+            if isinstance(row, dict) and row["action_id"] == {"kind": "dispatch", "subject": "work-a-1"}
+        )
+        assert isinstance(dispatch, dict)
+        dispatch_contract = dispatch["input_contract"]
+        assert isinstance(dispatch_contract, dict)
+        self.assertNotIn("payload_schema", dispatch_contract)
+        block = next(
+            row
+            for row in rows
+            if isinstance(row, dict) and row["action_id"] == {"kind": "block", "subject": "work-a-1"}
+        )
+        assert isinstance(block, dict)
+        block_contract = block["input_contract"]
+        assert isinstance(block_contract, dict)
+        self.assertEqual(
+            msgspec.json.decode(
+                msgspec.json.encode(action_models.action_payload_schema(decision_models.ActionKind.BLOCK))
+            ),
+            block_contract["payload_schema"],
+        )
+        for query, valid in zip(queries, results, strict=True):
+            with self.subTest(role=query["role"]):
+                before = deepcopy(valid)
+                self.assertIs(valid, contract_schemas.validate_result(mcp_server.ACTIONS_TOOL, valid))
+                self.assertEqual(before, valid)
+                values = valid["actions"]
+                assert isinstance(values, list)
+                self.assertTrue(values)
+                for row in values:
+                    assert isinstance(row, dict)
+                    identity, contract = row["action_id"], row["input_contract"]
+                    assert isinstance(identity, dict) and isinstance(contract, dict)
+                    kind = decision_models.ActionKind(str(identity["kind"]))
+                    expected = action_models.action_payload_schema(kind)
+                    self.assertEqual(expected is not None, "payload_schema" in contract)
+        projected = actions.project_action(
+            action(decision_models.DispatchAction, AttemptId("attempt-1")), include_input_contract=True
+        )
+        self.assertNotIn("payload_schema", msgspec.to_builtins(projected)["input_contract"])
+        self.assertNotIn("payload_schema", msgspec.json.decode(msgspec.json.encode(projected))["input_contract"])
+        self.assertIsNone(
+            actions.project_action(
+                action(decision_models.DispatchAction, AttemptId("attempt-1")), include_input_contract=False
+            ).input_contract
+        )
+
+        invalid_contracts: tuple[tuple[str, dict[str, contracts.JsonValue], dict[str, contracts.JsonValue]], ...] = (
+            ("dispatch-null", dispatch, {"payload_schema": None}),
+            ("dispatch-empty", dispatch, {"payload_schema": {}}),
+            ("dispatch-real-schema", dispatch, {"payload_schema": block_contract["payload_schema"]}),
+            ("block-null", block, {"payload_schema": None}),
+            ("block-wrong-schema", block, {"payload_schema": {"type": "object"}}),
+            ("unknown-omitted-contract-field", dispatch, {"unknown": True}),
+            ("wrong-kind", dispatch, {"action_kind": "block"}),
+            ("wrong-semantics", dispatch, {"semantics": block["semantics"]}),
+        )
+        invalid_results: list[tuple[str, dict[str, contracts.JsonValue]]] = []
+        for label, row, changes in invalid_contracts:
+            contract = row["input_contract"]
+            assert isinstance(contract, dict)
+            invalid_results.append((label, {**result, "actions": [{**row, "input_contract": {**contract, **changes}}]}))
+        missing_block_schema = {key: value for key, value in block_contract.items() if key != "payload_schema"}
+        invalid_results.extend(
+            (
+                ("block-missing", {**result, "actions": [{**block, "input_contract": missing_block_schema}]}),
+                ("unknown-action-field", {**result, "actions": [{**dispatch, "unknown": True}]}),
+                ("unknown-result-field", {**result, "unknown": True}),
+            )
+        )
+        for label, invalid in invalid_results:
+            with self.subTest(rejection=label):
+                before = deepcopy(invalid)
+                with self.assertRaises((msgspec.ValidationError, ValueError)):
+                    contract_schemas.validate_result(mcp_server.ACTIONS_TOOL, invalid)
+                self.assertEqual(before, invalid)
+
+        async def advertised_schema_scenario() -> None:
+            async with Client(native.server) as client:
+                for valid in results:
+                    await client.session.validate_tool_result(
+                        mcp_server.ACTIONS_TOOL, CallToolResult(content=[], structured_content=valid)
+                    )
+                for label, invalid in invalid_results:
+                    with self.subTest(advertised_rejection=label), self.assertRaises(RuntimeError):
+                        await client.session.validate_tool_result(
+                            mcp_server.ACTIONS_TOOL, CallToolResult(content=[], structured_content=invalid)
+                        )
+
+        with native_tools() as native:
+            _run_async(advertised_schema_scenario())
 
     def test_action_and_continuation_results_reject_cross_correlated_content(self) -> None:  # noqa: PLR0915 - one correlated contract matrix
         temporary, _project, roots = self._project()

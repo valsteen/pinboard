@@ -761,7 +761,12 @@ class McpCaptureTest(unittest.TestCase):
                     capture,
                     None
                     if operation
-                    in {server.BRIEF_SOURCES_TOOL, server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL, server.FIXTURE_REVIEW_TOOL}
+                    in {
+                        server.BRIEF_SOURCES_TOOL,
+                        server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
+                        server.FIXTURE_REVIEW_TOOL,
+                        server.BRIEF_LOOKUP_TOOL,
+                    }
                     else globals_capture,
                 )
                 observed[operation] = arguments

@@ -1075,7 +1075,7 @@ def _install_boundary_contracts(server: MCPServer) -> None:
         ),
         (
             DISPATCH_TOOL,
-            contract_schemas.schema_for(contracts.DispatchRequest),
+            contract_schemas.dispatch_request_schema(),
             contract_schemas.union_schema_for(contracts.DISPATCH_RESULT_TYPES),
         ),
         (

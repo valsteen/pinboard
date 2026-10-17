@@ -80,6 +80,7 @@ from pinboard.mcp.contracts import (
     DispatchInvalid,
     DispatchReady,
     DispatchRejected,
+    DispatchRequest,
     ExecutorBusyResult,
     FixtureReviewPage,
     FixtureReviewRejected,
@@ -182,9 +183,9 @@ def project_regex_patterns(schema: dict[str, JsonSchemaValue]) -> None:
                 value["pattern"] = projected
                 if terminator is not None:
                     # ECMAScript $ also matches just before a final line terminator.
-                    if "allOf" in value:
+                    if "not" in value:
                         raise ValueError(f"MCP pattern already has composed constraints: {pattern}")
-                    value["allOf"] = [{"not": {"pattern": terminator}}]
+                    value["not"] = {"pattern": terminator}
         elif isinstance(value, list):
             for child in value:
                 visit(child)
@@ -207,6 +208,34 @@ def schema_for(boundary_type: RequestBoundary) -> dict[str, JsonSchemaValue]:
     if not isinstance(definition, dict):
         raise TypeError("The MCP request schema root must be an object definition.")
     return {**definition, **schema}
+
+
+def dispatch_request_schema() -> dict[str, JsonSchemaValue]:
+    """Inline dispatch records so host reference-expansion limits retain every choice."""
+
+    schema = schema_for(DispatchRequest)
+    definitions = schema.pop("$defs")
+    assert isinstance(definitions, dict)
+
+    def inline(value: JsonSchemaValue) -> JsonSchemaValue:
+        if isinstance(value, dict):
+            if "$ref" in value:
+                reference = value["$ref"]
+                if set(value) != {"$ref"} or not isinstance(reference, str) or not reference.startswith("#/$defs/"):
+                    raise ValueError("Dispatch schema requires standalone local definition references.")
+                return inline(definitions[reference.removeprefix("#/$defs/")])
+            return {
+                key: child if key in {"const", "enum", "default", "examples"} else inline(child)
+                for key, child in value.items()
+                if key != "discriminator"
+            }
+        if isinstance(value, list):
+            return [inline(child) for child in value]
+        return value
+
+    result = inline(schema)
+    assert isinstance(result, dict)
+    return result
 
 
 def actions_request_schema() -> dict[str, JsonSchemaValue]:

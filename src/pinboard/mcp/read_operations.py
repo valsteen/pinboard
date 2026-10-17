@@ -1920,7 +1920,15 @@ def _verify_artifact(
         return common._read_failure(
             "pinboard-mcp-artifact-verification-result/v1",
             "ARTIFACT_VERIFY_INVALID",
-            f"Cannot verify artifact: {error}",
+            f"Cannot verify artifact request: {error}. "
+            "Compare supplied project_root, work_root, artifact_ref_id, selector, sha256 and size_bytes with the "
+            "exact producing response in available conversation/tool history; copy returned values exactly, "
+            "never guess or pad a digest. For a worker/reviewer prompt, stop this invalid native context and ask "
+            "the coordinator for a fresh coordinator-validated dispatch/review-job recipe; launch with unchanged "
+            "native arguments and verify before reading the prompt. Never bypass verification or read an "
+            "unverified prompt. If original response history is inaccessible, supported recovery is unavailable, "
+            "or exact returned values still fail, preserve the full original response when available and the "
+            "complete structured error and report them to the human/coordinator for investigation.",
             None,
         )
     store = common.compose_store(durable)

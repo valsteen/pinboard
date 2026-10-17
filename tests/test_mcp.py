@@ -5029,6 +5029,52 @@ class McpTransportTest(unittest.TestCase):
 
 
 class ResumedReviewReconciliationTest(CheckpointPackageSupport):
+    def test_malformed_verifier_digest_recovers_from_original_review_response(self) -> None:
+        fixture = self.checkpoint_fixture(review_condition="missing")
+        job = self.review_result(fixture, {"kind": "initial", "candidate_revision": fixture.candidate_revision})
+        self.assertEqual("ready", job["status"], job)
+        reference = self.json_object(job["prompt_reference"])
+        verification: dict[str, contracts.JsonValue] = {
+            "project_root": str(fixture.project),
+            "work_root": str(fixture.work),
+            "artifact_ref_id": reference["accepted_artifact_reference_id"],
+            "selector": reference["selector"],
+            "sha256": reference["sha256"],
+            "size_bytes": reference["size_bytes"],
+        }
+        digest = reference["sha256"]
+        assert isinstance(digest, str)
+        before = fixture.store.validated_snapshot()
+        prompt_path = fixture.work / str(reference["selector"])
+        prompt_bytes = prompt_path.read_bytes()
+        rejected = call_advertised_tool(mcp_server.ARTIFACT_VERIFY_TOOL, verification | {"sha256": digest[:-1]})
+        self.assertEqual("ARTIFACT_VERIFY_INVALID", rejected["code"])
+        self.assertEqual(
+            (False, "unchanged", "correct-input", []),
+            (rejected["state_changed"], rejected["effect"], rejected["retry"], rejected["changed_surfaces"]),
+        )
+        message = rejected["message"]
+        assert isinstance(message, str)
+        for required in (
+            "sha256",
+            "producing response",
+            "conversation/tool history",
+            "fresh",
+            "dispatch",
+            "review-job",
+            "unchanged native arguments",
+            "full original response",
+            "complete structured error",
+            "human/coordinator",
+        ):
+            self.assertIn(required, message)
+        recovered = call_advertised_tool(mcp_server.ARTIFACT_VERIFY_TOOL, verification)
+        self.assertEqual("pinboard-verified-artifact-reference/v1", recovered["schema"])
+        self.assertTrue(recovered["verified"])
+        self.assertEqual(reference["sha256"], recovered["sha256"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        self.assertEqual(prompt_bytes, prompt_path.read_bytes())
+
     def test_equivalent_commit_reuses_review_only_while_review_identity_is_current(self) -> None:
         fixture = self.checkpoint_fixture(candidate_form="working-tree", committed_context=True)
         snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))

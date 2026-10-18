@@ -69,6 +69,7 @@ project-includes = ["src", "tests", "docs/how_it_works", "scripts/check_duplicat
 search-path = ["."]
 preset = "strict"
 min-severity = "warn"
+type-ignore-unknown-tag-behavior = "no-effect"
 
 [tool.pyrefly.errors]
 invalid-cast = "error"

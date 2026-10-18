@@ -223,7 +223,9 @@ class PlannedReplacementTests(unittest.TestCase):
         )
         recorded = expect_success(decide(snapshot, record, NOW))
         self.assertIsInstance(recorded.change, decision_models.PlannedReplacementChange)
-        self.assertEqual(work_models.WorkState.READY, snapshot.work_item(WorkItemId("old-work")).state)  # type: ignore[union-attr]
+        old_work = snapshot.work_item(WorkItemId("old-work"))
+        assert old_work is not None
+        self.assertEqual(work_models.WorkState.READY, old_work.state)
 
         current = relation()
         retain = decision_models.RetainTemporarilyCommand(

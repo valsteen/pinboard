@@ -4,6 +4,7 @@ import json
 import tempfile
 import tomllib
 import unittest
+from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
@@ -224,12 +225,29 @@ class InvestigationTrialTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             layout = Layout(root / "out")
-            calls: list[list[str]] = []
+            calls: list[Sequence[str]] = []
             actual_run_tool = processes.run_tool
 
-            def controlled(tool: processes.Tool, arguments: list[str], **kwargs: object) -> processes.Completed:
+            def controlled(
+                tool: processes.Tool,
+                arguments: Sequence[str],
+                *,
+                cwd: Path,
+                environment: Mapping[str, str],
+                stdin: str | None,
+                timeout_seconds: float,
+                window: processes.Window,
+            ) -> processes.Completed:
                 if tool is processes.Tool.GIT:
-                    return actual_run_tool(tool, arguments, **kwargs)  # type: ignore[arg-type]
+                    return actual_run_tool(
+                        tool,
+                        arguments,
+                        cwd=cwd,
+                        environment=environment,
+                        stdin=stdin,
+                        timeout_seconds=timeout_seconds,
+                        window=window,
+                    )
                 self.assertIs(tool, processes.Tool.CLAUDE)
                 self.assertNotIn("--effort", arguments)
                 self.assertNotIn("--thinking", arguments)
@@ -238,9 +256,7 @@ class InvestigationTrialTests(unittest.TestCase):
                 self.assertNotIn("--resume", arguments)
                 calls.append(arguments)
                 identity = arguments[arguments.index("--session-id") + 1]
-                inquiry = kwargs["cwd"]
-                assert isinstance(inquiry, Path)
-                brief = inquiry / "kiosk-brief.md"
+                brief = cwd / "kiosk-brief.md"
                 events: list[dict[str, object]] = []
                 if len(calls) == 1:
                     brief.write_text("Saved brief with source window 09:00-09:30Z\n")

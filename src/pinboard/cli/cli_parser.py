@@ -167,7 +167,8 @@ def installed_commands() -> tuple[InstalledCommand, ...]:
             )
         for action in parser._actions:
             if isinstance(action, argparse._SubParsersAction):
-                for child in action.choices.values():
+                choices: dict[str, argparse.ArgumentParser] = action.choices
+                for child in choices.values():
                     if isinstance(child, argparse.ArgumentParser):
                         visit(child)
 

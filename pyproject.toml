@@ -67,18 +67,16 @@ known-first-party = ["pinboard", "tests", "evals"]
 python-version = "3.14"
 project-includes = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py", "evals"]
 search-path = ["."]
-# Linked worktrees live under `.claude/worktrees/`, which the shared repository's
-# `.git/info/exclude` ignores and Pyrefly's default exclusion heuristics also skip.
-# Keep exclusions explicit so a worktree checks the same files as the main checkout.
-use-ignore-files = false
-disable-project-excludes-heuristics = true
-project-excludes = ["**/node_modules", "**/__pycache__", "**/.venv/**"]
 preset = "strict"
 min-severity = "warn"
 
 [tool.pyrefly.errors]
 invalid-cast = "error"
 no-any-return = "error"
+unknown-return-type = "error"
+untyped-function-decorator = "error"
+untyped-class-decorator = "error"
+untyped-namedtuple = "error"
 
 [[tool.pyrefly.sub-config]]
 matches = "src/**"
@@ -103,6 +101,6 @@ show_missing = true
 dev = [
     "coverage>=7.10.4",
     "pyyaml>=6.0.3",
-    "pyrefly>=1.2.0",
+    "pyrefly>=1.4.0",
     "ruff>=0.16.3",
 ]

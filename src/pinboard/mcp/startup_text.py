@@ -90,7 +90,7 @@ def read(raw: Mapping[str, contracts.JsonValue], token: execution.CancellationTo
     try:
         request = msgspec.convert(raw, type=contracts.StartupTextEnvelope, strict=True).request
         msgspec.json.encode(request)
-    except (msgspec.ValidationError, ValueError, UnicodeError) as error:
+    except (msgspec.ValidationError, ValueError) as error:
         return _rejected("request", str(error), None)
     start = request.start_character if isinstance(request, contracts.StartupContinue) else 0
     expected: contracts.StartupSource | None

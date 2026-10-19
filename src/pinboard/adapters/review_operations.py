@@ -869,7 +869,12 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
         "Return a complete verdict for this exact candidate, acceptance-criterion evidence, required verification, "
         "and actionable findings with file locations. Classify every prior evidence family as reused, revalidated, "
         "or stale; justify reuse from unchanged relationships, reread changed owners and neighboring contracts or "
-        "consumers, and never treat an unchanged hash alone as sufficient. Report the candidate, brief digest and "
+        "consumers, and never treat an unchanged hash alone as sufficient. For correction or selected historical "
+        "evidence, name the semantic delta and the changed relationship or accepted requirement that warrants each "
+        "semantic reread or verification rerun. Reuse proof only while its facts, assumptions, dependencies and "
+        "consumer contract remain applicable; changed meaning invalidates dependent evidence. Current identity "
+        "checks, complete scope and prior-finding coverage, and required verification remain mandatory. "
+        "Report the candidate, brief digest and "
         "result digest actually reviewed. Do not accept, complete, change lifecycle, or write candidate files; the "
         "invoking outcome task owns acceptance and preserves your review."
     )

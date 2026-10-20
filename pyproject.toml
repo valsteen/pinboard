@@ -11,6 +11,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    "anyio>=4.15.1",
     "mcp==2.2.0",
     "msgspec>=0.21.1",
 ]
@@ -87,6 +88,40 @@ unknown-argument-type = "warn"
 unknown-attribute-type = "warn"
 unknown-variable-type = "warn"
 
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.src]
+include = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py", "evals"]
+respect-ignore-files = false
+
+[tool.ty.rules]
+all = "error"
+# Optional soundness rules reject Any/Unknown from library typing and inference.
+# https://docs.astral.sh/ty/reference/rules/#unsound-assignment
+# https://docs.astral.sh/ty/reference/rules/#unsound-return-statement
+# https://docs.astral.sh/ty/reference/rules/#unsound-yield
+# msgspec schema typing: https://github.com/msgspec/msgspec/issues/682
+# ty empty collection inference: https://github.com/astral-sh/ty/issues/4697
+# ty empty frozenset inference: https://github.com/astral-sh/ty/issues/4294
+# shortcut: optional soundness checks stay off; reconsider when upstream typing
+# and inference can express the existing validated boundaries without duplicate validation.
+# Opt in by replacing the corresponding ignore values with these error values:
+# unsound-assignment = "error"
+# unsound-return-statement = "error"
+# unsound-yield = "error"
+unsound-assignment = "ignore"
+unsound-return-statement = "ignore"
+unsound-yield = "ignore"
+
+[tool.ty.analysis]
+respect-type-ignore-comments = false
+strict-equality-semantics = true
+strict-generic-narrowing = true
+
+[tool.ty.terminal]
+error-on-warning = true
+
 [tool.coverage.run]
 branch = true
 source = ["pinboard"]
@@ -101,7 +136,9 @@ show_missing = true
 [dependency-groups]
 dev = [
     "coverage>=7.10.4",
+    "mcp-types>=2.2.0",
     "pyyaml>=6.0.3",
     "pyrefly>=1.4.0",
     "ruff>=0.16.3",
+    "ty>=0.0.90",
 ]

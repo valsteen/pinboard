@@ -125,7 +125,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
         reused_failure = next(failure for failure in failures if failure.details.effect.value == "unchanged")
         self.assertEqual("artifacts/evidence/concurrent/1.md", created_failure.selector)
         self.assertIsInstance(created_failure.cause, SQLiteReadOnlyError)
-        self.assertIsInstance(reused_failure.cause, SQLiteReadOnlyError)
+        assert isinstance(reused_failure.cause, SQLiteReadOnlyError)
         self.assertEqual(roots.database_path, reused_failure.cause.database_path)
         self.assertEqual("do-not-retry", created_failure.details.retry.value)
         self.assertEqual("do-not-retry", reused_failure.details.retry.value)
@@ -213,7 +213,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
         artifact = NewArtifact(work_models.ArtifactKind.BRIEF, "attempt-a", 1, ".json", b"{}\n")
         repository = ArtifactRepository(roots)
         publication = repository.publish(artifact)
-        self.assertIsInstance(publication, ArtifactPublication)
+        assert isinstance(publication, ArtifactPublication)
         artifact_directory = (roots.work_root / publication.reference.selector).parent
         artifact_directory.chmod(0o500)
         try:
@@ -243,7 +243,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
         with patch("pinboard.adapters.files.artifacts.create_immutable", side_effect=fail_after_publication):
             publication_failure = publish_accepted_artifact(store, ArtifactRepository(roots), artifact, SQLITE_NOW)
 
-        self.assertIsInstance(publication_failure, ArtifactWriteFailure)
+        assert isinstance(publication_failure, ArtifactWriteFailure)
         path = roots.work_root / publication_failure.selector
         self.assertEqual("artifacts/results/attempt-a/1.md", publication_failure.selector)
         self.assertEqual(EffectDisposition.COMMITTED, publication_failure.details.effect)

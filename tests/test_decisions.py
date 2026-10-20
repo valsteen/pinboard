@@ -362,7 +362,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             ),
             NOW,
         )
-        self.assertIsInstance(mismatch, DecisionFailure)
+        assert isinstance(mismatch, DecisionFailure)
         self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, mismatch.code)
 
         accepted = decide(
@@ -389,7 +389,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     ),
                     NOW,
                 )
-                self.assertIsInstance(rejected, DecisionFailure)
+                assert isinstance(rejected, DecisionFailure)
                 self.assertEqual(DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED, rejected.code)
 
         inconsistent = replace_dataclass(
@@ -432,7 +432,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             ),
             NOW,
         )
-        self.assertIsInstance(mismatch, DecisionFailure)
+        assert isinstance(mismatch, DecisionFailure)
         self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, mismatch.code)
 
     def test_rebind_preserves_active_or_paused_attempt_and_fences_authority(self) -> None:
@@ -1002,7 +1002,7 @@ class LifecycleDecisionTest(unittest.TestCase):
         submit = action(decision_models.SubmitReviewAction, AttemptId("build-map-1"))
         command = decision_models.SubmitReviewCommand(submit, work_models.SubmitReviewInput(CandidateId("candidate")))
         rejected = decision_outcome(snapshot, command, NOW)
-        self.assertIsInstance(rejected, DecisionFailure)
+        assert isinstance(rejected, DecisionFailure)
         self.assertEqual(DecisionFailureCode.ITEM_DEFINITION_STALE, rejected.code)
 
     def test_transition_rejections_preserve_the_domain_boundary(self) -> None:
@@ -1252,7 +1252,7 @@ class LifecycleDecisionTest(unittest.TestCase):
         for snapshot, command, code in cases:
             with self.subTest(kind=command.action.kind.value, code=code):
                 rejected = decision_outcome(snapshot, command, NOW)
-                self.assertIsInstance(rejected, DecisionFailure)
+                assert isinstance(rejected, DecisionFailure)
                 self.assertEqual(DecisionFailureCode(code), rejected.code)
 
     def test_proposal_rejections_use_unstarted_vocabulary(self) -> None:

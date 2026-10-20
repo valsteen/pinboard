@@ -1096,7 +1096,7 @@ class CandidateSnapshotTest(unittest.TestCase):
                 result = lifecycle_artifacts._submit_review(
                     checkout, store, artifacts, command, SQLITE_NOW, lambda: SQLITE_NOW
                 )
-                self.assertIsInstance(result, DecisionFailure)
+                assert isinstance(result, DecisionFailure)
                 self.assertEqual(
                     EffectDisposition.COMMITTED if created else EffectDisposition.UNCHANGED,
                     result.details.effect if result.details is not None else EffectDisposition.UNCHANGED,

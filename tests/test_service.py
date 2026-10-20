@@ -111,7 +111,7 @@ class ServiceTest(unittest.TestCase):
             0,
         )
         result = available_actions(snapshot, actor)
-        self.assertIsInstance(result, tuple)
+        assert isinstance(result, tuple)
         selected = next(
             action
             for action in result
@@ -163,7 +163,7 @@ class ServiceTest(unittest.TestCase):
             (authority.attempt,),
         )
         result = available_actions(snapshot, actor)
-        self.assertIsInstance(result, tuple)
+        assert isinstance(result, tuple)
         selected = next(action for action in result if isinstance(action, action_type))
         assert isinstance(selected, action_type)
         return selected
@@ -609,7 +609,7 @@ class ServiceTest(unittest.TestCase):
             brief_identity,
         )
 
-        self.assertIsInstance(preflight_rejection, DecisionFailure)
+        assert isinstance(preflight_rejection, DecisionFailure)
         self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, preflight_rejection.code)
         self.assertEqual(before_acceptance, submitted_store.validated_snapshot())
 
@@ -624,7 +624,7 @@ class ServiceTest(unittest.TestCase):
             transition_brief_identity=brief_identity,
         )
 
-        self.assertIsInstance(rejected, DecisionFailure)
+        assert isinstance(rejected, DecisionFailure)
         self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected.code)
         self.assertEqual(before_acceptance, submitted_store.validated_snapshot())
         accept = checkpoint_command(
@@ -734,7 +734,7 @@ class ServiceTest(unittest.TestCase):
         )
         before_mismatch = submitted_store.validated_snapshot()
         rejected = self._commit_transition(submitted_store, mismatch, SQLITE_NOW + timedelta(seconds=2))
-        self.assertIsInstance(rejected, DecisionFailure)
+        assert isinstance(rejected, DecisionFailure)
         self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected.code)
         self.assertEqual(before_mismatch, submitted_store.validated_snapshot())
         accept_action = self._project_action(submitted_store, decision_models.AcceptReviewAndContinueAction)
@@ -934,7 +934,7 @@ class ServiceTest(unittest.TestCase):
 
         rejected = self._commit_transition(store, command, SQLITE_NOW + timedelta(seconds=2))
 
-        self.assertIsInstance(rejected, DecisionFailure)
+        assert isinstance(rejected, DecisionFailure)
         self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, rejected.code)
         self.assertEqual(committed, store.validated_snapshot())
 
@@ -988,7 +988,7 @@ class ServiceTest(unittest.TestCase):
         duplicate = self._create_proposal(store, CreateProposalOperation(intake), recorded_at + timedelta(seconds=1))
 
         self.assertNotIsInstance(receipt, DecisionFailure)
-        self.assertIsInstance(duplicate, DecisionFailure)
+        assert isinstance(duplicate, DecisionFailure)
         self.assertEqual(DecisionFailureCode.PROPOSAL_ALREADY_EXISTS, duplicate.code)
         after = store.validated_snapshot()
         self.assertEqual(
@@ -1190,7 +1190,7 @@ class ServiceTest(unittest.TestCase):
 
         result = self._create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
 
-        self.assertIsInstance(result, DecisionFailure)
+        assert isinstance(result, DecisionFailure)
         self.assertEqual(DecisionFailureCode.ITEM_NOT_FOUND, result.code)
         self.assertEqual(before, store.validated_snapshot())
 

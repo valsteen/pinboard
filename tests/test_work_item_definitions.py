@@ -209,7 +209,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         for value, code in cases:
             with self.subTest(code=code):
                 rejected = decide_definition_revision(snapshot, build.work_item_id, value, NOW)
-                self.assertIsInstance(rejected, DecisionFailure)
+                assert isinstance(rejected, DecisionFailure)
                 self.assertEqual(code, rejected.code)
 
     def test_terminal_item_definition_cannot_be_revised(self) -> None:

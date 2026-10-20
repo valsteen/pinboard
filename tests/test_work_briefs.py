@@ -923,7 +923,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 artifacts = ArtifactRepository(roots)
 
                 identity = read_selected_work_brief_identity(reference, artifacts)
-                self.assertNotIsInstance(identity, DecisionFailure)
+                assert not isinstance(identity, DecisionFailure)
                 assert identity is not None
                 self.assertIsNone(validate_transition_work_brief(decision_facts(state, SQLITE_NOW), command, identity))
                 for identity_mismatch in (
@@ -1001,7 +1001,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     artifact_references=(mismatched_reference, *state.artifact_references[1:]),
                 )
                 mismatched_identity = read_selected_work_brief_identity(mismatched_reference, artifacts)
-                self.assertNotIsInstance(mismatched_identity, DecisionFailure)
+                assert not isinstance(mismatched_identity, DecisionFailure)
                 failure = validate_transition_work_brief(
                     decision_facts(mismatched_state, SQLITE_NOW), command, mismatched_identity
                 )

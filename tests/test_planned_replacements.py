@@ -238,7 +238,7 @@ class PlannedReplacementTests(unittest.TestCase):
             ),
         )
         retained = expect_success(decide(self.snapshot(relation_value=current), retain, NOW))
-        self.assertIsInstance(retained.change, decision_models.ReplacementDispositionChange)
+        assert isinstance(retained.change, decision_models.ReplacementDispositionChange)
         self.assertEqual(1, retained.change.disposition.relation_revision)
 
     def test_resume_decision_rejects_a_replacement_recorded_after_selection(self) -> None:

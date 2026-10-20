@@ -69,10 +69,6 @@ jobs:
         run: uv run --locked ruff format --check .
       - name: Lint
         run: uv run --locked ruff check .
-      - name: Type-check
-        run: uv run --locked pyrefly check
-      - name: Check strict type coverage
-        run: uv run --locked pyrefly coverage check src --strict --fail-under 100
       - name: Test with branch coverage
         run: uv run --locked python -m tests.runner --coverage
       - name: Validate plugin and skill metadata
@@ -93,3 +89,5 @@ jobs:
           uv run --isolated --no-project --with ./dist/*.whl pinboard --project-root "$smoke_repository" init
           test -f "$smoke_repository/.pinboard/state.sqlite3"
           git -C "$smoke_repository" check-ignore -q .pinboard/state.sqlite3
+      - name: Check strict types with Pyrefly and ty
+        run: scripts/check-types

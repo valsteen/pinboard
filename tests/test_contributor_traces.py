@@ -1236,7 +1236,7 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertIsNone(capture.resolve(str(worktree), branch_leaf))
             self.settings(primary, "off", {"work-a": "invalid"})
             rejected = capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"})
-            self.assertIsInstance(rejected, execution.OperationResult)
+            assert isinstance(rejected, execution.OperationResult)
             self.assertEqual("TRACE_PREFLIGHT_FAILED", rejected.content["code"])
 
     def test_mcp_startup_uses_automatic_mode_unless_manual_capture_was_declared(self) -> None:

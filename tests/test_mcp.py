@@ -5046,7 +5046,7 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual(self._expected_bytes(roots, "work-a"), msgspec.json.encode(result.structured_content))
         self.assertTrue(rejected.is_error)
         self.assertEqual(1, len(rejected.content))
-        self.assertIsInstance(rejected.content[0], TextContent)
+        assert isinstance(rejected.content[0], TextContent)
         self.assertIn("Unknown tool", rejected.content[0].text)
         for failure, code in ((invalid, "ITEM_STATUS_INVALID"), (missing, "ITEM_NOT_FOUND")):
             self.assertFalse(failure.is_error)

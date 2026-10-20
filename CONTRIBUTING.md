@@ -26,15 +26,26 @@ Use the Pinboard package installed in `<pinboard-source>/.venv` for every Python
 uv run --locked python -m docs.how_it_works.render --check
 uv run --locked ruff format --check .
 uv run --locked ruff check .
-uv run --locked pyrefly check
-uv run --locked pyrefly coverage check src --strict --fail-under 100
 uv run --locked python -m tests.runner --coverage
 uv run --locked python scripts/validate-metadata.py
+scripts/check-types
 ```
+
+`scripts/check-types` runs strict Pyrefly, its 100% strict production type coverage check, and `uv check --locked` in that order. CI uses the same entry on macOS and Linux. The entry stops on the first failed check; run the later commands separately when diagnosing an earlier failure. It is a developer command; worktree preparation only installs dependencies.
+
+ty is a locked development dependency. Its configuration checks the same paths as Pyrefly, sets `all = "error"` with explicit `ignore` overrides for the optional `unsound-assignment`, `unsound-return-statement` and `unsound-yield` rules. The rationale, upstream references, commented opt-in values and reopening condition live beside those settings in `pyproject.toml`. Generic `type: ignore` suppression and ignore-file exclusions stay disabled within the checked paths; equality and generic narrowing remain conservative. `uv check` is experimental in the declared uv version. Diagnostics make the command fail; keep a failing strict baseline visible rather than suppressing errors or making CI advisory.
 
 A `No Python files matched patterns` result from `pyrefly check` is a misconfiguration, not a pass.
 
 The repository uses `unittest`. The metadata validator is the supported check for plugin and skill discovery consistency. `HOW_IT_WORKS.md` and its diagrams are generated from `docs/how_it_works/`; update their sources and rerun the renderer instead of editing the generated guide directly.
+
+### Use the locked ty in PyCharm
+
+Prepare the source checkout opened in PyCharm with `scripts/prepare-worktree`, then select its `.venv/bin/python` as the project interpreter. Verify the installed version from that checkout with `uv run --locked ty --version`.
+
+In current PyCharm, open **Settings → Python → Tools → External Tools**, enable ty, and set its **Executable Path** explicitly to that checkout's `.venv/bin/ty`. Older versions expose **Python → Tools → ty** with an interpreter lookup option. Use the prepared interpreter there. This keeps the editor on the locked version instead of a PATH or uvx fallback. An environment marked “Not installed” means that selected checkout has not installed ty; prepare that checkout rather than using the IDE's global “Install latest” action. See [PyCharm's Python tools settings](https://www.jetbrains.com/help/pycharm/lsp-tools.html).
+
+The executable and project rules are shared; editor dependency-graph diagnostics additionally require ty's experimental uv integration. Selecting `.venv/bin/ty` alone does not establish that PyCharm enables it. Use `scripts/check-types` for the authoritative complete local/CI check; see [ty's editor uv option](https://docs.astral.sh/ty/reference/editor-settings/#experimentaluseuv).
 
 ## Design tests around coherent behavior
 

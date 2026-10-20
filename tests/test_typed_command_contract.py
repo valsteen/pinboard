@@ -131,8 +131,8 @@ class TypedTransitionContractTest(unittest.TestCase):
             with self.subTest(value=value):
                 selected_command = decision_models.ActivateCommand(activation, value)
                 rejected = decision_outcome(snapshot, selected_command, SQLITE_NOW)
-                self.assertIsInstance(rejected, DecisionFailure)
-            self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected.code)
+                assert isinstance(rejected, DecisionFailure)
+                self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected.code)
 
         accepted = decide(
             snapshot,
@@ -174,7 +174,7 @@ class TypedTransitionContractTest(unittest.TestCase):
             ),
             SQLITE_NOW,
         )
-        self.assertIsInstance(rejected_without_attempt, DecisionFailure)
+        assert isinstance(rejected_without_attempt, DecisionFailure)
         self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected_without_attempt.code)
 
         paused = work_models.WorkItem(
@@ -240,7 +240,7 @@ class TypedTransitionContractTest(unittest.TestCase):
         for value in (work_models.ResumeInput(ArtifactRefId(99)), work_models.ResumeInput(ArtifactRefId(3))):
             with self.subTest(value=value):
                 rejected = decision_outcome(snapshot, decision_models.ResumeCommand(resume, value), SQLITE_NOW)
-                self.assertIsInstance(rejected, DecisionFailure)
+                assert isinstance(rejected, DecisionFailure)
                 self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected.code)
 
         accepted = decide(

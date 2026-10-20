@@ -358,8 +358,8 @@ def validate_project_metadata() -> None:
         raise ValueError("distribution identity, readme, or license publication is invalid")
     if project.requires_python != ">=3.14,<3.15":
         raise ValueError("distribution must preserve Python 3.14-only compatibility")
-    if project.dependencies != ("mcp==2.2.0", "msgspec>=0.21.1"):
-        raise ValueError("runtime dependencies must be exact and limited to MCP plus msgspec")
+    if project.dependencies != ("anyio>=4.15.1", "mcp==2.2.0", "msgspec>=0.21.1"):
+        raise ValueError("runtime dependencies must be exact and limited to AnyIO, MCP and msgspec")
     if project.scripts != EXPECTED_ENTRY_POINTS:
         raise ValueError("project entry points must expose exactly the CLI, local-stdio MCP and Claude hook boundaries")
 

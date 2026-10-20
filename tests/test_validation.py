@@ -260,7 +260,7 @@ class SQLiteValidationTest(unittest.TestCase):
         with patch("pinboard.cli.work_state.initialize_database", side_effect=failure):
             result = self.initialize_work_state(project)
 
-        self.assertIsInstance(result, InitializationAfterCommittedEffects)
+        assert isinstance(result, InitializationAfterCommittedEffects)
         self.assertIs(failure, result.cause)
         self.assertEqual(exclude, result.git_exclude_path)
         self.assertIsNone(result.database_path)

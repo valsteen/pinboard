@@ -17,6 +17,7 @@ from pinboard.adapters.files.errors import (
     ImmutableFilePublishedError,
 )
 from pinboard.adapters.files.file_io import _sync_directory, create_immutable, resolve_durable_roots
+from pinboard.adapters.sqlite import database as sqlite_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application.artifacts import ArtifactPublication, NewArtifact
@@ -27,9 +28,104 @@ from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initial
 
 
 class StorageMigrationTests(unittest.TestCase):
+    def predecessor_rows(self, path: Path) -> tuple[str, ...]:
+        with contextlib.closing(sqlite3.connect(path)) as connection:
+            return tuple(
+                sorted(
+                    statement
+                    for statement in connection.iterdump()
+                    if statement.startswith("INSERT")
+                    and not statement.startswith(('INSERT INTO "project_meta"', 'INSERT INTO "artifact_ownership"'))
+                )
+            )
+
+    def initialize_v8(self, project: Path) -> Path:
+        subprocess.run(["git", "init", "-b", "main", str(project)], check=True, capture_output=True)
+        self.assertEqual(0, self.run_cli(project, "init")[0])
+        path = resolve_durable_roots(project).database_path
+        self.downgrade_v8(path)
+        return path
+
+    def downgrade_v8(self, path: Path) -> None:
+        with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("DROP TABLE artifact_ownership")
+            connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v9")
+            connection.execute("""CREATE TABLE project_meta (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    application TEXT NOT NULL CHECK (application = 'pinboard'),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 8),
+    revision INTEGER NOT NULL CHECK (revision >= 0),
+    host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT""")
+            connection.execute(
+                "INSERT INTO project_meta SELECT singleton, application, 8, revision, host_epoch, created_at, updated_at FROM project_meta_v9"
+            )
+            connection.execute("DROP TABLE project_meta_v9")
+
+    def test_v8_ownership_upgrade_is_bound_recoverable_and_reversible_until_a_new_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory).resolve()
+            path = self.initialize_v8(project)
+            original = path.read_bytes()
+            code, preview = self.run_cli(project, "migrate-schema")
+            self.assertEqual(0, code, preview)
+            self.assertEqual(original, path.read_bytes())
+            plan_id = str(preview["plan_id"])
+            with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("UPDATE project_meta SET revision = revision + 1")
+            original = path.read_bytes()
+            code, stale = self.run_cli(project, "migrate-schema", "--apply", plan_id)
+            self.assertEqual(11, code, stale)
+            self.assertEqual([], stale["changed_surfaces"])
+            self.assertEqual(original, path.read_bytes())
+            plan_id = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
+            with patch(
+                "pinboard.adapters.sqlite.schema_procedure.migrate_v8_database",
+                side_effect=StorageError(StorageErrorCode.IO_ERROR, "controlled interruption"),
+            ):
+                code, failed = self.run_cli(project, "migrate-schema", "--apply", plan_id)
+            self.assertEqual(11, code, failed)
+            self.assertEqual(original, path.read_bytes())
+            self.assertEqual(original, (path.parent / "migration" / f"{plan_id}.v8").read_bytes())
+            verify = sqlite_database._verify_current_schema
+            interrupted: list[bool] = []
+
+            def reject_live_postimage(connection: sqlite3.Connection) -> None:
+                verify(connection)
+                if connection.execute("PRAGMA database_list").fetchone()[2] == str(path):
+                    interrupted.append(True)
+                    raise StorageError(StorageErrorCode.INVALID_STATE, "controlled failure before authority commit")
+
+            with patch.object(sqlite_database, "_verify_current_schema", side_effect=reject_live_postimage):
+                self.assertEqual(11, self.run_cli(project, "migrate-schema", "--apply", plan_id)[0])
+            self.assertEqual([True], interrupted)
+            self.assertEqual(original, path.read_bytes())
+            self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", plan_id)[0])
+            reverse = str(self.run_cli(project, "migrate-schema", "--reverse", plan_id)[1]["plan_id"])
+            self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", reverse)[0])
+            self.assertEqual(original, path.read_bytes())
+            self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", plan_id)[0])
+            self.assertEqual(9, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
+            roots = resolve_durable_roots(project)
+            publication = ArtifactRepository(roots).publish(
+                NewArtifact(work_models.ArtifactKind.EVIDENCE, "later", 1, ".txt", b"later")
+            )
+            assert isinstance(publication, ArtifactPublication)
+            expect_success(
+                SQLiteWorkStore(path).accept_artifact_reference(
+                    roots.work_root, publication.reference, SQLITE_NOW, ownership=None
+                )
+            )
+            later = path.read_bytes()
+            self.assertEqual(11, self.run_cli(project, "migrate-schema", "--reverse", plan_id)[0])
+            self.assertEqual(later, path.read_bytes())
+
     def downgrade_schema(self, database_path: Path) -> None:
         with contextlib.closing(sqlite3.connect(database_path)) as connection, connection:
             for table in (
+                "artifact_ownership",
                 "initiative_assessments",
                 "initiative_decisions",
                 "initiative_memberships",
@@ -66,7 +162,7 @@ class StorageMigrationTests(unittest.TestCase):
             path = resolve_durable_roots(project).database_path
             store = SQLiteWorkStore(path)
             initialize_store(store, complete_sqlite_state())
-            expected = store.validated_snapshot()
+            expected = self.predecessor_rows(path)
             self.downgrade_schema(path)
 
             before_read = path.read_bytes()
@@ -113,7 +209,9 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual("unchanged", repeated["status"])
             current_id = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
             self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current_id)[0])
-            self.assertEqual(expected, SQLiteWorkStore(path).validated_snapshot())
+            self.assertEqual(expected, self.predecessor_rows(path))
+            with contextlib.closing(sqlite3.connect(path)) as connection:
+                self.assertEqual(8, connection.execute("SELECT schema_version FROM project_meta").fetchone()[0])
 
     def test_schema_apply_reports_committed_effect_without_a_second_database_read(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -238,7 +336,7 @@ class StorageMigrationTests(unittest.TestCase):
             roots = resolve_durable_roots(project, selected)
             store = SQLiteWorkStore(roots.database_path)
             initialize_store(store, complete_sqlite_state())
-            expected = store.validated_snapshot()
+            expected = self.predecessor_rows(roots.database_path)
             self.downgrade_schema(roots.database_path)
             original = roots.database_path.read_bytes()
             forward_id = str(self.run_cli(project, *args, "migrate-schema")[1]["plan_id"])
@@ -250,7 +348,9 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(0, self.run_cli(project, *args, "migrate-schema", "--apply", forward_id)[0])
             current_id = str(self.run_cli(project, *args, "migrate-schema")[1]["plan_id"])
             self.assertEqual(0, self.run_cli(project, *args, "migrate-schema", "--apply", current_id)[0])
-            self.assertEqual(expected, SQLiteWorkStore(roots.database_path).validated_snapshot())
+            self.assertEqual(expected, self.predecessor_rows(roots.database_path))
+            with contextlib.closing(sqlite3.connect(roots.database_path)) as connection:
+                self.assertEqual(8, connection.execute("SELECT schema_version FROM project_meta").fetchone()[0])
             self.assertFalse((project / ".pinboard").exists())
 
     def test_schema_preview_is_read_only_and_stale_apply_rejects_before_effects(self) -> None:
@@ -315,7 +415,7 @@ class StorageMigrationTests(unittest.TestCase):
                     assert isinstance(publication, ArtifactPublication)
                     expect_success(
                         SQLiteWorkStore(roots.database_path).accept_artifact_reference(
-                            selected, publication.reference, SQLITE_NOW
+                            selected, publication.reference, SQLITE_NOW, ownership=None
                         )
                     )
                     fresh = SQLiteWorkStore(roots.database_path).validated_snapshot()
@@ -335,7 +435,7 @@ class StorageMigrationTests(unittest.TestCase):
             assert isinstance(publication, ArtifactPublication)
             expect_success(
                 SQLiteWorkStore(current.database_path).accept_artifact_reference(
-                    current.work_root, publication.reference, SQLITE_NOW
+                    current.work_root, publication.reference, SQLITE_NOW, ownership=None
                 )
             )
             reference = SQLiteWorkStore(current.database_path).validated_snapshot().artifact_references[0]

@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pinboard.application import query_models, stored_state
+from pinboard.application import artifact_identity, query_models, stored_state
 from pinboard.application.artifacts import (
     ArtifactPublication,
     ArtifactRef,
@@ -81,6 +81,7 @@ def publish_accepted_artifact(
     publisher: ArtifactPublisher,
     artifact: NewArtifact,
     accepted_at: datetime,
+    ownership: artifact_identity.Ownership | None,
 ) -> DecisionResult[AcceptedArtifactPublication | ArtifactAcceptanceFailure | ArtifactWriteFailure]:
     """Publish immutable bytes, then accept their verified reference in SQLite.
 
@@ -93,7 +94,7 @@ def publish_accepted_artifact(
     published_reference = publication.reference
     artifact_created = publication.created
     try:
-        accepted = store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at)
+        accepted = store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at, ownership)
     except WorkStoreError as error:
         if error.invariant_violation:
             raise

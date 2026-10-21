@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, assert_never
 
 import msgspec
 from msgspec.structs import replace as replace_struct
@@ -21,6 +21,7 @@ from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
+    artifact_identity,
     candidate_snapshots,
     query_models,
     stored_state,
@@ -38,7 +39,7 @@ from pinboard.application.work_briefs import (
 from pinboard.cli.entrypoint import main
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import AttemptId, WorkItemId
+from pinboard.domain.identifiers import AttemptId, CheckpointId, WorkItemId
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import server as mcp_server
@@ -63,6 +64,13 @@ class CheckpointFixture:
     @property
     def common(self) -> tuple[str, ...]:
         return "--project-root", str(self.project), "--work-root", str(self.work)
+
+    def checkpoint_key(self, role: artifact_identity.CheckpointRole) -> str:
+        return artifact_identity.artifact_key(
+            artifact_identity.CheckpointAddress(
+                AttemptId(self.brief.attempt_id), CheckpointId(self.brief.checkpoint.checkpoint_id), role, 1
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,7 +165,7 @@ class CheckpointPackageSupport(unittest.TestCase):
                 "project_root": str(fixture.project),
                 "work_root": str(fixture.work),
                 "review": {
-                    "attempt_id": "work-a-1",
+                    "attempt_id": fixture.brief.attempt_id,
                     "candidate_revision": "b" * 40,
                     "runtime": "codex",
                     "background": False,
@@ -185,13 +193,13 @@ class CheckpointPackageSupport(unittest.TestCase):
         """Build the exact record-ready leaf for the current candidate, brief, result.md and review.md."""
 
         store = SQLiteWorkStore(fixture.work / "state.sqlite3")
-        snapshot = store.read_candidate_snapshot_context(AttemptId("work-a-1"))
-        attempt = store.read_attempt_context(AttemptId("work-a-1"))
+        snapshot = store.read_candidate_snapshot_context(AttemptId(fixture.brief.attempt_id))
+        attempt = store.read_attempt_context(AttemptId(fixture.brief.attempt_id))
         assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
-        attempt_root = fixture.work / "attempts" / "work-a-1"
+        attempt_root = fixture.work / "attempts" / fixture.brief.attempt_id
         return {
             "kind": "record-ready",
-            "attempt_id": "work-a-1",
+            "attempt_id": fixture.brief.attempt_id,
             "candidate_revision": candidate,
             "candidate_snapshot_sha256": snapshot.reference.content_sha256,
             "accepted_brief_sha256": attempt.brief_reference.content_sha256,
@@ -237,7 +245,7 @@ class CheckpointPackageSupport(unittest.TestCase):
                     "project_root": str(fixture.project),
                     "work_root": str(fixture.work),
                     "operation": "acquire",
-                    "attempt_id": "work-a-1",
+                    "attempt_id": fixture.brief.attempt_id,
                     "task_id": worker,
                     "host_id": "local",
                     "ttl_seconds": 300,
@@ -299,7 +307,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         ).stdout.strip()
         candidate = working_tree_identity(preimage, candidate_diff)
         lease = self.native_attempt_acquire(fixture, worker)
-        selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+        selected = self.native_actions(fixture, "submit-review", fixture.brief.attempt_id, role="worker", lease=lease)
         payload = fixture.project / f"submit-{candidate}.json"
         payload.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
         self.transition_json(fixture, selected, payload)
@@ -401,7 +409,12 @@ class CheckpointPackageSupport(unittest.TestCase):
                 candidate_snapshots.canonical_candidate_snapshot_bytes(snapshot),
             ),
         )
-        accepted = store.accept_artifact_reference(roots.work_root, published, recorded_at)
+        accepted = store.accept_artifact_reference(
+            roots.work_root,
+            published,
+            recorded_at,
+            ownership=artifact_identity.AttemptMembership(attempt.attempt_id, artifact_identity.AttemptRole.SOURCE),
+        )
         if isinstance(accepted, DecisionFailure):
             self.fail(str(accepted))
         with contextlib.closing(sqlite3.connect(roots.database_path)) as connection, connection:
@@ -416,13 +429,15 @@ class CheckpointPackageSupport(unittest.TestCase):
                     history_id, project_revision, action_id, action_kind, subject_id,
                     artifact_ref_id, artifact_kind, authorization_kind, actor_task_id, actor_host_id,
                     input_schema, input_json, outcome_schema, outcome_json, committed_at
-                ) VALUES (?, ?, 'submit-review:work-a-1', 'submit-review', 'work-a-1', ?, 'evidence',
+                ) VALUES (?, ?, ?, 'submit-review', ?, ?, 'evidence',
                           'attempt', NULL, NULL, ?, ?,
                           'transition-receipt/v1', ?, ?)
                 """,
                 (
                     history_id,
                     project_revision,
+                    f"submit-review:{attempt.attempt_id}",
+                    str(attempt.attempt_id),
                     reference_id,
                     snapshot.schema,
                     msgspec.json.encode(
@@ -479,6 +494,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         candidate_form: Literal["working-tree", "current-head"] = "working-tree",
         accepted_base: str | None = None,
         committed_context: bool = False,
+        checkpoint_id: str | None = None,
         review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner", "original"] = "ready",
     ) -> CheckpointFixture:
         state = complete_sqlite_state()
@@ -516,6 +532,8 @@ class CheckpointPackageSupport(unittest.TestCase):
         )
         project = Path(tempfile.mkdtemp()).resolve()
         brief = self.local_brief(project) if local else work_a_brief(project)
+        if checkpoint_id is not None:
+            brief = replace_struct(brief, checkpoint=replace_struct(brief.checkpoint, checkpoint_id=checkpoint_id))
         subprocess.run(["git", "init", "-b", "codex/work-a"], cwd=project, check=True, capture_output=True)
         (project / ".git" / "info" / "exclude").write_text("/.pinboard/\n", encoding="utf-8")
         tracked = project / "tracked.txt"
@@ -575,6 +593,9 @@ class CheckpointPackageSupport(unittest.TestCase):
             selector=published_brief.selector,
             content_sha256=published_brief.content_sha256,
             size_bytes=published_brief.size_bytes,
+            owners=(
+                artifact_identity.AttemptMembership(AttemptId(brief.attempt_id), artifact_identity.AttemptRole.SOURCE),
+            ),
         )
         store = SQLiteWorkStore(roots.database_path)
         initialize_store(store, replace(state, artifact_references=(brief_reference,)))
@@ -619,7 +640,14 @@ class CheckpointPackageSupport(unittest.TestCase):
                     review_bytes,
                 ),
             )
-            accepted_review = store.accept_artifact_reference(roots.work_root, published_review, now)
+            accepted_review = store.accept_artifact_reference(
+                roots.work_root,
+                published_review,
+                now,
+                ownership=artifact_identity.AttemptMembership(
+                    AttemptId(brief.attempt_id), artifact_identity.AttemptRole.SOURCE
+                ),
+            )
             if isinstance(accepted_review, DecisionFailure):
                 self.fail(str(accepted_review))
         attempt_root = roots.work_root / "attempts" / "work-a-1"
@@ -656,9 +684,13 @@ class CheckpointPackageSupport(unittest.TestCase):
         local: bool = False,
         candidate_form: Literal["working-tree", "current-head"] = "working-tree",
         committed_context: bool = False,
+        checkpoint_id: str | None = None,
     ) -> AcceptedPackageFixture:
         fixture = self.checkpoint_fixture(
-            local=local, candidate_form=candidate_form, committed_context=committed_context
+            local=local,
+            candidate_form=candidate_form,
+            committed_context=committed_context,
+            checkpoint_id=checkpoint_id,
         )
         self.accept_checkpoint(
             fixture,
@@ -666,9 +698,11 @@ class CheckpointPackageSupport(unittest.TestCase):
             fixture.payload,
         )
         reloaded = fixture.store.validated_snapshot()
-        checkpoint_id = fixture.brief.checkpoint.checkpoint_id
+        receipt = next(
+            value for value in reloaded.transition_receipts if value.outcome_schema == "checkpoint-acceptance/v2"
+        )
         package_reference = next(
-            value for value in reloaded.artifact_references if value.key == f"work-a-1-{checkpoint_id}-review-package"
+            value for value in reloaded.artifact_references if value.artifact_ref_id == receipt.artifact_ref_id
         )
         return AcceptedPackageFixture(
             fixture.project,
@@ -706,14 +740,21 @@ class CheckpointPackageSupport(unittest.TestCase):
                 canonical_work_brief_bytes(terminal),
             ),
         )
-        accepted = fixture.store.accept_artifact_reference(roots.work_root, published, datetime.now(UTC))
+        accepted = fixture.store.accept_artifact_reference(
+            roots.work_root,
+            published,
+            datetime.now(UTC),
+            ownership=artifact_identity.AttemptMembership(
+                AttemptId(terminal.attempt_id), artifact_identity.AttemptRole.SOURCE
+            ),
+        )
         if isinstance(accepted, DecisionFailure):
             self.fail(str(accepted))
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             connection.execute(
                 "UPDATE attempts SET brief_artifact_ref_id = ?, subject_revision = subject_revision + 1 "
-                "WHERE attempt_id = 'work-a-1'",
-                (int(accepted.reference.artifact_ref_id),),
+                "WHERE attempt_id = ?",
+                (int(accepted.reference.artifact_ref_id), fixture.brief.attempt_id),
             )
         return replace(fixture, brief=terminal)
 
@@ -818,7 +859,36 @@ class CheckpointPackageSupport(unittest.TestCase):
             content: bytes,
         ) -> work_brief_models.PortableArtifactIdentity:
             published = write_revision(roots, NewArtifact(kind, key, revision, extension, content))
-            reference = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW)
+            owner: artifact_identity.Ownership
+            match role:
+                case "accepted-brief":
+                    owner = artifact_identity.AttemptMembership(
+                        AttemptId(brief.attempt_id), artifact_identity.AttemptRole.SOURCE
+                    )
+                case "candidate":
+                    owner = artifact_identity.CheckpointAddress(
+                        AttemptId(brief.attempt_id),
+                        CheckpointId(checkpoint.checkpoint_id),
+                        artifact_identity.CheckpointRole.CANDIDATE,
+                        revision,
+                    )
+                case "result":
+                    owner = artifact_identity.CheckpointAddress(
+                        AttemptId(brief.attempt_id),
+                        CheckpointId(checkpoint.checkpoint_id),
+                        artifact_identity.CheckpointRole.RESULT,
+                        revision,
+                    )
+                case "implementation-review":
+                    owner = artifact_identity.CheckpointAddress(
+                        AttemptId(brief.attempt_id),
+                        CheckpointId(checkpoint.checkpoint_id),
+                        artifact_identity.CheckpointRole.REVIEW,
+                        revision,
+                    )
+                case _ as unreachable:
+                    assert_never(unreachable)
+            reference = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW, ownership=owner)
             if isinstance(reference, DecisionFailure):
                 self.fail(str(reference))
             return msgspec.convert(
@@ -886,7 +956,17 @@ class CheckpointPackageSupport(unittest.TestCase):
         published_package = write_revision(
             roots, NewArtifact(work_models.ArtifactKind.EVIDENCE, f"{prefix}-review-package", 1, ".json", encoded)
         )
-        accepted_package = fixture.store.accept_artifact_reference(fixture.work, published_package, SQLITE_NOW)
+        accepted_package = fixture.store.accept_artifact_reference(
+            fixture.work,
+            published_package,
+            SQLITE_NOW,
+            ownership=artifact_identity.CheckpointAddress(
+                AttemptId(brief.attempt_id),
+                CheckpointId(checkpoint.checkpoint_id),
+                artifact_identity.CheckpointRole.PACKAGE,
+                1,
+            ),
+        )
         if isinstance(accepted_package, DecisionFailure):
             self.fail(str(accepted_package))
         package_reference = fixture.store.read_artifact_reference(

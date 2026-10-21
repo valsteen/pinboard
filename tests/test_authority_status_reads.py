@@ -1142,6 +1142,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assertEqual(
             {
                 "artifact_refs",
+                "artifact_ownership",
                 "attempts",
                 "item_dependencies",
                 "project_meta",
@@ -1203,7 +1204,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assertEqual(before_review, after_review)
         self.assertEqual(unrelated_before, (unrelated_view.read_bytes(), unrelated_view.stat().st_mtime_ns))
         review_tables, review_statements = review_reads
-        self.assertEqual(read_tables, review_tables)
+        self.assertEqual(read_tables - {"artifact_ownership"}, review_tables)
         self.assert_keyed_status_queries(database, review_statements)
 
     def test_attempt_inspection_rejects_live_review_without_snapshot(self) -> None:

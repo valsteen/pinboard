@@ -13,9 +13,10 @@ from pathlib import Path
 import msgspec
 
 from pinboard.adapters.files.artifacts import verify_reference
+from pinboard.adapters.sqlite.artifact_ownership import accept_ownership, attach_ownership
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.application import stored_state
+from pinboard.application import artifact_identity, stored_state
 from pinboard.application.artifacts import (
     ArtifactRef,
     BriefArtifactRef,
@@ -41,6 +42,19 @@ class _ArtifactAllocationRow(msgspec.Struct, frozen=True, forbid_unknown_fields=
     artifact_ref_id: int
 
 
+def decode_reference_row(row: sqlite3.Row) -> stored_state.ArtifactReference:
+    try:
+        return msgspec.convert({**dict(row), "owners": ()}, type=stored_state.ArtifactReference, strict=True)
+    except msgspec.ValidationError as error:
+        raise StorageError(StorageErrorCode.INVALID_STATE, f"Stored row is invalid: {error}") from error
+
+
+def decode_reference_rows(
+    connection: sqlite3.Connection, rows: tuple[sqlite3.Row, ...] | list[sqlite3.Row]
+) -> tuple[stored_state.ArtifactReference, ...]:
+    return attach_ownership(connection, (decode_reference_row(row) for row in rows))
+
+
 def _read_accepted_artifact(
     connection: sqlite3.Connection,
     published: ArtifactRef | ResultArtifactRef | EvidenceArtifactRef,
@@ -54,7 +68,7 @@ def _read_accepted_artifact(
         """,
         (published.kind.value, published.key, published.revision),
     ).fetchone()
-    return None if row is None else decode_row(row, stored_state.ArtifactReference)
+    return None if row is None else decode_reference_rows(connection, [row])[0]
 
 
 def read_artifact_reference(
@@ -72,7 +86,22 @@ def read_artifact_reference(
         """,
         (kind.value, key, revision),
     ).fetchone()
-    return None if row is None else decode_row(row, stored_state.ArtifactReference)
+    return None if row is None else decode_reference_rows(connection, [row])[0]
+
+
+def read_owned_reference(
+    connection: sqlite3.Connection, ownership: artifact_identity.LifecycleAddress
+) -> stored_state.ArtifactReference | None:
+    rows = connection.execute(
+        """SELECT artifact_refs.artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+                  relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+           FROM artifact_ownership JOIN artifact_refs USING (artifact_ref_id)
+           WHERE ownership_json = ?""",
+        (artifact_identity.canonical_ownership(ownership),),
+    ).fetchall()
+    if len(rows) > 1:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "A lifecycle address names multiple accepted artifacts.")
+    return None if not rows else decode_reference_rows(connection, rows)[0]
 
 
 def read_latest_artifact_reference(
@@ -91,7 +120,7 @@ def read_latest_artifact_reference(
         """,
         (kind.value, key),
     ).fetchone()
-    return None if row is None else decode_row(row, stored_state.ArtifactReference)
+    return None if row is None else decode_reference_rows(connection, [row])[0]
 
 
 def read_artifact_reference_by_id(
@@ -105,7 +134,7 @@ def read_artifact_reference_by_id(
         """,
         (artifact_ref_id,),
     ).fetchone()
-    return None if row is None else decode_row(row, stored_state.ArtifactReference)
+    return None if row is None else decode_reference_rows(connection, [row])[0]
 
 
 def read_artifact_references_by_ids(
@@ -113,15 +142,15 @@ def read_artifact_references_by_ids(
 ) -> dict[ArtifactRefId, stored_state.ArtifactReference]:
     return {
         value.artifact_ref_id: value
-        for value in (
-            decode_row(row, stored_state.ArtifactReference)
-            for row in select_by_ids(
+        for value in decode_reference_rows(
+            connection,
+            select_by_ids(
                 connection,
                 """SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
                           relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
                    FROM artifact_refs WHERE artifact_ref_id IN ({ids})""",
                 artifact_ids,
-            )
+            ),
         )
     }
 
@@ -146,19 +175,21 @@ def _insert_artifact(connection: sqlite3.Connection, reference: stored_state.Art
             reference.created_at.isoformat(),
         ),
     )
+    for ownership in reference.owners:
+        accept_ownership(connection, reference.artifact_ref_id, ownership)
 
 
 def read_artifacts(connection: sqlite3.Connection) -> tuple[stored_state.ArtifactReference, ...]:
-    return tuple(
-        decode_row(row, stored_state.ArtifactReference)
-        for row in connection.execute(
+    return decode_reference_rows(
+        connection,
+        connection.execute(
             """
             SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
                    relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
             FROM artifact_refs
             ORDER BY artifact_ref_id
             """
-        ).fetchall()
+        ).fetchall(),
     )
 
 
@@ -194,6 +225,7 @@ def accept_checkpoint_artifact(
     expected_id: ArtifactRefId,
     revision: int,
     now: datetime,
+    ownership: artifact_identity.Ownership,
 ) -> ArtifactRefId:
     existing = _read_accepted_artifact(connection, published)
     if existing is not None:
@@ -205,6 +237,10 @@ def accept_checkpoint_artifact(
             raise StorageError(
                 StorageErrorCode.INVARIANT_VIOLATION,
                 "An accepted checkpoint artifact identity names different bytes.",
+            )
+        if ownership not in existing.owners:
+            raise StorageError(
+                StorageErrorCode.INVARIANT_VIOLATION, "An accepted lifecycle artifact has another owner."
             )
         return existing.artifact_ref_id
     _insert_artifact(
@@ -219,6 +255,7 @@ def accept_checkpoint_artifact(
             published.size_bytes,
             revision,
             now,
+            (ownership,),
         ),
     )
     return expected_id
@@ -229,6 +266,7 @@ def accept_artifact_reference(
     work_root: Path,
     published: ArtifactRef,
     accepted_at: datetime,
+    ownership: artifact_identity.Ownership | None,
 ) -> DecisionResult[ArtifactReferenceAcceptance]:
     """Accept one verified reference; the caller owns transaction and readback."""
 
@@ -244,6 +282,8 @@ def accept_artifact_reference(
                 StorageErrorCode.INVARIANT_VIOLATION,
                 "An accepted artifact identity already names different bytes.",
             )
+        if ownership is not None and ownership not in existing.owners:
+            raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "An accepted artifact has another owner.")
         return ArtifactReferenceAcceptance(existing, False)
     allocation = connection.execute(
         """
@@ -266,6 +306,7 @@ def accept_artifact_reference(
         published.size_bytes,
         current_revision + 1,
         accepted_at,
+        () if ownership is None else (ownership,),
     )
     revision = current_revision + 1
     _insert_artifact(connection, reference)

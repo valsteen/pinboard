@@ -23,6 +23,7 @@ from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     action_models,
+    artifact_identity,
     candidate_snapshots,
     query_models,
     stored_state,
@@ -37,7 +38,7 @@ from pinboard.application.brief_source_models import BriefSourceFailure, authori
 from pinboard.application.dispatch_models import DispatchArtifactPort
 from pinboard.application.ports import WorkStore
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import AttemptId, HistoryId, ReviewId
+from pinboard.domain.identifiers import AttemptId, CheckpointId, HistoryId, ReviewId
 from pinboard.mcp import contract_schemas, server
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import job_operations as mcp_jobs
@@ -1334,7 +1335,16 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual(work_models.AttemptState.PAUSED, current.state)
         self.assertIsNone(current.candidate_revision)
         package_reference = fresh_store.read_artifact_reference(
-            work_models.ArtifactKind.EVIDENCE, f"work-a-1-{replacement.checkpoint.checkpoint_id}-review-package", 1
+            work_models.ArtifactKind.EVIDENCE,
+            artifact_identity.artifact_key(
+                artifact_identity.CheckpointAddress(
+                    AttemptId("work-a-1"),
+                    CheckpointId(replacement.checkpoint.checkpoint_id),
+                    artifact_identity.CheckpointRole.PACKAGE,
+                    1,
+                )
+            ),
+            1,
         )
         assert package_reference is not None and ready_reference is not None
         package = work_briefs.decode_canonical_checkpoint_review_package(

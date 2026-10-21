@@ -31,7 +31,7 @@ from pinboard.adapters.files.root import classify_checkout
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import stored_state, work_brief_models
+from pinboard.application import artifact_identity, stored_state, work_brief_models
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, BriefArtifactRef, NewArtifact
 from pinboard.application.dispatch_models import (
@@ -145,7 +145,7 @@ class DispatchTest(unittest.TestCase):
                 msgspec.json.encode(payload, order="sorted") + b"\n",
             ),
         )
-        expect_success(store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW))
+        expect_success(store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW, ownership=None))
         before = store.validated_snapshot()
         rejected = self.native_dispatch(
             project, roots, self.dispatch_choice(action(), environment, None, "unused", None)
@@ -864,12 +864,13 @@ class DispatchTest(unittest.TestCase):
             work_root: Path,
             published: ArtifactRef,
             accepted_at: datetime,
+            ownership: artifact_identity.Ownership | None,
         ) -> DecisionResult[ArtifactReferenceAcceptance]:
             nonlocal acceptance_calls
             acceptance_calls += 1
             if acceptance_calls == 2:
                 raise database_failure
-            return accept_reference(selected_store, work_root, published, accepted_at)
+            return accept_reference(selected_store, work_root, published, accepted_at, ownership)
 
         with patch.object(
             SQLiteWorkStore,
@@ -1002,6 +1003,7 @@ class DispatchTest(unittest.TestCase):
                         ),
                     ),
                     datetime.now(UTC),
+                    ownership=None,
                 )
             )
             return rendered
@@ -1033,6 +1035,7 @@ class DispatchTest(unittest.TestCase):
             work_root: Path,
             published: ArtifactRef,
             accepted_at: datetime,
+            ownership: artifact_identity.Ownership | None,
         ) -> DecisionResult[ArtifactReferenceAcceptance]:
             expect_success(
                 accept_reference(
@@ -1048,9 +1051,10 @@ class DispatchTest(unittest.TestCase):
                         ),
                     ),
                     accepted_at,
+                    None,
                 )
             )
-            return accept_reference(work_root, published, accepted_at)
+            return accept_reference(work_root, published, accepted_at, ownership)
 
         with patch.object(store, "accept_artifact_reference", side_effect=accept_after_unrelated_revision):
             result = prepare_dispatch(
@@ -1216,6 +1220,7 @@ class DispatchTest(unittest.TestCase):
             work_root: Path,
             published: ArtifactRef,
             accepted_at: datetime,
+            ownership: artifact_identity.Ownership | None,
         ) -> DecisionResult[ArtifactReferenceAcceptance]:
             nonlocal acceptance_calls
             acceptance_calls += 1
@@ -1225,7 +1230,7 @@ class DispatchTest(unittest.TestCase):
                     "Prompt reference changed before acceptance.",
                     None,
                 )
-            return accept_reference(work_root, published, accepted_at)
+            return accept_reference(work_root, published, accepted_at, ownership)
 
         with patch.object(store, "accept_artifact_reference", side_effect=reject_reused_prompt):
             failed = prepare_dispatch(
@@ -1304,12 +1309,13 @@ class DispatchTest(unittest.TestCase):
             work_root: Path,
             published: ArtifactRef,
             accepted_at: datetime,
+            ownership: artifact_identity.Ownership | None,
         ) -> DecisionResult[ArtifactReferenceAcceptance]:
             nonlocal acceptance_calls
             acceptance_calls += 1
             if acceptance_calls == 2:
                 raise database_failure
-            return accept_reference(selected_store, work_root, published, accepted_at)
+            return accept_reference(selected_store, work_root, published, accepted_at, ownership)
 
         with patch.object(
             SQLiteWorkStore,

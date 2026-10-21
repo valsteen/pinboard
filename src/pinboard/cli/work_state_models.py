@@ -92,7 +92,7 @@ class SchemaMigrationView(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     plan_id: str
     plan: SchemaPlan | None
     database_path: str
-    authority: Literal["sqlite-v6", "sqlite-v7", "sqlite-v8"]
+    authority: Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9"]
     state_changed: bool
     effect: Literal["committed", "unchanged"]
     retry: Literal["do-not-retry", "safe-to-repeat"]

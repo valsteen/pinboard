@@ -7,6 +7,7 @@ import msgspec
 
 from pinboard.application import (
     action_models,
+    artifact_identity,
     candidate_snapshots,
     stored_state,
     work_brief_compatibility_models,
@@ -24,24 +25,25 @@ from pinboard.application.work_briefs import (
 )
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import ArtifactRefId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CheckpointId
 
 
 def _invalid(message: str) -> work_brief_models.WorkBriefFailure:
     return work_brief_models.WorkBriefFailure(work_brief_models.WorkBriefErrorCode.PACKAGE_PROVENANCE_INVALID, message)
 
 
-def checkpoint_candidate_key(attempt_id: str, checkpoint_id: str) -> str:
-    return f"{attempt_id}-{checkpoint_id}-candidate"
-
-
 def canonical_checkpoint_candidate_reference(
     package: work_brief_models.CheckpointReviewPackageV3, reference: stored_state.ArtifactReference
 ) -> bool:
-    return (reference.kind, reference.key, reference.revision) == (
-        work_models.ArtifactKind.EVIDENCE,
-        checkpoint_candidate_key(package.attempt_id, package.checkpoint.id),
-        1,
+    return (
+        reference.kind == work_models.ArtifactKind.EVIDENCE
+        and artifact_identity.CheckpointAddress(
+            AttemptId(package.attempt_id),
+            CheckpointId(package.checkpoint.id),
+            artifact_identity.CheckpointRole.CANDIDATE,
+            reference.revision,
+        )
+        in reference.owners
     )
 
 
@@ -101,19 +103,27 @@ def _artifact_identities(
     candidate = _portable_reference(package.candidate_snapshot, references, artifact_bytes)
     if isinstance(candidate, work_brief_models.WorkBriefFailure):
         return candidate
-    if (package.candidate_snapshot.kind, package.candidate_snapshot.key, package.candidate_snapshot.revision) != (
-        work_models.ArtifactKind.EVIDENCE.value,
-        checkpoint_candidate_key(package.attempt_id, checkpoint_id),
-        1,
-    ):
+    if not canonical_checkpoint_candidate_reference(package, candidate):
         return _invalid("Checkpoint package candidate snapshot identity is not canonical.")
     if (
-        (package.accepted_brief.kind, package.accepted_brief.key)
-        != (work_models.ArtifactKind.BRIEF.value, package.attempt_id)
-        or (package.result.kind, package.result.key)
-        != (work_models.ArtifactKind.RESULT.value, f"{package.attempt_id}-{checkpoint_id}-result")
-        or (package.implementation_review.kind, package.implementation_review.key)
-        != (work_models.ArtifactKind.EVIDENCE.value, f"{package.attempt_id}-{checkpoint_id}-review")
+        accepted_brief.kind != work_models.ArtifactKind.BRIEF
+        or not any(owner.attempt_id == package.attempt_id for owner in accepted_brief.owners)
+        or result.kind != work_models.ArtifactKind.RESULT
+        or artifact_identity.CheckpointAddress(
+            AttemptId(package.attempt_id),
+            CheckpointId(checkpoint_id),
+            artifact_identity.CheckpointRole.RESULT,
+            result.revision,
+        )
+        not in result.owners
+        or implementation_review.kind != work_models.ArtifactKind.EVIDENCE
+        or artifact_identity.CheckpointAddress(
+            AttemptId(package.attempt_id),
+            CheckpointId(checkpoint_id),
+            artifact_identity.CheckpointRole.REVIEW,
+            implementation_review.revision,
+        )
+        not in implementation_review.owners
     ):
         return _invalid("Checkpoint package artifact roles do not use their canonical identities.")
     return accepted_brief
@@ -240,7 +250,13 @@ def validate_selected_checkpoint_review_package(
     if (
         receipt.artifact_ref_id != package_reference.artifact_ref_id
         or package_reference.kind != work_models.ArtifactKind.EVIDENCE
-        or package_reference.key != f"{package.attempt_id}-{package.checkpoint.id}-review-package"
+        or artifact_identity.CheckpointAddress(
+            AttemptId(package.attempt_id),
+            CheckpointId(package.checkpoint.id),
+            artifact_identity.CheckpointRole.PACKAGE,
+            package_reference.revision,
+        )
+        not in package_reference.owners
         or package_reference.revision != 1
         or package.attempt_id != attempt_id
         or package.item_id != item_id

@@ -6,6 +6,7 @@ from typing import Annotated, Literal, Protocol, Self, assert_never
 
 import msgspec
 
+from pinboard.application import artifact_identity
 from pinboard.application.artifact_publication import (
     AcceptedArtifactPublication,
     ArtifactAcceptanceFailure,
@@ -25,7 +26,7 @@ from pinboard.domain.errors import (
     DescribedCode,
     FailureDetails,
 )
-from pinboard.domain.identifiers import HostId
+from pinboard.domain.identifiers import AttemptId, HostId
 
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\n]+\z")]
 
@@ -246,6 +247,7 @@ def publish_agent_prompt(
             content,
         ),
         accepted_at,
+        artifact_identity.AttemptMembership(AttemptId(subject.attempt_id), artifact_identity.AttemptRole.SOURCE),
     )
     if isinstance(accepted, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         return accepted

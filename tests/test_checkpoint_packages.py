@@ -22,6 +22,7 @@ from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
+    artifact_identity,
     candidate_snapshots,
     checkpoint_packages,
     stored_state,
@@ -42,7 +43,7 @@ from pinboard.application.work_briefs import (
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.history import CheckpointAcceptanceOutcome
-from pinboard.domain.identifiers import AttemptId
+from pinboard.domain.identifiers import AttemptId, CheckpointId
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import AcceptedPackageFixture, CheckpointFixture, CheckpointPackageSupport
@@ -113,7 +114,14 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             content: bytes,
         ) -> work_brief_models.PortableArtifactIdentity:
             published = write_revision(roots, NewArtifact(kind, key, revision, ".json", content))
-            accepted = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW)
+            accepted = fixture.store.accept_artifact_reference(
+                fixture.work,
+                published,
+                SQLITE_NOW,
+                ownership=artifact_identity.AttemptMembership(
+                    AttemptId(fixture.brief.attempt_id), artifact_identity.AttemptRole.SOURCE
+                ),
+            )
             self.assertNotIsInstance(accepted, DecisionFailure)
             return msgspec.convert(
                 {
@@ -363,7 +371,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         candidate = package.candidate_snapshot
         self.assertEqual("candidate", candidate.role)
         self.assertEqual("evidence", candidate.kind)
-        self.assertEqual(f"work-a-1-{package.checkpoint.id}-candidate", candidate.key)
+        self.assertEqual(fixture.checkpoint_key(artifact_identity.CheckpointRole.CANDIDATE), candidate.key)
         self.assertEqual(1, candidate.revision)
         snapshot = candidate_snapshots.decode_candidate_snapshot((fixture.work / candidate.selector).read_bytes())
         self.assertEqual(snapshot.candidate, package.candidate)
@@ -438,7 +446,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         reference = next(
             value
             for value in fixture.store.validated_snapshot().artifact_references
-            if value.key.endswith("-candidate")
+            if value.key == fixture.checkpoint_key(artifact_identity.CheckpointRole.CANDIDATE)
         )
         self.assertEqual(
             fixture.candidate_bytes,
@@ -474,6 +482,10 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 candidate_bytes = (fixture.work / candidate_reference.selector).read_bytes()
                 connection = sqlite3.connect(fixture.work / "state.sqlite3")
                 try:
+                    connection.execute(
+                        "DELETE FROM artifact_ownership WHERE artifact_ref_id = ?",
+                        (int(candidate_reference.artifact_ref_id),),
+                    )
                     connection.execute(
                         "DELETE FROM artifact_refs WHERE artifact_ref_id = ?",
                         (int(candidate_reference.artifact_ref_id),),
@@ -909,6 +921,26 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         self.assertNotIn("checkpoint_packages", project_export)
         return str(package_diagnostic["code"]), str(project_export["code"])
 
+    def test_validation_reports_malformed_artifact_timestamp_without_writes(self) -> None:
+        fixture = self.accepted_package_fixture()
+        path = fixture.work / "state.sqlite3"
+        with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute(
+                "UPDATE artifact_refs SET created_at = ? WHERE artifact_ref_id = ?",
+                ("invalid timestamp", fixture.package_reference.artifact_ref_id),
+            )
+        before = path.read_bytes()
+        code, stdout, stderr = self.run_cli(*fixture.common, "validate", "--json")
+        self.assertEqual(10, code, stderr)
+        validation = self.json_object(json.loads(stdout))
+        self.assertFalse(validation["valid"])
+        diagnostics = self.json_array(validation["diagnostics"])
+        self.assertEqual(
+            [StorageErrorCode.INVALID_STATE.value], [self.json_object(value)["code"] for value in diagnostics]
+        )
+        self.assertEqual(str(path), self.json_object(diagnostics[0])["path"])
+        self.assertEqual(before, path.read_bytes())
+
     def test_installed_commands_validate_and_export_one_linked_package_without_writes(self) -> None:
         fixture = self.accepted_package_fixture()
         database_before = (fixture.work / "state.sqlite3").read_bytes()
@@ -933,7 +965,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         result, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
         self.assertEqual(0, result, stderr)
         project_export = msgspec.json.decode(stdout, type=ProjectExport, strict=True)
-        self.assertEqual("pinboard-project-export/v2", project_export.schema)
+        self.assertEqual("pinboard-project-export/v3", project_export.schema)
         self.assertEqual((), project_export.completion_packages)
         self.assertEqual(1, len(project_export.checkpoint_packages))
         exported = project_export.checkpoint_packages[0]
@@ -963,6 +995,83 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 if path.is_file() and path.name != "state.sqlite3"
             },
         )
+
+    def test_completion_named_checkpoints_validate_and_export_without_writes(self) -> None:
+        for checkpoint_id in ("completion", "mapping-observation-completion"):
+            with self.subTest(checkpoint_id=checkpoint_id):
+                fixture = self.accepted_package_fixture(checkpoint_id=checkpoint_id)
+                reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+                receipt = next(
+                    value
+                    for value in reloaded.transition_receipts
+                    if value.outcome_schema == "checkpoint-acceptance/v2"
+                )
+                self.assertEqual(fixture.package_reference.artifact_ref_id, receipt.artifact_ref_id)
+                files_before = {
+                    path.relative_to(fixture.work): path.read_bytes()
+                    for path in fixture.work.rglob("*")
+                    if path.is_file()
+                }
+                validation = self.run_json_cli(*fixture.common, "validate")
+                self.assertTrue(validation["valid"])
+                code, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
+                self.assertEqual(0, code, stderr)
+                portable = msgspec.json.decode(stdout, type=ProjectExport, strict=True)
+                self.assertEqual(checkpoint_id, portable.checkpoint_packages[0].checkpoint.id)
+                self.assertEqual((), portable.completion_packages)
+                self.assertEqual(
+                    files_before,
+                    {
+                        path.relative_to(fixture.work): path.read_bytes()
+                        for path in fixture.work.rglob("*")
+                        if path.is_file()
+                    },
+                )
+
+    def test_orphan_checkpoint_and_completion_packages_still_reject(self) -> None:
+        for owner in (
+            artifact_identity.CheckpointAddress(
+                AttemptId("work-a-1"), CheckpointId("orphan"), artifact_identity.CheckpointRole.PACKAGE, 1
+            ),
+            artifact_identity.CompletionAddress(AttemptId("work-a-1"), artifact_identity.CompletionRole.PACKAGE, 1),
+        ):
+            with self.subTest(owner=owner):
+                fixture = self.accepted_package_fixture(checkpoint_id="completion")
+                published = write_revision(
+                    resolve_durable_roots(fixture.project),
+                    NewArtifact(
+                        work_models.ArtifactKind.EVIDENCE, artifact_identity.artifact_key(owner), 1, ".json", b"{}\n"
+                    ),
+                )
+                accepted = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW, ownership=owner)
+                self.assertNotIsInstance(accepted, DecisionFailure)
+                self.assertEqual(
+                    ("CHECKPOINT_REVIEW_PACKAGE_PROVENANCE_INVALID",) * 2,
+                    self.package_failure_codes(fixture),
+                )
+
+    def test_collision_name_acceptance_does_not_relax_wrong_owner_or_role(self) -> None:
+        for role, attempt_id in (
+            (artifact_identity.CheckpointRole.REVIEW, AttemptId("work-a-1")),
+            (artifact_identity.CheckpointRole.CANDIDATE, AttemptId("foreign-attempt")),
+        ):
+            with self.subTest(role=role, attempt=attempt_id):
+                fixture = self.accepted_package_fixture(checkpoint_id="completion")
+                self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+                candidate = self.package(fixture).candidate_snapshot
+                reference = fixture.store.read_artifact_reference(
+                    work_models.ArtifactKind.EVIDENCE, candidate.key, candidate.revision
+                )
+                assert reference is not None
+                owner = artifact_identity.CheckpointAddress(attempt_id, CheckpointId("completion"), role, 1)
+                with sqlite3.connect(fixture.work / "state.sqlite3") as connection:
+                    connection.execute(
+                        "UPDATE artifact_ownership SET attempt_id = ?, ownership_json = ? WHERE artifact_ref_id = ?",
+                        (str(attempt_id), artifact_identity.canonical_ownership(owner), int(reference.artifact_ref_id)),
+                    )
+                self.assertEqual(
+                    ("CHECKPOINT_REVIEW_PACKAGE_PROVENANCE_INVALID",) * 2, self.package_failure_codes(fixture)
+                )
 
     def test_nonterminal_v2_cannot_authorize_review_or_completion(self) -> None:
         fixture = self.accepted_package_fixture(local=True, candidate_form="current-head")
@@ -1369,6 +1478,10 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             )
             with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
                 connection.execute(
+                    "DELETE FROM artifact_ownership WHERE artifact_ref_id = ?",
+                    (int(candidate_reference.artifact_ref_id),),
+                )
+                connection.execute(
                     "DELETE FROM artifact_refs WHERE artifact_ref_id = ?",
                     (int(candidate_reference.artifact_ref_id),),
                 )
@@ -1551,7 +1664,14 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 canonical_work_brief_bytes(replacement_brief),
             ),
         )
-        accepted = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW)
+        accepted = fixture.store.accept_artifact_reference(
+            fixture.work,
+            published,
+            SQLITE_NOW,
+            ownership=artifact_identity.AttemptMembership(
+                AttemptId(replacement_brief.attempt_id), artifact_identity.AttemptRole.SOURCE
+            ),
+        )
         if isinstance(accepted, DecisionFailure):
             self.fail(str(accepted))
         connection = sqlite3.connect(fixture.work / "state.sqlite3")

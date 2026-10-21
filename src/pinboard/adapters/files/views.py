@@ -42,7 +42,7 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
 
 
 def _render_header(kind: str) -> str:
-    return f"---\nkind: {kind}\nauthority: sqlite-v8\n---\n\n> {NOTICE}\n\n"
+    return f"---\nkind: {kind}\nauthority: sqlite-v9\n---\n\n> {NOTICE}\n\n"
 
 
 def _bullets(values: tuple[str, ...]) -> str:

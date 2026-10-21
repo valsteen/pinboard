@@ -12,7 +12,7 @@ from contextlib import closing, redirect_stdout
 from datetime import timedelta
 from pathlib import Path
 
-from pinboard.adapters.sqlite.database import migrate_v6_database, migrate_v7_database
+from pinboard.adapters.sqlite.database import migrate_v6_database, migrate_v7_database, read_schema_bytes
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import queries, query_models, service, stored_state
@@ -40,6 +40,22 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
         shutil.copyfile(FIXTURE_ROOT / f"{name}.sqlite3", destination)
         assert migrate_v6_database(destination)
         assert migrate_v7_database(destination)
+        # These frozen relational fixtures have deliberately unavailable opaque artifact
+        # stubs. Project their unchanged rows into current test storage; the supported
+        # ownership migration independently requires genuine original bytes.
+        current = destination.with_suffix(".current.sqlite3")
+        with closing(sqlite3.connect(current)) as connection, connection:
+            connection.executescript(read_schema_bytes().decode("utf-8"))
+            connection.execute("ATTACH DATABASE ? AS predecessor", (str(destination),))
+            tables = connection.execute(
+                "SELECT name FROM predecessor.sqlite_schema WHERE type = 'table' AND name != 'project_meta'"
+            ).fetchall()
+            for (name,) in tables:
+                connection.execute(f'INSERT INTO "{name}" SELECT * FROM predecessor."{name}"')
+            connection.execute(
+                "INSERT INTO project_meta SELECT singleton, application, 9, revision, host_epoch, created_at, updated_at FROM predecessor.project_meta"
+            )
+        current.replace(destination)
         return SQLiteWorkStore(destination)
 
     def _raw_counts(self, database: Path) -> dict[str, int]:

@@ -74,7 +74,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                 content,
             ),
         )
-        accepted = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW)
+        accepted = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW, ownership=None)
         if isinstance(accepted, DecisionFailure):
             self.fail(str(accepted))
         return int(accepted.reference.artifact_ref_id)

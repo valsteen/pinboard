@@ -7,6 +7,7 @@ from typing import Protocol, assert_never
 import msgspec
 
 from pinboard.application import (
+    artifact_identity,
     query_models,
     stored_state,
     work_brief_compatibility_models,
@@ -65,6 +66,7 @@ def publish_work_brief(
             canonical_work_brief_bytes(brief),
         ),
         accepted_at,
+        artifact_identity.AttemptMembership(AttemptId(brief.attempt_id), artifact_identity.AttemptRole.SOURCE),
     )
 
 
@@ -504,6 +506,7 @@ def publish_brief_review_needs_correction(
             canonical_work_brief_review_needs_correction_bytes(review),
         ),
         accepted_at,
+        artifact_identity.AttemptMembership(AttemptId(selected.brief.attempt_id), artifact_identity.AttemptRole.SOURCE),
     )
 
 

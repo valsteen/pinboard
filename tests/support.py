@@ -302,6 +302,7 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
         100,
         3,
         SQLITE_NOW,
+        (),
     )
     requirements = stored_state.ArtifactReference(
         ArtifactRefId(2),
@@ -313,6 +314,7 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
         200,
         3,
         SQLITE_NOW,
+        (),
     )
     evidence = stored_state.ArtifactReference(
         ArtifactRefId(3),
@@ -324,6 +326,7 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
         50,
         4,
         SQLITE_NOW,
+        (),
     )
     lifecycle = stored_state.LifecycleRecords(
         stored_state.ProjectRecord(APPLICATION, SCHEMA_VERSION, 12, 2, SQLITE_NOW, SQLITE_NOW),

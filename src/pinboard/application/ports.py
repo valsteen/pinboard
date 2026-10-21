@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pinboard.application import cancellation_models, query_models, roadmap, stored_state
+from pinboard.application import artifact_identity, cancellation_models, query_models, roadmap, stored_state
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.mutation_models import (
     CheckpointMutationAllocation,
@@ -77,6 +77,7 @@ class WorkStore(Protocol):
         work_root: Path,
         published: ArtifactRef,
         accepted_at: datetime,
+        ownership: artifact_identity.Ownership | None,
     ) -> DecisionResult[ArtifactReferenceAcceptance]: ...
 
     def read_artifact_reference(

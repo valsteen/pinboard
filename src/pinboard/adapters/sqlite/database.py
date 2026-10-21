@@ -32,8 +32,8 @@ from pinboard.application import stored_state
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 
 APPLICATION: Final = "pinboard"
-SCHEMA_VERSION: Final = 8
-SCHEMA_ID = "sqlite-v8"
+SCHEMA_VERSION: Final = 9
+SCHEMA_ID = "sqlite-v9"
 BUSY_TIMEOUT_MS = 2_000
 
 
@@ -46,7 +46,9 @@ def decode_row[Record](row: sqlite3.Row, record_type: type[Record]) -> Record:
         raise StorageError(StorageErrorCode.INVALID_STATE, f"Stored row is invalid: {error}") from error
 
 
-def select_by_ids(connection: sqlite3.Connection, query: str, ids: Iterable[str | int]) -> tuple[sqlite3.Row, ...]:
+def select_by_ids(
+    connection: sqlite3.Connection, query: str, ids: Iterable[str | int | bytes]
+) -> tuple[sqlite3.Row, ...]:
     """Read selected keys in bounded batches; query contains one ``{ids}`` slot."""
 
     selected = tuple(dict.fromkeys(ids))
@@ -200,9 +202,30 @@ def _verify_v7_schema(connection: sqlite3.Connection) -> None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v7 schema.")
 
 
+@cache
+def _build_v8_schema_signature() -> tuple[tuple[str, str, str, str | None], ...]:
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.executescript(Path(__file__).with_name("schema_compatibility_v8.sql").read_text(encoding="utf-8"))
+        return _read_schema_signature(connection)
+
+
+def _verify_v8_schema(connection: sqlite3.Connection) -> None:
+    if (
+        _read_pinboard_schema_version(connection) != 8
+        or _read_schema_signature(connection) != _build_v8_schema_signature()
+    ):
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v8 schema.")
+
+
 def _verify_current_schema(connection: sqlite3.Connection) -> None:
     version = _read_pinboard_schema_version(connection)
     if version != SCHEMA_VERSION:
+        if version == 8:
+            _verify_v8_schema(connection)
+            raise StorageError(
+                StorageErrorCode.SCHEMA_UNSUPPORTED,
+                "Schema sqlite-v8 requires a 'pinboard migrate-schema' preview and 'migrate-schema --apply <plan-id>' with the same project and work roots before ordinary commands can open it.",
+            )
         if version == 7:
             _verify_v7_schema(connection)
             raise StorageError(
@@ -557,6 +580,8 @@ def current_schema_logical_digest(path: Path) -> str:
             version = _read_pinboard_schema_version(connection)
             if version == 7:
                 _verify_v7_schema(connection)
+            elif version == 8:
+                _verify_v8_schema(connection)
             else:
                 _verify_current_schema(connection)
             verify_database_integrity(connection)
@@ -625,17 +650,22 @@ def write_transaction(connection: sqlite3.Connection) -> Generator[sqlite3.Conne
 
 
 def _upgrade_v7_connection(connection: sqlite3.Connection) -> bool:
-    """Advance exact v7 to current schema atomically, preserving every predecessor row."""
+    """Preserve the released v7-to-v8 step and its retained plan postimage."""
     with write_transaction(connection):
         version = _read_pinboard_schema_version(connection)
-        if version == SCHEMA_VERSION:
-            _verify_current_schema(connection)
+        if version == 8:
+            _verify_v8_schema(connection)
             return False
         _verify_v7_schema(connection)
         verify_database_integrity(connection)
         connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v7")
         statement = ""
-        for line in read_schema_bytes().decode("utf-8").splitlines(keepends=True):
+        for line in (
+            Path(__file__)
+            .with_name("schema_compatibility_v8.sql")
+            .read_text(encoding="utf-8")
+            .splitlines(keepends=True)
+        ):
             statement += line
             if not sqlite3.complete_statement(statement):
                 continue
@@ -654,39 +684,9 @@ def _upgrade_v7_connection(connection: sqlite3.Connection) -> bool:
             "INSERT INTO project_meta SELECT singleton, application, 8, revision, host_epoch, created_at, updated_at FROM project_meta_v7"
         )
         connection.execute("DROP TABLE project_meta_v7")
-        _verify_current_schema(connection)
+        _verify_v8_schema(connection)
         verify_database_integrity(connection)
     return True
-
-
-def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
-    """Observe exact v7/current identities and predict current output without effects."""
-    try:
-        source = sha256(path.read_bytes()).hexdigest()
-        with closing(
-            sqlite3.connect(_build_database_uri(path, OpenMode.READ_ONLY), uri=True, isolation_level=None)
-        ) as connection:
-            _configure_connection(connection)
-            version = _read_pinboard_schema_version(connection)
-            if version == 6:
-                return inspect_schema_migration(path)
-            if version == SCHEMA_VERSION:
-                _verify_current_schema(connection)
-                verify_database_integrity(connection)
-                return version, source, None
-            _verify_v7_schema(connection)
-            verify_database_integrity(connection)
-            with closing(sqlite3.connect(":memory:", isolation_level=None)) as simulation:
-                connection.backup(simulation)
-                _configure_connection(simulation)
-                _upgrade_v7_connection(simulation)
-                return version, source, schema_logical_digest(simulation)
-    except OSError as error:
-        raise StorageError(
-            StorageErrorCode.IO_ERROR, "The current schema migration could not read the database."
-        ) from error
-    except sqlite3.Error as error:
-        raise translate_database_error(error, opening=True).with_database_path(path) from error
 
 
 def migrate_v7_database(path: Path) -> bool:

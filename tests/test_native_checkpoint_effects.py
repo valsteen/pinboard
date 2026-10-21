@@ -15,7 +15,7 @@ from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode, FileIOError, FileIOErrorCode
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models, stored_state
+from pinboard.application import artifact_identity, query_models, stored_state
 from pinboard.application.artifact_publication import ArtifactWriteFailure
 from pinboard.application.artifacts import ArtifactPublication, NewArtifact
 from pinboard.domain import work_models
@@ -109,7 +109,7 @@ class NativeCheckpointEffectsTest(CheckpointPackageSupport):
         def fail_package(
             repository: ArtifactRepository, artifact: NewArtifact
         ) -> ArtifactPublication | ArtifactWriteFailure:
-            if artifact.key.endswith("-review-package"):
+            if artifact.key == fixture.checkpoint_key(artifact_identity.CheckpointRole.PACKAGE):
                 raise ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, "controlled package publication failure")
             return publish(repository, artifact)
 
@@ -126,12 +126,11 @@ class NativeCheckpointEffectsTest(CheckpointPackageSupport):
             ),
         )
         selectors = tuple(str(self.json_object(value)["value"]) for value in self.json_array(failure["observed"]))
-        checkpoint = fixture.brief.checkpoint.checkpoint_id
         self.assertEqual(
             (
-                f"artifacts/evidence/work-a-1-{checkpoint}-candidate/1.json",
-                f"artifacts/results/work-a-1-{checkpoint}-result/1.md",
-                f"artifacts/evidence/work-a-1-{checkpoint}-review/1.md",
+                f"artifacts/evidence/{fixture.checkpoint_key(artifact_identity.CheckpointRole.CANDIDATE)}/1.json",
+                f"artifacts/results/{fixture.checkpoint_key(artifact_identity.CheckpointRole.RESULT)}/1.md",
+                f"artifacts/evidence/{fixture.checkpoint_key(artifact_identity.CheckpointRole.REVIEW)}/1.md",
             ),
             selectors,
         )
@@ -241,12 +240,11 @@ class NativeCheckpointEffectsTest(CheckpointPackageSupport):
                 action = self.project_action(fixture, "accept-checkpoint:work-a-1")
                 payload = self.json_object(json.loads(fixture.payload.read_bytes()))
                 before = fixture.store.validated_snapshot()
-                checkpoint = fixture.brief.checkpoint.checkpoint_id
                 selectors = (
-                    f"artifacts/evidence/work-a-1-{checkpoint}-candidate/1.json",
-                    f"artifacts/results/work-a-1-{checkpoint}-result/1.md",
-                    f"artifacts/evidence/work-a-1-{checkpoint}-review/1.md",
-                    f"artifacts/evidence/work-a-1-{checkpoint}-review-package/1.json",
+                    f"artifacts/evidence/{fixture.checkpoint_key(artifact_identity.CheckpointRole.CANDIDATE)}/1.json",
+                    f"artifacts/results/{fixture.checkpoint_key(artifact_identity.CheckpointRole.RESULT)}/1.md",
+                    f"artifacts/evidence/{fixture.checkpoint_key(artifact_identity.CheckpointRole.REVIEW)}/1.md",
+                    f"artifacts/evidence/{fixture.checkpoint_key(artifact_identity.CheckpointRole.PACKAGE)}/1.json",
                 )
                 create = artifact_files.create_immutable
                 creations = 0
@@ -291,11 +289,10 @@ class NativeCheckpointEffectsTest(CheckpointPackageSupport):
         action = self.project_action(fixture, "accept-checkpoint:work-a-1")
         payload = self.json_object(json.loads(fixture.payload.read_bytes()))
         before = fixture.store.validated_snapshot()
-        checkpoint_id = fixture.brief.checkpoint.checkpoint_id
         selectors = (
-            f"artifacts/evidence/work-a-1-{checkpoint_id}-candidate/1.json",
-            f"artifacts/results/work-a-1-{checkpoint_id}-result/1.md",
-            f"artifacts/evidence/work-a-1-{checkpoint_id}-review/1.md",
+            f"artifacts/evidence/{fixture.checkpoint_key(artifact_identity.CheckpointRole.CANDIDATE)}/1.json",
+            f"artifacts/results/{fixture.checkpoint_key(artifact_identity.CheckpointRole.RESULT)}/1.md",
+            f"artifacts/evidence/{fixture.checkpoint_key(artifact_identity.CheckpointRole.REVIEW)}/1.md",
         )
         result_bytes = (fixture.work / "attempts/work-a-1/result.md").read_bytes()
         review_bytes = (fixture.work / "attempts/work-a-1/review.md").read_bytes()
@@ -409,7 +406,7 @@ class NativeCheckpointEffectsTest(CheckpointPackageSupport):
             repository: ArtifactRepository, artifact: NewArtifact
         ) -> ArtifactPublication | ArtifactWriteFailure:
             publication = original_publish(repository, artifact)
-            if artifact.key.endswith("-review-package") and not relation_state:
+            if artifact.key == fixture.checkpoint_key(artifact_identity.CheckpointRole.PACKAGE) and not relation_state:
                 recorded = self.transition_result(fixture, replacement_action, relation)
                 self.assertEqual("committed", recorded["status"])
                 relation_state.append(SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
@@ -422,13 +419,12 @@ class NativeCheckpointEffectsTest(CheckpointPackageSupport):
         self.assertTrue(failure["state_changed"])
         self.assertEqual(["immutable-artifact"], failure["changed_surfaces"])
         self.assertEqual("do-not-retry", failure["retry"])
-        checkpoint_id = fixture.brief.checkpoint.checkpoint_id
         self.assertEqual(
             (
-                f"artifacts/evidence/work-a-1-{checkpoint_id}-candidate/1.json",
-                f"artifacts/results/work-a-1-{checkpoint_id}-result/1.md",
-                f"artifacts/evidence/work-a-1-{checkpoint_id}-review/1.md",
-                f"artifacts/evidence/work-a-1-{checkpoint_id}-review-package/1.json",
+                f"artifacts/evidence/{fixture.checkpoint_key(artifact_identity.CheckpointRole.CANDIDATE)}/1.json",
+                f"artifacts/results/{fixture.checkpoint_key(artifact_identity.CheckpointRole.RESULT)}/1.md",
+                f"artifacts/evidence/{fixture.checkpoint_key(artifact_identity.CheckpointRole.REVIEW)}/1.md",
+                f"artifacts/evidence/{fixture.checkpoint_key(artifact_identity.CheckpointRole.PACKAGE)}/1.json",
             ),
             tuple(
                 str(self.json_object(value)["value"])

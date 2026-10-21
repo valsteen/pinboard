@@ -12,11 +12,12 @@ from pinboard.application import (
     cancellation,
     candidate_snapshots,
     history_archives,
+    lifecycle_packages,
     ports,
     project_export,
     work_brief_models,
 )
-from pinboard.cli import cli_commands, work_state
+from pinboard.cli import cli_commands
 from pinboard.cli.cli_output import write_json
 from pinboard.domain import decision_models
 from pinboard.domain.identifiers import ArtifactRefId
@@ -90,7 +91,7 @@ def export_project(
             work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
             str(error),
         )
-    checkpoint_packages = work_state.validate_checkpoint_review_packages(
+    checkpoint_packages = lifecycle_packages.validate_checkpoint_review_packages(
         captured_state.lifecycle,
         captured_state.artifact_references,
         captured_state.transition_receipts,
@@ -99,7 +100,7 @@ def export_project(
     )
     if isinstance(checkpoint_packages, work_brief_models.WorkBriefFailure):
         return checkpoint_packages
-    completion_packages = work_state.validate_completion_review_packages(
+    completion_packages = lifecycle_packages.validate_completion_review_packages(
         captured_state.lifecycle,
         captured_state.artifact_references,
         captured_state.transition_receipts,
@@ -114,7 +115,9 @@ def export_project(
             receipt.action_kind == decision_models.ActionKind.CANCEL
             and (message := cancellation.receipt_failure(receipt)) is not None
         ):
-            return work_state._package_provenance_failure(message)
+            return work_brief_models.WorkBriefFailure(
+                work_brief_models.WorkBriefErrorCode.PACKAGE_PROVENANCE_INVALID, message
+            )
     portable_package = project_export.project_export_from_state(
         captured_state,
         projected_references,

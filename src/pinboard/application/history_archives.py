@@ -14,13 +14,14 @@ from typing import Annotated, Literal, assert_never
 import msgspec
 
 from pinboard.application import (
+    artifact_identity,
     candidate_snapshots,
     stored_state,
     work_brief_models,
     work_briefs,
 )
 from pinboard.domain import decision_models, history, work_models
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CheckpointId
 
 type Sha256 = Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
 type Positive = Annotated[int, msgspec.Meta(gt=0)]
@@ -214,7 +215,13 @@ def _retired_checkpoint(
         or outcome.evidence != checkpoint.acceptance_evidence
         or outcome.outcome != decision_models.ActionKind.ACCEPT_CHECKPOINT.value
         or reference.kind != work_models.ArtifactKind.EVIDENCE
-        or reference.key != f"{facts.attempt.attempt_id}-{checkpoint.checkpoint_id}-review-package"
+        or artifact_identity.CheckpointAddress(
+            facts.attempt.attempt_id,
+            CheckpointId(checkpoint.checkpoint_id),
+            artifact_identity.CheckpointRole.PACKAGE,
+            reference.revision,
+        )
+        not in reference.owners
         or reference.revision != 1
         or not any(
             (value.revision, value.digest) == (checkpoint.accepted_scope_revision, checkpoint.accepted_scope_digest)
@@ -227,7 +234,13 @@ def _retired_checkpoint(
             value
             for value in facts.artifact_references
             if value.kind == work_models.ArtifactKind.EVIDENCE
-            and value.key == f"{facts.attempt.attempt_id}-{checkpoint.checkpoint_id}-candidate"
+            and artifact_identity.CheckpointAddress(
+                facts.attempt.attempt_id,
+                CheckpointId(checkpoint.checkpoint_id),
+                artifact_identity.CheckpointRole.CANDIDATE,
+                value.revision,
+            )
+            in value.owners
             and value.revision == 1
         ),
         None,
@@ -389,7 +402,7 @@ def derive_archive(  # noqa: C901, PLR0912 - one complete original-history proje
         return _failure(f"Historical archive closure is invalid: {error}")
 
 
-def _receipt_belongs_to_attempt(receipt: stored_state.StoredTransitionReceipt, attempt_id: str) -> bool:
+def receipt_belongs_to_attempt(receipt: stored_state.StoredTransitionReceipt, attempt_id: str) -> bool:
     if str(receipt.subject_id) != attempt_id:
         return False
     if receipt.input_schema == "attempt-authority/v1":
@@ -410,44 +423,18 @@ def select_archive_facts(
     receipts: tuple[stored_state.StoredTransitionReceipt, ...],
     definitions: tuple[stored_state.ItemDefinitionRevision, ...],
 ) -> stored_state.ArchiveHistoryFacts:
-    """Select original ownership without letting later sibling publication reassign it."""
+    """Select persisted membership independently of certificate-supplied source claims."""
 
     attempt_id = str(attempt.attempt_id)
-    selected_receipts = tuple(value for value in receipts if _receipt_belongs_to_attempt(value, attempt_id))
-    linked_ids = {
-        attempt.brief_artifact_ref_id,
-        attempt.result_artifact_ref_id,
-        *(value.artifact_ref_id for value in selected_receipts),
-    }
-    checkpoint_keys = {
-        f"{reference.key.removesuffix('-review-package')}-{role}"
-        for receipt in selected_receipts
-        if receipt.outcome_schema == "checkpoint-acceptance/v2"
-        for reference in references
-        if reference.artifact_ref_id == receipt.artifact_ref_id
-        for role in ("candidate", "result", "review", "review-package")
-    }
-    sibling_briefs = tuple(
-        value
-        for value in references
-        if value.kind == work_models.ArtifactKind.BRIEF and value.key.startswith(f"{attempt_id}-")
-    )
+    selected_receipts = tuple(value for value in receipts if receipt_belongs_to_attempt(value, attempt_id))
     return stored_state.ArchiveHistoryFacts(
         attempt,
         tuple(
             value
             for value in references
-            if (value.key == attempt_id or value.key.startswith(f"{attempt_id}-"))
-            and value.key != archive_key(attempt_id)
-            and (
-                value.artifact_ref_id in linked_ids
-                or value.key in checkpoint_keys
-                or not any(
-                    (value.key == sibling.key or value.key.startswith(f"{sibling.key}-"))
-                    and value.accepted_revision >= sibling.accepted_revision
-                    for sibling in sibling_briefs
-                )
-            )
+            if any(owner.attempt_id == attempt.attempt_id for owner in value.owners)
+            and artifact_identity.AttemptMembership(attempt.attempt_id, artifact_identity.AttemptRole.ARCHIVE)
+            not in value.owners
         ),
         selected_receipts,
         tuple(value for value in definitions if value.item_id == attempt.item_id),
@@ -461,13 +448,12 @@ def verify_archive(
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> work_brief_models.WorkBriefResult[HistoryArchive]:
     if (
-        (reference.kind, reference.key, reference.revision, reference.selector)
-        != (
-            work_models.ArtifactKind.EVIDENCE,
-            archive_key(str(facts.attempt.attempt_id)),
-            1,
-            f"artifacts/evidence/{archive_key(str(facts.attempt.attempt_id))}/1.json",
-        )
+        reference.kind != work_models.ArtifactKind.EVIDENCE
+        or artifact_identity.AttemptMembership(facts.attempt.attempt_id, artifact_identity.AttemptRole.ARCHIVE)
+        not in reference.owners
+        or reference.key != archive_key(str(facts.attempt.attempt_id))
+        or reference.revision != 1
+        or reference.selector != f"artifacts/evidence/{reference.key}/1.json"
         or len(data) != reference.size_bytes
         or hashlib.sha256(data).hexdigest() != reference.content_sha256
     ):
@@ -490,9 +476,17 @@ def verify_archives(
     archives: dict[AttemptId, HistoryArchive] = {}
     attempts = {str(value.attempt_id): value for value in state.lifecycle.attempts}
     for reference in state.artifact_references:
-        if not reference.key.endswith("-history-archive"):
+        owners = tuple(
+            owner
+            for owner in reference.owners
+            if isinstance(owner, artifact_identity.AttemptMembership)
+            and owner.role == artifact_identity.AttemptRole.ARCHIVE
+        )
+        if not owners:
             continue
-        attempt = attempts.get(reference.key.removesuffix("-history-archive"))
+        if len(owners) != 1:
+            return _failure("An archive certificate must name one exact terminal attempt.")
+        attempt = attempts.get(str(owners[0].attempt_id))
         if attempt is None or reference.artifact_ref_id not in artifact_bytes:
             return _failure("Accepted historical archive lacks its terminal attempt or verified certificate bytes.")
         facts = select_archive_facts(

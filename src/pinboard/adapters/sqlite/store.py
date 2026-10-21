@@ -17,11 +17,13 @@ from pinboard.adapters.sqlite import cancellation, pr_review
 from pinboard.adapters.sqlite import initiatives as initiative_storage
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
+    decode_reference_rows,
     read_artifact_reference,
     read_artifact_reference_by_id,
     read_artifact_references_by_ids,
     read_brief_artifact_reference,
     read_latest_artifact_reference,
+    read_owned_reference,
 )
 from pinboard.adapters.sqlite.authority import (
     read_attempt_authority_status,
@@ -81,9 +83,9 @@ from pinboard.adapters.sqlite.proposals import (
     read_proposals_by_ids,
 )
 from pinboard.application import (
+    artifact_identity,
     cancellation_models,
     candidate_snapshots,
-    checkpoint_packages,
     history_archives,
     queries,
     query_models,
@@ -97,7 +99,15 @@ from pinboard.application.project_export import ProjectExportState
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain import initiatives as initiative_models
 from pinboard.domain.errors import DecisionResult
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, LeaseId, ProposalId, WorkItemId
+from pinboard.domain.identifiers import (
+    ArtifactRefId,
+    AttemptId,
+    CheckpointId,
+    HistoryId,
+    LeaseId,
+    ProposalId,
+    WorkItemId,
+)
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -144,34 +154,39 @@ def _read_archive_projections(
     selected_attempt_records: dict[AttemptId, stored_state.StoredAttempt],
 ) -> dict[AttemptId, tuple[stored_state.ArtifactReference, stored_state.ArchiveHistoryFacts]]:
     archive_references = {
-        value.key: value
-        for value in (
-            decode_row(row, stored_state.ArtifactReference)
-            for row in select_by_ids(
+        owner.attempt_id: value
+        for value in decode_reference_rows(
+            connection,
+            select_by_ids(
                 connection,
-                """SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+                """SELECT artifact_refs.artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
                           relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
-                   FROM artifact_refs WHERE artifact_key IN ({ids})""",
-                tuple(history_archives.archive_key(str(value)) for value in attempt_ids),
-            )
+                   FROM artifact_ownership JOIN artifact_refs USING (artifact_ref_id) WHERE ownership_json IN ({ids})""",
+                tuple(
+                    artifact_identity.canonical_ownership(
+                        artifact_identity.AttemptMembership(value, artifact_identity.AttemptRole.ARCHIVE)
+                    )
+                    for value in attempt_ids
+                ),
+            ),
         )
+        for owner in value.owners
+        if isinstance(owner, artifact_identity.AttemptMembership)
+        and owner.role == artifact_identity.AttemptRole.ARCHIVE
     }
-    archived_attempt_ids = tuple(
-        value for value in attempt_ids if history_archives.archive_key(str(value)) in archive_references
-    )
+    archived_attempt_ids = tuple(value for value in attempt_ids if value in archive_references)
     # Read candidate references; the shared selector preserves exact links and original ownership.
-    archive_sources = tuple(
-        decode_row(row, stored_state.ArtifactReference)
-        for row in select_by_ids(
+    archive_sources = decode_reference_rows(
+        connection,
+        select_by_ids(
             connection,
             """SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
                       relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
-               FROM artifact_refs WHERE EXISTS (
-                   SELECT 1 FROM attempts WHERE attempt_id IN ({ids}) AND
-                   (artifact_key = attempt_id OR substr(artifact_key, 1, length(attempt_id) + 1) = attempt_id || '-')
+               FROM artifact_refs WHERE artifact_ref_id IN (
+                   SELECT artifact_ref_id FROM artifact_ownership WHERE attempt_id IN ({ids})
                ) ORDER BY artifact_ref_id""",
             archived_attempt_ids,
-        )
+        ),
     )
     # Subject text supplies candidates; the shared selector resolves receipt-family ownership.
     archive_history_ids = tuple(
@@ -196,7 +211,7 @@ def _read_archive_projections(
     )
     return {
         attempt_id: (
-            archive_references[history_archives.archive_key(str(attempt_id))],
+            archive_references[attempt_id],
             history_archives.select_archive_facts(
                 selected_attempt_records[attempt_id], archive_sources, archive_receipts, archive_definitions
             ),
@@ -458,15 +473,15 @@ def _read_board_records(connection: sqlite3.Connection, snapshot: LedgerSnapshot
         and attempt.candidate_recorded_at is not None
     }
     snapshots: dict[str, stored_state.ArtifactReference] = {}
-    for reference in (
-        decode_row(row, stored_state.ArtifactReference)
-        for row in select_by_ids(
+    for reference in decode_reference_rows(
+        connection,
+        select_by_ids(
             connection,
             """SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
                       relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
                FROM artifact_refs WHERE kind = 'evidence' AND artifact_key IN ({ids})""",
             snapshot_keys.values(),
-        )
+        ),
     ):
         if (current := snapshots.get(reference.key)) is None or current.revision < reference.revision:
             snapshots[reference.key] = reference
@@ -1203,13 +1218,14 @@ class SQLiteWorkStore:
                     except msgspec.DecodeError:
                         pass
                     else:
-                        checkpoint_candidate_reference = read_artifact_reference(
+                        checkpoint_candidate_reference = read_owned_reference(
                             connection,
-                            work_models.ArtifactKind.EVIDENCE,
-                            checkpoint_packages.checkpoint_candidate_key(
-                                str(attempt_id), checkpoint_outcome.checkpoint
+                            artifact_identity.CheckpointAddress(
+                                attempt_id,
+                                CheckpointId(checkpoint_outcome.checkpoint),
+                                artifact_identity.CheckpointRole.CANDIDATE,
+                                1,
                             ),
-                            1,
                         )
                 correction_receipt = (
                     None
@@ -1354,5 +1370,6 @@ class SQLiteWorkStore:
         work_root: Path,
         published: ArtifactRef,
         accepted_at: datetime,
+        ownership: artifact_identity.Ownership | None,
     ) -> DecisionResult[ArtifactReferenceAcceptance]:
-        return persist_artifact_reference(self._path, work_root, published, accepted_at)
+        return persist_artifact_reference(self._path, work_root, published, accepted_at, ownership)

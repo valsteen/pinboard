@@ -8,7 +8,13 @@ from typing import Literal, assert_never
 
 import msgspec
 
-from pinboard.application import initiative_records, query_models, released_v6_compatibility, stored_state
+from pinboard.application import (
+    artifact_identity,
+    initiative_records,
+    query_models,
+    released_v6_compatibility,
+    stored_state,
+)
 from pinboard.domain import decision_models, work_models
 from pinboard.domain import initiatives as initiative_models
 from pinboard.domain.identifiers import ProposalId
@@ -21,7 +27,7 @@ class ContentEncoding(Enum):
 
 class ProjectExportProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[8]
+    schema_version: Literal[9]
     created_at: str
     updated_at: str
 
@@ -240,6 +246,7 @@ class ProjectExportArtifactReference(msgspec.Struct, frozen=True, forbid_unknown
     size_bytes: int
     accepted_revision: int
     created_at: str
+    owners: tuple[artifact_identity.Ownership, ...]
 
 
 class ProjectExportArtifactContent(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -386,8 +393,8 @@ class ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_u
 
 
 class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-project-export/v2"]
-    authority: Literal["sqlite-v8"]
+    schema: Literal["pinboard-project-export/v3"]
+    authority: Literal["sqlite-v9"]
     revision: int
     project: ProjectExportProject
     work_items: tuple[ProjectExportWorkItem, ...]
@@ -490,6 +497,7 @@ def project_artifact_reference(
         reference.size_bytes,
         reference.accepted_revision,
         reference.created_at.isoformat(),
+        reference.owners,
     )
 
 
@@ -565,8 +573,8 @@ def project_export_from_state(
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
     return ProjectExport(
-        "pinboard-project-export/v2",
-        "sqlite-v8",
+        "pinboard-project-export/v3",
+        "sqlite-v9",
         state.lifecycle.project.revision,
         ProjectExportProject(
             state.lifecycle.project.application,

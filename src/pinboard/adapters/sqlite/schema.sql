@@ -1,10 +1,10 @@
--- SQLite authority schema version 8.
+-- SQLite authority schema version 9.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE project_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     application TEXT NOT NULL CHECK (application = 'pinboard'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 8),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 9),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
     created_at TEXT NOT NULL,
@@ -24,6 +24,16 @@ CREATE TABLE artifact_refs (
     UNIQUE (kind, artifact_key, artifact_revision),
     UNIQUE (artifact_ref_id, kind)
 ) STRICT;
+
+CREATE TABLE artifact_ownership (
+    artifact_ref_id INTEGER NOT NULL REFERENCES artifact_refs(artifact_ref_id),
+    attempt_id TEXT NOT NULL,
+    ownership_json BLOB NOT NULL,
+    PRIMARY KEY (artifact_ref_id, ownership_json)
+) STRICT;
+
+CREATE INDEX artifact_ownership_by_attempt ON artifact_ownership(attempt_id, artifact_ref_id);
+CREATE INDEX artifact_ownership_by_identity ON artifact_ownership(ownership_json, artifact_ref_id);
 
 CREATE TABLE work_items (
     item_id TEXT PRIMARY KEY,

@@ -1652,6 +1652,7 @@ class McpTransportTest(unittest.TestCase):
             published.size_bytes,
             prior_reference.accepted_revision,
             prior_reference.created_at,
+            prior_reference.owners,
         )
         initialize_store(
             SQLiteWorkStore(roots.database_path),
@@ -3651,7 +3652,7 @@ class McpTransportTest(unittest.TestCase):
         overview_content = overview.structured_content
         assert isinstance(overview_content, dict)
         self.assertEqual("pinboard-overview/v7", overview_content["schema"])
-        self.assertEqual("sqlite-v8", overview_content["authority"])
+        self.assertEqual("sqlite-v9", overview_content["authority"])
         self.assertEqual(["work-a-1"], overview_content["active_attempts"])
         observer_content = observer.structured_content
         assert isinstance(observer_content, dict)

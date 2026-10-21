@@ -283,7 +283,9 @@ def _brief_published(
                 "recommendation": (
                     "Assess this checkpoint before brief review or worker dispatch: continue together when coherent; "
                     "reduce repeated or carried-forward presentation while preserving requirements and assurance; "
-                    "or use actual successive deliverables within the same item, keeping later work required. "
+                    "or use Pinboard\u2019s existing checkpoint flow within this same item, giving each useful successive "
+                    "deliverable its own brief and review while keeping later work required. "
+                    "That flow needs neither another item nor a checkpoint-model change. "
                     "Size alone is not a complexity verdict, a reason to split, or a request for human acknowledgment."
                 ),
             }

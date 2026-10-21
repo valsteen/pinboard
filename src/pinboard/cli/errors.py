@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import override
 
 from pinboard.adapters.files.errors import ArtifactError, FileIOError
 from pinboard.adapters.files.file_io import DurableRoots
@@ -88,6 +89,7 @@ class CommandFailure:
     message: str
     details: FailureDetails | None
 
+    @override
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"
 

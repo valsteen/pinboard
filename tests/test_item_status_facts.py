@@ -444,7 +444,6 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
             damaged_history = self.latest_history_id(fixture)
             clean_state = self.receipt_probe_state(fixture)
             for label, columns in damage:
-                completed = False
                 with self.subTest(receipt=receipt.value, damage=label):
                     if receipt == decision_models.ActionKind.ACCEPT_CHECKPOINT and label == "outcome-schema":
                         columns = {"outcome_schema": "checkpoint-acceptance/v9"}
@@ -486,9 +485,8 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
                                 self.assertNotIn("TRANSITION_RECEIPT_DAMAGED", codes)
                             case _ as unreachable:
                                 assert_never(unreachable)
-                    completed = True
-                if not completed:
-                    return
+                    continue
+                return
 
     def test_damaged_pause_receipt_is_named_by_view_generation(self) -> None:
         for label, columns in (

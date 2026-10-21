@@ -3015,13 +3015,11 @@ class McpTransportTest(unittest.TestCase):
             assert isinstance(contract, dict)
             invalid_results.append((label, {**result, "actions": [{**row, "input_contract": {**contract, **changes}}]}))
         missing_block_schema = {key: value for key, value in block_contract.items() if key != "payload_schema"}
-        invalid_results.extend(
-            (
-                ("block-missing", {**result, "actions": [{**block, "input_contract": missing_block_schema}]}),
-                ("unknown-action-field", {**result, "actions": [{**dispatch, "unknown": True}]}),
-                ("unknown-result-field", {**result, "unknown": True}),
-            )
+        invalid_results.append(
+            ("block-missing", {**result, "actions": [{**block, "input_contract": missing_block_schema}]})
         )
+        invalid_results.append(("unknown-action-field", {**result, "actions": [{**dispatch, "unknown": True}]}))
+        invalid_results.append(("unknown-result-field", {**result, "unknown": True}))
         for label, invalid in invalid_results:
             with self.subTest(rejection=label):
                 before = deepcopy(invalid)
@@ -3989,6 +3987,7 @@ class McpTransportTest(unittest.TestCase):
                 token_cancellation_count += 1
 
         async def scenario() -> CallToolResult:
+            busy: CallToolResult | None = None
             client_send, server_receive = anyio.create_memory_object_stream[SessionMessage | Exception](0)
             server_send, client_receive = anyio.create_memory_object_stream[SessionMessage](0)
             lowlevel = server._lowlevel_server
@@ -4048,6 +4047,7 @@ class McpTransportTest(unittest.TestCase):
             self.assertTrue(cooperative_cancelled.is_set())
             replacement = executor.submit(lambda token: token.cancelled)
             self.assertFalse(await replacement.result())
+            assert busy is not None
             return busy
 
         try:

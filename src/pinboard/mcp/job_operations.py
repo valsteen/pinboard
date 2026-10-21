@@ -173,9 +173,11 @@ def _job_failure(
     if details is not None:
         rendered["changed_surfaces"] = list[JsonValue](_job_publication_surfaces(details.changed_surfaces))
     committed = details is not None and details.effect == EffectDisposition.COMMITTED
-    rendered["observed"] = [
-        *({"field": fact.field, "value": fact.value} for fact in (() if details is None else details.observed)),
-        {"field": "inspection_tool", "value": tool_names.ATTEMPT_INSPECT_TOOL},
+    observed: list[JsonValue] = [
+        {"field": fact.field, "value": fact.value} for fact in (() if details is None else details.observed)
+    ]
+    observed.append({"field": "inspection_tool", "value": tool_names.ATTEMPT_INSPECT_TOOL})
+    observed.append(
         {
             "field": "inspection_input",
             "value": msgspec.json.encode(
@@ -188,7 +190,8 @@ def _job_failure(
                 order="sorted",
             ).decode(),
         },
-    ]
+    )
+    rendered["observed"] = observed
     return execution.OperationResult(
         {
             "schema": schema,
@@ -751,12 +754,12 @@ def _candidate_restore(
     )
     if isinstance(restored, DecisionFailure):
         details = common._details_json(restored.details)
-        details["observed"] = [
-            *(
-                {"field": fact.field, "value": fact.value}
-                for fact in (() if restored.details is None else restored.details.observed)
-            ),
-            {"field": "next_step_tool", "value": tool_names.CANDIDATE_OBSERVE_TOOL},
+        observed: list[JsonValue] = [
+            {"field": fact.field, "value": fact.value}
+            for fact in (() if restored.details is None else restored.details.observed)
+        ]
+        observed.append({"field": "next_step_tool", "value": tool_names.CANDIDATE_OBSERVE_TOOL})
+        observed.append(
             {
                 "field": "next_step_input",
                 "value": msgspec.json.encode(
@@ -768,7 +771,8 @@ def _candidate_restore(
                     order="sorted",
                 ).decode(),
             },
-        ]
+        )
+        details["observed"] = observed
         committed = restored.details is not None and restored.details.effect == EffectDisposition.COMMITTED
         return execution.OperationResult(
             {

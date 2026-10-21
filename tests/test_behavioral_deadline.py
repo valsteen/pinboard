@@ -160,10 +160,12 @@ class EffectDeadlineTest(unittest.TestCase):
                 patch.object(credentials, "settle") as settle,
             ):
                 start.return_value = child
+                home: credentials.IsolatedHome | None = None
                 with (
                     self.assertRaises(processes.CleanupUnconfirmed) as failure,
-                    credentials.isolated_home(source, root, processes.Window(None)) as home,
+                    credentials.isolated_home(source, root, processes.Window(None)) as entered_home,
                 ):
+                    home = entered_home
                     processes.run_tool(
                         processes.Tool.CODEX,
                         [],
@@ -173,6 +175,7 @@ class EffectDeadlineTest(unittest.TestCase):
                         timeout_seconds=1,
                         window=processes.Window(None),
                     )
+                assert home is not None
                 self.assertTrue(home.path.exists())
                 self.assertEqual(b"{}", source.read_bytes())
                 self.assertIn(str(home.path), str(failure.exception))
@@ -200,12 +203,14 @@ class EffectDeadlineTest(unittest.TestCase):
                         else [communication_failure, (b"retained native output", diagnostic)]
                     )
                     continuation = MagicMock()
+                    home: credentials.IsolatedHome | None = None
                     with (
                         patch.object(processes.subprocess, "Popen", return_value=child),
                         patch.object(credentials, "settle") as settle,
                         self.assertRaises(processes.CleanupUnconfirmed) as failure,
-                        credentials.isolated_home(source, root, processes.Window(None)) as home,
+                        credentials.isolated_home(source, root, processes.Window(None)) as entered_home,
                     ):
+                        home = entered_home
                         (home.path / "auth.json").write_bytes(b'{"refreshed":true}')
                         codex_driver.run_turn(
                             home.path, root, None, "controlled", root / "turn.jsonl", processes.Window(None)
@@ -215,6 +220,7 @@ class EffectDeadlineTest(unittest.TestCase):
                     self.assertEqual(diagnostic.decode(), failure.exception.stderr)
                     self.assertEqual("retained native output", (root / "turn.jsonl").read_text())
                     self.assertEqual(diagnostic.decode(), (root / "turn.stderr").read_text())
+                    assert home is not None
                     self.assertTrue(home.path.exists())
                     self.assertIsNone(home.settlement)
                     self.assertEqual(b"{}", source.read_bytes())
@@ -389,13 +395,15 @@ class EffectDeadlineTest(unittest.TestCase):
                             (b"paid partial", b"in-process app-server shutdown failed"),
                         ]
                         child.stdout.close.side_effect = cause
+                    home: credentials.IsolatedHome | None = None
                     with (
                         patch.object(processes.subprocess, "Popen", return_value=child),
                         patch.object(processes.os, "killpg", side_effect=cause if stage == "force" else None),
                         patch.object(credentials, "settle") as settle,
                         self.assertRaises(processes.CleanupUnconfirmed) as failure,
-                        credentials.isolated_home(source, root, processes.Window(None)) as home,
+                        credentials.isolated_home(source, root, processes.Window(None)) as entered_home,
                     ):
+                        home = entered_home
                         codex_driver.run_turn(
                             home.path, root, None, "no paid call", root / "turn.jsonl", processes.Window(None)
                         )
@@ -403,6 +411,7 @@ class EffectDeadlineTest(unittest.TestCase):
                     self.assertEqual("paid partial", failure.exception.stdout)
                     self.assertEqual("paid partial", (root / "turn.jsonl").read_text())
                     self.assertIn(str(cause), str(failure.exception))
+                    assert home is not None
                     self.assertTrue(home.path.exists())
                     self.assertIsNone(home.settlement)
                     settle.assert_not_called()
@@ -504,18 +513,21 @@ class EvidenceFailureTest(unittest.TestCase):
             source = root / "auth.json"
             source.write_bytes(b"{}")
             original = processes.CleanupUnconfirmed(777, b"partial", b"failed shutdown")
+            home: credentials.IsolatedHome | None = None
             with (
                 patch.object(codex_driver, "codex", side_effect=original),
                 patch.object(credentials, "settle") as settle,
                 self.assertRaises(processes.CleanupUnconfirmed) as failure,
-                credentials.isolated_home(source, root, processes.Window(None)) as home,
+                credentials.isolated_home(source, root, processes.Window(None)) as entered_home,
             ):
+                home = entered_home
                 codex_driver.run_turn(
                     home.path, root, None, "no paid call", root / "absent" / "turn.jsonl", processes.Window(None)
                 )
             self.assertIs(original, failure.exception)
             self.assertIsInstance(failure.exception.__cause__, FileNotFoundError)
             self.assertIn("partial-output capture failed", str(failure.exception))
+            assert home is not None
             self.assertTrue(home.path.exists())
             settle.assert_not_called()
 
@@ -535,17 +547,20 @@ class EvidenceFailureTest(unittest.TestCase):
                 plan.run = MagicMock()
                 plan.run.model = "gpt-6-sol"
                 original = processes.CleanupUnconfirmed(777, b"partial", b"failed shutdown")
+                home: credentials.IsolatedHome | None = None
                 with (
                     patch.object(runner, "codex_thread", side_effect=original),
                     patch.object(codex_driver, "rollout_text", return_value='{"type":"turn_context","payload":{}}\n'),
                     patch.object(credentials, "settle") as settle,
                     self.assertRaises(processes.CleanupUnconfirmed) as failure,
-                    credentials.isolated_home(source, root, processes.Window(None)) as home,
+                    credentials.isolated_home(source, root, processes.Window(None)) as entered_home,
                 ):
+                    home = entered_home
                     runner.codex_turns(state, MagicMock(), home, plan)
                 self.assertIs(original, failure.exception)
                 self.assertIsInstance(failure.exception.__cause__, msgspec.ValidationError if malformed else OSError)
                 self.assertIn("rollout capture failed", str(failure.exception))
+                assert home is not None
                 self.assertTrue(home.path.exists())
                 settle.assert_not_called()
 
@@ -628,14 +643,16 @@ class EvidenceFailureTest(unittest.TestCase):
                     codex_driver.run_turn(home, project, None, "no paid call", directory / "turn.jsonl", window)
                     raise AssertionError("controlled native call must fail")
 
+                home: credentials.IsolatedHome | None = None
                 with (
                     patch.object(processes.subprocess, "Popen", return_value=child),
                     patch.object(codex_driver, "rollout_text", return_value=""),
                     patch.object(runner, "codex_thread", side_effect=run_thread),
                     patch.object(probe, "probe_turns", side_effect=probe_turns),
                     self.assertRaises(processes.ProcessIncomplete) as failure,
-                    credentials.isolated_home(source, root, processes.Window(None)) as home,
+                    credentials.isolated_home(source, root, processes.Window(None)) as entered_home,
                 ):
+                    home = entered_home
                     if owner == "run":
                         runner.codex_turns(state, MagicMock(), home, plan)
                     else:
@@ -644,6 +661,7 @@ class EvidenceFailureTest(unittest.TestCase):
                 self.assertEqual("partial native output", (root / "turn.jsonl").read_text())
                 accounting = msgspec.json.decode((root / "accounting.json").read_bytes(), type=CodexAccounting)
                 self.assertFalse(accounting.main_usage_complete)
+                assert home is not None
                 self.assertFalse(home.path.exists())
                 self.assertEqual(credentials.CredentialSettlement.UNCHANGED, home.settlement)
 

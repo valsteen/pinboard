@@ -10,7 +10,7 @@ from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Literal, assert_never
+from typing import Literal, assert_never, override
 
 import msgspec
 
@@ -175,6 +175,7 @@ class DispatchFailure:
     message: str
     details: FailureDetails | None
 
+    @override
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"
 

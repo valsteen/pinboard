@@ -698,7 +698,7 @@ class PluginPackagingTests(unittest.TestCase):
                         self.assertEqual(pristine, tree_fingerprint(plugin), "metadata case restoration")
                         restored = True
                 # subTest records guard failures without raising outside its context.
-                if not isolated or not restored:
+                if not all((isolated, restored)):
                     return
 
     def test_copy_and_fingerprint_cover_only_tracked_payload_entry_identity(self) -> None:

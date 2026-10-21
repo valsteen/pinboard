@@ -184,8 +184,9 @@ def _append_source_segments(
                     f"Use a shorter selector, split this line or raise the limit (maximum {MAX_PRESENTED_BATCH_BYTES}).",
                 )
         current_segment_lines.extend(new_lines)
-    segments.append(candidate)
-    current_batch.append((candidate, content))
+    segment = _compose_segment(request, len(segments), tuple(current_segment_lines))
+    segments.append(segment)
+    current_batch.append((segment, b"".join(line.content for line in current_segment_lines)))
     return tuple(segments)
 
 

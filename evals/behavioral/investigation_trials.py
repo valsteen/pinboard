@@ -559,7 +559,11 @@ def assessment_evidence(run: InvestigationRunRecord) -> str:
             if turn.runtime_identity
             else "unreported"
         )
-        compaction = "event recorded" if turn.compaction_event else "no event recorded"
+        compaction = (
+            "event recorded"
+            if turn.compaction_event is not None and turn.compaction_event != ""
+            else "no event recorded"
+        )
         parts.append(
             f"Turn {turn.index}: recorded mode={turn.mode}; anonymous identity={identity}; "
             f"successful saved-evidence read observed={turn.saved_evidence_read}; compaction={compaction}\n"

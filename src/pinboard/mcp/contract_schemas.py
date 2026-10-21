@@ -515,11 +515,12 @@ def _forbidden_routes_constraint() -> dict[str, JsonSchemaValue]:
 
 def _apply_attempt_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
     terminal = definitions.get("TerminalAttemptContinuation")
-    if isinstance(terminal, dict) and isinstance(terminal.get("properties"), dict):
-        terminal["properties"]["state"] = {"const": "done"}
-        terminal["properties"]["terminal"] = {"type": "boolean", "const": True}
-        terminal["properties"]["user_input_required"] = {"type": "boolean", "const": False}
-        terminal["properties"]["forbidden_routes"] = _forbidden_routes_constraint()
+    terminal_properties = terminal.get("properties") if isinstance(terminal, dict) else None
+    if isinstance(terminal_properties, dict):
+        terminal_properties["state"] = {"const": "done"}
+        terminal_properties["terminal"] = {"type": "boolean", "const": True}
+        terminal_properties["user_input_required"] = {"type": "boolean", "const": False}
+        terminal_properties["forbidden_routes"] = _forbidden_routes_constraint()
     continuation_constraints: tuple[
         tuple[
             str,
@@ -776,13 +777,9 @@ def validate_brief_preparation_result(content: dict[str, JsonValue]) -> dict[str
 
 def _validate_actions_result(content: dict[str, JsonValue]) -> None:
     action_values = content.get("actions")
-    focused_completion = (
-        isinstance(action_values, list)
-        and len(action_values) == 1
-        and isinstance(action_values[0], dict)
-        and isinstance(action_values[0].get("input_contract"), dict)
-        and "checkpoint_packages" in action_values[0]["input_contract"]
-    )
+    first_action = action_values[0] if isinstance(action_values, list) and len(action_values) == 1 else None
+    input_contract = first_action.get("input_contract") if isinstance(first_action, dict) else None
+    focused_completion = isinstance(input_contract, dict) and "checkpoint_packages" in input_contract
     if focused_completion:
         msgspec.convert(content, type=CompletionActionsSuccess, strict=True)
         return

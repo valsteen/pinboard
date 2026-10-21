@@ -261,24 +261,18 @@ def _with_solved_dependencies() -> stored_state.StoredWorkState:
     return with_definition_dependencies(state, WorkItemId("review-work"), (WorkItemId("work-b"),))
 
 
-def _page_data(html: str) -> dict[str, object]:
+def _page_data(html: str) -> views_module._BoardPage:
     match = re.search(r'<script id="board-data" type="application/json">(.*?)</script>', html, re.DOTALL)
     assert match is not None
-    decoded = json.loads(match.group(1))
-    assert isinstance(decoded, dict)
-    return decoded
+    return msgspec.json.decode(match.group(1), type=views_module._BoardPage)
 
 
-def _page_items(html: str) -> list[dict[str, object]]:
-    items = _page_data(html)["items"]
-    assert isinstance(items, list)
-    return [value for value in items if isinstance(value, dict)]
+def _page_items(html: str) -> list[views_module._BoardPageItem]:
+    return list(_page_data(html).items)
 
 
-def _page_dependencies(item: dict[str, object]) -> list[tuple[object, object]]:
-    dependencies = item["dependencies"]
-    assert isinstance(dependencies, list)
-    return [(value["item_id"], value["on_board"]) for value in dependencies if isinstance(value, dict)]
+def _page_dependencies(item: views_module._BoardPageItem) -> list[tuple[str, bool]]:
+    return [(value.item_id, value.on_board) for value in item.dependencies]
 
 
 def _markdown_groups(markdown: str) -> dict[str, list[tuple[str, str]]]:
@@ -439,7 +433,7 @@ class BoardProjectionTest(unittest.TestCase):
                 "blocked-work",
                 "deferred-work",
             ],
-            [value["item_id"] for value in _page_items(html)],
+            [value.item_id for value in _page_items(html)],
         )
         state = store.validated_snapshot()
         self.assertEqual(
@@ -490,11 +484,11 @@ class BoardProjectionTest(unittest.TestCase):
         self.assertEqual(live, set(lines))
         for item_id in live:
             self.assertEqual(_utc_label(times[item_id]), lines[item_id])
-        self.assertEqual(_utc_instant(latest), _page_data(html)["updated_at"])
+        self.assertEqual(_utc_instant(latest), _page_data(html).updated_at)
         items = _page_items(html)
-        self.assertEqual(live, {str(value["item_id"]) for value in items})
+        self.assertEqual(live, {value.item_id for value in items})
         for value in items:
-            self.assertEqual(_utc_instant(times[str(value["item_id"])]), value["updated_at"])
+            self.assertEqual(_utc_instant(times[value.item_id]), value.updated_at)
 
     def test_a_board_without_live_items_shows_no_board_time(self) -> None:
         state = _validatable_state()
@@ -520,7 +514,7 @@ class BoardProjectionTest(unittest.TestCase):
         markdown, html = self._board(roots)
         self.assertNotIn("Updated ", markdown)
         self.assertNotRegex(markdown, r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC")
-        self.assertIsNone(_page_data(html)["updated_at"])
+        self.assertIsNone(_page_data(html).updated_at)
         self.assertEqual([], _page_items(html))
 
     def test_artifact_only_commit_preserves_board_and_requires_revision_labelled_roadmap_refresh(self) -> None:
@@ -574,7 +568,7 @@ class BoardProjectionTest(unittest.TestCase):
         self._rebuild(roots, store)
 
         _markdown, html = self._board(roots)
-        items = {str(value["item_id"]): value for value in _page_items(html)}
+        items = {value.item_id: value for value in _page_items(html)}
         self.assertEqual(
             [("work-c", True), ("needed-first", True), ("work-b", False)],
             _page_dependencies(items["deferred-work"]),
@@ -616,8 +610,8 @@ class BoardProjectionTest(unittest.TestCase):
     def test_committed_reorder_changes_neither_an_items_time_nor_the_board_time(self) -> None:
         project, roots, store = self._ledger(complete_sqlite_state())
         self._rebuild(roots, store)
-        before = {str(value["item_id"]): value["updated_at"] for value in _page_items(self._board(roots)[1])}
-        before_board = _page_data(self._board(roots)[1])["updated_at"]
+        before = {value.item_id: value.updated_at for value in _page_items(self._board(roots)[1])}
+        before_board = _page_data(self._board(roots)[1]).updated_at
         current = ["intake-work", "work-a", "work-c", "zz-proposal-a"]
 
         result = mcp_reads._order(
@@ -639,8 +633,8 @@ class BoardProjectionTest(unittest.TestCase):
 
         self.assertEqual("committed", result["status"])
         _markdown, html = self._board(roots)
-        self.assertEqual(before, {str(value["item_id"]): value["updated_at"] for value in _page_items(html)})
-        self.assertEqual(before_board, _page_data(html)["updated_at"])
+        self.assertEqual(before, {value.item_id: value.updated_at for value in _page_items(html)})
+        self.assertEqual(before_board, _page_data(html).updated_at)
 
     def test_refresh_rebuild_and_validate_derive_identical_board_bytes(self) -> None:
         _project, roots, store = self._ledger(_every_state())
@@ -695,9 +689,9 @@ class BoardProjectionTest(unittest.TestCase):
         for raw in ("</script><img", "<img src=x", "<!-- -->", "</SCRIPT>", "<b>next", "\u2028", "\u2029", "&amp;"):
             self.assertNotIn(raw, html)
         self.assertEqual(2, html.lower().count("</script"))
-        work_c = next(value for value in _page_items(html) if value["item_id"] == "work-c")
-        self.assertEqual(HOSTILE_TITLE, work_c["title"])
-        self.assertEqual(HOSTILE_INTAKE, work_c["intake_next_action"])
+        work_c = next(value for value in _page_items(html) if value.item_id == "work-c")
+        self.assertEqual(HOSTILE_TITLE, work_c.title)
+        self.assertEqual(HOSTILE_INTAKE, work_c.intake_next_action)
         script = html.rpartition("<script>")[2]
         self.assertNotIn("innerHTML", script)
         self.assertNotIn("insertAdjacentHTML", script)
@@ -722,33 +716,30 @@ class BoardProjectionTest(unittest.TestCase):
 
         markdown, html = self._board(roots)
         data = _page_data(html)
-        self.assertEqual("pinboard-board-page/v2", data["schema"])
-        states = data["states"]
-        assert isinstance(states, list)
+        self.assertEqual("pinboard-board-page/v2", data.schema)
+        states = data.states
         self.assertEqual({state.value for state in work_models.WorkState}, set(states))
-        items = {str(value["item_id"]): value for value in _page_items(html)}
+        items = {value.item_id: value for value in _page_items(html)}
         attempts = {"work-a", "paused-work", "review-work"}
         for item_id, value in items.items():
-            self.assertNotIn("prompt", value)
-            self.assertNotIn("attempt_id", value)
-            self.assertNotIn("item_view", value)
-            self.assertTrue(value["effect"] and value["unlock"])
-            standing = value["standing"]
-            assert isinstance(standing, dict)
+            raw_item = msgspec.to_builtins(value)
+            self.assertNotIn("prompt", raw_item)
+            self.assertNotIn("attempt_id", raw_item)
+            self.assertNotIn("item_view", raw_item)
+            self.assertTrue(value.effect and value.unlock)
+            standing = value.standing
             if item_id in attempts:
-                self.assertEqual("attempt", standing["kind"])
-                self.assertEqual("unreadable-brief", standing["checkpoint"]["kind"])
-                self.assertEqual(
-                    f"{item_id}-1" if item_id != "work-a" else "work-a-1", standing["checkpoint"]["attempt_id"]
-                )
+                assert isinstance(standing, views_module._BoardPageStanding)
+                assert isinstance(standing.checkpoint, views_module._BoardPageUnreadableBrief)
+                self.assertEqual(f"{item_id}-1" if item_id != "work-a" else "work-a-1", standing.checkpoint.attempt_id)
             else:
-                self.assertEqual("next-step", standing["kind"])
-                self.assertTrue(standing["text"])
+                assert isinstance(standing, views_module._BoardPageNextStep)
+                self.assertTrue(standing.text)
         self.assertNotIn("prompt", markdown.lower())
         self.assertNotIn("<textarea", html)
         self.assertNotIn("clipboard", html.lower())
-        self.assertEqual("continue", items["work-a"]["intake_next_action"])
-        self.assertEqual("Current work remains bounded.", items["work-a"]["intake_notes"])
+        self.assertEqual("continue", items["work-a"].intake_next_action)
+        self.assertEqual("Current work remains bounded.", items["work-a"].intake_notes)
         self.assertEqual(
             [
                 {
@@ -758,7 +749,7 @@ class BoardProjectionTest(unittest.TestCase):
                     "unsatisfied": True,
                 }
             ],
-            items["blocked-work"]["dependencies"],
+            list(msgspec.to_builtins(items["blocked-work"].dependencies)),
         )
         self.assertIn("Original intake context", html)
 
@@ -826,16 +817,16 @@ class BoardProjectionTest(unittest.TestCase):
                     SQLITE_NOW,
                 )
                 self.assertIsNone(result.warning)
-                work_a = next(value for value in _page_items(self._board(roots)[1]) if value["item_id"] == "work-a")
-                standing = work_a["standing"]
-                assert isinstance(standing, dict)
-                page = standing["condition"]
+                work_a = next(value for value in _page_items(self._board(roots)[1]) if value.item_id == "work-a")
+                standing = work_a.standing
+                assert isinstance(standing, views_module._BoardPageStanding)
+                page = standing.condition
                 self.assertEqual(
                     (kind, None if at is None else _utc_instant(at), text, absent),
-                    (page["kind"], page["at"], page["text"], page["absence"] is not None),
+                    (page.kind, page.at, page.text, page.absence is not None),
                 )
-                self.assertEqual(at is not None, page["time_source"] is not None)
-                self.assertTrue(page["label"])
+                self.assertEqual(at is not None, page.time_source is not None)
+                self.assertTrue(page.label)
 
     def test_page_names_every_changed_definition_field_and_a_retained_definition_schema(self) -> None:
         _project, roots, store = self._ledger(complete_sqlite_state())
@@ -881,17 +872,15 @@ class BoardProjectionTest(unittest.TestCase):
             SQLITE_NOW,
         )
 
-        page = next(value for value in _page_items(self._board(roots)[1]) if value["item_id"] == "work-a")
-        scope_revisions = page["scope_revisions"]
-        assert isinstance(scope_revisions, list)
-        latest = scope_revisions[-1]["changes"]
-        self.assertEqual(len(query_models.DefinitionTextField), len({value["field"] for value in latest["texts"]}))
-        self.assertEqual(len(query_models.DefinitionListField), len({value["field"] for value in latest["lists"]}))
-        self.assertEqual(1, len(latest["obligations_added"]))
-        self.assertEqual(1, len(latest["obligations_changed"]))
-        scope = page["scope"]
-        assert isinstance(scope, dict)
-        self.assertEqual((2, None, None), (scope["revision"], scope["obligations"], scope["checkout_policy"]))
+        page = next(value for value in _page_items(self._board(roots)[1]) if value.item_id == "work-a")
+        latest = page.scope_revisions[-1].changes
+        assert isinstance(latest, views_module._BoardPageScopeChanges)
+        self.assertEqual(len(query_models.DefinitionTextField), len({value.field for value in latest.texts}))
+        self.assertEqual(len(query_models.DefinitionListField), len({value.field for value in latest.lists}))
+        self.assertEqual(1, len(latest.obligations_added))
+        self.assertEqual(1, len(latest.obligations_changed))
+        scope = page.scope
+        self.assertEqual((2, None, None), (scope.revision, scope.obligations, scope.checkout_policy))
 
     def test_mcp_committed_order_refreshes_the_board(self) -> None:
         project, roots, _store = self._ledger(complete_sqlite_state())
@@ -921,7 +910,7 @@ class BoardProjectionTest(unittest.TestCase):
             [("work-c", "ready"), ("zz-proposal-a", "ready"), ("intake-work", "ready")],
             _markdown_groups(markdown)["Ready"],
         )
-        self.assertEqual(requested, [value["item_id"] for value in _page_items(html)])
+        self.assertEqual(requested, [value.item_id for value in _page_items(html)])
 
     def test_board_write_failure_is_a_view_warning_with_the_commit_intact(self) -> None:
         project, roots, store = self._ledger(complete_sqlite_state())
@@ -1034,7 +1023,7 @@ class BoardProjectionTest(unittest.TestCase):
             "The dependency must be preserved before activation.\n",
             markdown,
         )
-        self.assertIn("required-before-work-c", [value["item_id"] for value in _page_items(html)])
+        self.assertIn("required-before-work-c", [value.item_id for value in _page_items(html)])
 
     def test_rebuild_writes_both_files_and_validate_reports_board_drift(self) -> None:
         project, roots, _store = self._ledger(_validatable_state())
@@ -1113,7 +1102,7 @@ class BoardProjectionTest(unittest.TestCase):
         self.assertEqual([], failures)
         markdown, html = self._board(roots)
         self.assertIn("required-before-work-c", markdown)
-        self.assertIn("required-before-work-c", [value["item_id"] for value in _page_items(html)])
+        self.assertIn("required-before-work-c", [value.item_id for value in _page_items(html)])
         expected = derive_expected_view_bytes(
             store.validated_snapshot(),
             {},
@@ -1793,7 +1782,7 @@ class BoardHistoryTest(ItemLifecycleSupport):
         self.assertEqual(("unreadable-brief", "work-a-1"), (notice["kind"], notice["attempt_id"]))
         self.assertEqual("returned", self.json_object(standing["condition"])["kind"])
         self.assertNotIn(
-            "work-c", [value["item_id"] for value in _page_items((fixture.work / "views" / "board.html").read_text())]
+            "work-c", [value.item_id for value in _page_items((fixture.work / "views" / "board.html").read_text())]
         )
         _status, stdout, _stderr = self.run_cli(*fixture.common, "validate", "--json")
         report = self.json_object(json.loads(stdout))
@@ -1815,10 +1804,7 @@ class BoardHistoryTest(ItemLifecycleSupport):
         self.assertEqual("unreadable", damaged["kind"])
         self.assertIn(str(returned), str(damaged["label"]))
         self.assertTrue(
-            any(
-                value["item_id"] == "work-c"
-                for value in _page_items((fixture.work / "views" / "board.html").read_text())
-            )
+            any(value.item_id == "work-c" for value in _page_items((fixture.work / "views" / "board.html").read_text()))
         )
         self.assert_board_parity(fixture)
         self.update_receipt(

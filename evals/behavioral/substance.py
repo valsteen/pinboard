@@ -100,46 +100,51 @@ def assess_run(record: RunRecord, directory: Path, window: processes.Window, mod
     directory.mkdir(parents=True)
     text = prompt(record, label)
     (directory / "prompt.txt").write_text(text)
-    answer: oneshot.Answer | None = None
-    interrupted: processes.ProcessIncomplete | processes.CleanupUnconfirmed | None = None
     outcome: AssessmentOutcome = AssessmentFailure(reason="started assessor failed before publishing a result")
     try:
         answer = oneshot.ask(text, model, window)
-        (directory / "raw.json").write_text(answer.stdout)
-        decoded = (
-            decode_answer(answer.text, label, len(record.turns))
-            if answer.problem is None
-            else AssessmentFailure(reason=answer.problem)
-        )
-        outcome = outcome_of(decoded)
     except (processes.ProcessIncomplete, processes.CleanupUnconfirmed) as error:
-        interrupted = error
         outcome = AssessmentFailure(reason=str(error))
         try:
-            (directory / "raw.json").write_text(error.stdout)
-            (directory / "stderr.txt").write_text(error.stderr)
-        except BaseException as evidence_failure:
-            error.args = (*error.args, f"partial-output capture failed: {evidence_failure!r}")
-            evidence_failure.__cause__ = error.__cause__
-            raise error from evidence_failure
+            try:
+                (directory / "raw.json").write_text(error.stdout)
+                (directory / "stderr.txt").write_text(error.stderr)
+            except BaseException as evidence_failure:
+                error.args = (*error.args, f"partial-output capture failed: {evidence_failure!r}")
+                evidence_failure.__cause__ = error.__cause__
+                raise error from evidence_failure
+        finally:
+            _write_assessment(record, directory, model, None, outcome)
         raise
-    except BaseException as failure:
-        if answer is not None:
-            raise processes.ProcessIncomplete(answer.stdout.encode(), b"", failure) from failure
-        raise
-    finally:
-        if answer is not None or interrupted is not None:
-            write_new(
-                directory / "assessment.json",
-                AssessmentRecord(
-                    schema="pinboard-behavioral-substance/v1",
-                    run=record.run,
-                    assessor_model=model,
-                    cost_usd=None if answer is None else answer.cost_usd,
-                    words=turn_words(record),
-                    outcome=outcome,
-                ),
+    else:
+        try:
+            (directory / "raw.json").write_text(answer.stdout)
+            decoded = (
+                decode_answer(answer.text, label, len(record.turns))
+                if answer.problem is None
+                else AssessmentFailure(reason=answer.problem)
             )
+            outcome = outcome_of(decoded)
+        except BaseException as failure:
+            raise processes.ProcessIncomplete(answer.stdout.encode(), b"", failure) from failure
+        finally:
+            _write_assessment(record, directory, model, answer.cost_usd, outcome)
+
+
+def _write_assessment(
+    record: RunRecord, directory: Path, model: str, cost_usd: float | None, outcome: AssessmentOutcome
+) -> None:
+    write_new(
+        directory / "assessment.json",
+        AssessmentRecord(
+            schema="pinboard-behavioral-substance/v1",
+            run=record.run,
+            assessor_model=model,
+            cost_usd=cost_usd,
+            words=turn_words(record),
+            outcome=outcome,
+        ),
+    )
 
 
 def summarize(layout: Layout) -> str:

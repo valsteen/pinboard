@@ -3304,6 +3304,9 @@ FIXTURE_REVIEW_RESULT_TYPES = (FixtureReviewPage, FixtureReviewRejected, Executo
 
 type RequestBoundary = (
     type[initiative_contracts.Envelope]
+    | type[CancellationEnvelope]
+    | type[BriefSourcePlanOutputEnvelope]
+    | type[PrReviewEnvelope]
     | type[StartupTextEnvelope]
     | type[FixtureReviewEnvelope]
     | type[BriefContractEnvelope]
@@ -3332,6 +3335,16 @@ type RequestBoundary = (
 )
 type ResultBoundary = (
     type[initiative_contracts.RoadmapResult]
+    | type[CancellationPreviewResult]
+    | type[CancellationRejected]
+    | type[CancellationCommitted]
+    | type[query_models.ItemIntegration]
+    | type[IntegrationTargetUnresolved]
+    | type[IntegrationCandidateUnavailable]
+    | type[IntegrationCandidateEvidenceInvalid]
+    | type[ItemStatusGitUnavailable]
+    | type[PrReviewSuccess]
+    | type[PrReviewRejected]
     | type[initiative_contracts.ReadResult]
     | type[initiative_contracts.Committed]
     | type[initiative_contracts.Rejected]

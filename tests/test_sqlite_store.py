@@ -50,7 +50,7 @@ from pinboard.domain.ledger import LedgerSnapshot
 from tests.decision_support import project_decision_snapshot
 from tests.domain_support import expect_success
 from tests.domain_support import replace as replace_dataclass
-from tests.support import SQLITE_DIGEST, SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation
+from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation
 
 
 def available_actions(
@@ -523,7 +523,7 @@ class SQLiteStoreTest(unittest.TestCase):
             try:
                 if ignore_constraints:
                     connection.execute("PRAGMA ignore_check_constraints = ON")
-                connection.execute(statement, (SQLITE_DIGEST, SQLITE_DIGEST) if "?" in statement else ())
+                connection.execute(statement)
                 connection.commit()
             finally:
                 connection.close()

@@ -68,7 +68,6 @@ def isolated_home(source: Path, parent: Path | None, window: Window) -> Generato
     copied = source.read_bytes()
     path = Path(tempfile.mkdtemp(prefix="pinboard-eval-codex-home-", dir=parent))
     home = IsolatedHome(path=path, source=source, copied=copied, settlement=None)
-    retain = False
     try:
         path.chmod(0o700)
         descriptor = os.open(path / AUTH_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -76,15 +75,20 @@ def isolated_home(source: Path, parent: Path | None, window: Window) -> Generato
             stream.write(copied)
         yield home
     except CleanupUnconfirmed as error:
-        retain = True
         error.args = (f"{error}. Private Codex home retained at {path}; credentials were neither settled nor removed",)
         raise
+    except BaseException:
+        _settle_and_remove(home, path)
+        raise
+    else:
+        _settle_and_remove(home, path)
+
+
+def _settle_and_remove(home: IsolatedHome, path: Path) -> None:
+    try:
+        home.settlement = settle(home)
     finally:
-        if not retain:
-            try:
-                home.settlement = settle(home)
-            finally:
-                shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(path, ignore_errors=True)
 
 
 LOGIN_VALUE = re.compile(rb'"([^"\\]{16,})"')

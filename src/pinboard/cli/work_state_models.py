@@ -40,7 +40,7 @@ class Diagnostic:
 
     def render(self) -> str:
         result = f"{self.severity.value.upper()} {self.code} {self.path}: {self.message}"
-        if self.hint:
+        if self.hint is not None and self.hint != "":
             result += f" Hint: {self.hint}"
         return result
 

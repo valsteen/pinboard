@@ -71,7 +71,7 @@ class InvestigationTrialTests(unittest.TestCase):
                         + "\n"
                     )
                     raw_path.write_text(raw)
-                    usage = codex_driver.Usage(100 * (2 if previous else 1), 0, 0, 10, 0)
+                    usage = codex_driver.Usage(100 * (2 if previous is not None and previous != "" else 1), 0, 0, 10, 0)
                     return processes.Completed(0, raw, "", False), codex_driver.TurnReading(
                         identity,
                         ["identical final reply"],

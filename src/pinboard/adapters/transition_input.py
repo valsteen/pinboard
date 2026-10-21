@@ -6,7 +6,7 @@ authority selection, legality decision, or persistence effect.
 """
 
 from dataclasses import dataclass
-from typing import assert_never
+from typing import assert_never, override
 
 import msgspec
 
@@ -29,6 +29,7 @@ class TransitionInputFailure:
     message: str
     details: FailureDetails | None
 
+    @override
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"
 

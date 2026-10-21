@@ -775,14 +775,15 @@ def _authority_rejected(
     inspection_input: dict[str, JsonValue],
 ) -> execution.OperationResult:
     details = _authority_rejection_details(failure)
-    details["observed"] = [
-        *(
-            {"field": fact.field, "value": fact.value}
-            for fact in (() if failure.details is None else failure.details.observed)
-        ),
-        {"field": "next_step_tool", "value": inspection_tool},
-        {"field": "next_step_input", "value": msgspec.json.encode(inspection_input, order="sorted").decode()},
+    observed: list[JsonValue] = [
+        {"field": fact.field, "value": fact.value}
+        for fact in (() if failure.details is None else failure.details.observed)
     ]
+    observed.append({"field": "next_step_tool", "value": inspection_tool})
+    observed.append(
+        {"field": "next_step_input", "value": msgspec.json.encode(inspection_input, order="sorted").decode()}
+    )
+    details["observed"] = observed
     return execution.OperationResult(
         {
             "schema": schema,

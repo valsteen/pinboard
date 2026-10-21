@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import PurePosixPath
-from typing import Annotated, Literal
+from typing import Annotated, Literal, override
 
 import msgspec
 
@@ -37,6 +37,7 @@ class BriefSourceFailure:
     code: BriefSourceErrorCode
     message: str
 
+    @override
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"
 

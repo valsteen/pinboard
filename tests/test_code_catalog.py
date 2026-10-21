@@ -27,7 +27,7 @@ def _declared_and_emitted_codes() -> set[str]:  # noqa: C901 - independent sourc
     for path in _installed_sources():
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
-            if isinstance(node, ast.TypeAlias) and isinstance(node.name, ast.Name) and node.name.id.endswith("Code"):
+            if isinstance(node, ast.TypeAlias) and node.name.id.endswith("Code"):
                 codes.update(
                     value.value
                     for value in ast.walk(node.value)

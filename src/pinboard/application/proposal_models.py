@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, override
 
 import msgspec
 
@@ -13,6 +13,7 @@ class ProposalFailure:
     message: str
     details: FailureDetails | None
 
+    @override
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"
 

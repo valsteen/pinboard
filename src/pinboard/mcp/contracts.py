@@ -2552,10 +2552,19 @@ class ArtifactReferenceResult(msgspec.Struct, frozen=True, forbid_unknown_fields
     accepted_revision: PositiveInt
 
 
+class LargeBriefAdvisory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """A publication-size observation for planning; it changes no publication or lifecycle effect."""
+
+    size_bytes: PositiveInt
+    threshold_bytes: PositiveInt
+    recommendation: NonEmptyText
+
+
 class BriefCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["committed"]
     reference: ArtifactReferenceResult
+    advisory: LargeBriefAdvisory | None
     state_changed: bool
     effect: Literal["committed"]
     retry: Literal["do-not-retry"]
@@ -2568,6 +2577,7 @@ class BriefReferenceCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbi
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["committed"]
     reference: ArtifactReferenceResult
+    advisory: LargeBriefAdvisory | None
     state_changed: bool
     effect: Literal["committed"]
     retry: Literal["do-not-retry"]
@@ -2580,6 +2590,7 @@ class BriefArtifactCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["committed"]
     reference: ArtifactReferenceResult
+    advisory: LargeBriefAdvisory | None
     state_changed: bool
     effect: Literal["committed"]
     retry: Literal["do-not-retry"]
@@ -2592,6 +2603,7 @@ class BriefCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=True, for
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["committed-with-warning"]
     reference: ArtifactReferenceResult
+    advisory: LargeBriefAdvisory | None
     state_changed: bool
     effect: Literal["committed"]
     retry: Literal["do-not-retry"]
@@ -2604,6 +2616,7 @@ class BriefReferenceCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["committed-with-warning"]
     reference: ArtifactReferenceResult
+    advisory: LargeBriefAdvisory | None
     state_changed: bool
     effect: Literal["committed"]
     retry: Literal["do-not-retry"]
@@ -2616,6 +2629,7 @@ class BriefArtifactCommittedWithWarning(_ChangedResult, msgspec.Struct, frozen=T
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["committed-with-warning"]
     reference: ArtifactReferenceResult
+    advisory: LargeBriefAdvisory | None
     state_changed: bool
     effect: Literal["committed"]
     retry: Literal["do-not-retry"]
@@ -2628,6 +2642,7 @@ class BriefUnchanged(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unkno
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["unchanged"]
     reference: ArtifactReferenceResult
+    advisory: LargeBriefAdvisory | None
     state_changed: bool
     effect: Literal["unchanged"]
     retry: Literal["retry-same-input"]
@@ -2640,6 +2655,7 @@ class BriefUnchangedWithWarning(_UnchangedResult, msgspec.Struct, frozen=True, f
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
     status: Literal["unchanged-with-warning"]
     reference: ArtifactReferenceResult
+    advisory: LargeBriefAdvisory | None
     state_changed: bool
     effect: Literal["unchanged"]
     retry: Literal["retry-same-input"]

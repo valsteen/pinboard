@@ -213,6 +213,9 @@ def _proposal_created(
     )
 
 
+LARGE_BRIEF_THRESHOLD_BYTES = 32768
+
+
 def _brief_published(
     project_root: str,
     work_root: str,
@@ -273,6 +276,20 @@ def _brief_published(
         "schema": "pinboard-mcp-brief-publication-result/v1",
         "status": status,
         "reference": common._artifact_reference_json(publication.reference),
+        "advisory": (
+            {
+                "size_bytes": publication.reference.size_bytes,
+                "threshold_bytes": LARGE_BRIEF_THRESHOLD_BYTES,
+                "recommendation": (
+                    "Assess this checkpoint before brief review or worker dispatch: continue together when coherent; "
+                    "reduce repeated or carried-forward presentation while preserving requirements and assurance; "
+                    "or use actual successive deliverables within the same item, keeping later work required. "
+                    "Size alone is not a complexity verdict, a reason to split, or a request for human acknowledgment."
+                ),
+            }
+            if publication.reference.size_bytes > LARGE_BRIEF_THRESHOLD_BYTES
+            else None
+        ),
         "state_changed": state_changed,
         "effect": (EffectDisposition.COMMITTED.value if state_changed else EffectDisposition.UNCHANGED.value),
         "retry": (RetryDisposition.DO_NOT_RETRY.value if state_changed else RetryDisposition.RETRY_SAME_INPUT.value),

@@ -18,6 +18,8 @@ from mcp_types import CallToolResult
 
 from pinboard.adapters.files import file_io
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
+from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
+from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     brief_source_codec,
     brief_source_models,
@@ -30,8 +32,9 @@ from pinboard.mcp import contract_schemas, contracts, server
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import read_operations as mcp_reads
 from tests import test_mcp
+from tests.native_support import native_tools
 from tests.test_work_brief_contract import complete_starter, json_object, select_structural_variant
-from tests.work_brief_support import example_work_brief, work_c_brief
+from tests.work_brief_support import example_work_brief, work_a_brief, work_c_brief
 
 
 class McpBriefPreparationTest(unittest.TestCase):
@@ -119,6 +122,89 @@ class McpBriefPreparationTest(unittest.TestCase):
             )
             contract_schemas.validate_result(server.BRIEF_CONTRACT_TOOL, result.content)
         asyncio.run(scenario())
+
+    def test_native_publication_advises_only_above_canonical_byte_cutoff_and_preserves_reuse(self) -> None:
+        temporary, project, roots = test_mcp.McpTransportTest()._project()
+        self.addCleanup(temporary.cleanup)
+        explicit_roots = {"project_root": str(project), "work_root": str(roots.work_root)}
+        initial = SQLiteWorkStore(roots.database_path).validated_snapshot()
+        with native_tools() as native:
+            for revision, size in enumerate((32767, 32768, 32769), start=2):
+                with self.subTest(canonical_bytes=size):
+                    brief = msgspec.structs.replace(work_a_brief(project), artifact_revision=revision)
+                    provenance = brief.product_decision_and_provenance + "é"
+                    brief = msgspec.structs.replace(brief, product_decision_and_provenance=provenance)
+                    padding = size - len(work_briefs.canonical_work_brief_bytes(brief))
+                    brief = msgspec.structs.replace(brief, product_decision_and_provenance=provenance + "x" * padding)
+                    canonical = work_briefs.canonical_work_brief_bytes(brief)
+                    self.assertEqual(size, len(canonical))
+                    self.assertLess(len(canonical.decode("utf-8")), size)
+                    arguments = {**explicit_roots, "brief": msgspec.to_builtins(brief)}
+                    published = native.call_advertised_tool(server.BRIEF_PUBLISH_TOOL, arguments)
+                    self.assertEqual("committed", published["status"])
+                    self.assertEqual("committed", published["effect"])
+                    self.assertEqual("do-not-retry", published["retry"])
+                    self.assertTrue(published["state_changed"])
+                    self.assertEqual(
+                        ["immutable-artifact", "accepted-artifact-reference", "ledger"], published["changed_surfaces"]
+                    )
+                    self.assertIsNone(published["warning"])
+                    reference = published["reference"]
+                    assert isinstance(reference, dict) and isinstance(reference["selector"], str)
+                    self.assertEqual(size, reference["size_bytes"])
+                    self.assertEqual(canonical, (roots.work_root / reference["selector"]).read_bytes())
+                    advisory = published["advisory"]
+                    if size > 32768:
+                        assert isinstance(advisory, dict)
+                        self.assertEqual(size, advisory["size_bytes"])
+                        self.assertEqual(32768, advisory["threshold_bytes"])
+                        self.assertTrue(advisory["recommendation"])
+                    else:
+                        self.assertIsNone(advisory)
+                    after = SQLiteWorkStore(roots.database_path).validated_snapshot()
+                    self.assertEqual(initial.lifecycle.work_items, after.lifecycle.work_items)
+                    self.assertEqual(initial.lifecycle.attempts, after.lifecycle.attempts)
+                    self.assertEqual(initial.lifecycle.dependencies, after.lifecycle.dependencies)
+                    self.assertEqual(initial.lifecycle.definition_revisions, after.lifecycle.definition_revisions)
+                    self.assertEqual(initial.authority, after.authority)
+                    reused = native.call_advertised_tool(server.BRIEF_PUBLISH_TOOL, arguments)
+                    self.assertEqual("unchanged", reused["status"])
+                    self.assertEqual("unchanged", reused["effect"])
+                    self.assertEqual("retry-same-input", reused["retry"])
+                    self.assertFalse(reused["state_changed"])
+                    self.assertEqual([], reused["changed_surfaces"])
+                    self.assertIsNone(reused["warning"])
+                    self.assertEqual(reference, reused["reference"])
+                    self.assertEqual(advisory, reused["advisory"])
+                    self.assertEqual(after, SQLiteWorkStore(roots.database_path).validated_snapshot())
+
+    def test_large_brief_advisory_coexists_with_committed_and_reused_view_warning(self) -> None:
+        temporary, project, roots = test_mcp.McpTransportTest()._project()
+        self.addCleanup(temporary.cleanup)
+        brief = msgspec.structs.replace(
+            work_a_brief(project), artifact_revision=2, product_decision_and_provenance="x" * 32769
+        )
+        arguments = {
+            "project_root": str(project),
+            "work_root": str(roots.work_root),
+            "brief": msgspec.to_builtins(brief),
+        }
+        view_warning = ViewWarning("Generated views need repair.", "Run 'pinboard views rebuild'.")
+        warning = ViewRefreshResult(12, view_warning)
+        with native_tools() as native, patch.object(mcp_common, "_refresh_affected_views", return_value=warning):
+            published = native.call_advertised_tool(server.BRIEF_PUBLISH_TOOL, arguments)
+            reused = native.call_advertised_tool(server.BRIEF_PUBLISH_TOOL, arguments)
+        self.assertEqual("committed-with-warning", published["status"])
+        self.assertEqual("committed", published["effect"])
+        self.assertEqual("do-not-retry", published["retry"])
+        self.assertEqual("unchanged-with-warning", reused["status"])
+        self.assertEqual("unchanged", reused["effect"])
+        self.assertEqual("retry-same-input", reused["retry"])
+        self.assertEqual({"message": view_warning.message, "recovery": view_warning.repair}, published["warning"])
+        self.assertEqual(published["warning"], reused["warning"])
+        self.assertIsNotNone(published["advisory"])
+        self.assertEqual(published["advisory"], reused["advisory"])
+        self.assertEqual(published["reference"], reused["reference"])
 
     def test_strict_leaf_matrix_rejects_before_root_source_or_output_effects(self) -> None:
         plan = self.sources("plan", manifest=self.manifest, max_batch_bytes=500)

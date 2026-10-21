@@ -374,10 +374,9 @@ def initialize_database(roots: DurableRoots, now: datetime) -> None:
     path = roots.database_path
     staging = _prepare_database_publication(path)
 
-    connection: sqlite3.Connection | None = None
     try:
+        connection = sqlite3.connect(staging, timeout=BUSY_TIMEOUT_MS / 1_000, isolation_level=None)
         try:
-            connection = sqlite3.connect(staging, timeout=BUSY_TIMEOUT_MS / 1_000, isolation_level=None)
             _configure_connection(connection)
             _configure_writes(connection)
             connection.executescript(read_schema_bytes().decode("utf-8"))
@@ -398,8 +397,7 @@ def initialize_database(roots: DurableRoots, now: datetime) -> None:
             _verify_current_schema(connection)
             verify_database_integrity(connection)
         finally:
-            if connection is not None:
-                connection.close()
+            connection.close()
         _sync_database(staging)
     except StorageError as error:
         _cleanup_database_files(staging)

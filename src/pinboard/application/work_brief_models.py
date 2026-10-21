@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass
-from typing import Annotated, Literal, Protocol, assert_never
+from typing import Annotated, Literal, Protocol, assert_never, override
 
 import msgspec
 
@@ -56,6 +56,7 @@ class WorkBriefFailure:
     code: WorkBriefErrorCode
     message: str
 
+    @override
     def __str__(self) -> str:
         return f"{self.code.value}: {self.message}"
 

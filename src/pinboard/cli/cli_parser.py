@@ -167,10 +167,9 @@ def installed_commands() -> tuple[InstalledCommand, ...]:
             )
         for action in parser._actions:
             if isinstance(action, argparse._SubParsersAction):
-                choices: dict[str, argparse.ArgumentParser] = action.choices
-                for child in choices.values():
-                    if isinstance(child, argparse.ArgumentParser):
-                        visit(child)
+                for choice in action.choices.items():
+                    if isinstance(choice[1], argparse.ArgumentParser):
+                        visit(choice[1])
 
     visit(build_parser())
     return tuple(discovered)

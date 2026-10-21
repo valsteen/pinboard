@@ -139,8 +139,8 @@ def select_capture_item(  # noqa: C901 - one MCP boundary interprets its support
             if isinstance(item_id, str):
                 return item_id
             relation = value.get("relation")
-            if isinstance(relation, dict) and isinstance(relation.get("item"), str):
-                return relation["item"]
+            if isinstance(relation, dict) and isinstance(related_item := relation.get("item"), str):
+                return related_item
     attempt_id = selected.get("attempt_id")
     if not isinstance(attempt_id, str):
         review = arguments.get("review")

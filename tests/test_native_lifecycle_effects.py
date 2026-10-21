@@ -163,9 +163,10 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                         checkout_selection=work_models.CheckoutSelection.ISOLATED,
                     )
                     reference_id = self.accept_execution_brief(fixture, brief, legacy=invalidity == "legacy")
+                    payload: JsonObject
                     if route == "rebind":
                         action = self.project_action(fixture, "rebind-attempt:work-a-1")
-                        payload: JsonObject = {
+                        payload = {
                             "branch": brief.branch,
                             "base_revision": brief.base_revision,
                             "brief_artifact_ref_id": reference_id,

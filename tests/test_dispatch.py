@@ -559,7 +559,9 @@ class DispatchTest(unittest.TestCase):
             }
             arguments.update(changed)
             with self.subTest(name=_name):
-                failure = expect_dispatch_failure(prepare_dispatch_from_artifact(**arguments), code)
+                failure = expect_dispatch_failure(
+                    prepare_dispatch_from_artifact(**arguments, supplied_prompt=None), code
+                )
                 if code == DispatchErrorCode.DISPATCH_BASE_REVISION_MISMATCH:
                     assert failure.details is not None
                     self.assertEqual("correct-input", failure.details.retry.value)

@@ -49,7 +49,7 @@ def _with_close_alternatives(
             decision_models.action_id(value),
             "project",
             value.capability.subject_revision,
-            None if value.capability.authorization is None else value.capability.authorization.value,
+            value.capability.authorization.value,
             None if value.capability.lease_id is None else str(value.capability.lease_id),
             value.capability.command_authority.generation
             if value.capability.command_authority is not None

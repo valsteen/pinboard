@@ -83,13 +83,17 @@ def _decode_settings(path: Path) -> ContributorTraceSettings | git_config.ReadFa
         if key in seen:
             raise ValueError("Contributor trace settings contain duplicate keys.")
         seen.add(key)
-        if key == "pinboard.unsafe_persist_exact_pinboard_traces.mode" and value in ("off", "on"):
-            project_mode = value
-        elif key.startswith("item.") and key.endswith(".mode") and value in ("inherit", "off", "on"):
+        if key == "pinboard.unsafe_persist_exact_pinboard_traces.mode" and (value == "off" or value == "on"):
+            project_mode = "off" if value == "off" else "on"
+        elif (
+            key.startswith("item.")
+            and key.endswith(".mode")
+            and (value == "inherit" or value == "off" or value == "on")
+        ):
             item = key.removeprefix("item.").removesuffix(".mode")
             if not item:
                 raise ValueError("Contributor trace item override needs an item ID.")
-            overrides[item] = value
+            overrides[item] = "inherit" if value == "inherit" else "off" if value == "off" else "on"
         else:
             raise ValueError("Contributor trace settings contain an unknown key or mode.")
     return ContributorTraceSettings(project_mode, MappingProxyType(overrides)) if project_mode is not None else None

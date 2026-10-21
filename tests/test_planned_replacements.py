@@ -14,7 +14,15 @@ NOW = datetime(2026, 9, 10, tzinfo=UTC)
 
 def work_item(item_id: str, state: work_models.WorkState, attempt: str | None = None) -> work_models.WorkItem:
     return work_models.WorkItem(
-        WorkItemId(item_id), state, None, (), AttemptId(attempt) if attempt else None, None, None, None, 1
+        WorkItemId(item_id),
+        state,
+        None,
+        (),
+        AttemptId(attempt) if attempt is not None and attempt != "" else None,
+        None,
+        None,
+        None,
+        1,
     )
 
 

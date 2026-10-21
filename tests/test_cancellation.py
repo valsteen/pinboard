@@ -359,7 +359,7 @@ class CancellationTest(CheckpointPackageSupport):
         for value in self.json_array(page["items"]):
             for dependency in self.json_array(self.json_object(value)["dependencies"]):
                 target = self.json_object(dependency)
-                if target["on_board"]:
+                if bool(target["on_board"]):
                     self.assertIn(target["item_id"], live_ids)
         fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
         authority = fresh.read_preparation_authority_status(WorkItemId("work-c"))

@@ -71,15 +71,15 @@ from pinboard.mcp.tool_names import (
 type IntegerBoundaryValue = bool | int | float | str | None
 
 LOCAL_AUTHORITY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=False,
-    openWorldHint=False,
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
+    open_world_hint=False,
 )
 # Full-invocation read-only hints exclude auxiliary settings and trace writes.
 # Source and exact brief lookup tools bypass capture; ordinary ledger reads may use it.
 READ_ONLY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
-    readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
+    read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
 )
 
 
@@ -373,14 +373,15 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         description="Discover and record a human-owned PR review brief, observed heads, exact-head rounds, and human-directed closure without an implementation attempt.",
     )
     async def pr_review(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        arguments: dict[str, JsonValue] = {"request": request}
         return await execution._run_request(
             executor,
             diagnostics,
             next(request_ids),
             PR_REVIEW_TOOL,
             str(request.get("project_root", "")),
-            partial(pr_review_operations.execute, {"request": request}),
-            arguments={"request": request},
+            partial(pr_review_operations.execute, arguments),
+            arguments=arguments,
             capture=capture,
         )
 

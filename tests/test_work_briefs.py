@@ -1116,7 +1116,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 self.assertEqual("unchanged", reused_failure["effect"])
                 self.assertEqual([], reused_failure["changed_surfaces"])
                 self.assertEqual(
-                    "retry-same-input" if isinstance(error, StorageError) and error.retryable else "do-not-retry",
+                    "retry-same-input" if error.retryable else "do-not-retry",
                     reused_failure["retry"],
                 )
                 self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())

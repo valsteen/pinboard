@@ -491,7 +491,6 @@ class SQLiteStoreTest(unittest.TestCase):
             (
                 "required timestamp",
                 "UPDATE project_meta SET created_at = 'not-a-time'",
-                False,
             ),
             (
                 "optional timestamp",
@@ -499,30 +498,24 @@ class SQLiteStoreTest(unittest.TestCase):
                 UPDATE attempts SET state = 'review', candidate_revision = 'candidate-a',
                     candidate_recorded_at = 'not-a-time' WHERE attempt_id = 'work-a-1'
                 """,
-                False,
             ),
             (
                 "stored history input JSON",
                 "UPDATE transition_history SET input_json = '{' WHERE history_id = 1",
-                False,
             ),
             (
                 "stored history outcome JSON",
                 "UPDATE transition_history SET outcome_json = '{' WHERE history_id = 1",
-                False,
             ),
             (
                 "attempt generation exceeds its counter",
                 "UPDATE attempt_lease_counters SET generation_high_water = 2 WHERE attempt_id = 'work-a-1'",
-                False,
             ),
         )
-        for name, statement, ignore_constraints in cases:
+        for name, statement in cases:
             path, store = self._store()
             connection = sqlite3.connect(path)
             try:
-                if ignore_constraints:
-                    connection.execute("PRAGMA ignore_check_constraints = ON")
                 connection.execute(statement)
                 connection.commit()
             finally:

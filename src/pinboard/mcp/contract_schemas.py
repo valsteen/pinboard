@@ -114,8 +114,6 @@ from pinboard.mcp.contracts import (
     PrReviewRejected,
     PrReviewSuccess,
     ReplacementReadinessReady,
-    RequestBoundary,
-    ResultBoundary,
     ReturnContextReady,
     ReturnContextRejected,
     ReviewJobFailedAfterPublication,
@@ -193,7 +191,7 @@ def project_regex_patterns(schema: dict[str, JsonSchemaValue]) -> None:
     visit(schema)
 
 
-def schema_for(boundary_type: RequestBoundary) -> dict[str, JsonSchemaValue]:
+def schema_for(boundary_type: type[msgspec.Struct]) -> dict[str, JsonSchemaValue]:
     """Return one host-facing MCP request schema from a strict msgspec record."""
     schema: dict[str, JsonSchemaValue] = msgspec.json.schema(
         boundary_type, schema_hook=dispatch_models.dispatch_environment_schema_hook
@@ -266,7 +264,7 @@ def transition_request_schema() -> dict[str, JsonSchemaValue]:
 
 
 def _apply_result_state_constraints(
-    definitions: dict[str, JsonSchemaValue], boundary_types: tuple[ResultBoundary, ...]
+    definitions: dict[str, JsonSchemaValue], boundary_types: tuple[type[msgspec.Struct], ...]
 ) -> None:
     for boundary_type in boundary_types:
         state_changed = _fixed_state_changed(boundary_type)
@@ -669,7 +667,7 @@ def _apply_job_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
             }
 
 
-def union_schema_for(boundary_types: tuple[ResultBoundary, ...]) -> dict[str, JsonSchemaValue]:
+def union_schema_for(boundary_types: tuple[type[msgspec.Struct], ...]) -> dict[str, JsonSchemaValue]:
     """Return one closed MCP result schema from separate correlated records."""
     if ExecutorBusyResult in boundary_types:
         boundary_types = (*boundary_types, TracePreflightResult)

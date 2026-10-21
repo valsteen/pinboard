@@ -719,7 +719,7 @@ class CompletionRecoveryRequired:
 
 
 type ItemStatusSchema = Literal["pinboard-item-status/v3"]
-type ItemStatusAuthority = Literal["sqlite-v8"]
+type ItemStatusAuthority = Literal["sqlite-v9"]
 
 
 type DamagedReceiptActionKind = Literal[
@@ -1600,7 +1600,7 @@ class NextUnstarted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class WorkOverview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-overview/v7"]
-    authority: Literal["sqlite-v8"]
+    authority: Literal["sqlite-v9"]
     revision: str
     active_attempts: tuple[str, ...]
     items: tuple[OverviewItem, ...]
@@ -1720,7 +1720,7 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition/v1"]
-    authority: Literal["sqlite-v8"]
+    authority: Literal["sqlite-v9"]
     project_revision: int
     item_id: str
     item_subject_revision: int
@@ -1743,7 +1743,7 @@ class ItemDefinitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class ItemDefinitionHistory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition-history/v1"]
-    authority: Literal["sqlite-v8"]
+    authority: Literal["sqlite-v9"]
     project_revision: int
     item_id: str
     revisions: tuple[ItemDefinitionHistoryRow, ...]

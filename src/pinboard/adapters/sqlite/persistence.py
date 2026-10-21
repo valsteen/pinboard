@@ -15,7 +15,11 @@ from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
     accept_artifact_reference as write_artifact_reference,
 )
-from pinboard.adapters.sqlite.artifacts import accept_checkpoint_artifact, read_artifact_reference_by_id
+from pinboard.adapters.sqlite.artifacts import (
+    accept_checkpoint_artifact,
+    decode_reference_rows,
+    read_artifact_reference_by_id,
+)
 from pinboard.adapters.sqlite.authority import (
     consume_preparation_authority,
     fence_attempt_authority,
@@ -56,7 +60,7 @@ from pinboard.adapters.sqlite.proposals import (
     insert_planned_replacement,
     set_proposal_disposition,
 )
-from pinboard.application import cancellation_models, query_models, stored_state
+from pinboard.application import artifact_identity, cancellation_models, query_models, stored_state
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
@@ -706,6 +710,9 @@ def _persist_checkpoint_acceptance(
         artifacts.candidate_id,
         revision,
         now,
+        artifact_identity.CheckpointAddress(
+            change.attempt, change.checkpoint, artifact_identity.CheckpointRole.CANDIDATE, artifacts.candidate.revision
+        ),
     )
     accept_checkpoint_artifact(
         connection,
@@ -713,6 +720,9 @@ def _persist_checkpoint_acceptance(
         artifacts.result_id,
         revision,
         now,
+        artifact_identity.CheckpointAddress(
+            change.attempt, change.checkpoint, artifact_identity.CheckpointRole.RESULT, artifacts.result.revision
+        ),
     )
     accept_checkpoint_artifact(
         connection,
@@ -720,6 +730,9 @@ def _persist_checkpoint_acceptance(
         artifacts.review_id,
         revision,
         now,
+        artifact_identity.CheckpointAddress(
+            change.attempt, change.checkpoint, artifact_identity.CheckpointRole.REVIEW, artifacts.review.revision
+        ),
     )
     accept_checkpoint_artifact(
         connection,
@@ -727,6 +740,9 @@ def _persist_checkpoint_acceptance(
         artifacts.package_id,
         revision,
         now,
+        artifact_identity.CheckpointAddress(
+            change.attempt, change.checkpoint, artifact_identity.CheckpointRole.PACKAGE, artifacts.package.revision
+        ),
     )
     if (
         failure := set_item_state(
@@ -765,12 +781,19 @@ def _persist_completion_acceptance(
     artifacts = mutation.completion_artifacts
     revision = mutation.receipt.project_revision
     now = mutation.decision.receipt.decided_at
-    for artifact, artifact_id in (
-        (artifacts.result, artifacts.result_id),
-        (artifacts.review, artifacts.review_id),
-        (artifacts.package, artifacts.package_id),
+    for artifact, artifact_id, role in (
+        (artifacts.result, artifacts.result_id, artifact_identity.CompletionRole.RESULT),
+        (artifacts.review, artifacts.review_id, artifact_identity.CompletionRole.REVIEW),
+        (artifacts.package, artifacts.package_id, artifact_identity.CompletionRole.PACKAGE),
     ):
-        accept_checkpoint_artifact(connection, artifact, artifact_id, revision, now)
+        accept_checkpoint_artifact(
+            connection,
+            artifact,
+            artifact_id,
+            revision,
+            now,
+            artifact_identity.CompletionAddress(change.attempt, role, artifact.revision),
+        )
     if (
         failure := set_item_state(
             connection,
@@ -851,6 +874,9 @@ def _persist_state_change(  # noqa: C901, PLR0912 - exhaustive closed mutation p
                 mutation.candidate_snapshot_id,
                 mutation.receipt.project_revision,
                 mutation.decision.receipt.decided_at,
+                artifact_identity.AttemptMembership(
+                    AttemptId(str(mutation.decision.action.capability.subject)), artifact_identity.AttemptRole.SOURCE
+                ),
             )
             return _persist_transition(
                 connection,
@@ -1042,7 +1068,7 @@ class SQLiteWorkTransaction:
                 (artifact.kind.value, artifact.key, artifact.revision),
             ).fetchone()
             if row is not None:
-                accepted.append(decode_row(row, stored_state.ArtifactReference))
+                accepted.extend(decode_reference_rows(self.connection, [row]))
         selected_artifact_allocation = decode_row(artifact_allocation, ArtifactIdAllocationRow)
         return CheckpointMutationAllocation(
             allocation.project_revision,
@@ -1121,11 +1147,12 @@ def accept_artifact_reference(
     work_root: Path,
     published: ArtifactRef,
     accepted_at: datetime,
+    ownership: artifact_identity.Ownership | None,
 ) -> DecisionResult[ArtifactReferenceAcceptance]:
     """Accept and exactly reload one immutable artifact inside one write transaction."""
     with SQLiteWorkTransaction(database_path) as transaction:
         try:
-            result = write_artifact_reference(transaction.connection, work_root, published, accepted_at)
+            result = write_artifact_reference(transaction.connection, work_root, published, accepted_at, ownership)
         except ArtifactError as error:
             match error.code:
                 case ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION:

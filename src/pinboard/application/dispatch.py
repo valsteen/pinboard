@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from pinboard.application import query_models, stored_state
+from pinboard.application import artifact_identity, query_models, stored_state
 from pinboard.application.actions import discover_current_actions
 from pinboard.application.artifact_publication import (
     ArtifactAcceptanceFailure,
@@ -174,6 +174,7 @@ def publish_dispatch_review(
             artifacts,
             NewArtifact(work_models.ArtifactKind.EVIDENCE, f"{key}-rejected-{review_id}", 1, ".json", candidate),
             accepted_at,
+            artifact_identity.AttemptMembership(attempt_id, artifact_identity.AttemptRole.SOURCE),
         )
         if isinstance(rejected_acceptance, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
             return rejected_acceptance
@@ -212,6 +213,7 @@ def publish_dispatch_review(
         artifacts,
         NewArtifact(work_models.ArtifactKind.EVIDENCE, key, 1, ".json", candidate),
         accepted_at,
+        artifact_identity.AttemptMembership(attempt_id, artifact_identity.AttemptRole.SOURCE),
     )
     if isinstance(accepted_publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         return accepted_publication

@@ -22,6 +22,7 @@ from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.application import artifact_identity
 from pinboard.application.artifact_publication import (
     ArtifactAcceptanceFailure,
     ArtifactWriteFailure,
@@ -48,8 +49,9 @@ class _AlwaysReadOnlyArtifactStore(SQLiteWorkStore):
         work_root: Path,
         published: ArtifactRef,
         accepted_at: datetime,
+        ownership: artifact_identity.Ownership | None,
     ) -> Never:
-        del work_root, published, accepted_at
+        del work_root, published, accepted_at, ownership
         raise SQLiteReadOnlyError(self._path)
 
 
@@ -72,7 +74,7 @@ def _publish_to_readonly_store(
     publisher: _BarrierArtifactPublisher,
     artifact: NewArtifact,
 ) -> ArtifactAcceptanceFailure:
-    result = publish_accepted_artifact(store, publisher, artifact, SQLITE_NOW)
+    result = publish_accepted_artifact(store, publisher, artifact, SQLITE_NOW, ownership=None)
     if isinstance(result, ArtifactAcceptanceFailure):
         return result
     raise AssertionError("Read-only artifact acceptance unexpectedly succeeded.")
@@ -91,7 +93,9 @@ class ArtifactPersistenceTest(unittest.TestCase):
                 failure = StorageError(code, "persisted state is inconsistent")
                 with patch.object(store, "accept_artifact_reference", side_effect=failure):
                     try:
-                        publish_accepted_artifact(store, ArtifactRepository(roots), artifact, SQLITE_NOW)
+                        publish_accepted_artifact(
+                            store, ArtifactRepository(roots), artifact, SQLITE_NOW, ownership=None
+                        )
                     except StorageError as raised:
                         self.assertIs(failure, raised)
                         self.assertIn("publish_accepted_artifact", "".join(traceback.format_tb(raised.__traceback__)))
@@ -148,11 +152,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
         )
 
         accepted = expect_success(
-            store.accept_artifact_reference(
-                roots.work_root,
-                published,
-                SQLITE_NOW,
-            )
+            store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW, ownership=None)
         )
 
         reloaded = SQLiteWorkStore(roots.database_path).validated_snapshot()
@@ -177,7 +177,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
                     f"{revision}\n".encode(),
                 ),
             )
-            expect_success(store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW))
+            expect_success(store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW, ownership=None))
 
         latest = store.read_latest_artifact_reference(work_models.ArtifactKind.EVIDENCE, "blocking-review")
         assert latest is not None
@@ -241,7 +241,9 @@ class ArtifactPersistenceTest(unittest.TestCase):
                 return create_immutable(path, content)
 
         with patch("pinboard.adapters.files.artifacts.create_immutable", side_effect=fail_after_publication):
-            publication_failure = publish_accepted_artifact(store, ArtifactRepository(roots), artifact, SQLITE_NOW)
+            publication_failure = publish_accepted_artifact(
+                store, ArtifactRepository(roots), artifact, SQLITE_NOW, ownership=None
+            )
 
         assert isinstance(publication_failure, ArtifactWriteFailure)
         path = roots.work_root / publication_failure.selector
@@ -314,14 +316,10 @@ class ArtifactPersistenceTest(unittest.TestCase):
             NewArtifact(work_models.ArtifactKind.EVIDENCE, "review-reuse", 1, ".md", b"ready\n"),
         )
         accepted = expect_success(
-            store.accept_artifact_reference(
-                roots.work_root,
-                published,
-                SQLITE_NOW,
-            )
+            store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW, ownership=None)
         )
         before_retry = store.validated_snapshot()
-        retry = expect_success(store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW))
+        retry = expect_success(store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW, ownership=None))
         self.assertEqual(accepted.reference, retry.reference)
         self.assertFalse(retry.ledger_changed)
         self.assertEqual(before_retry, store.validated_snapshot())
@@ -348,7 +346,7 @@ class ArtifactPersistenceTest(unittest.TestCase):
             """
         )
         with patch("pinboard.adapters.sqlite.persistence.open_database", return_value=connection):
-            result = store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW)
+            result = store.accept_artifact_reference(roots.work_root, published, SQLITE_NOW, ownership=None)
 
         self.assertIsInstance(result, DecisionFailure)
         assert isinstance(result, DecisionFailure)

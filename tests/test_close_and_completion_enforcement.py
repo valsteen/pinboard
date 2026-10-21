@@ -13,6 +13,7 @@ from threading import Event
 from unittest.mock import patch
 
 import msgspec
+from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters import lifecycle_artifacts
 from pinboard.adapters.files.artifacts import ArtifactRepository
@@ -20,9 +21,11 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     action_models,
+    candidate_snapshots,
     dispatch_models,
     ports,
     query_models,
+    stored_state,
     work_brief_compatibility_models,
     work_brief_models,
     work_briefs,
@@ -37,7 +40,8 @@ from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import AcceptedPackageFixture, CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_advertised_tool, native_tools
-from tests.support import JsonObject, JsonValue
+from tests.sqlite_support import _insert_lifecycle
+from tests.support import SQLITE_NOW, JsonObject, JsonValue
 
 HUMAN_WORDS = "Yes, close work-c as done: the parser rewrite already covers it."
 
@@ -294,14 +298,19 @@ class SubmittedCandidateSupport(NativeFixtureSupport):
             for row in self.json_array(result["observed"])
         }
 
-    def review_fixture(self) -> tuple[AcceptedPackageFixture, str]:
-        fixture = self.native_fixture(self.accepted_package_fixture(local=True, candidate_form="current-head"))
+    def review_fixture(self, *, checkpoint_id: str | None = None) -> tuple[AcceptedPackageFixture, str]:
+        fixture = self.native_fixture(
+            self.accepted_package_fixture(local=True, candidate_form="current-head", checkpoint_id=checkpoint_id)
+        )
+        return self.submitted_checkpoint_fixture(fixture)
+
+    def submitted_checkpoint_fixture(self, fixture: AcceptedPackageFixture) -> tuple[AcceptedPackageFixture, str]:
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
-            connection.execute("UPDATE work_items SET state = 'active' WHERE item_id = 'work-a'")
-            connection.execute("UPDATE attempts SET state = 'active' WHERE attempt_id = 'work-a-1'")
+            connection.execute("UPDATE work_items SET state = 'active' WHERE item_id = ?", (fixture.brief.item_id,))
+            connection.execute("UPDATE attempts SET state = 'active' WHERE attempt_id = ?", (fixture.brief.attempt_id,))
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'paused'")
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'active'")
-        attempt_root = fixture.work / "attempts" / "work-a-1"
+        attempt_root = fixture.work / "attempts" / fixture.brief.attempt_id
         (attempt_root / "result.md").write_bytes(b"terminal result\n")
         (attempt_root / "review.md").write_bytes(b"terminal independent review\n")
         candidate = self.submit_review(fixture, "commissioned candidate", "commissioned-worker")
@@ -309,12 +318,206 @@ class SubmittedCandidateSupport(NativeFixtureSupport):
 
 
 class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
+    def sibling_checkpoint(self, fixture: AcceptedPackageFixture, candidate: str) -> AcceptedPackageFixture:
+        state = fixture.store.validated_snapshot()
+        original = next(
+            value for value in state.lifecycle.attempts if str(value.attempt_id) == fixture.brief.attempt_id
+        )
+        definition = next(
+            value
+            for value in state.lifecycle.definition_revisions
+            if value.item_id == original.item_id and value.revision == original.accepted_scope_revision
+        )
+        item_id = WorkItemId("work-a-sibling")
+        attempt_id = AttemptId("work-a-1-part")
+        item = dataclasses.replace(
+            next(value for value in state.lifecycle.work_items if value.item_id == original.item_id),
+            item_id=item_id,
+            state=stored_state.StoredWorkItemState.READY,
+            outcome_evidence=None,
+            queue_position=max(value.queue_position or 0 for value in state.lifecycle.work_items) + 1,
+        )
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            _insert_lifecycle(
+                connection,
+                stored_state.LifecycleRecords(
+                    state.lifecycle.project,
+                    (item,),
+                    tuple(
+                        dataclasses.replace(value, item_id=item_id)
+                        for value in state.lifecycle.dependencies
+                        if value.item_id == original.item_id
+                    ),
+                    (),
+                    (dataclasses.replace(definition, item_id=item_id),),
+                ),
+            )
+            connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'ready'")
+        checkpoint = replace_struct(
+            fixture.brief.checkpoint,
+            checkpoint_id="one",
+            disposition=work_brief_models.ContinueCheckpointDisposition(
+                "Complete the sibling and its terminal review."
+            ),
+            verification=tuple(
+                replace_struct(
+                    value,
+                    authorization_basis=work_brief_models.AcceptedScopeAuthorization(str(item_id), definition.revision),
+                )
+                for value in fixture.brief.checkpoint.verification
+            ),
+        )
+        brief = replace_struct(
+            fixture.brief, item_id=str(item_id), attempt_id=str(attempt_id), artifact_revision=1, checkpoint=checkpoint
+        )
+        published = work_briefs.publish_work_brief(
+            fixture.store, ArtifactRepository(resolve_durable_roots(fixture.project, fixture.work)), brief, SQLITE_NOW
+        )
+        assert isinstance(published, AcceptedArtifactPublication)
+        attempt = dataclasses.replace(
+            original,
+            attempt_id=attempt_id,
+            item_id=item_id,
+            state=work_models.AttemptState.REVIEW,
+            brief_artifact_ref_id=published.reference.artifact_ref_id,
+            result_artifact_ref_id=None,
+            candidate_revision=candidate,
+            candidate_recorded_at=SQLITE_NOW,
+            subject_revision=published.reference.accepted_revision,
+        )
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            _insert_lifecycle(
+                connection, stored_state.LifecycleRecords(state.lifecycle.project, (), (), (attempt,), ())
+            )
+            connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = ?", (str(item_id),))
+            connection.execute("UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'ready'")
+            connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'review'")
+            connection.execute(
+                "INSERT INTO attempt_lease_counters SELECT ?, generation_high_water FROM attempt_lease_counters WHERE attempt_id = ?",
+                (str(attempt_id), str(original.attempt_id)),
+            )
+            connection.execute(
+                "INSERT INTO attempt_lease_generations SELECT ?, generation, lease_id, task_id, host_id FROM attempt_lease_generations WHERE attempt_id = ?",
+                (str(attempt_id), str(original.attempt_id)),
+            )
+            connection.execute(
+                "INSERT INTO attempt_leases SELECT ?, generation, acquired_at, expires_at, status FROM attempt_leases WHERE attempt_id = ?",
+                (str(attempt_id), str(original.attempt_id)),
+            )
+        evidence = fixture.store.read_candidate_snapshot_context(original.attempt_id)
+        assert evidence is not None
+        snapshot = candidate_snapshots.decode_candidate_snapshot(
+            (fixture.work / evidence.reference.selector).read_bytes()
+        )
+        self.accept_candidate_snapshot(
+            resolve_durable_roots(fixture.project, fixture.work),
+            fixture.store,
+            attempt,
+            "working-tree",
+            candidate,
+            snapshot.diff,
+            snapshot.preimage_revision,
+            snapshot.accepted_base_revision,
+            SQLITE_NOW,
+        )
+        attempt_root = fixture.work / "attempts" / str(attempt_id)
+        attempt_root.mkdir()
+        (attempt_root / "result.md").write_bytes(b"sibling checkpoint result\n")
+        (attempt_root / "review.md").write_bytes(b"sibling checkpoint review\n")
+        sibling = dataclasses.replace(fixture, brief=brief, candidate_revision=candidate, candidate_bytes=snapshot.diff)
+        committed = sibling.call_advertised_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(
+                sibling,
+                self.project_action(sibling, f"accept-checkpoint:{attempt_id}"),
+                {"checkpoint": "one", "candidate": candidate, "evidence": "The sibling checkpoint is ready."},
+            ),
+        )
+        self.assertEqual("committed", committed["status"], committed)
+        fresh = fixture.store.validated_snapshot()
+        package = next(
+            value
+            for value in fresh.artifact_references
+            if value.artifact_ref_id == fresh.transition_receipts[-1].artifact_ref_id
+        )
+        return dataclasses.replace(sibling, package_reference=package)
+
+    def test_hyphen_ambiguous_siblings_complete_in_one_ledger_without_replacing_evidence(self) -> None:
+        fixture, candidate = self.review_fixture(checkpoint_id="part-one")
+        fixture = self.terminalize_brief(fixture)
+        self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
+        completed = fixture.call_advertised_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(
+                fixture,
+                self.project_action(fixture, "complete:work-a-1"),
+                self.completion_payload(fixture, candidate, "commissioned-reviewer"),
+            ),
+        )
+        self.assertEqual("committed", completed["status"], completed)
+        first = fixture.store.validated_snapshot()
+        preserved = {
+            value.artifact_ref_id: (value.selector, (fixture.work / value.selector).read_bytes())
+            for value in first.artifact_references
+        }
+        sibling = self.sibling_checkpoint(fixture, candidate)
+        sibling, candidate = self.submitted_checkpoint_fixture(sibling)
+        sibling = self.terminalize_brief(sibling)
+        self.record_commissioned_review(sibling, candidate, "sibling-reviewer")
+        completed = sibling.call_advertised_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(
+                sibling,
+                self.project_action(sibling, f"complete:{sibling.brief.attempt_id}"),
+                self.completion_payload(sibling, candidate, "sibling-reviewer"),
+            ),
+        )
+        self.assertEqual("committed", completed["status"], completed)
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        self.assertTrue(set(preserved) <= {value.artifact_ref_id for value in fresh.artifact_references})
+        self.assertTrue(
+            all(content == (fixture.work / selector).read_bytes() for selector, content in preserved.values())
+        )
+        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+        code, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
+        self.assertEqual(0, code, stderr)
+        exported = msgspec.json.decode(stdout, type=ProjectExport)
+        self.assertEqual((2, 2), (len(exported.checkpoint_packages), len(exported.completion_packages)))
+
+    def test_freely_chosen_checkpoint_names_preserve_distinct_terminal_artifacts(self) -> None:
+        for checkpoint_id in ("completion", "terminal", "package", "component-" * 30 + "tail"):
+            with self.subTest(checkpoint=checkpoint_id):
+                fixture, candidate = self.review_fixture(checkpoint_id=checkpoint_id)
+                checkpoint_bytes = (fixture.work / fixture.package_reference.selector).read_bytes()
+                fixture = self.terminalize_brief(fixture)
+                self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
+                committed = fixture.call_advertised_tool(
+                    mcp_server.TRANSITION_TOOL,
+                    self.native_transition_request(
+                        fixture,
+                        self.project_action(fixture, "complete:work-a-1"),
+                        self.completion_payload(fixture, candidate, "commissioned-reviewer"),
+                    ),
+                )
+                self.assertEqual("committed", committed["status"], committed)
+                fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+                completion = fresh.transition_receipts[-1]
+                self.assertNotEqual(fixture.package_reference.artifact_ref_id, completion.artifact_ref_id)
+                self.assertEqual(checkpoint_bytes, (fixture.work / fixture.package_reference.selector).read_bytes())
+                self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+                code, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
+                self.assertEqual(0, code, stderr)
+                exported = msgspec.json.decode(stdout, type=ProjectExport)
+                self.assertEqual(1, len(exported.completion_packages))
+
     def completion_payload(self, fixture: AcceptedPackageFixture, candidate: str, reviewer: str) -> JsonObject:
         state = fixture.store.validated_snapshot()
         checkpoint = next(
-            value for value in state.transition_receipts if value.outcome_schema == "checkpoint-acceptance/v2"
+            value
+            for value in state.transition_receipts
+            if value.outcome_schema == "checkpoint-acceptance/v2" and str(value.subject_id) == fixture.brief.attempt_id
         )
-        attempt_root = fixture.work / "attempts" / "work-a-1"
+        attempt_root = fixture.work / "attempts" / fixture.brief.attempt_id
         return {
             "schema": "pinboard-reviewed-completion/v3",
             "human_decision": "Complete this item with its reviewed outcome.",
@@ -677,13 +880,14 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
                 work_models.ArtifactKind.EVIDENCE, key, 1, ".json", work_briefs.canonical_candidate_review_bytes(review)
             ),
             datetime.now(UTC),
+            ownership=None,
         )
         self.assertIsInstance(published, AcceptedArtifactPublication)
         payload = self.completion_payload(fixture, candidate, "commissioned-reviewer")
         self.assert_review_required(fixture, payload, "commissioned-reviewer")
 
     def test_commissioned_review_relaxes_no_continue_disposition_refusal(self) -> None:
-        fixture, candidate = self.review_fixture()
+        fixture, candidate = self.review_fixture(checkpoint_id="completion")
         self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
         state = fixture.store.validated_snapshot()
         self.assertIn("checkpoint-acceptance/v2", {value.outcome_schema for value in state.transition_receipts})
@@ -846,6 +1050,7 @@ class RecordReadyCommissionTest(SubmittedCandidateSupport):
                 msgspec.json.encode(retained, order="sorted") + b"\n",
             ),
             datetime.now(UTC),
+            ownership=None,
         )
         self.assertIsInstance(published, AcceptedArtifactPublication)
         roots = {"project_root": str(fixture.project), "work_root": str(fixture.work)}

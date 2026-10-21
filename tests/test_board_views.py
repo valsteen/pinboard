@@ -527,7 +527,7 @@ class BoardProjectionTest(unittest.TestCase):
             roots, NewArtifact(work_models.ArtifactKind.EVIDENCE, "later-evidence", 1, ".md", b"later\n")
         )
 
-        expect_success(store.accept_artifact_reference(roots.work_root, published, LATER))
+        expect_success(store.accept_artifact_reference(roots.work_root, published, LATER, ownership=None))
 
         reloaded = store.validated_snapshot()
         self.assertEqual(LATER, reloaded.lifecycle.project.updated_at)
@@ -1380,7 +1380,8 @@ class BoardHistoryTest(ItemLifecycleSupport):
             "WHERE project_revision IN": "project_revision",
             "outcome_schema = 'checkpoint-acceptance/v2'": "checkpoint_history_by_subject",
             "FROM work_item_definition_revisions": "sqlite_autoindex_work_item_definition_revisions_1",
-            "artifact_ref_id IN": "INTEGER PRIMARY KEY",
+            "FROM artifact_refs WHERE artifact_ref_id IN": "INTEGER PRIMARY KEY",
+            "FROM artifact_ownership WHERE artifact_ref_id IN": "sqlite_autoindex_artifact_ownership",
             "kind = 'evidence' AND artifact_key IN": "sqlite_autoindex_artifact_refs",
         }
         for marker, index in expected_indexes.items():

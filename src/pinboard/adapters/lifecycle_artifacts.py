@@ -26,6 +26,7 @@ from pinboard.adapters.files.root import (
 from pinboard.adapters.lifecycle_operations import SelectedTransition
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.application import (
+    artifact_identity,
     candidate_snapshots,
     checkpoint_packages,
     ports,
@@ -70,7 +71,7 @@ from pinboard.domain.errors import (
     FailureMismatch,
     RetryDisposition,
 )
-from pinboard.domain.identifiers import ArtifactRefId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CheckpointId
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,21 +503,33 @@ def _publish_checkpoint(
     publications = (
         NewArtifact(
             work_models.ArtifactKind.EVIDENCE,
-            checkpoint_packages.checkpoint_candidate_key(attempt_id, checkpoint_id),
+            artifact_identity.artifact_key(
+                artifact_identity.CheckpointAddress(
+                    AttemptId(attempt_id), CheckpointId(checkpoint_id), artifact_identity.CheckpointRole.CANDIDATE, 1
+                )
+            ),
             1,
             ".json",
             candidate_snapshots.canonical_candidate_snapshot_bytes(selected.snapshot),
         ),
         NewArtifact(
             work_models.ArtifactKind.RESULT,
-            f"{attempt_id}-{checkpoint_id}-result",
+            artifact_identity.artifact_key(
+                artifact_identity.CheckpointAddress(
+                    AttemptId(attempt_id), CheckpointId(checkpoint_id), artifact_identity.CheckpointRole.RESULT, 1
+                )
+            ),
             1,
             ".md",
             result_bytes,
         ),
         NewArtifact(
             work_models.ArtifactKind.EVIDENCE,
-            f"{attempt_id}-{checkpoint_id}-review",
+            artifact_identity.artifact_key(
+                artifact_identity.CheckpointAddress(
+                    AttemptId(attempt_id), CheckpointId(checkpoint_id), artifact_identity.CheckpointRole.REVIEW, 1
+                )
+            ),
             1,
             ".md",
             review_bytes,
@@ -591,7 +604,11 @@ def _publish_checkpoint(
             artifacts,
             NewArtifact(
                 work_models.ArtifactKind.EVIDENCE,
-                f"{attempt_id}-{checkpoint_id}-review-package",
+                artifact_identity.artifact_key(
+                    artifact_identity.CheckpointAddress(
+                        AttemptId(attempt_id), CheckpointId(checkpoint_id), artifact_identity.CheckpointRole.PACKAGE, 1
+                    )
+                ),
                 1,
                 ".json",
                 canonical_checkpoint_review_package_bytes(package),
@@ -777,14 +794,34 @@ def _publish_completion(
     try:
         result_publication = _publish_artifact(
             artifacts,
-            NewArtifact(work_models.ArtifactKind.RESULT, f"{attempt_id}-terminal-result", 1, ".md", result_bytes),
+            NewArtifact(
+                work_models.ArtifactKind.RESULT,
+                artifact_identity.artifact_key(
+                    artifact_identity.CompletionAddress(
+                        AttemptId(attempt_id), artifact_identity.CompletionRole.RESULT, 1
+                    )
+                ),
+                1,
+                ".md",
+                result_bytes,
+            ),
             created,
         )
         if isinstance(result_publication, PublishedTransitionFailure):
             return result_publication
         review_publication = _publish_artifact(
             artifacts,
-            NewArtifact(work_models.ArtifactKind.EVIDENCE, f"{attempt_id}-terminal-review", 1, ".md", review_bytes),
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                artifact_identity.artifact_key(
+                    artifact_identity.CompletionAddress(
+                        AttemptId(attempt_id), artifact_identity.CompletionRole.REVIEW, 1
+                    )
+                ),
+                1,
+                ".md",
+                review_bytes,
+            ),
             created,
         )
         if isinstance(review_publication, PublishedTransitionFailure):
@@ -835,7 +872,11 @@ def _publish_completion(
             artifacts,
             NewArtifact(
                 work_models.ArtifactKind.EVIDENCE,
-                f"{attempt_id}-completion-review-package",
+                artifact_identity.artifact_key(
+                    artifact_identity.CompletionAddress(
+                        AttemptId(attempt_id), artifact_identity.CompletionRole.PACKAGE, 1
+                    )
+                ),
                 1,
                 ".json",
                 canonical_completion_review_package_bytes(package),

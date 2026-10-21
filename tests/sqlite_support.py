@@ -4,6 +4,7 @@ import sqlite3
 
 import msgspec
 
+from pinboard.adapters.sqlite.artifact_ownership import accept_ownership
 from pinboard.adapters.sqlite.database import APPLICATION, SCHEMA_VERSION
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import _definition_revision_values
@@ -39,6 +40,9 @@ def _insert_artifacts(
             for value in records
         ),
     )
+    for value in records:
+        for owner in value.owners:
+            accept_ownership(connection, value.artifact_ref_id, owner)
 
 
 def _insert_lifecycle(connection: sqlite3.Connection, records: stored_state.LifecycleRecords) -> None:

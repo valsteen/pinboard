@@ -12,7 +12,13 @@ from msgspec.structs import replace as replace_struct
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import checkpoint_packages, history_archives, work_brief_models, work_briefs
+from pinboard.application import (
+    artifact_identity,
+    checkpoint_packages,
+    history_archives,
+    work_brief_models,
+    work_briefs,
+)
 from pinboard.application.project_export import ProjectExport
 from pinboard.domain import history
 from pinboard.domain.identifiers import AttemptId
@@ -141,7 +147,7 @@ class RecordTextJourneyTest(RecordTextSupport):
         package_reference = next(
             value
             for value in fixture.store.validated_snapshot().artifact_references
-            if value.key == f"work-a-1-{checkpoint_id}-review-package"
+            if value.key == fixture.checkpoint_key(artifact_identity.CheckpointRole.PACKAGE)
         )
         package = msgspec.json.decode(
             (fixture.work / package_reference.selector).read_bytes(), type=work_brief_models.CheckpointReviewPackageV3

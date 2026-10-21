@@ -11,6 +11,7 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import lifecycle, proposals
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite import store as sqlite_store
+from pinboard.adapters.sqlite.artifact_ownership import accept_ownership
 from pinboard.adapters.sqlite.artifacts import accept_checkpoint_artifact
 from pinboard.adapters.sqlite.authority import (
     validate_attempt_authority,
@@ -20,7 +21,7 @@ from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models, stored_state
+from pinboard.application import artifact_identity, query_models, stored_state
 from pinboard.application.artifacts import EvidenceArtifactRef
 from pinboard.application.mutations import project_transition_mutation
 from pinboard.application.service import start_preparation
@@ -317,6 +318,8 @@ class SQLiteEffectContractTest(unittest.TestCase):
         )
         connection = open_database(path, OpenMode.READ_WRITE)
         try:
+            owner = artifact_identity.AttemptMembership(AttemptId("work-a-1"), artifact_identity.AttemptRole.SOURCE)
+            accept_ownership(connection, existing.artifact_ref_id, owner)
             self.assertEqual(
                 existing.artifact_ref_id,
                 accept_checkpoint_artifact(
@@ -325,6 +328,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
                     existing.artifact_ref_id,
                     state.lifecycle.project.revision + 1,
                     SQLITE_NOW,
+                    owner,
                 ),
             )
             with self.assertRaises(StorageError) as conflicting:
@@ -334,6 +338,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
                     ArtifactRefId(int(existing.artifact_ref_id) + 1),
                     state.lifecycle.project.revision + 1,
                     SQLITE_NOW,
+                    owner,
                 )
             self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, conflicting.exception.code)
         finally:

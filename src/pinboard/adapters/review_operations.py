@@ -22,6 +22,7 @@ from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import (
+    artifact_identity,
     candidate_snapshots,
     checkpoint_packages,
     dispatch_models,
@@ -327,6 +328,7 @@ def record_ready_candidate_review(
         artifacts,
         NewArtifact(work_models.ArtifactKind.EVIDENCE, key, 1, ".json", canonical),
         datetime.now(UTC),
+        artifact_identity.AttemptMembership(AttemptId(review.attempt_id), artifact_identity.AttemptRole.SOURCE),
     )
     if isinstance(publication, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         return publication

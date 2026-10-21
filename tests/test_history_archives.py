@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import json
 import sqlite3
@@ -10,8 +11,10 @@ from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.sqlite import artifact_ownership, schema_procedure
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
+    artifact_identity,
     candidate_snapshots,
     dispatch_models,
     history_archives,
@@ -24,24 +27,166 @@ from pinboard.application.artifacts import NewArtifact
 from pinboard.application.project_export import ProjectExport
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure
-from pinboard.domain.identifiers import WorkItemId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, WorkItemId
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import AcceptedPackageFixture
 from tests.native_support import call_native_tool
+from tests.sqlite_support import _insert_artifacts
 from tests.support import SQLITE_NOW, JsonObject
 from tests.test_close_and_completion_enforcement import SubmittedCandidateSupport
 from tests.test_proposals import proposal
+from tests.test_storage_migration import StorageMigrationTests
 from tests.work_brief_support import work_a_brief
 
 
 class HistoryArchiveTest(SubmittedCandidateSupport):
+    def test_v8_migration_distinguishes_unbound_briefs_from_orphan_evidence(self) -> None:
+        for suffix in ("review-package", "history-archive"):
+            for kind in (work_models.ArtifactKind.BRIEF, work_models.ArtifactKind.EVIDENCE):
+                with self.subTest(suffix=suffix, kind=kind):
+                    fixture = self.checkpoint_fixture(local=True)
+                    roots = resolve_durable_roots(fixture.project, fixture.work)
+                    artifacts = ArtifactRepository(roots)
+                    key = f"unbound-{suffix}"
+                    if kind == work_models.ArtifactKind.BRIEF:
+                        brief = replace_struct(fixture.brief, attempt_id=key, artifact_revision=1)
+                        publication = work_briefs.publish_work_brief(fixture.store, artifacts, brief, SQLITE_NOW)
+                        assert isinstance(publication, AcceptedArtifactPublication), publication
+                        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+                    else:
+                        reference = write_revision(roots, NewArtifact(kind, key, 1, ".txt", b"orphan evidence\n"))
+                        accepted = fixture.store.accept_artifact_reference(
+                            fixture.work, reference, SQLITE_NOW, ownership=None
+                        )
+                        assert not isinstance(accepted, DecisionFailure), accepted
+                    before = fixture.store.validated_snapshot()
+                    contents = {value.artifact_ref_id: artifacts.read(value) for value in before.artifact_references}
+                    path = roots.database_path
+                    StorageMigrationTests().downgrade_v8(path)
+                    predecessor = path.read_bytes()
+                    code, stdout, stderr = self.run_cli(*fixture.common, "migrate-schema", "--json")
+                    preview = self.json_object(json.loads(stdout))
+                    self.assertEqual(predecessor, path.read_bytes())
+                    if kind == work_models.ArtifactKind.EVIDENCE:
+                        self.assertEqual(11, code, stderr)
+                        self.assertEqual("SCHEMA_MIGRATION_INVALID", preview["code"])
+                        self.assertEqual([], preview["changed_surfaces"])
+                        expected = (
+                            "no authoritative acceptance receipt"
+                            if suffix == "review-package"
+                            else "no exact terminal attempt"
+                        )
+                        self.assertIn(expected, str(preview["message"]))
+                        continue
+                    self.assertEqual(0, code, preview)
+                    self.run_json_cli(*fixture.common, "migrate-schema", "--apply", str(preview["plan_id"]))
+                    after = SQLiteWorkStore(path).validated_snapshot()
+                    self.assertEqual(before.artifact_references, after.artifact_references)
+                    self.assertEqual(
+                        contents, {value.artifact_ref_id: artifacts.read(value) for value in after.artifact_references}
+                    )
+                    self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+                    self.run_json_cli(*fixture.common, "export")
+
+    def test_v8_migration_preserves_unlinked_overlapping_membership(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        roots = resolve_durable_roots(fixture.project, fixture.work)
+        artifacts = ArtifactRepository(roots)
+        sibling_id = f"{fixture.brief.attempt_id}-sibling-1"
+        original = write_revision(
+            roots,
+            NewArtifact(
+                work_models.ArtifactKind.EVIDENCE,
+                f"{sibling_id}-unlinked",
+                1,
+                ".txt",
+                b"Original evidence preceding the sibling brief.\n",
+            ),
+        )
+        accepted = fixture.store.accept_artifact_reference(fixture.work, original, SQLITE_NOW, ownership=None)
+        assert not isinstance(accepted, DecisionFailure)
+        sibling = replace_struct(fixture.brief, attempt_id=sibling_id, artifact_revision=1)
+        publication = work_briefs.publish_work_brief(fixture.store, artifacts, sibling, SQLITE_NOW)
+        assert isinstance(publication, AcceptedArtifactPublication)
+        before = fixture.store.validated_snapshot()
+        contents = {value.artifact_ref_id: artifacts.read(value) for value in before.artifact_references}
+        path = fixture.work / "state.sqlite3"
+        StorageMigrationTests().downgrade_v8(path)
+        preview = schema_procedure.preview_schema(path)
+        assert isinstance(preview, schema_procedure.PlannedSchema), preview
+        applied = schema_procedure.apply_schema(path, preview.plan_id)
+        self.assertIsInstance(applied, schema_procedure.AppliedSchema, applied)
+        after = SQLiteWorkStore(path).validated_snapshot()
+        shared = next(
+            value for value in after.artifact_references if value.artifact_ref_id == accepted.reference.artifact_ref_id
+        )
+        self.assertEqual(
+            {fixture.brief.attempt_id, sibling_id},
+            {
+                str(value.attempt_id)
+                for value in shared.owners
+                if isinstance(value, artifact_identity.AttemptMembership)
+                and value.role == artifact_identity.AttemptRole.SOURCE
+            },
+        )
+        self.assertEqual(
+            tuple(replace(value, owners=()) for value in before.artifact_references),
+            tuple(replace(value, owners=()) for value in after.artifact_references),
+        )
+        self.assertEqual(
+            contents, {value.artifact_ref_id: artifacts.read(value) for value in after.artifact_references}
+        )
+
+    def assert_selected_archive_reads_exclude_unrelated_ownership(self, fixture: AcceptedPackageFixture) -> None:
+        state = fixture.store.validated_snapshot()
+        attempt = state.lifecycle.attempts[0]
+        arguments = ((attempt.item_id,), (attempt.attempt_id,), (), SQLITE_NOW)
+        with patch.object(artifact_ownership, "decode_row", wraps=artifact_ownership.decode_row) as decoded:
+            before = fixture.store.read_generated_view_facts(*arguments)
+            before_reads = decoded.call_count
+        first_id = max(value.artifact_ref_id for value in state.artifact_references) + 1
+        unrelated = tuple(
+            replace(
+                state.artifact_references[0],
+                artifact_ref_id=ArtifactRefId(first_id + index),
+                key=f"unrelated-{index}",
+                selector=f"artifacts/evidence/unrelated-{index}/1.txt",
+                owners=(
+                    artifact_identity.AttemptMembership(
+                        AttemptId(f"other-{index}"), artifact_identity.AttemptRole.SOURCE
+                    ),
+                ),
+            )
+            for index in range(1000)
+        )
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection:
+            with connection:
+                _insert_artifacts(connection, unrelated)
+            try:
+                with patch.object(artifact_ownership, "decode_row", wraps=artifact_ownership.decode_row) as decoded:
+                    after = SQLiteWorkStore(fixture.work / "state.sqlite3").read_generated_view_facts(*arguments)
+                    self.assertEqual(before_reads, decoded.call_count)
+                self.assertEqual(before, after)
+                plans = connection.execute(
+                    "EXPLAIN QUERY PLAN SELECT artifact_ref_id FROM artifact_ownership WHERE attempt_id = ?",
+                    (attempt.attempt_id,),
+                ).fetchall()
+                self.assertTrue(any("SEARCH" in str(row[3]) and "INDEX" in str(row[3]) for row in plans), plans)
+                self.assertFalse(any("SCAN" in str(row[3]) for row in plans), plans)
+            finally:
+                with connection:
+                    connection.execute("DELETE FROM artifact_ownership WHERE artifact_ref_id >= ?", (first_id,))
+                    connection.execute("DELETE FROM artifact_refs WHERE artifact_ref_id >= ?", (first_id,))
+
     def completed_fixture(self) -> AcceptedPackageFixture:
         local_brief = self.local_brief
 
         def overlapping_brief(project: Path) -> work_brief_models.WorkBrief:
             brief = local_brief(project)
-            return replace_struct(brief, checkpoint=replace_struct(brief.checkpoint, checkpoint_id="sibling-1"))
+            return replace_struct(
+                brief, checkpoint=replace_struct(brief.checkpoint, checkpoint_id="sibling-1-completion")
+            )
 
         with patch.object(self, "local_brief", side_effect=overlapping_brief):
             fixture, candidate = self.review_fixture()
@@ -140,7 +285,15 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
                 roots, NewArtifact(kind, f"{sibling.attempt_id}-{suffix}", 1, ".md", b"Sibling evidence.\n")
             )
             self.assertNotIsInstance(
-                fixture.store.accept_artifact_reference(fixture.work, sibling_artifact, SQLITE_NOW), DecisionFailure
+                fixture.store.accept_artifact_reference(
+                    fixture.work,
+                    sibling_artifact,
+                    SQLITE_NOW,
+                    ownership=artifact_identity.AttemptMembership(
+                        AttemptId(sibling.attempt_id), artifact_identity.AttemptRole.SOURCE
+                    ),
+                ),
+                DecisionFailure,
             )
 
     def assert_archive_readable(
@@ -244,7 +397,14 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
                 history_archives.canonical_archive_bytes(archive),
             ),
         )
-        accepted = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW)
+        accepted = fixture.store.accept_artifact_reference(
+            fixture.work,
+            published,
+            SQLITE_NOW,
+            ownership=artifact_identity.AttemptMembership(
+                AttemptId(archive.attempt_id), artifact_identity.AttemptRole.ARCHIVE
+            ),
+        )
         assert not isinstance(accepted, DecisionFailure)
         fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         all_bytes = {value.artifact_ref_id: artifacts.read(value) for value in fresh.artifact_references}
@@ -313,7 +473,14 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
                 history_archives.canonical_archive_bytes(archive),
             ),
         )
-        accepted = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW)
+        accepted = fixture.store.accept_artifact_reference(
+            fixture.work,
+            published,
+            SQLITE_NOW,
+            ownership=artifact_identity.AttemptMembership(
+                AttemptId(archive.attempt_id), artifact_identity.AttemptRole.ARCHIVE
+            ),
+        )
         assert not isinstance(accepted, DecisionFailure)
         self.assert_archive_readable(fixture, archive)
         snapshot_reference = next(value for value in facts.artifact_references if "-candidate-snapshot-" in value.key)
@@ -327,7 +494,7 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
         self.assertIn("CANDIDATE_SNAPSHOT_INVALID", [self.json_object(value)["code"] for value in diagnostics])
         self.assertNotEqual(0, self.run_cli(*fixture.common, "export", "--json")[0])
 
-    def test_archive_preserves_exact_history_through_sibling_and_same_name_proposal_publication(self) -> None:
+    def test_archive_preserves_exact_history_through_sibling_and_same_name_proposal_publication(self) -> None:  # noqa: PLR0915 - one complete archive preservation journey
         fixture = self.completed_fixture()
         original = fixture.store.validated_snapshot()
         attempt = original.lifecycle.attempts[0]
@@ -351,7 +518,14 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
                 history_archives.canonical_archive_bytes(archive),
             ),
         )
-        accepted = fixture.store.accept_artifact_reference(fixture.work, published, SQLITE_NOW)
+        accepted = fixture.store.accept_artifact_reference(
+            fixture.work,
+            published,
+            SQLITE_NOW,
+            ownership=artifact_identity.AttemptMembership(
+                AttemptId(archive.attempt_id), artifact_identity.AttemptRole.ARCHIVE
+            ),
+        )
         assert not isinstance(accepted, DecisionFailure)
         fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         self.assertEqual(original.lifecycle.work_items, fresh.lifecycle.work_items)
@@ -372,6 +546,7 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
         self.assertEqual(
             source_bytes, {value.artifact_ref_id: artifacts.read(value) for value in facts.artifact_references}
         )
+        self.assert_selected_archive_reads_exclude_unrelated_ownership(fixture)
         self.publish_sibling(fixture, artifacts)
         self.assert_archive_readable(fixture, archive)
         self.assert_same_name_work_preserves_archive(fixture, archive, facts)
@@ -466,7 +641,9 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
                     if int(value.artifact_ref_id) == checkpoint.package_artifact_ref_id
                 )
                 candidate_reference = next(
-                    value for value in facts.artifact_references if value.key.endswith("-candidate")
+                    value
+                    for value in facts.artifact_references
+                    if value.key == fixture.checkpoint_key(artifact_identity.CheckpointRole.CANDIDATE)
                 )
                 patch_bytes = b"historical patch bytes"
                 patch_sha256 = hashlib.sha256(patch_bytes).hexdigest()

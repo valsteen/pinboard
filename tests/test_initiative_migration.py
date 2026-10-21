@@ -13,9 +13,10 @@ from tests.checkpoint_support import CheckpointPackageSupport
 
 class InitiativeMigrationTest(CheckpointPackageSupport):
     def v7(self, path: Path) -> None:
-        # The released v7 shape differs only by the new initiative relations and metadata identity.
+        # Remove the relations added after the released v7 shape.
         with contextlib.closing(sqlite3.connect(path)) as connection, connection:
             for table in (
+                "artifact_ownership",
                 "initiative_assessments",
                 "initiative_decisions",
                 "initiative_memberships",
@@ -42,31 +43,31 @@ class InitiativeMigrationTest(CheckpointPackageSupport):
     def test_populated_v7_preview_apply_resume_reverse_preserves_facts_and_exact_predecessor(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
         path = fixture.work / "state.sqlite3"
-        expected = fixture.store.validated_snapshot()
+        expected = test_storage_migration.StorageMigrationTests().predecessor_rows(path)
         self.v7(path)
         before = path.read_bytes()
         plan = schema_procedure.preview_schema(path)
         self.assertIsInstance(plan, schema_procedure.PlannedSchema)
         assert isinstance(plan, schema_procedure.PlannedSchema)
-        self.assertIsInstance(plan.plan, schema_procedure.AdvancePlan)
+        self.assertIsInstance(plan.plan, schema_procedure.CompatibilityAdvancePlanV2)
         self.assertEqual(before, path.read_bytes())
         self.assertFalse((fixture.work / "migration").exists())
         applied = schema_procedure.apply_schema(path, plan.plan_id)
         self.assertIsInstance(applied, schema_procedure.AppliedSchema)
-        self.assertEqual(expected, fixture.store.validated_snapshot())
+        self.assertEqual(expected, test_storage_migration.StorageMigrationTests().predecessor_rows(path))
         resumed = schema_procedure.apply_schema(path, plan.plan_id)
         self.assertIsInstance(resumed, schema_procedure.AppliedSchema)
         assert isinstance(resumed, schema_procedure.AppliedSchema)
         self.assertEqual((), resumed.changed_surfaces)
         self.assertEqual(before, (fixture.work / "migration" / f"{plan.plan_id}.v7").read_bytes())
-        self.assertEqual(expected.lifecycle, fixture.store.read_project_export_batches()[0].lifecycle)
+        self.assertEqual(8, resumed.resulting_version)
         reverse = schema_procedure.preview_schema(path, plan.plan_id)
         assert isinstance(reverse, schema_procedure.PlannedSchema)
         self.assertIsInstance(schema_procedure.apply_schema(path, reverse.plan_id), schema_procedure.AppliedSchema)
         self.assertEqual(before, path.read_bytes())
         self.assertIsInstance(schema_procedure.apply_schema(path, reverse.plan_id), schema_procedure.AppliedSchema)
         self.assertIsInstance(schema_procedure.apply_schema(path, plan.plan_id), schema_procedure.AppliedSchema)
-        self.assertEqual(expected, fixture.store.validated_snapshot())
+        self.assertEqual(expected, test_storage_migration.StorageMigrationTests().predecessor_rows(path))
 
     def test_v7_transaction_failure_rolls_back_and_stale_plan_refuses(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
@@ -76,13 +77,16 @@ class InitiativeMigrationTest(CheckpointPackageSupport):
         plan = schema_procedure.preview_schema(path)
         assert isinstance(plan, schema_procedure.PlannedSchema)
         with patch(
-            "pinboard.adapters.sqlite.database._verify_current_schema",
+            "pinboard.adapters.sqlite.database._verify_v8_schema",
             side_effect=StorageError(StorageErrorCode.INVALID_STATE, "injected candidate schema failure"),
         ):
             failed = schema_procedure.apply_schema(path, plan.plan_id)
         self.assertIsInstance(failed, schema_procedure.SchemaProcedureFailure)
         self.assertEqual(before, path.read_bytes())
         self.assertIsInstance(schema_procedure.apply_schema(path, plan.plan_id), schema_procedure.AppliedSchema)
+        ownership = schema_procedure.preview_schema(path)
+        assert isinstance(ownership, schema_procedure.PlannedSchema)
+        self.assertIsInstance(schema_procedure.apply_schema(path, ownership.plan_id), schema_procedure.AppliedSchema)
         operations = test_initiatives.InitiativeTest()
         operations.create(fixture)
         operations.mutate(fixture, "member-add", {"expected_revision": 1, "item_id": "work-a"})
@@ -116,7 +120,7 @@ class InitiativeMigrationTest(CheckpointPackageSupport):
     def test_retained_v6_plans_backups_and_predicted_v7_meaning_are_not_reinterpreted(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
         path = fixture.work / "state.sqlite3"
-        expected = fixture.store.validated_snapshot()
+        expected = test_storage_migration.StorageMigrationTests().predecessor_rows(path)
         test_storage_migration.StorageMigrationTests().downgrade_schema(path)
         predecessor = path.read_bytes()
         legacy = schema_procedure.preview_schema(path)
@@ -129,7 +133,7 @@ class InitiativeMigrationTest(CheckpointPackageSupport):
         advance = schema_procedure.preview_schema(path)
         assert isinstance(advance, schema_procedure.PlannedSchema)
         self.assertIsInstance(schema_procedure.apply_schema(path, advance.plan_id), schema_procedure.AppliedSchema)
-        self.assertEqual(expected, fixture.store.validated_snapshot())
+        self.assertEqual(expected, test_storage_migration.StorageMigrationTests().predecessor_rows(path))
         self.assertEqual(legacy_bytes, legacy_plan_path.read_bytes())
         self.assertEqual(predecessor, (fixture.work / "migration" / f"{legacy.plan_id}.v6").read_bytes())
         current = path.read_bytes()

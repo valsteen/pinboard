@@ -20,16 +20,31 @@ For a diagnosed Codex sandbox restriction during already-authorized setup, reque
 
 ## Run the checks
 
-Use the Pinboard package installed in `<pinboard-source>/.venv` for every Python check:
+After preparation, run all four verification groups in parallel:
 
 ```sh
-uv run --locked python -m docs.how_it_works.render --check
-uv run --locked ruff format --check .
-uv run --locked ruff check .
-uv run --locked python -m tests.runner --coverage
-uv run --locked python scripts/validate-metadata.py
-scripts/check-types
+uv run --locked python -m scripts.verify verify-all
 ```
+
+`scripts.verify` is development-only orchestration. It uses the Pinboard package and tools installed in `<pinboard-source>/.venv`, and each group can run independently:
+
+| Group | Checks |
+| --- | --- |
+| `verify-repo` | Generated visitor guide, formatting, lint, plugin and skill metadata, strict Claude manifest validation, and CI duplication enforcement |
+| `verify-types` | The complete `scripts/check-types` sequence |
+| `verify-tests` | The existing test runner with branch coverage |
+| `verify-package` | Build without workspace sources, then isolated wheel version/help/module checks and initialization in a temporary Git repository |
+
+Select one group for focused work, or stream all groups in order when debugging:
+
+```sh
+uv run --locked python -m scripts.verify verify-tests --jobs 2
+uv run --locked python -m scripts.verify verify-all --sequential
+```
+
+`--jobs` passes the test worker count to `tests.runner`; omitting it retains that runner's default. Individual groups stream their output. Parallel verification records each group's complete combined output in a separate log within one per-run system temporary directory, prints the paths, and shows failed output with a final result for every group. Sequential verification streams the same output and keeps the same logs. Independent groups finish even when another fails; a failed command stops dependent work within its group, including wheel smoke checks after a failed build. Launch or log failures also fail verification. Temporary logs remain until OS cleanup; no retention duration is guaranteed.
+
+CI runs the same four groups as parallel jobs on macOS and Linux. Repository verification gets full Git history for comparison with `origin/main`, and CI displays the raw native duplication report even on failure. The sensitive advisory duplication scan remains available separately below. Complete verification can need network access for the existing Claude manifest validation and isolated uv operations; it does not promise offline execution.
 
 `scripts/check-types` runs strict Pyrefly, its 100% strict production type coverage check, and `uv check --locked` in that order. CI uses the same entry on macOS and Linux. The entry stops on the first failed check; run the later commands separately when diagnosing an earlier failure. It is a developer command; worktree preparation only installs dependencies.
 

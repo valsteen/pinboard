@@ -13,43 +13,19 @@ permissions:
   contents: read
 
 jobs:
-  duplication:
-    name: Duplication limit
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - name: Select Node.js and restore npm cache
-        uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          cache: npm
-      - name: Install declared uv and Python
-        uses: astral-sh/setup-uv@v8.1.0
-        with:
-          version-file: pyproject.toml
-          python-version: "3.14.7"
-          enable-cache: true
-      - name: Prepare repository worktree
-        run: scripts/prepare-worktree
-      - name: Reject new production duplication
-        run: npm run duplication:ci
-      - name: Preserve raw native duplication evidence in the job log
-        if: always()
-        run: cat .codex/audits/duplication/jscpd-report.json
-
   checks:
-    name: Checks (${{ matrix.os }})
+    name: ${{ matrix.group }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        group: [verify-repo, verify-types, verify-tests, verify-package]
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: ${{ matrix.group == 'verify-repo' && '0' || '1' }}
       - name: Select Node.js and restore npm cache
         uses: actions/setup-node@v7
         with:
@@ -63,31 +39,8 @@ jobs:
           enable-cache: true
       - name: Prepare repository worktree
         run: scripts/prepare-worktree
-      - name: Check generated visitor guide
-        run: uv run --locked python -m docs.how_it_works.render --check
-      - name: Check formatting
-        run: uv run --locked ruff format --check .
-      - name: Lint
-        run: uv run --locked ruff check .
-      - name: Test with branch coverage
-        run: uv run --locked python -m tests.runner --coverage
-      - name: Validate plugin and skill metadata
-        run: uv run --locked python scripts/validate-metadata.py
-      - name: Validate Claude plugin and marketplace manifests
-        run: |
-          npx --yes @anthropic-ai/claude-code plugin validate .claude-plugin/plugin.json --strict
-          npx --yes @anthropic-ai/claude-code plugin validate . --strict
-      - name: Build without workspace sources
-        run: uv build --no-sources
-      - name: Smoke-test the installed wheel in isolation
-        run: |
-          uv run --isolated --no-project --with ./dist/*.whl pinboard --version
-          uv run --isolated --no-project --with ./dist/*.whl pinboard --help
-          uv run --isolated --no-project --with ./dist/*.whl python -m pinboard --version
-          smoke_repository=$(mktemp -d)
-          git -C "$smoke_repository" init
-          uv run --isolated --no-project --with ./dist/*.whl pinboard --project-root "$smoke_repository" init
-          test -f "$smoke_repository/.pinboard/state.sqlite3"
-          git -C "$smoke_repository" check-ignore -q .pinboard/state.sqlite3
-      - name: Check strict types with Pyrefly and ty
-        run: scripts/check-types
+      - name: Run shared verification group
+        run: uv run --locked python -m scripts.verify ${{ matrix.group }}
+      - name: Preserve raw native duplication evidence in the job log
+        if: always() && matrix.group == 'verify-repo'
+        run: cat .codex/audits/duplication/jscpd-report.json

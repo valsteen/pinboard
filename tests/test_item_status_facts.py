@@ -31,7 +31,9 @@ CLOSED_AT = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
 COMPLETED_AT = datetime(2030, 1, 3, 4, 5, 6, tzinfo=UTC)
 
 
-class ItemStatusFactsTest(CheckpointPackageSupport):
+class ItemStatusSupport(CheckpointPackageSupport):
+    """Shared item-status leaf, transition, and fixture helpers for status-fact tests."""
+
     def roots(self, fixture: CheckpointFixture) -> JsonObject:
         return {"project_root": str(fixture.project), "work_root": str(fixture.work)}
 
@@ -237,6 +239,57 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         assert isinstance(value, int)
         return value
 
+    def damaged_receipt_fixture(self, receipt: query_models.DamagedReceiptActionKind) -> CheckpointFixture:
+        """Build an attempt whose consumed receipt of the named kind is its latest receipt."""
+
+        match receipt:
+            case decision_models.ActionKind.ACCEPT_CHECKPOINT:
+                return self.accepted_package_fixture()
+            case decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE:
+                fixture = self.checkpoint_fixture()
+                self.transition(
+                    fixture,
+                    "accept-review-and-continue:work-a-1",
+                    {"candidate": fixture.candidate_revision, "evidence": "Accepted; continue the attempt."},
+                )
+                return fixture
+            case decision_models.ActionKind.RETURN_FOR_CORRECTION:
+                fixture = self.checkpoint_fixture()
+                self.return_for_review(fixture, "Rework the candidate.")
+                return fixture
+            case decision_models.ActionKind.PAUSE:
+                fixture = self.damaged_receipt_fixture(decision_models.ActionKind.RETURN_FOR_CORRECTION)
+                self.transition(fixture, "pause:work-a-1", {"reason": "Wait for the maintainer."})
+                return fixture
+            case decision_models.ActionKind.REBIND_ATTEMPT:
+                fixture = self.damaged_receipt_fixture(decision_models.ActionKind.PAUSE)
+                self.rebind(fixture, fixture.brief.branch, 2)
+                return fixture
+            case _ as unreachable:
+                assert_never(unreachable)
+
+    def named_receipt(
+        self, result: JsonObject, action_kind: query_models.DamagedReceiptActionKind
+    ) -> query_models.DamagedTransitionReceipt:
+        """Rebuild the damaged receipt a rejected read names from its structured facts."""
+
+        self.assertEqual("TRANSITION_RECEIPT_DAMAGED", result["code"], result)
+        self.assertEqual(("unchanged", "do-not-retry"), (result["effect"], result["retry"]))
+        observed = {
+            self.json_object(value)["field"]: self.json_object(value)["value"]
+            for value in self.json_array(result["observed"])
+        }
+        self.assertEqual(action_kind.value, observed["action_kind"])
+        attempt_id, history_id, committed_at = observed["attempt_id"], observed["history_id"], observed["committed_at"]
+        defect = self.json_object(self.json_array(result["mismatches"])[0])["observed"]
+        assert isinstance(attempt_id, str) and isinstance(history_id, int)
+        assert isinstance(committed_at, str) and isinstance(defect, str)
+        return query_models.DamagedTransitionReceipt(
+            AttemptId(attempt_id), HistoryId(history_id), datetime.fromisoformat(committed_at), action_kind, defect
+        )
+
+
+class ItemStatusFactsTest(ItemStatusSupport):
     def test_returned_verdict_survives_pause_block_resume_and_rebind_until_resubmission(self) -> None:
         reason = "Criterion 2 lacks behavior evidence."
         for route in ("pause", "block", "rebind"):
@@ -344,55 +397,6 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                 self.rebind(fixture, fixture.brief.branch, 2)
                 self.assertTrue(self.verdict(fixture)["rebound_since_return"])
 
-    def damaged_receipt_fixture(self, receipt: query_models.DamagedReceiptActionKind) -> CheckpointFixture:
-        """Build an attempt whose consumed receipt of the named kind is its latest receipt."""
-
-        match receipt:
-            case decision_models.ActionKind.ACCEPT_CHECKPOINT:
-                return self.accepted_package_fixture()
-            case decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE:
-                fixture = self.checkpoint_fixture()
-                self.transition(
-                    fixture,
-                    "accept-review-and-continue:work-a-1",
-                    {"candidate": fixture.candidate_revision, "evidence": "Accepted; continue the attempt."},
-                )
-                return fixture
-            case decision_models.ActionKind.RETURN_FOR_CORRECTION:
-                fixture = self.checkpoint_fixture()
-                self.return_for_review(fixture, "Rework the candidate.")
-                return fixture
-            case decision_models.ActionKind.PAUSE:
-                fixture = self.damaged_receipt_fixture(decision_models.ActionKind.RETURN_FOR_CORRECTION)
-                self.transition(fixture, "pause:work-a-1", {"reason": "Wait for the maintainer."})
-                return fixture
-            case decision_models.ActionKind.REBIND_ATTEMPT:
-                fixture = self.damaged_receipt_fixture(decision_models.ActionKind.PAUSE)
-                self.rebind(fixture, fixture.brief.branch, 2)
-                return fixture
-            case _ as unreachable:
-                assert_never(unreachable)
-
-    def named_receipt(
-        self, result: JsonObject, action_kind: query_models.DamagedReceiptActionKind
-    ) -> query_models.DamagedTransitionReceipt:
-        """Rebuild the damaged receipt a rejected read names from its structured facts."""
-
-        self.assertEqual("TRANSITION_RECEIPT_DAMAGED", result["code"], result)
-        self.assertEqual(("unchanged", "do-not-retry"), (result["effect"], result["retry"]))
-        observed = {
-            self.json_object(value)["field"]: self.json_object(value)["value"]
-            for value in self.json_array(result["observed"])
-        }
-        self.assertEqual(action_kind.value, observed["action_kind"])
-        attempt_id, history_id, committed_at = observed["attempt_id"], observed["history_id"], observed["committed_at"]
-        defect = self.json_object(self.json_array(result["mismatches"])[0])["observed"]
-        assert isinstance(attempt_id, str) and isinstance(history_id, int)
-        assert isinstance(committed_at, str) and isinstance(defect, str)
-        return query_models.DamagedTransitionReceipt(
-            AttemptId(attempt_id), HistoryId(history_id), datetime.fromisoformat(committed_at), action_kind, defect
-        )
-
     def test_damaged_consumed_receipts_are_named_by_status_reads(self) -> None:
         damage = (
             ("outcome-schema", {"outcome_schema": "transition-receipt/v9"}),
@@ -418,7 +422,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                     self.update_receipt(fixture, damaged_history, **columns)
 
                     status = self.item_leaf(fixture)
-                    self.assertEqual("pinboard-mcp-item-status-result/v2", status["schema"])
+                    self.assertEqual("pinboard-mcp-item-status-result/v3", status["schema"])
                     named = self.named_receipt(status, receipt)
                     self.assertEqual((AttemptId("work-a-1"), damaged_history), (named.attempt_id, named.history_id))
                     self.assertEqual(diagnosis, queries.damaged_receipt_diagnosis(receipt))

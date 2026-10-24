@@ -949,6 +949,121 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
 
 
+@dataclass(frozen=True, slots=True)
+class IntegrationAttemptFacts:
+    """The current nonterminal attempt's keyed columns that select an integration source."""
+
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCheckpointFacts:
+    """The current attempt's latest checkpoint-acceptance receipt and its linked package reference."""
+
+    receipt: ConsumedTransitionReceipt
+    package_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class ItemIntegrationFacts:
+    project_revision: int
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    current_attempt: IntegrationAttemptFacts | None
+    latest_checkpoint: IntegrationCheckpointFacts | None
+    closure: ItemClosureFacts | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedReviewSource:
+    attempt_id: AttemptId
+    candidate: str
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedCheckpointSource:
+    attempt_id: AttemptId
+    candidate: str
+    checkpoint_id: str
+    package_reference: stored_state.ArtifactReference
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionSource:
+    attempt_id: AttemptId
+    candidate: str
+
+
+type IntegrationSource = ProtectedReviewSource | AcceptedCheckpointSource | CompletionSource
+
+
+class IntegrationUnavailableReason(Enum):
+    """Why an item has no reviewed candidate with accepted snapshot bytes."""
+
+    NO_REVIEWED_CANDIDATE = "no-protected-candidate-and-no-checkpoint-acceptance"
+    DIRECT_CLOSE = "closed-without-completion"
+    PACKAGE_WITHOUT_SNAPSHOT = "checkpoint-package-without-candidate-snapshot"
+    PRE_SNAPSHOT_CANDIDATE = "retained-pre-snapshot-review-candidate"
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationCandidateUnavailable:
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    reason: IntegrationUnavailableReason
+
+
+class IntegrationPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+class ProtectedReviewIntegrationSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+class AcceptedCheckpointIntegrationSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+    checkpoint_id: str
+
+
+class CompletionIntegrationSource(
+    msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: str
+    candidate_revision: str
+    compared_from_revision: str
+
+
+type ItemIntegrationSource = (
+    ProtectedReviewIntegrationSource | AcceptedCheckpointIntegrationSource | CompletionIntegrationSource
+)
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Whether the selected reviewed candidate's accepted diff is present in the caller-named target's tree."""
+
+    schema: Literal["pinboard-item-integration/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: str
+    target: str
+    target_revision: str
+    source: ItemIntegrationSource
+    presence: IntegrationPresence
+
+
 class ParallelSelection(Enum):
     ALL_SAFE = "all-safe"
     SELECTED = "selected"

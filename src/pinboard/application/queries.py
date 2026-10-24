@@ -7,6 +7,7 @@ snapshot. These functions never read files, mutate state, or present output.
 
 from collections.abc import Mapping
 from datetime import datetime
+from functools import partial
 from types import MappingProxyType
 from typing import assert_never
 
@@ -1180,6 +1181,81 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
             for owner in facts.owners
         ),
     )
+
+
+def select_integration_source(
+    reader: ports.ItemIntegrationReader,
+    work_item_id: WorkItemId,
+) -> (
+    DecisionResult[tuple[query_models.ItemIntegrationFacts, query_models.IntegrationSource]]
+    | query_models.IntegrationCandidateUnavailable
+    | query_models.DamagedTransitionReceipt
+):
+    """Select the one reviewed candidate bound to accepted snapshot bytes for an integration check.
+
+    A review-state attempt's protected candidate wins; otherwise the current
+    attempt's latest checkpoint acceptance; a completed item uses its closing
+    attempt's retained candidate. Everything else has no reviewed candidate.
+    """
+
+    facts = reader.read_item_integration(work_item_id)
+    if facts is None:
+        return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' was not found.", None)
+    unavailable = partial(query_models.IntegrationCandidateUnavailable, facts.work_item_id, facts.state)
+    if stored_state.live_work_state(facts.state) is None:
+        closure = facts.closure
+        closing = None if closure is None else closure.closing_attempt
+        if (
+            closure is None
+            or closure.action_kind != decision_models.ActionKind.COMPLETE
+            or closing is None
+            or closing.candidate_revision is None
+        ):
+            return unavailable(query_models.IntegrationUnavailableReason.DIRECT_CLOSE)
+        return facts, query_models.CompletionSource(closing.attempt_id, closing.candidate_revision)
+    attempt = facts.current_attempt
+    if attempt is None:
+        return unavailable(query_models.IntegrationUnavailableReason.NO_REVIEWED_CANDIDATE)
+    if attempt.state == work_models.AttemptState.REVIEW and attempt.candidate_revision is not None:
+        return facts, query_models.ProtectedReviewSource(attempt.attempt_id, attempt.candidate_revision)
+    checkpoint = facts.latest_checkpoint
+    if checkpoint is None:
+        return unavailable(query_models.IntegrationUnavailableReason.NO_REVIEWED_CANDIDATE)
+    accepted = decision_models.ActionKind.ACCEPT_CHECKPOINT
+    receipt = checkpoint.receipt
+    try:
+        outcome = msgspec.json.decode(
+            receipt.outcome_json.encode("utf-8"), type=history.CheckpointAcceptanceOutcome, strict=True
+        )
+    except msgspec.DecodeError as error:
+        return _damaged(
+            attempt.attempt_id, receipt, accepted, f"The outcome does not decode as checkpoint-acceptance/v2: {error}"
+        )
+    if checkpoint.package_reference is None:
+        return unavailable(query_models.IntegrationUnavailableReason.PACKAGE_WITHOUT_SNAPSHOT)
+    return facts, query_models.AcceptedCheckpointSource(
+        attempt.attempt_id, outcome.candidate, outcome.checkpoint, checkpoint.package_reference
+    )
+
+
+def integration_source_view(
+    source: query_models.IntegrationSource, compared_from_revision: str
+) -> query_models.ItemIntegrationSource:
+    match source:
+        case query_models.ProtectedReviewSource():
+            return query_models.ProtectedReviewIntegrationSource(
+                str(source.attempt_id), source.candidate, compared_from_revision
+            )
+        case query_models.AcceptedCheckpointSource():
+            return query_models.AcceptedCheckpointIntegrationSource(
+                str(source.attempt_id), source.candidate, compared_from_revision, source.checkpoint_id
+            )
+        case query_models.CompletionSource():
+            return query_models.CompletionIntegrationSource(
+                str(source.attempt_id), source.candidate, compared_from_revision
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _project_definition(definition: work_models.WorkItemDefinition) -> query_models.WorkItemDefinitionView:

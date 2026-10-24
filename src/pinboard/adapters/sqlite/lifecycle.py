@@ -14,6 +14,7 @@ from typing import NoReturn, assert_never
 
 import msgspec
 
+from pinboard.adapters.sqlite.artifacts import read_artifact_reference_by_id
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import queries, query_models, released_v6_compatibility, stored_state
@@ -314,6 +315,78 @@ def _read_item_closure(
         ).fetchone()
         closing_attempt = None if attempt_row is None else decode_row(attempt_row, query_models.ClosingAttemptFacts)
     return query_models.ItemClosureFacts(action_kind, receipt.committed_at, closing_attempt)
+
+
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    work_item_id: WorkItemId
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+def read_item_integration(
+    connection: sqlite3.Connection, item_id: WorkItemId
+) -> query_models.ItemIntegrationFacts | None:
+    """Read the keyed facts that select an integration source; no history walk, scan, or artifact bytes.
+
+    The current attempt comes from the one-live-attempt index, its latest checkpoint
+    acceptance from the ``checkpoint_history_by_subject`` partial index, the linked
+    package reference by primary key, and a terminal item's closure from the one
+    receipt at its subject revision.
+    """
+
+    project_revision_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_revision_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    item_row = connection.execute(
+        "SELECT item_id AS work_item_id, state, subject_revision FROM work_items WHERE item_id = ?",
+        (item_id,),
+    ).fetchone()
+    if item_row is None:
+        return None
+    item = decode_row(item_row, _IntegrationItemRow)
+    current_attempt = None
+    latest_checkpoint = None
+    attempt_row = connection.execute(
+        """
+        SELECT attempt_id, state, candidate_revision
+        FROM attempts INDEXED BY one_live_attempt_per_item
+        WHERE item_id = ? AND state != 'done'
+        """,
+        (item_id,),
+    ).fetchone()
+    if attempt_row is not None:
+        current_attempt = decode_row(attempt_row, query_models.IntegrationAttemptFacts)
+        checkpoint_row = connection.execute(
+            f"""
+            SELECT {_CONSUMED_RECEIPT_COLUMNS}
+            FROM transition_history INDEXED BY checkpoint_history_by_subject
+            WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+            ORDER BY history_id DESC
+            LIMIT 1
+            """,
+            (current_attempt.attempt_id,),
+        ).fetchone()
+        if checkpoint_row is not None:
+            receipt = _consumed_receipt(checkpoint_row)
+            latest_checkpoint = query_models.IntegrationCheckpointFacts(
+                receipt,
+                None
+                if receipt.artifact_ref_id is None
+                else read_artifact_reference_by_id(connection, receipt.artifact_ref_id),
+            )
+    closure = (
+        _read_item_closure(connection, item.work_item_id, item.subject_revision)
+        if stored_state.live_work_state(item.state) is None
+        else None
+    )
+    return query_models.ItemIntegrationFacts(
+        decode_row(project_revision_row, _ProjectRevisionRow).revision,
+        item.work_item_id,
+        item.state,
+        current_attempt,
+        latest_checkpoint,
+        closure,
+    )
 
 
 def read_branch_owners(connection: sqlite3.Connection, branch: str) -> query_models.BranchOwnersFacts:

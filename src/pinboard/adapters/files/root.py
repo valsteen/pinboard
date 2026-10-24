@@ -1,5 +1,8 @@
 import fcntl
+import os
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -52,6 +55,11 @@ class CandidateRestoreRejection:
 
 
 type CandidateRestoreResult = CandidateRestoreSuccess | CandidateRestoreRejection
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedIntegrationTarget:
+    target: str
 
 
 class CandidateRestoreAfterMutationError(RootError):
@@ -377,6 +385,85 @@ def restore_commit_candidate(
             "Candidate restoration changed the checkout but did not produce the exact clean commit.",
         )
     return CandidateRestoreSuccess(True, candidate)
+
+
+def resolve_integration_target(cwd: Path, target: str) -> str | UnresolvedIntegrationTarget:
+    """Resolve a caller-named local revision to its full commit without fetching."""
+
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "--end-of-options", f"{target}^{{commit}}"],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if resolved.returncode == 1:
+        return UnresolvedIntegrationTarget(target)
+    target_revision = resolved.stdout.strip()
+    if resolved.returncode != 0 or not target_revision:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            resolved.stderr.strip() or f"Cannot resolve integration target '{target}' at '{cwd}'.",
+        )
+    return target_revision
+
+
+def observe_diff_presence(cwd: Path, target_revision: str, diff: bytes) -> bool:
+    """Report whether reviewed diff bytes reverse-apply cleanly to the target commit's tree.
+
+    The read loads that commit's tree into an index file inside a private temporary
+    directory and asks Git to check the reversed patch there. It writes nothing under
+    the repository, so it works when ``.git`` is read-only, fetches nothing, and removes
+    the temporary directory before returning. Any Git failure other than a rejected
+    patch is the adapter's ``RootError``.
+    """
+
+    temporary = Path(tempfile.mkdtemp(prefix="pinboard-integration-"))
+    try:
+        environment = {**os.environ, "GIT_INDEX_FILE": str(temporary / "index")}
+        read_tree = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", target_revision],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+        if read_tree.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                read_tree.stderr.decode(errors="replace").strip()
+                or f"Cannot read the tree of '{target_revision}' at '{cwd}'.",
+            )
+        applied = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "apply.whitespace=nowarn",
+                "-c",
+                "apply.ignoreWhitespace=no",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "-",
+            ],
+            cwd=cwd,
+            env=environment,
+            input=diff,
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+    if applied.returncode in (0, 1):
+        return applied.returncode == 0
+    raise RootError(
+        RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+        applied.stderr.decode(errors="replace").strip()
+        or f"Cannot check the reviewed diff against '{target_revision}'.",
+    )
 
 
 def resolve_shared_repository_root(cwd: Path) -> Path:

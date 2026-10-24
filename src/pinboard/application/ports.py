@@ -118,6 +118,8 @@ class WorkStore(Protocol):
 
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
 
+    def read_item_integration(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationFacts | None: ...
+
     def read_parallel_preview(
         self, work_item_ids: tuple[WorkItemId, ...]
     ) -> query_models.ParallelPreviewFacts | None: ...
@@ -173,6 +175,12 @@ class ReadyCandidateReviewReader(Protocol):
 
 class BranchOwnerReader(Protocol):
     def read_branch_owners(self, branch: str) -> query_models.BranchOwnersFacts: ...
+
+
+class ItemIntegrationReader(Protocol):
+    """Read the keyed item, current-attempt, latest-checkpoint, and closure facts that select an integration source."""
+
+    def read_item_integration(self, work_item_id: WorkItemId) -> query_models.ItemIntegrationFacts | None: ...
 
 
 class AttemptContextReader(Protocol):

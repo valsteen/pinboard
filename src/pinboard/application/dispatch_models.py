@@ -31,7 +31,7 @@ from pinboard.domain.identifiers import AttemptId, HostId
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\n]+\z")]
 
 type DispatchSchema = Literal["pinboard-dispatch/v2"]
-type NativeRuntime = Literal["codex", "claude-code"]
+type NativeRuntime = Literal["codex", "claude-code", "antigravity"]
 type StableHostId = Annotated[
     HostId,
     msgspec.Meta(min_length=1, pattern=r"\A(?!\s)(?!\.{1,2}\z)[^/\r\n\x00]*[^\s/\r\n\x00]\z"),
@@ -131,6 +131,14 @@ class ClaudeLaunchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     run_in_background: bool
 
 
+class AntigravityLaunchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True, rename="pascal"):
+    """invoke_subagent with the self type: a separate conversation in the parent's workspace, model and tools."""
+
+    type_name: Literal["self"]
+    role: NonEmptyLine
+    prompt: Annotated[str, msgspec.Meta(min_length=1)]
+
+
 class CodexNativeLaunchEnvelope(
     msgspec.Struct, tag="codex", tag_field="runtime", frozen=True, forbid_unknown_fields=True
 ):
@@ -149,7 +157,16 @@ class ClaudeNativeLaunchEnvelope(
     arguments: ClaudeLaunchArguments
 
 
-type NativeLaunchEnvelope = CodexNativeLaunchEnvelope | ClaudeNativeLaunchEnvelope
+class AntigravityNativeLaunchEnvelope(
+    msgspec.Struct, tag="antigravity", tag_field="runtime", frozen=True, forbid_unknown_fields=True
+):
+    schema: Literal["pinboard-native-agent-launch/v2"]
+    tool: Literal["invoke_subagent"]
+    background: bool
+    arguments: AntigravityLaunchArguments
+
+
+type NativeLaunchEnvelope = CodexNativeLaunchEnvelope | ClaudeNativeLaunchEnvelope | AntigravityNativeLaunchEnvelope
 
 
 class PublishedAgentPrompt(str):

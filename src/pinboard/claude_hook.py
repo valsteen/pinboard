@@ -7,11 +7,8 @@ from typing import Annotated, Literal
 
 import msgspec
 
-type NativeText = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\x00]+\z")]
-type NativeIdentity = Annotated[
-    str,
-    msgspec.Meta(min_length=1, pattern=r"\A(?!\s)(?!\.{1,2}\z)[^/\r\n\x00]*[^\s/\r\n\x00]\z"),
-]
+from pinboard.hook_values import NativeIdentity, NativeText
+
 PINBOARD_SERVER = "mcp__plugin_pinboard_pinboard"
 PINBOARD_TOOL_PREFIX = f"{PINBOARD_SERVER}__"
 type PinboardToolName = Annotated[str, msgspec.Meta(pattern=rf"\A{PINBOARD_TOOL_PREFIX}[^\x00]+\z")]

@@ -21,7 +21,7 @@ It works in local Git-backed repositories. When you start saved work, the agent 
 
 ## Use it in conversation
 
-Use `$pinboard` in Codex or `/pinboard:pinboard` in Claude Code, then ask naturally:
+Use `$pinboard` in Codex or `/pinboard:pinboard` in Claude Code, or ask for the `pinboard` skill in Antigravity, then ask naturally:
 
 > I found a database issue. Save it for later and keep working on this.
 
@@ -56,7 +56,7 @@ Pinboard is most useful when a decision needs to survive another revision, inter
 
 ## Install from GitHub
 
-Pinboard supports macOS and Linux. Codex is the primary, stress-tested integration. Have [uv](https://docs.astral.sh/uv/) available for the plugin's first runtime setup.
+Pinboard supports macOS and Linux. Codex is the primary, stress-tested integration; Claude Code and Antigravity CLI (`agy`) are also supported. Have [uv](https://docs.astral.sh/uv/) available for the plugin's first runtime setup.
 
 ### Codex
 
@@ -74,23 +74,32 @@ claude plugin install pinboard@pinboard
 
 On Claude Code's first session, MCP startup or the SessionStart hook can prepare the runtime automatically. If Pinboard remains unavailable after preparation, reconnect the `pinboard` server with `/mcp` or restart. See [Claude Code setup](INSTALL.md#claude-code) for preparation and context settings.
 
+### Antigravity
+
+```sh
+git clone https://github.com/valsteen/pinboard.git
+agy plugin install /path/to/pinboard
+```
+
+Antigravity runs Pinboard's tools only after you add `mcp(pinboard_pinboard/*)` to `permissions.allow` in `~/.gemini/antigravity-cli/settings.json`. Even then it asks you before closing a saved item, so a close cannot run in a headless `agy -p` session. See [Antigravity setup](INSTALL.md#antigravity) for the settings file, first session and upgrades.
+
 Start a task in your project and ask:
 
 > Set up Pinboard here and explain how I can use it from one task or several tasks.
 
-The [installation guide](INSTALL.md) covers permissions, linked worktrees, trying one Claude Code session without installing, and troubleshooting.
+The [installation guide](INSTALL.md) covers permissions, linked worktrees, trying one Claude Code session without installing, Antigravity setup, and troubleshooting.
 
 ## More skills
 
 Pinboard can use specialized skills when the work calls for them. You can also invoke them directly:
 
-| Skill | Use it to | Codex | Claude Code |
-| --- | --- | --- | --- |
-| Investigation Focus | Investigate a question and produce an evidence-based result. | `$investigation-focus` | `/pinboard:investigation-focus` |
-| Technical Writing | Shape substantial technical documents. | `$technical-writing` | `/pinboard:technical-writing` |
-| Repository Readiness | Understand an unfamiliar repository before changing it. | `$repository-readiness` | `/pinboard:repository-readiness` |
-| Slop Cleanup | Remove abandoned code and its residue. | `$slop-cleanup` | `/pinboard:slop-cleanup` |
-| Maintaining Agent Guidance | Keep durable instructions at the right owner. | `$maintaining-agent-guidance` | `/pinboard:maintaining-agent-guidance` |
+| Skill | Use it to | Codex | Claude Code | Antigravity |
+| --- | --- | --- | --- | --- |
+| Investigation Focus | Investigate a question and produce an evidence-based result. | `$investigation-focus` | `/pinboard:investigation-focus` | Ask for `investigation-focus` |
+| Technical Writing | Shape substantial technical documents. | `$technical-writing` | `/pinboard:technical-writing` | Ask for `technical-writing` |
+| Repository Readiness | Understand an unfamiliar repository before changing it. | `$repository-readiness` | `/pinboard:repository-readiness` | Ask for `repository-readiness` |
+| Slop Cleanup | Remove abandoned code and its residue. | `$slop-cleanup` | `/pinboard:slop-cleanup` | Ask for `slop-cleanup` |
+| Maintaining Agent Guidance | Keep durable instructions at the right owner. | `$maintaining-agent-guidance` | `/pinboard:maintaining-agent-guidance` | Ask for `maintaining-agent-guidance` |
 
 For investigation setup and continuity across sessions, see [Use Investigation Focus](INSTALL.md#use-investigation-focus).
 

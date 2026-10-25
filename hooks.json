@@ -1,0 +1,22 @@
+{
+  "pinboard": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "./scripts/pinboard --antigravity-session-start",
+        "timeout": 600
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "call_mcp_tool",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/pinboard --antigravity-pre-tool-use"
+          }
+        ]
+      }
+    ]
+  }
+}

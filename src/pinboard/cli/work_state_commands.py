@@ -233,7 +233,7 @@ def initialize_state(
     )
     recommendation = (
         None
-        if receipt.resumed or os.environ.get("PINBOARD_RUNTIME") == "claude"
+        if receipt.resumed or os.environ.get("PINBOARD_RUNTIME") in {"claude", "antigravity"}
         else _read_user_config_and_recommend_body_after_prefix()
     )
     view = InitializationView(

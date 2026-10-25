@@ -1127,7 +1127,7 @@ class _DefinitionFields:
 
     texts: tuple[tuple[query_models.DefinitionTextField, str | None], ...]
     lists: tuple[tuple[query_models.DefinitionListField, tuple[str, ...]], ...]
-    obligations: tuple[work_models.WorkObligation, ...]
+    obligations: tuple[work_models.DefinitionObligation, ...]
 
 
 def _definition_fields(definition: stored_state.StoredDefinition) -> _DefinitionFields:

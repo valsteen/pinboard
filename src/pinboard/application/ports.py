@@ -5,7 +5,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from pinboard.application import artifact_identity, cancellation_models, query_models, roadmap, stored_state
+from pinboard.application import (
+    artifact_identity,
+    cancellation_models,
+    obligation_coverage,
+    query_models,
+    roadmap,
+    stored_state,
+)
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.mutation_models import (
     CheckpointMutationAllocation,
@@ -34,6 +41,10 @@ class ArtifactReferenceAcceptance:
 
 
 class WorkTransaction(Protocol):
+    def read_obligation_origins(
+        self, origins: tuple[work_models.ObligationOrigin, ...]
+    ) -> frozenset[work_models.ObligationOrigin]: ...
+
     def read_cancellation_preview(self, item_id: WorkItemId) -> cancellation_models.CancellationPreview | None: ...
 
     def read_decision_facts(self, scope: query_models.DecisionScope, now: datetime) -> query_models.DecisionFacts: ...
@@ -64,6 +75,14 @@ class WorkTransaction(Protocol):
 
 
 class WorkStore(Protocol):
+    def read_obligation_origins(
+        self, origins: tuple[work_models.ObligationOrigin, ...]
+    ) -> frozenset[work_models.ObligationOrigin]: ...
+
+    def read_obligation_coverage(
+        self, source_item: WorkItemId, replacement_item: WorkItemId | None
+    ) -> obligation_coverage.CoverageFacts: ...
+
     def read_roadmap(self) -> roadmap.Projection: ...
 
     def read_cancellation_preview(self, item_id: WorkItemId) -> cancellation_models.CancellationPreview | None: ...

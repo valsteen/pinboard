@@ -509,7 +509,11 @@ def decode_definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionR
 
 def current_definition_anchor(value: stored_state.ItemDefinitionRevision) -> work_models.DefinitionAnchor:
     if not isinstance(value.definition, work_models.WorkItemDefinition):
-        raise StorageError(StorageErrorCode.INVALID_STATE, "A live work item requires a genuine current v2 definition.")
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            "A live work item requires a genuine current supported definition: origin-free v2 or origin-bearing v3; "
+            "historical v1 is not executable.",
+        )
     return work_models.DefinitionAnchor(value.item_id, value.revision, value.digest, value.definition)
 
 

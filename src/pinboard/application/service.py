@@ -4,7 +4,7 @@ from typing import assert_never, overload
 
 import msgspec
 
-from pinboard.application import query_models, stored_state
+from pinboard.application import obligation_coverage, query_models, stored_state
 from pinboard.application.actions import action_subject_ids
 from pinboard.application.artifact_publication import validate_transition_work_brief
 from pinboard.application.artifacts import (
@@ -523,6 +523,8 @@ def create_proposal(
             failure := validate_dependency_brief_pins(decision_context, requested_dependencies, dependency_brief_pins)
         ) is not None:
             return failure
+        if (failure := obligation_coverage.validate_origins(transaction, operation.intake.obligations)) is not None:
+            return failure
         decision_result = decide_proposal_creation(
             decision_context,
             operation,
@@ -758,6 +760,11 @@ def _read_authorize_and_decide(
             )
         )
         is not None
+    ):
+        return failure
+    if (
+        isinstance(command, decision_models.ReviseWorkItemCommand)
+        and (failure := obligation_coverage.validate_origins(reader, command.value.definition.obligations)) is not None
     ):
         return failure
     return decide(decision_context, command, now)

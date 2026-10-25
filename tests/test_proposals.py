@@ -5,7 +5,7 @@ from unittest.mock import patch
 import msgspec
 
 from pinboard.application import proposal_models
-from pinboard.application.proposal_models import Proposal
+from pinboard.application.proposal_models import ProposalInput
 from pinboard.mcp import contracts
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import mutation_operations as mcp_mutations
@@ -47,7 +47,7 @@ class ProposalInputTest(unittest.TestCase):
             "actor_host_id": "host",
         }
 
-        def decoded(proposal: dict[str, proposal_models.ProposalJsonValue]) -> Proposal:
+        def decoded(proposal: dict[str, proposal_models.ProposalJsonValue]) -> ProposalInput:
             return msgspec.convert(common | {"proposal": proposal}, type=contracts.ProposalCreateRequest).proposal
 
         current = decoded(value)

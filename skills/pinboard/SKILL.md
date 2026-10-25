@@ -27,6 +27,8 @@ If implementation already began before that classification, recover the actual p
 
 Cancellation releases a live commitment as **dropped**, preserving its work and history. Only the human's explicit cancellation request starts this route. Never initiate cancellation or infer it from cleanup, completion, vague wording, silence or an obsolete-looking item. Use the [cancellation procedure](references/setup-and-transitions.md#cancel-after-separate-exact-item-confirmation), show the exact item and consequences, then stop for a separate explicit confirmation. Ordinary close and reviewed successful completion keep their independent requirements.
 
+Before ending a planned-replaced item, follow [replacement coverage before ending work](references/setup-and-transitions.md#read-replacement-coverage). Bring every uncovered obligation to the human as an explicit decision. Coverage adds no permission to close or cancel and no veto when the human explicitly chooses an otherwise-legal ending despite the uncovered work.
+
 ## Phase index
 
 Use only the phase needed now. A reference supplies concrete mechanics; this core remains the conversation owner.

@@ -54,6 +54,35 @@ class WorkObligationPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     deferral_policy: work_models.ObligationDeferralPolicy
 
 
+class ObligationOriginPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: Identity
+    definition_revision: Annotated[int, msgspec.Meta(ge=1)]
+    obligation_id: Identity
+
+
+class OriginObligationPayload(WorkObligationPayload, frozen=True, forbid_unknown_fields=True):
+    origin: ObligationOriginPayload | None
+
+
+def obligation_origin(value: ObligationOriginPayload) -> work_models.ObligationOrigin:
+    return work_models.ObligationOrigin(
+        WorkItemId(value.item_id), value.definition_revision, work_models.ObligationId(value.obligation_id)
+    )
+
+
+def obligation_from_payload(value: WorkObligationPayload | OriginObligationPayload) -> work_models.DefinitionObligation:
+    if isinstance(value, OriginObligationPayload) and value.origin is not None:
+        return work_models.CarriedWorkObligation(
+            work_models.ObligationId(value.obligation_id),
+            value.statement,
+            value.deferral_policy,
+            obligation_origin(value.origin),
+        )
+    return work_models.WorkObligation(
+        work_models.ObligationId(value.obligation_id), value.statement, value.deferral_policy
+    )
+
+
 class CheckpointDependencyPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item: Identity
     checkpoint: Identity
@@ -74,17 +103,20 @@ def dependency_payload(value: work_models.Dependency) -> DependencyPayload:
     return msgspec.convert({"item": value.item_id, "checkpoint": value.checkpoint_id}, type=CheckpointDependencyPayload)
 
 
-class WorkItemDefinitionPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+# v2 remains a current origin-free input and canonical encoding, preserving retained digest bindings.
+# Keep the mixed boundary here while both definition forms are supported.
+class WorkItemDefinitionPayload(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-work-item-definition/v2", tag_field="schema"
+):
+    title: CanonicalLine
+    objective: CanonicalLine
+    hypothesis: CanonicalLine
+    evidence: tuple[CanonicalLine, ...]
+    scope: Annotated[tuple[CanonicalLine, ...], msgspec.Meta(min_length=1)]
+    non_scope: tuple[CanonicalLine, ...]
     acceptance_criteria: Annotated[tuple[CanonicalLine, ...], msgspec.Meta(min_length=1)]
     dependencies: tuple[DependencyPayload, ...]
     effect: CanonicalLine
-    evidence: tuple[CanonicalLine, ...]
-    hypothesis: CanonicalLine
-    non_scope: tuple[CanonicalLine, ...]
-    objective: CanonicalLine
-    schema: Literal["pinboard-work-item-definition/v2"]
-    scope: Annotated[tuple[CanonicalLine, ...], msgspec.Meta(min_length=1)]
-    title: CanonicalLine
     unlock: CanonicalLine
     checkout_policy: Literal["main", "isolated", "coordinator-selected"]
     obligations: Annotated[tuple[WorkObligationPayload, ...], msgspec.Meta(min_length=1)]
@@ -104,6 +136,24 @@ class WorkItemDefinitionPayload(msgspec.Struct, frozen=True, forbid_unknown_fiel
         dependency_ids = tuple(value if isinstance(value, str) else value.item for value in self.dependencies)
         if len(dependency_ids) != len(set(dependency_ids)):
             raise ValueError("dependencies must contain one entry per prerequisite item.")
+
+
+class OriginWorkItemDefinitionPayload(
+    WorkItemDefinitionPayload,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="pinboard-work-item-definition/v3",
+    tag_field="schema",
+):
+    obligations: Annotated[tuple[OriginObligationPayload, ...], msgspec.Meta(min_length=1)]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not any(value.origin is not None for value in self.obligations):
+            raise ValueError("An origin-free definition uses pinboard-work-item-definition/v2.")
+
+
+type DefinitionPayload = WorkItemDefinitionPayload | OriginWorkItemDefinitionPayload
 
 
 class TransitionReceiptOutcome(msgspec.Struct, frozen=True, forbid_unknown_fields=True, omit_defaults=True):
@@ -164,9 +214,10 @@ def encode_completion_acceptance_outcome(*, candidate: str, evidence: str) -> by
 
 def _work_item_definition_payload(
     definition: work_models.WorkItemDefinition,
-) -> DecisionResult[WorkItemDefinitionPayload]:
+) -> DecisionResult[DefinitionPayload]:
+    carries_origins = any(isinstance(value, work_models.CarriedWorkObligation) for value in definition.obligations)
     try:
-        return msgspec.convert(
+        payload: DefinitionPayload = msgspec.convert(
             {
                 "acceptance_criteria": definition.acceptance_criteria,
                 "dependencies": tuple(dependency_payload(value) for value in definition.dependencies),
@@ -175,7 +226,7 @@ def _work_item_definition_payload(
                 "hypothesis": definition.hypothesis,
                 "non_scope": definition.non_scope,
                 "objective": definition.objective,
-                "schema": "pinboard-work-item-definition/v2",
+                "schema": "pinboard-work-item-definition/v3" if carries_origins else "pinboard-work-item-definition/v2",
                 "scope": definition.scope,
                 "title": definition.title,
                 "unlock": definition.unlock,
@@ -185,13 +236,27 @@ def _work_item_definition_payload(
                         "obligation_id": value.obligation_id,
                         "statement": value.statement,
                         "deferral_policy": value.deferral_policy.value,
+                        **(
+                            {
+                                "origin": {
+                                    "item_id": value.origin.item_id,
+                                    "definition_revision": value.origin.definition_revision,
+                                    "obligation_id": value.origin.obligation_id,
+                                }
+                                if isinstance(value, work_models.CarriedWorkObligation)
+                                else None
+                            }
+                            if carries_origins
+                            else {}
+                        ),
                     }
                     for value in definition.obligations
                 ),
             },
-            type=WorkItemDefinitionPayload,
+            type=DefinitionPayload,
             strict=True,
         )
+        return payload
     except msgspec.ValidationError as error:
         return DecisionFailure(DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Definition is invalid: {error}", None)
 
@@ -212,7 +277,7 @@ def work_item_definition_digest(definition: work_models.WorkItemDefinition) -> D
 
 def decode_work_item_definition(payload: bytes) -> DecisionResult[work_models.WorkItemDefinition]:
     try:
-        record = msgspec.json.decode(payload, type=WorkItemDefinitionPayload, strict=True)
+        record = msgspec.json.decode(payload, type=DefinitionPayload, strict=True)
     except msgspec.DecodeError as error:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Definition JSON is invalid: {error}", None
@@ -226,7 +291,7 @@ def decode_work_item_definition(payload: bytes) -> DecisionResult[work_models.Wo
     return work_item_definition_from_payload(record)
 
 
-def work_item_definition_from_payload(record: WorkItemDefinitionPayload) -> work_models.WorkItemDefinition:
+def work_item_definition_from_payload(record: DefinitionPayload) -> work_models.WorkItemDefinition:
     return work_models.WorkItemDefinition(
         record.title,
         record.objective,
@@ -239,12 +304,5 @@ def work_item_definition_from_payload(record: WorkItemDefinitionPayload) -> work
         record.effect,
         record.unlock,
         work_models.CheckoutPolicy(record.checkout_policy),
-        tuple(
-            work_models.WorkObligation(
-                work_models.ObligationId(value.obligation_id),
-                value.statement,
-                value.deferral_policy,
-            )
-            for value in record.obligations
-        ),
+        tuple(obligation_from_payload(value) for value in record.obligations),
     )

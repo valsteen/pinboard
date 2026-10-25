@@ -220,7 +220,7 @@ def validate_review_history(  # noqa: C901, PLR0912, PLR0915
             for row in state.evidence:
                 recorded_item_id = (
                     row.payload.preview.item_id
-                    if isinstance(row.payload, cancellation_models.CancellationRecord)
+                    if isinstance(row.payload, cancellation_models.CompatibilityCancellationRecordV1)
                     else row.payload.item_id
                 )
                 if closed or recorded_item_id != item_id:
@@ -320,7 +320,7 @@ def validate_review_history(  # noqa: C901, PLR0912, PLR0915
                             if row.payload.outcome == "accepted"
                             else stored_state.StoredWorkItemState.DROPPED
                         )
-                    case cancellation_models.CancellationRecord():
+                    case cancellation_models.CompatibilityCancellationRecordV1():
                         if (
                             brief_id is None
                             or row.payload.preview.state != stored_state.StoredWorkItemState.REVIEW

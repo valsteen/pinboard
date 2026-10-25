@@ -4984,6 +4984,7 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.CORRECTION_CONTEXT_TOOL,
                 mcp_server.RETURN_CONTEXT_TOOL,
                 mcp_server.ITEM_DEFINITION_TOOL,
+                mcp_server.OBLIGATION_COVERAGE_TOOL,
                 mcp_server.BRIEF_REVIEW_TOOL,
                 mcp_server.BRIEF_CONTRACT_TOOL,
                 mcp_server.BRIEF_SOURCES_TOOL,
@@ -5057,8 +5058,9 @@ class McpTransportTest(unittest.TestCase):
         self.assertIn("pattern", item_schema["$defs"]["ItemStatusItemRequest"]["properties"]["item_id"])
         self.assertIn("pattern", item_schema["$defs"]["ItemStatusBranchRequest"]["properties"]["branch"])
         proposal_schema = tools_by_name[mcp_server.PROPOSAL_CREATE_TOOL].input_schema
-        self.assertEqual("#/$defs/Proposal", proposal_schema["properties"]["proposal"]["$ref"])
+        self.assertIn("anyOf", proposal_schema["properties"]["proposal"])
         self.assertFalse(proposal_schema["$defs"]["Proposal"]["additionalProperties"])
+        self.assertFalse(proposal_schema["$defs"]["OriginProposal"]["additionalProperties"])
         brief_schema = tools_by_name[mcp_server.BRIEF_PUBLISH_TOOL].input_schema
         self.assertEqual("#/$defs/WorkBrief", brief_schema["properties"]["brief"]["$ref"])
         self.assertFalse(brief_schema["$defs"]["WorkBrief"]["additionalProperties"])

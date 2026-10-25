@@ -36,6 +36,29 @@ class HistoricalDefinitionTest(unittest.TestCase):
             {"request": {**self.explicit_roots, "operation": "current", "item_id": item_id}},
         )
 
+    def test_historical_replacement_has_no_recorded_carriers_and_cannot_supply_source_obligations(self) -> None:
+        self.replace_original("work-b", self.historical_payload("work-b"))
+        pair: JsonObject = {
+            **self.explicit_roots,
+            "operation": "pair",
+            "source_item": "work-c",
+            "replacement_item": "work-b",
+        }
+        result = call_advertised_tool("pinboard_obligation_coverage", {"request": pair})
+        self.assertEqual("ok", result["status"], result)
+        coverage = result["coverage"]
+        assert isinstance(coverage, dict) and isinstance(coverage["obligations"], list)
+        self.assertTrue(coverage["obligations"])
+        self.assertTrue(
+            all(isinstance(value, dict) and value["status"] == "uncovered" for value in coverage["obligations"])
+        )
+        reversed_pair = {**pair, "source_item": "work-b", "replacement_item": "work-c"}
+        rejected = call_advertised_tool("pinboard_obligation_coverage", {"request": reversed_pair})
+        self.assertEqual(
+            ("rejected", "ITEM_DEFINITION_INVALID", "unchanged"),
+            (rejected["status"], rejected["code"], rejected["effect"]),
+        )
+
     def historical_payload(self, item_id: str) -> bytes:
         value = self.current(item_id)["definition"]
         assert isinstance(value, dict)

@@ -11,6 +11,7 @@ from typing import Literal, Self, assert_never
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.sqlite import cancellation
 from pinboard.adapters.sqlite import initiatives as initiative_storage
+from pinboard.adapters.sqlite import obligation_coverage as obligation_storage
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
     accept_artifact_reference as write_artifact_reference,
@@ -961,6 +962,11 @@ def _persist(
 
 
 class SQLiteWorkTransaction:
+    def read_obligation_origins(
+        self, origins: tuple[work_models.ObligationOrigin, ...]
+    ) -> frozenset[work_models.ObligationOrigin]:
+        return obligation_storage.read_origins(self.connection, origins)
+
     def read_initiative_facts(
         self, initiative_id: initiative_models.InitiativeId
     ) -> initiative_models.CurrentFacts | None:

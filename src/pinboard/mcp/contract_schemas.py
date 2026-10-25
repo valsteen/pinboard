@@ -72,6 +72,7 @@ from pinboard.mcp.contracts import (
     CandidateRestoreReady,
     CandidateRestoreRejected,
     CandidateReviewRecorded,
+    CloseActionsSuccess,
     CompletionActionsSuccess,
     CorrectionContextReady,
     CorrectionContextRejected,
@@ -97,6 +98,8 @@ from pinboard.mcp.contracts import (
     JsonValue,
     NonterminalAttemptInspectionSuccess,
     NoPayloadInputContract,
+    ObligationCoverageRejected,
+    ObligationCoverageSuccess,
     OrderCommitted,
     OrderRejected,
     OverviewRejected,
@@ -779,6 +782,9 @@ def _validate_actions_result(content: dict[str, JsonValue]) -> None:
     first_action = action_values[0] if isinstance(action_values, list) and len(action_values) == 1 else None
     input_contract = first_action.get("input_contract") if isinstance(first_action, dict) else None
     focused_completion = isinstance(input_contract, dict) and "checkpoint_packages" in input_contract
+    if isinstance(first_action, dict) and "replacement_coverage" in first_action:
+        msgspec.convert(content, type=CloseActionsSuccess, strict=True)
+        return
     if focused_completion:
         msgspec.convert(content, type=CompletionActionsSuccess, strict=True)
         return
@@ -846,6 +852,12 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     elif tool_name == "pinboard_parallel_preview":
         msgspec.convert(
             content, type=ParallelPreviewRejected if status == "rejected" else ParallelPreviewSuccess, strict=True
+        )
+    elif tool_name == "pinboard_obligation_coverage":
+        msgspec.convert(
+            content,
+            type=ObligationCoverageRejected if status == "rejected" else ObligationCoverageSuccess,
+            strict=True,
         )
     elif tool_name == "pinboard_item_definition":
         if schema == "pinboard-item-definition/v1":

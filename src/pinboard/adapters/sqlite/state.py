@@ -232,6 +232,24 @@ def _current_definitions(
         ):
             raise StorageError(error_code, "Definition history digest does not match its canonical definition.")
     current_definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision] = {}
+    retained_origins = {
+        work_models.ObligationOrigin(value.item_id, value.revision, obligation.obligation_id)
+        for value in state.lifecycle.definition_revisions
+        if isinstance(value.definition, work_models.WorkItemDefinition)
+        for obligation in value.definition.obligations
+    }
+    for value in state.lifecycle.definition_revisions:
+        if isinstance(value.definition, work_models.WorkItemDefinition):
+            for obligation in value.definition.obligations:
+                if (
+                    isinstance(obligation, work_models.CarriedWorkObligation)
+                    and obligation.origin not in retained_origins
+                ):
+                    origin = obligation.origin
+                    raise StorageError(
+                        error_code,
+                        f"Definition '{value.item_id}@{value.revision}' names missing retained origin '{origin.item_id}@{origin.definition_revision}/obligation/{origin.obligation_id}'.",
+                    )
     for item_id, revisions in definitions_by_item.items():
         ordered = sorted(revisions, key=_definition_revision_number)
         if [value.revision for value in ordered] != list(range(1, len(ordered) + 1)) or not ordered:
@@ -346,7 +364,11 @@ def _validate_current_state(state: stored_state.StoredWorkState, error_code: Sto
         if stored_state.live_work_state(item_state) is not None and not isinstance(
             current_definitions[item_id].definition, work_models.WorkItemDefinition
         ):
-            raise StorageError(error_code, "A live work item requires a genuine current v2 definition.")
+            raise StorageError(
+                error_code,
+                "A live work item requires a genuine current supported definition: origin-free v2 or origin-bearing v3; "
+                "historical v1 is not executable.",
+            )
     current_attempt_states = {
         value.item_id: value.state for value in state.lifecycle.attempts if value.state != work_models.AttemptState.DONE
     }

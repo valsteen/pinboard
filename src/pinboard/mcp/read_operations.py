@@ -30,6 +30,7 @@ from pinboard.application import (
     brief_sources,
     candidate_snapshots,
     fixture_review,
+    obligation_coverage,
     ports,
     queries,
     query_models,
@@ -1214,7 +1215,7 @@ def _mcp_action(
     focused: bool,
     artifacts: ArtifactRepository | None = None,
 ) -> DecisionResult[dict[str, JsonValue]]:
-    """Project a legal action, reading final evidence only for focused completion."""
+    """Project a legal action; focused ending detail adds its current decision evidence."""
     projected = actions.project_action(action, include_input_contract=True)
     if not isinstance(projected, action_models.ActionView):
         raise RuntimeError("MCP action discovery requires an inline input contract.")
@@ -1278,6 +1279,12 @@ def _mcp_action(
         )
     content = msgspec.to_builtins(record)
     assert isinstance(content, dict)
+    if isinstance(action, decision_models.CloseAction) and focused:
+        facts = store.read_obligation_coverage(action.capability.subject, None)
+        coverage = None if facts.replacement_item is None else obligation_coverage.report(facts)
+        if isinstance(coverage, DecisionFailure):
+            return coverage
+        content["replacement_coverage"] = msgspec.to_builtins(coverage)
     return content
 
 

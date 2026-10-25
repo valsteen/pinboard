@@ -10,7 +10,6 @@ from threading import Barrier
 from unittest.mock import patch
 
 import msgspec
-from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.sqlite.lifecycle import move_item_state_count
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -563,16 +562,21 @@ class CancellationTest(CheckpointPackageSupport):
         self.assertEqual("committed", self.confirm(fixture, "work-a", preview)["status"])
         receipt = fixture.store.validated_snapshot().transition_receipts[-1]
         record = msgspec.json.decode(bytes(receipt.input_payload), type=cancellation_models.CancellationRecord)
-        historical_preview = replace_struct(
-            record.preview,
-            dependency_effect="Dropped prerequisites remain unsatisfied; dependent commitments are retained.",
+        preview_value = msgspec.to_builtins(record.preview)
+        preview_value.pop("replacement_coverage")
+        preview_value["schema"] = "pinboard-cancellation-preview/v1"
+        preview_value["dependency_effect"] = (
+            "Dropped prerequisites remain unsatisfied; dependent commitments are retained."
         )
+        historical_preview = msgspec.convert(preview_value, type=cancellation_models.CompatibilityCancellationPreviewV1)
         historical_binding = cancellation.binding(historical_preview, fixture.work)
-        historical_record = replace_struct(record, preview=historical_preview, binding=historical_binding)
+        historical_record = cancellation_models.CompatibilityCancellationRecordV1(
+            historical_binding, historical_preview, record.human_confirmation
+        )
         historical_bytes = msgspec.json.encode(historical_record, order="sorted")
         with fixture.store.write() as transaction:
             transaction.connection.execute(
-                "UPDATE transition_history SET input_json = ? WHERE history_id = ?",
+                "UPDATE transition_history SET input_schema = 'pinboard-cancellation/v1', input_json = ? WHERE history_id = ?",
                 (historical_bytes.decode(), receipt.history_id),
             )
         fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()

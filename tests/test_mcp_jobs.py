@@ -757,6 +757,61 @@ class McpJobsTest(CheckpointPackageSupport):
         self.assertIn(str(reference["sha256"]), prompt)
         self.assertIn("Do not return successful delivery before", prompt)
 
+    def test_antigravity_worker_launch_is_complete_fresh_context_and_cannot_request_another_checkout(self) -> None:
+        for background in (False, True):
+            with self.subTest(background=background):
+                project, work, choice = self.dispatch_fixture()
+                environment = self.json_object(choice["environment"])
+                choice["environment"] = environment | {"runtime": "antigravity", "background": background}
+                outcome = mcp_jobs._dispatch_job(str(project), str(work), choice, mcp_execution.CancellationToken())
+                self.assertEqual("ready", outcome.content["status"], outcome.content)
+                contract_schemas.validate_result("pinboard_dispatch", outcome.content)
+                launch = self.json_object(outcome.content["native_launch"])
+                self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
+                self.assertEqual("antigravity", launch["runtime"])
+                self.assertEqual("invoke_subagent", launch["tool"])
+                self.assertEqual(background, launch["background"])
+                arguments = self.json_object(launch["arguments"])
+                self.assertEqual({"TypeName", "Role", "Prompt"}, set(arguments))
+                self.assertEqual("self", arguments["TypeName"])
+                prompt = arguments["Prompt"]
+                assert isinstance(prompt, str)
+                reference = self.json_object(outcome.content["prompt_reference"])
+                published_prompt = (work / str(reference["selector"])).read_text(encoding="utf-8")
+                self.assertNotIn(published_prompt, prompt)
+                self.assertIn(str(work / str(reference["selector"])), prompt)
+                self.assertIn(str(reference["sha256"]), prompt)
+                self.assertIn("Do not return successful delivery before", prompt)
+
+    def test_antigravity_review_job_launches_fresh_self_subagent_with_shared_message(self) -> None:
+        fixture, _package_id, _correction_id = self.review_job_fixture()
+        outcome = mcp_jobs._review_job(
+            str(fixture.project),
+            str(fixture.work),
+            {
+                "kind": "initial",
+                "attempt_id": "work-a-1",
+                "candidate_revision": "b" * 40,
+                "runtime": "antigravity",
+                "background": True,
+            },
+            mcp_execution.CancellationToken(),
+        )
+        self.assertEqual("ready", outcome.content["status"], outcome.content)
+        contract_schemas.validate_result("pinboard_review_job", outcome.content)
+        launch = self.json_object(outcome.content["native_launch"])
+        self.assertEqual(
+            ("antigravity", "invoke_subagent", True), (launch["runtime"], launch["tool"], launch["background"])
+        )
+        arguments = self.json_object(launch["arguments"])
+        self.assertEqual({"TypeName", "Role", "Prompt"}, set(arguments))
+        self.assertEqual("self", arguments["TypeName"])
+        prompt = arguments["Prompt"]
+        assert isinstance(prompt, str)
+        reference = self.json_object(outcome.content["prompt_reference"])
+        self.assertIn(str(fixture.work / str(reference["selector"])), prompt)
+        self.assertIn(str(reference["sha256"]), prompt)
+
     def test_review_jobs_select_four_rounds_and_keep_mutable_review_digest_separate(self) -> None:
         fixture, package_id, correction_id = self.review_job_fixture()
         before = fixture.store.validated_snapshot()

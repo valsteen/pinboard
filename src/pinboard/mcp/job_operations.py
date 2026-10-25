@@ -97,8 +97,10 @@ def _mcp_launch_envelope(
         "Read each page and follow its exact continuation under request until continuation is null; emit one page "
         "per outer response without aggregating pages. Concatenate text in order to read the complete exact task "
         "and follow it. Stop on rejection, unreadable text or identity/range mismatch. EOF establishes delivery "
-        "only. Load complete skills/references through the native skill loader or pinboard_startup_text file-start "
-        "with the actual resolved absolute path and the same roots/budget, following pages in the same way."
+        "only. Load complete skills/references through the native skill loader only when it delivers the complete "
+        "body; otherwise, including in Antigravity, which injects only the first 24000 bytes, use "
+        "pinboard_startup_text file-start with the actual resolved absolute path and the same roots/budget, "
+        "following pages in the same way."
     )
     if environment is not None:
         acquisition = {
@@ -153,6 +155,17 @@ def _mcp_launch_envelope(
                     f"Pinboard {prompt_role} for {attempt_id}",
                     message,
                     background,
+                ),
+            )
+        case "antigravity":
+            return dispatch_models.AntigravityNativeLaunchEnvelope(
+                "pinboard-native-agent-launch/v2",
+                "invoke_subagent",
+                background,
+                dispatch_models.AntigravityLaunchArguments(
+                    "self",
+                    f"Pinboard {prompt_role} for {attempt_id}",
+                    message,
                 ),
             )
         case _ as unreachable:

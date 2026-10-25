@@ -19,8 +19,8 @@ import msgspec
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from pinboard import claude_hook
-from tests.support import JsonObject
+from pinboard import antigravity_hook, claude_hook
+from tests.support import JsonObject, JsonValue
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -52,6 +52,37 @@ def pre_tool_use_event(cwd: Path) -> dict[str, str]:
         "session_id": "sensitive-parent-session",
         "tool_name": "mcp__plugin_pinboard_pinboard__pinboard_overview",
         "transcript_path": "/sensitive/native-transcript.jsonl",
+    }
+
+
+def antigravity_session_start_event() -> JsonObject:
+    return {
+        "conversationId": "65a31c31-5fba-4d85-8461-1df5645b9994",
+        "workspacePaths": ["/sensitive/native-project"],
+        "transcriptPath": "/sensitive/native-transcript.jsonl",
+        "artifactDirectoryPath": "/sensitive/native-artifacts",
+        "modelName": "sensitive-model-name",
+        "lastUserInput": "sensitive user input",
+    }
+
+
+def antigravity_tool_event(server_name: str, tool_name: str) -> JsonObject:
+    return {
+        "conversationId": "sensitive-conversation",
+        "workspacePaths": ["/sensitive/native-project"],
+        "transcriptPath": "/sensitive/native-transcript.jsonl",
+        "artifactDirectoryPath": "/sensitive/native-artifacts",
+        "modelName": "sensitive-model-name",
+        "lastUserInput": "sensitive user input",
+        "stepIdx": 4,
+        "toolCall": {
+            "name": "call_mcp_tool",
+            "args": {
+                "ServerName": server_name,
+                "ToolName": tool_name,
+                "Arguments": {"project_root": "/sensitive/root"},
+            },
+        },
     }
 
 
@@ -387,6 +418,179 @@ class PluginPackagingTests(unittest.TestCase):
         self.assertEqual(2, len(successful_outputs))
         self.assertEqual(successful_outputs[0], successful_outputs[1])
 
+    def run_antigravity_hook(self, selector: str, payload: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(ROOT / "scripts" / "pinboard"), selector, *arguments],
+            input=payload,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_antigravity_owned_outputs_reject_undeclared_fields_and_decisions(self) -> None:
+        step: JsonObject = {"systemMessage": {"systemMessage": "context"}}
+        empty_list: list[JsonValue] = []
+        empty_object: JsonObject = {}
+        startup_outputs: tuple[JsonObject, ...] = (
+            {"injectSteps": empty_list},
+            {"injectSteps": [step, step]},
+            {"injectSteps": [step], "unknown": True},
+            {"injectSteps": [{**step, "ephemeralMessage": "context"}]},
+            {"injectSteps": [{"systemMessage": {"systemMessage": "context", "metadata": empty_object}}]},
+            {"injectSteps": [{"userMessage": "context"}]},
+        )
+        for value in startup_outputs:
+            with self.subTest(value=value), self.assertRaises(msgspec.ValidationError):
+                msgspec.json.decode(json.dumps(value), type=antigravity_hook.StartupOutput)
+        permission_outputs: tuple[JsonObject, ...] = (
+            {"decision": "deny", "reason": "reason"},
+            {"decision": "allow", "reason": "reason", "overwrite": empty_object},
+            {"decision": "allow", "reason": "reason", "permissionOverrides": empty_list},
+            {"decision": "allow"},
+        )
+        for value in permission_outputs:
+            with self.subTest(value=value), self.assertRaises(msgspec.ValidationError):
+                msgspec.json.decode(json.dumps(value), type=antigravity_hook.PermissionOutput)
+
+    def test_antigravity_session_hook_delivers_conversation_and_machine_without_forwarding_payload(self) -> None:
+        event = antigravity_session_start_event()
+        extended: JsonObject = {
+            **event,
+            "sessionSource": "sensitive-source",
+            "metadata": {"nested": ["sensitive-nested"]},
+        }
+        child: JsonObject = {**event, "lastUserInput": ""}
+        required = ("conversationId", "workspacePaths", "transcriptPath", "artifactDirectoryPath", "modelName")
+        invalid: list[JsonObject | list[str]] = [
+            [],
+            {**event, "conversationId": ""},
+            {**event, "conversationId": " conversation"},
+            {**event, "conversationId": "parent/child"},
+            {**event, "conversationId": "conversation\nspoofed"},
+            {**event, "conversationId": "conversation\u0000"},
+            {**event, "workspacePaths": "/sensitive/native-project"},
+            {**event, "conversation_id": event["conversationId"], "conversationId": 47},
+        ]
+        invalid.extend({key: value for key, value in event.items() if key != missing} for missing in required)
+        invalid.extend({**event, key: 47} for key in required)
+        valid: list[JsonObject] = [event, extended, child]
+        outputs: list[str] = []
+        for index, payload in enumerate([*(json.dumps(value) for value in [*valid, *invalid]), "{", ""]):
+            with self.subTest(index=index):
+                result = self.run_antigravity_hook("--antigravity-session-start", payload)
+                if index < len(valid):
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual("", result.stderr)
+                    output = msgspec.json.decode(result.stdout, type=antigravity_hook.StartupOutput)
+                    context = output.inject_steps[0].system_message.system_message
+                    self.assertIn(json.dumps(event["conversationId"]), context)
+                    self.assertIn(json.dumps(socket.gethostname()), context)
+                    outputs.append(result.stdout)
+                else:
+                    self.assertEqual(1, result.returncode, result.stderr)
+                    self.assertEqual("", result.stdout)
+                    self.assertLess(len(result.stderr), 256)
+                for sensitive in (
+                    "/sensitive/",
+                    "sensitive-model-name",
+                    "sensitive user input",
+                    "sensitive-source",
+                    "sensitive-nested",
+                ):
+                    self.assertNotIn(sensitive, result.stdout + result.stderr)
+        self.assertEqual(1, len(set(outputs)))
+        for argument in ("--antigravity-pre-tool-use", "--mcp", "--version", ""):
+            with self.subTest(argument=argument):
+                result = self.run_antigravity_hook("--antigravity-session-start", json.dumps(event), argument)
+                self.assertEqual(64, result.returncode)
+                self.assertEqual("", result.stdout)
+                self.assertEqual("invalid-startup-arguments", json.loads(result.stderr)["status"])
+
+    def test_antigravity_session_hook_adds_reconnect_note_only_when_launcher_prepared_runtime_now(self) -> None:
+        for value, expected in ((None, False), ("0", False), ("1", True)):
+            environment: dict[str, str] = {} if value is None else {"PINBOARD_RUNTIME_PREPARED_NOW": value}
+            with (
+                self.subTest(value=value),
+                patch.dict(os.environ, environment, clear=False),
+                patch.object(sys, "argv", ["pinboard-antigravity-session-start"]),
+                patch.object(
+                    sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(antigravity_session_start_event()).encode()))
+                ),
+                patch.object(socket, "gethostname", return_value="machine"),
+                redirect_stdout(io.StringIO()) as stdout,
+            ):
+                if value is None:
+                    os.environ.pop("PINBOARD_RUNTIME_PREPARED_NOW", None)
+                self.assertEqual(0, antigravity_hook.session_start_main())
+                output = msgspec.json.decode(stdout.getvalue(), type=antigravity_hook.StartupOutput)
+                context = output.inject_steps[0].system_message.system_message
+                self.assertEqual(expected, "Pinboard prepared this plugin version's private runtime" in context)
+                self.assertIn(json.dumps("machine"), context)
+        with (
+            patch.object(sys, "argv", ["pinboard-antigravity-session-start"]),
+            patch.object(
+                sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(antigravity_session_start_event()).encode()))
+            ),
+            patch.object(socket, "gethostname", side_effect=OSError("sensitive-machine-error")),
+            redirect_stdout(io.StringIO()) as stdout,
+            redirect_stderr(io.StringIO()) as stderr,
+        ):
+            self.assertEqual(1, antigravity_hook.session_start_main())
+            self.assertEqual("", stdout.getvalue())
+            self.assertNotIn("sensitive-machine-error", stderr.getvalue())
+
+    def test_antigravity_permission_hook_decides_by_pinboard_server_and_tool(self) -> None:
+        cases = (
+            (antigravity_tool_event("pinboard_pinboard", "pinboard_overview"), "allow"),
+            (antigravity_tool_event("pinboard_pinboard", "pinboard_transition"), "allow"),
+            (antigravity_tool_event("pinboard_pinboard", "pinboard_close"), "force_ask"),
+            ({**antigravity_tool_event("pinboard_pinboard", "pinboard_close"), "futureField": {"x": 1}}, "force_ask"),
+            ({**antigravity_tool_event("pinboard_pinboard", "pinboard_overview"), "futureField": 47}, "allow"),
+            (antigravity_tool_event("other_server", "pinboard_overview"), "ask"),
+            (antigravity_tool_event("other_pinboard", "pinboard_close"), "ask"),
+            (
+                {
+                    key: value
+                    for key, value in antigravity_tool_event("pinboard_pinboard", "pinboard_close").items()
+                    if key != "conversationId"
+                },
+                "force_ask",
+            ),
+            ({"toolCall": antigravity_tool_event("pinboard_pinboard", "pinboard_overview")["toolCall"]}, "allow"),
+        )
+        for event, decision in cases:
+            with self.subTest(event=event["toolCall"], decision=decision):
+                result = self.run_antigravity_hook("--antigravity-pre-tool-use", json.dumps(event))
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("", result.stderr)
+                output = msgspec.json.decode(result.stdout, type=antigravity_hook.PermissionOutput)
+                self.assertEqual(decision, output.decision)
+                self.assertNotIn("sensitive", result.stdout)
+        event = antigravity_tool_event("pinboard_pinboard", "pinboard_overview")
+        tool_call = event["toolCall"]
+        assert isinstance(tool_call, dict)
+        invalid: list[JsonObject | list[str]] = [
+            [],
+            {**event, "toolCall": {**tool_call, "name": "read_file"}},
+            {**event, "toolCall": {"name": "call_mcp_tool"}},
+            {**event, "toolCall": {**tool_call, "args": {"ServerName": "pinboard_pinboard"}}},
+            {**event, "toolCall": {**tool_call, "args": {"ServerName": "pinboard_pinboard", "ToolName": ""}}},
+            {key: value for key, value in event.items() if key != "toolCall"},
+        ]
+        for index, payload in enumerate([*(json.dumps(value) for value in invalid), "{", ""]):
+            with self.subTest(index=index):
+                result = self.run_antigravity_hook("--antigravity-pre-tool-use", payload)
+                self.assertEqual(1, result.returncode, result.stderr)
+                self.assertEqual("", result.stdout)
+                self.assertLess(len(result.stderr), 256)
+                self.assertNotIn("sensitive", result.stderr)
+        for argument in ("--antigravity-session-start", "--mcp", "--version", ""):
+            with self.subTest(argument=argument):
+                result = self.run_antigravity_hook("--antigravity-pre-tool-use", json.dumps(event), argument)
+                self.assertEqual(64, result.returncode)
+                self.assertEqual("", result.stdout)
+                self.assertEqual("invalid-startup-arguments", json.loads(result.stderr)["status"])
+
     def assert_configured_mcp_reads(
         self, sandbox: Path, plugin_root: Path, project: Path, environment: dict[str, str], proposal: JsonObject
     ) -> None:
@@ -476,7 +680,64 @@ class PluginPackagingTests(unittest.TestCase):
         worker_command = worker_matcher["hooks"][0]
         permission_matcher = hooks["PreToolUse"][0]
         permission_command = permission_matcher["hooks"][0]
+        antigravity_manifest_path = ".antigravity-plugin/plugin.json"
+        antigravity_manifest = json.loads((ROOT / antigravity_manifest_path).read_bytes())
+        antigravity_hooks = json.loads((ROOT / "hooks.json").read_bytes())["pinboard"]
+        antigravity_startup = antigravity_hooks["SessionStart"][0]
+        antigravity_matcher = antigravity_hooks["PreToolUse"][0]
+        antigravity_mcp = json.loads((ROOT / "mcp_config.json").read_bytes())["mcpServers"]["pinboard"]
         changes = (
+            (antigravity_manifest_path, None),
+            (antigravity_manifest_path, json.dumps({**antigravity_manifest, "version": "0.1.0+claude.20260101000000"})),
+            (antigravity_manifest_path, json.dumps({**antigravity_manifest, "version": "0.1.0+antigravity.latest"})),
+            (antigravity_manifest_path, json.dumps({**antigravity_manifest, "hooks": "./hooks.json"})),
+            (antigravity_manifest_path, json.dumps({**antigravity_manifest, "description": "Different."})),
+            ("hooks.json", None),
+            (
+                "hooks.json",
+                json.dumps(
+                    {"pinboard": {**antigravity_hooks, "PreToolUse": [{**antigravity_matcher, "matcher": ".*"}]}}
+                ),
+            ),
+            ("hooks.json", json.dumps({"pinboard": {**antigravity_hooks, "PreToolUse": []}})),
+            ("hooks.json", json.dumps({"pinboard": {**antigravity_hooks, "Stop": []}})),
+            ("hooks.json", json.dumps({"pinboard": antigravity_hooks, "other": antigravity_hooks})),
+            (
+                "hooks.json",
+                json.dumps(
+                    {
+                        "pinboard": {
+                            **antigravity_hooks,
+                            "SessionStart": [
+                                {**antigravity_startup, "command": antigravity_startup["command"] + " --version"}
+                            ],
+                        }
+                    }
+                ),
+            ),
+            ("hooks.json", json.dumps({"pinboard": {**antigravity_hooks, "enabled": False}})),
+            ("mcp_config.json", None),
+            (
+                "mcp_config.json",
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "pinboard": {
+                                **antigravity_mcp,
+                                "command": "${PLUGIN_ROOT}/scripts/pinboard",
+                                "args": ["--mcp"],
+                            }
+                        }
+                    }
+                ),
+            ),
+            ("mcp_config.json", json.dumps({"mcpServers": {"pinboard": {**antigravity_mcp, "cwd": "."}}})),
+            (
+                "mcp_config.json",
+                json.dumps(
+                    {"mcpServers": {"pinboard": {**antigravity_mcp, "args": [*antigravity_mcp["args"], "--version"]}}}
+                ),
+            ),
             (
                 codex_manifest_path,
                 json.dumps(
@@ -757,7 +1018,7 @@ class PluginPackagingTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertIn("Codex and Claude plugins", metadata_validation.stdout)
+        self.assertIn("Codex, Claude and Antigravity plugins", metadata_validation.stdout)
 
         missing_runtime = subprocess.run(
             [str(launcher), "--project-root", str(project), "status", "--json"],

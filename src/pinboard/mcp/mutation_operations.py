@@ -493,7 +493,9 @@ def _transition(
                 identity,
                 "pinboard_transition does not apply close; close is applied only through pinboard_close, which "
                 "records the human's decision. Claude Code v2.1.199 or later asks the human to confirm that call; "
-                "Codex and earlier Claude Code versions may not ask.",
+                "Codex and earlier Claude Code versions may not ask. Antigravity asks through Pinboard's PreToolUse "
+                "force_ask decision, so close is unavailable in headless agy runs; when that hook does not run, "
+                "Antigravity's own approval settings decide.",
                 FailureFact("close_tool", tool_names.CLOSE_TOOL),
             )
         return _transition_rejected(

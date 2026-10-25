@@ -58,6 +58,8 @@ EXPECTED_ENTRY_POINTS: Final = {
     "pinboard-claude-subagent-start": "pinboard.claude_hook:main",
     "pinboard-claude-session-start": "pinboard.claude_hook:session_start_main",
     "pinboard-claude-pre-tool-use": "pinboard.claude_hook:pre_tool_use_main",
+    "pinboard-antigravity-session-start": "pinboard.antigravity_hook:session_start_main",
+    "pinboard-antigravity-pre-tool-use": "pinboard.antigravity_hook:pre_tool_use_main",
 }
 
 type SkillName = Annotated[
@@ -199,6 +201,58 @@ class ClaudeHookConfiguration(msgspec.Struct, frozen=True, forbid_unknown_fields
     hooks: ClaudeHooks
 
 
+class AntigravityPluginManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    name: str
+    description: str
+    version: str
+
+
+class AntigravityMcpServer(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    command: Literal["sh"]
+    args: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.args != ("${PLUGIN_ROOT}/scripts/pinboard", "--mcp"):
+            raise ValueError("Antigravity MCP must select the plugin-root launcher with only --mcp")
+
+
+class AntigravityMcpServers(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    pinboard: AntigravityMcpServer
+
+
+class AntigravityMcpConfiguration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    mcp_servers: AntigravityMcpServers = msgspec.field(name="mcpServers")
+
+
+class AntigravityStartupCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    type: Literal["command"]
+    command: Literal["./scripts/pinboard --antigravity-session-start"]
+    timeout: Literal[600]
+
+
+class AntigravityPermissionCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    type: Literal["command"]
+    command: Literal["./scripts/pinboard --antigravity-pre-tool-use"]
+
+
+class AntigravityPermissionMatcher(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    matcher: Literal["call_mcp_tool"]
+    hooks: Annotated[tuple[AntigravityPermissionCommand, ...], msgspec.Meta(min_length=1, max_length=1)]
+
+
+class AntigravityHooks(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    session_start: Annotated[tuple[AntigravityStartupCommand, ...], msgspec.Meta(min_length=1, max_length=1)] = (
+        msgspec.field(name="SessionStart")
+    )
+    pre_tool_use: Annotated[tuple[AntigravityPermissionMatcher, ...], msgspec.Meta(min_length=1, max_length=1)] = (
+        msgspec.field(name="PreToolUse")
+    )
+
+
+class AntigravityHookConfiguration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    pinboard: AntigravityHooks
+
+
 class ProjectMetadata(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     name: str
     version: str
@@ -333,6 +387,23 @@ def validate_claude_plugin() -> None:
     msgspec.json.decode((ROOT / value.hooks).read_bytes(), type=ClaudeHookConfiguration)
 
 
+def validate_antigravity_plugin() -> None:
+    path = ROOT / ".antigravity-plugin" / "plugin.json"
+    value = msgspec.json.decode(path.read_bytes(), type=AntigravityPluginManifest)
+    cachebuster_prefix = f"{PROJECT_VERSION}+antigravity."
+    cachebuster = value.version.removeprefix(cachebuster_prefix)
+    if value.name != PLUGIN_NAME or not value.version.startswith(cachebuster_prefix):
+        raise ValueError("Antigravity plugin manifest identity or version is invalid")
+    if len(cachebuster) != 14 or not cachebuster.isdecimal():
+        raise ValueError("plugin manifest cachebuster must be a UTC timestamp")
+    claude = msgspec.json.decode((ROOT / ".claude-plugin" / "plugin.json").read_bytes(), type=ClaudePluginManifest)
+    if value.description != claude.description:
+        raise ValueError("Antigravity and Claude plugin descriptions must match")
+    # Antigravity loads a native plugin's hooks and MCP servers only from these fixed root files.
+    msgspec.json.decode((ROOT / "hooks.json").read_bytes(), type=AntigravityHookConfiguration)
+    msgspec.json.decode((ROOT / "mcp_config.json").read_bytes(), type=AntigravityMcpConfiguration)
+
+
 def validate_mcp_configuration() -> None:
     msgspec.json.decode((ROOT / "mcp-codex.json").read_bytes(), type=CodexMcpConfiguration)
     msgspec.json.decode((ROOT / "mcp-claude.json").read_bytes(), type=ClaudeMcpConfiguration)
@@ -361,7 +432,9 @@ def validate_project_metadata() -> None:
     if project.dependencies != ("anyio>=4.15.1", "mcp==2.2.0", "msgspec>=0.21.1"):
         raise ValueError("runtime dependencies must be exact and limited to AnyIO, MCP and msgspec")
     if project.scripts != EXPECTED_ENTRY_POINTS:
-        raise ValueError("project entry points must expose exactly the CLI, local-stdio MCP and Claude hook boundaries")
+        raise ValueError(
+            "project entry points must expose exactly the CLI, local-stdio MCP, Claude hook and Antigravity hook boundaries"
+        )
 
 
 def validate_codex_marketplace() -> None:
@@ -420,6 +493,7 @@ def main() -> None:
         raise ValueError("repository license must exactly match the canonical MIT license text")
     validate_plugin()
     validate_claude_plugin()
+    validate_antigravity_plugin()
     validate_mcp_configuration()
     validate_project_metadata()
     validate_codex_marketplace()
@@ -432,7 +506,9 @@ def main() -> None:
         )
     for path in skill_paths:
         validate_skill(path)
-    print(f"validated Codex and Claude plugins, Codex and Claude marketplaces, and {len(skill_paths)} skills")
+    print(
+        f"validated Codex, Claude and Antigravity plugins, Codex and Claude marketplaces, and {len(skill_paths)} skills"
+    )
 
 
 if __name__ == "__main__":

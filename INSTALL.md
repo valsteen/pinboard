@@ -1,6 +1,6 @@
 # Install Pinboard
 
-Pinboard supports macOS and Linux. Codex is the primary, stress-tested integration; Claude Code installs the same plugin through its own marketplace mechanism.
+Pinboard supports macOS and Linux. Codex is the primary, stress-tested integration; Claude Code installs the same plugin through its own marketplace mechanism, and Antigravity CLI (`agy`) installs the same repository as a native Antigravity plugin from a local clone.
 
 ## Launcher and environment paths
 
@@ -196,6 +196,80 @@ The explicit preparation makes the runtime available before the single session s
 
 The free Claude chat plan and Claude Code access are separate product surfaces. Check [Anthropic's current authentication options](https://code.claude.com/docs/en/authentication) before an authenticated smoke test because access can change.
 
+## Antigravity
+
+Antigravity CLI (`agy`; observed with version 1.4.7) loads the same repository as a native Antigravity plugin. Install it from a local clone:
+
+```sh
+git clone https://github.com/valsteen/pinboard.git
+agy plugin install /path/to/pinboard
+agy plugin list --json
+```
+
+`agy plugin install` copies the whole directory to `~/.gemini/config/plugins/pinboard/` and reads `.antigravity-plugin/plugin.json`, the root `mcp_config.json` and the root `hooks.json`. `agy plugin list --json` should report the plugin with `"source": "antigravity"`, the `pinboard` MCP server and the `pinboard` hooks. Install from a clean clone: the copy takes everything in the directory, and the launcher prefers a development `.venv` when one is present. `agy plugin validate /path/to/pinboard` checks the plugin; its warnings that two skill bodies exceed 24000 bytes and that `AGENTS.md` is never loaded are expected.
+
+### Allow Pinboard tools
+
+Antigravity runs a plugin's MCP tools only under its own permission rules, and a plugin cannot install them. Add Pinboard's server to `permissions.allow` in `~/.gemini/antigravity-cli/settings.json`, keeping any rules already there:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp(pinboard_pinboard/*)"
+    ]
+  }
+}
+```
+
+Pinboard never writes this file. Without the rule, an interactive session asks before each Pinboard call and a headless `agy -p` run denies it. A rule in a project-level settings file did not grant the call in the observed version.
+
+Antigravity sends every MCP call, from any server, through one tool, so Pinboard's PreToolUse hook answers each of them. It answers `force_ask` for `pinboard_close`, so Antigravity asks you before every close of a saved item even with the allow rule; `allow` for the other Pinboard tools; and `ask` for other servers' tools, which leaves them to your own settings. In the observed version, another server's tool with its own allow rule still ran without a prompt. Headless `agy -p` cannot show the close prompt, so a close is denied there. If the hook does not run, your Antigravity approval settings decide for every tool, including `pinboard_close`. The close also records your decision in your own words, so an agent without them should ask you rather than close.
+
+### Unattended headless runs
+
+A Pinboard reviewer computes the SHA-256 digests of the files it checks itself, and in Antigravity that takes a shell command. Before you leave a headless `agy -p` run to delegate review, add an allow rule for the hash command next to the Pinboard rule, for example `command(shasum)`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp(pinboard_pinboard/*)",
+      "command(shasum)"
+    ]
+  }
+}
+```
+
+Workers and reviewers run as Antigravity subagents, and in the observed version a headless run does not deliver a refusal to a subagent. When a worker or reviewer needs a command that has no allow rule, the subagent stalls and the run waits indefinitely with no message instead of failing. Allow the commands your workers and reviewers need, such as the hash command and the project's build and test commands, or stop a run that stops making progress. An interactive session is expected to ask you about such a command instead, but this has not been confirmed.
+
+### First Antigravity session
+
+Start agy in the project where you want to use Pinboard and ask:
+
+> Set up Pinboard here and explain how I can use it from one session or several.
+
+On the first session of a new install, the SessionStart hook prepares the plugin's private runtime with uv, and MCP startup can do the same; both use the version-local preparation lock and write only `~/.gemini/config/plugins/pinboard/.pinboard-runtime`. To prepare it yourself, or when uv is not on agy's PATH:
+
+```sh
+~/.gemini/config/plugins/pinboard/scripts/pinboard --prepare-runtime
+```
+
+If Pinboard stays unavailable after preparation, start a new agy session so Antigravity reconnects the server.
+
+Antigravity loads only the first 24000 bytes of a skill body. Pinboard's hook tells each session, and each worker or reviewer it launches, to read complete skills through Pinboard's paged reader, so the two larger skills are still followed in full. Workers and reviewers run as Antigravity subagents in the same workspace; keeping each one inside its assigned checkout relies on its instructions, because Antigravity does not confine it.
+
+### Upgrade or remove
+
+Reinstall from the updated clone:
+
+```sh
+agy plugin uninstall pinboard
+agy plugin install /path/to/pinboard
+```
+
+Each install is a fresh copy and is prepared again on its first session. Uninstalling removes the copy. It leaves `~/.gemini/config/import_manifest.json`, Antigravity's cached Pinboard tool schemas under `~/.gemini/antigravity-cli/mcp/pinboard_pinboard/`, and your `permissions.allow` rule, which you can remove yourself.
+
 ## Local data
 
 By default, Pinboard keeps project decisions and evidence in the managed repository's ignored `.pinboard` directory, created by the [first setup](#first-setup). Primary and linked worktrees share that location; [Linked worktrees and custom data locations](#linked-worktrees-and-custom-data-locations) explains how to find and authorize it. Explicit data locations remain at the selected path under the ordinary root rules.
@@ -210,7 +284,7 @@ An installed plugin keeps its private Python environment at `<launcher-root>/.pi
 
 ## Upgrade an installed plugin
 
-Refresh the installed code through the client's supported plugin update or reload mechanism. Codex loads a cached copy; marketplace refresh can replace files for configured plugins, including disabled ones. See [Codex plugin refresh](https://developers.openai.com/plugins/build/plugins#enable-or-disable-a-plugin-for-a-repo). In Claude Code, use `claude plugin update pinboard@pinboard`.
+Refresh the installed code through the client's supported plugin update or reload mechanism. Codex loads a cached copy; marketplace refresh can replace files for configured plugins, including disabled ones. See [Codex plugin refresh](https://developers.openai.com/plugins/build/plugins#enable-or-disable-a-plugin-for-a-repo). In Claude Code, use `claude plugin update pinboard@pinboard`. In Antigravity, [reinstall from the updated clone](#upgrade-or-remove).
 
 Each newly installed version needs its own [runtime preparation](#the-launcher-says-runtime-preparation-is-required). If Pinboard remains unavailable afterward, reconnect or restart the MCP service from an existing installed plugin directory. A fresh manifest version identifies a release; it does not guarantee uninterrupted service. A reported missing working directory does not establish what removed it.
 
@@ -241,7 +315,7 @@ Direct CLI use covers root discovery, initialization, summary status, validation
 
 After the first successful setup, Pinboard may point to the optional Repository Readiness, Slop Cleanup, and Maintaining Agent Guidance skills. It does not run them, create work, or change configuration.
 
-Pinboard may also recommend the `model_auto_compact_token_limit_scope` setting for long Codex tasks when that user setting is absent. It reads `~/.codex/config.toml`, or the equivalent under `CODEX_HOME`, but never edits user or project Codex configuration. A trusted project's `.codex/config.toml` can override the user default. Returning to an existing Pinboard, a failed setup, or an unreadable or malformed configuration produces no recommendation.
+Pinboard may also recommend the `model_auto_compact_token_limit_scope` setting for long Codex tasks when that user setting is absent. Claude Code and Antigravity agents run the launcher with `PINBOARD_RUNTIME` set to `claude` or `antigravity` and receive no such recommendation. It reads `~/.codex/config.toml`, or the equivalent under `CODEX_HOME`, but never edits user or project Codex configuration. A trusted project's `.codex/config.toml` can override the user default. Returning to an existing Pinboard, a failed setup, or an unreadable or malformed configuration produces no recommendation.
 
 ## Troubleshooting
 
@@ -273,12 +347,20 @@ Identify the requested tool first. The Pinboard MCP hook does not approve Bash o
 
 ### Claude Code still asks before each Pinboard tool
 
-The PreToolUse hook only runs from a prepared version. Check that preparation finished and Pinboard tools are available; reconnect only if the connection remains unavailable, as described above. Check that the `pinboard` plugin is enabled and that `disableAllHooks` is not set; `/hooks` should list its `PreToolUse` hook for `mcp__plugin_pinboard_pinboard__.*`. A confirmation before `pinboard_close` is expected, not a misconfiguration: Claude Code v2.1.199 or later asks before every close of a saved item, and removing hooks or rules does not change that; Codex and earlier Claude Code versions may not ask. If a prompt still appears for another tool, a deny or ask rule naming it is saved in one of your settings sources; Claude Code enforces those rules regardless of the hook, so remove the rule to restore automatic approval or keep it if you want to be asked. If Claude Code reports a hook error, run the exact `installPath` launcher from `claude plugin list --json` with `--claude-pre-tool-use` on one PreToolUse event to see its stderr diagnostic. As a fallback, the `mcp__plugin_pinboard_pinboard__*` allow rule from the [Permissions](#permissions) section approves the server without the hook.
+The PreToolUse hook only runs from a prepared version. Check that preparation finished and Pinboard tools are available; reconnect only if the connection remains unavailable, as described above. Check that the `pinboard` plugin is enabled and that `disableAllHooks` is not set; `/hooks` should list its `PreToolUse` hook for `mcp__plugin_pinboard_pinboard__.*`. A confirmation before `pinboard_close` is expected, not a misconfiguration: Claude Code v2.1.199 or later asks before every close of a saved item, and removing hooks or rules does not change that; Codex and earlier Claude Code versions may not ask, and Antigravity asks through Pinboard's own hook. If a prompt still appears for another tool, a deny or ask rule naming it is saved in one of your settings sources; Claude Code enforces those rules regardless of the hook, so remove the rule to restore automatic approval or keep it if you want to be asked. If Claude Code reports a hook error, run the exact `installPath` launcher from `claude plugin list --json` with `--claude-pre-tool-use` on one PreToolUse event to see its stderr diagnostic. As a fallback, the `mcp__plugin_pinboard_pinboard__*` allow rule from the [Permissions](#permissions) section approves the server without the hook.
+
+### Antigravity asks before or denies each Pinboard tool
+
+Check that `~/.gemini/antigravity-cli/settings.json` contains `mcp(pinboard_pinboard/*)` under `permissions.allow`, as in [Allow Pinboard tools](#allow-pinboard-tools); the hook alone does not let a Pinboard tool run. `agy plugin list --json` should show the plugin enabled with its hooks. A prompt before `pinboard_close` is expected, and in headless `agy -p` that close is denied rather than asked; run the close in an interactive session. A prompt or denial for another server's tool follows your own rules for that server.
+
+### Antigravity reports the pinboard MCP server as unavailable
+
+MCP startup and the SessionStart hook can prepare a new install automatically. When hook preparation fails, the session's injected context names the observed cause and the exact manual command from [First setup](#first-antigravity-session). After preparation, check tool availability and start a new agy session if the connection remains unavailable.
 
 ### The launcher says runtime preparation is required
 
 An unprepared ordinary CLI call exits before Pinboard starts and returns `pinboard-launcher-result/v1` with the exact same-launcher `--prepare-runtime` action. MCP startup first tries automatic preparation; if that fails, its prestart recovery is on stderr so protocol stdout stays empty. CLI recovery is on stdout. Run the reported action with uv available and grant write access only to `<launcher-root>/.pinboard-runtime`. If preparation fails, keep the reported upstream diagnostics and follow its stated retry requirement; do not substitute `<managed-project>/.venv`, an import-path change, or an ad hoc uv command.
 
-Preparation verifies the CLI entry and the availability of the MCP and Claude hook executables before writing the ready marker; a runtime prepared by an older version that lacks one of them is not treated as ready, and `--prepare-runtime` repairs it. After it succeeds, check tool availability and reconnect the client if Pinboard remains unavailable. `scripts/pinboard --mcp` selects `pinboard-mcp`, while ordinary CLI arguments select `pinboard`. Project and work roots belong to tool requests. MCP startup accepts only the optional complete `--capture-evidence-dir <existing-directory> --safe-to-persist-exactly` declaration described in the [invocation capture guide](skills/pinboard/references/invocation-evidence.md). Ordinary installed use does not invoke uv, read its cache, or mutate the prepared plugin tree. A source checkout prepared by `<pinboard-source>/scripts/prepare-worktree` continues to use `<pinboard-source>/.venv`.
+Preparation verifies the CLI entry and the availability of the MCP, Claude hook and Antigravity hook executables before writing the ready marker; a runtime prepared by an older version that lacks one of them is not treated as ready, and `--prepare-runtime` repairs it. After it succeeds, check tool availability and reconnect the client if Pinboard remains unavailable. `scripts/pinboard --mcp` selects `pinboard-mcp`, while ordinary CLI arguments select `pinboard`. Project and work roots belong to tool requests. MCP startup accepts only the optional complete `--capture-evidence-dir <existing-directory> --safe-to-persist-exactly` declaration described in the [invocation capture guide](skills/pinboard/references/invocation-evidence.md). Ordinary installed use does not invoke uv, read its cache, or mutate the prepared plugin tree. A source checkout prepared by `<pinboard-source>/scripts/prepare-worktree` continues to use `<pinboard-source>/.venv`.
 
 For workflow and recovery behavior beyond installation, see [How Pinboard works](HOW_IT_WORKS.md). For system boundaries and current operating assumptions, see [Architecture](ARCHITECTURE.md).

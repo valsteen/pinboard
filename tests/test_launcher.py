@@ -18,12 +18,17 @@ class LauncherTest(unittest.TestCase):
         return launcher
 
     def run_launcher(
-        self, launcher: Path, *arguments: str, path: str, extra_environment: dict[str, str] | None = None
+        self,
+        launcher: Path,
+        *arguments: str,
+        path: str,
+        extra_environment: dict[str, str] | None = None,
+        stdin: str = "",
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [str(launcher), *arguments],
             env={**os.environ, "PATH": path, **(extra_environment or {})},
-            stdin=subprocess.DEVNULL,
+            input=stdin,
             capture_output=True,
             text=True,
             check=False,
@@ -84,6 +89,8 @@ class LauncherTest(unittest.TestCase):
             ("--claude-subagent-start", "pinboard-claude-subagent-start"),
             ("--claude-session-start", "pinboard-claude-session-start"),
             ("--claude-pre-tool-use", "pinboard-claude-pre-tool-use"),
+            ("--antigravity-session-start", "pinboard-antigravity-session-start"),
+            ("--antigravity-pre-tool-use", "pinboard-antigravity-pre-tool-use"),
         ):
             for runtime in (".venv", ".pinboard-runtime/environment"):
                 with self.subTest(selector=selector, runtime=runtime), tempfile.TemporaryDirectory() as temporary:
@@ -255,6 +262,8 @@ class LauncherTest(unittest.TestCase):
             'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n'
             'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-subagent-start"\n'
             'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n'
+            'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-antigravity-session-start"\n'
+            'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-antigravity-pre-tool-use"\n'
         )
 
     def test_parent_context_entry_names_manual_route_without_uv_and_changes_nothing(self) -> None:
@@ -275,6 +284,82 @@ class LauncherTest(unittest.TestCase):
                 self.assertEqual(78, worker.returncode)
                 self.assertEqual("", worker.stdout)
                 self.assertEqual("runtime-preparation-required", json.loads(worker.stderr)["status"])
+
+    def test_antigravity_session_entry_names_manual_route_in_injected_step_without_uv(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launcher = self.copy_launcher(root)
+            before = tuple(sorted(root.rglob("*")))
+            result = self.run_launcher(launcher, "--antigravity-session-start", path="/usr/bin:/bin")
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(1, result.stdout.count("\n"))
+            output = json.loads(result.stdout)
+            self.assertEqual({"injectSteps"}, set(output))
+            self.assertEqual(1, len(output["injectSteps"]))
+            step = output["injectSteps"][0]
+            self.assertEqual({"systemMessage"}, set(step))
+            self.assertEqual({"systemMessage"}, set(step["systemMessage"]))
+            context = step["systemMessage"]["systemMessage"]
+            self.assertIn("uv is not on PATH", context)
+            self.assertIn(f"{root}/scripts/pinboard --prepare-runtime", context)
+            self.assertNotIn("Claude Code", context)
+            self.assertEqual("runtime-preparation-required", json.loads(result.stderr)["status"])
+            self.assertEqual(before, tuple(sorted(root.rglob("*"))))
+            claude_permission = self.run_launcher(launcher, "--claude-pre-tool-use", path="/usr/bin:/bin")
+            self.assertEqual(78, claude_permission.returncode)
+            self.assertEqual("", claude_permission.stdout)
+            self.assertEqual("runtime-preparation-required", json.loads(claude_permission.stderr)["status"])
+            for server_name, tool_name, decision in (
+                ("pinboard_pinboard", "pinboard_close", "force_ask"),
+                ("pinboard_pinboard", "pinboard_overview", "ask"),
+                ("other_server", "other_tool", "ask"),
+            ):
+                with self.subTest(tool_name=tool_name, server_name=server_name):
+                    event = {
+                        "conversationId": "conversation",
+                        "toolCall": {
+                            "name": "call_mcp_tool",
+                            "args": {"ServerName": server_name, "ToolName": tool_name, "Arguments": {"text": "probe"}},
+                        },
+                    }
+                    permission = self.run_launcher(
+                        launcher, "--antigravity-pre-tool-use", path="/usr/bin:/bin", stdin=json.dumps(event)
+                    )
+                    self.assertEqual(0, permission.returncode, permission.stderr)
+                    self.assertEqual(decision, json.loads(permission.stdout)["decision"])
+                    self.assertEqual("runtime-preparation-required", json.loads(permission.stderr)["status"])
+            self.assertEqual(before, tuple(sorted(root.rglob("*"))))
+            for argument in ("--prepare-runtime", "--mcp", "--claude-session-start", "--version", ""):
+                with self.subTest(argument=argument):
+                    extra = self.run_launcher(launcher, "--antigravity-session-start", argument, path="/usr/bin:/bin")
+                    self.assertEqual(64, extra.returncode)
+                    self.assertEqual("", extra.stdout)
+                    self.assertEqual("invalid-startup-arguments", json.loads(extra.stderr)["status"])
+
+    def test_antigravity_session_entry_prepares_runtime_once_then_runs_prepared_entry_with_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launcher = self.copy_launcher(root)
+            calls = root / "uv-calls"
+            copied_entry = 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/{}"\n'
+            body = self.prepared_entries_uv_body().replace(
+                copied_entry.format("pinboard-antigravity-session-start"), ""
+            ).replace("pinboard-claude-session-start", "pinboard-antigravity-session-start") + copied_entry.format(
+                "pinboard-claude-session-start"
+            )
+            self.write_uv(root, f'echo "$@" >> "{calls}"\n' + body)
+            started = subprocess.run(
+                [str(launcher), "--antigravity-session-start"],
+                input="native-event",
+                env={**os.environ, "PATH": f"{root}:/usr/bin:/bin"},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, started.returncode, started.stderr)
+            self.assertEqual("prepared:1 stdin:native-event\n", started.stdout)
+            self.assertTrue((root / ".pinboard-runtime" / ".pinboard-ready").exists())
+            self.assertEqual(1, len(calls.read_text(encoding="utf-8").splitlines()))
 
     def test_parent_context_entry_prepares_runtime_once_then_runs_prepared_entry_with_event(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -403,7 +488,9 @@ class LauncherTest(unittest.TestCase):
                     'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n'
                     'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-subagent-start"\n'
                     'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start"\n'
-                    'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n',
+                    'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n'
+                    'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-antigravity-session-start"\n'
+                    'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-antigravity-pre-tool-use"\n',
                 )
                 result = self.run_launcher(launcher, "--mcp", path=f"{root}:/usr/bin:/bin")
                 self.assertEqual(0, result.returncode, result.stderr)
@@ -612,7 +699,9 @@ class LauncherTest(unittest.TestCase):
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n'
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-subagent-start"\n'
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start"\n'
-                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n',
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n'
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-antigravity-session-start"\n'
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-antigravity-pre-tool-use"\n',
             )
 
             result = self.run_launcher(launcher, "--prepare-runtime", path=f"{root}:/usr/bin:/bin")
@@ -643,7 +732,9 @@ class LauncherTest(unittest.TestCase):
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n'
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-subagent-start"\n'
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start"\n'
-                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n',
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n'
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-antigravity-session-start"\n'
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-antigravity-pre-tool-use"\n',
             )
 
             result = self.run_launcher(
@@ -762,7 +853,9 @@ class LauncherTest(unittest.TestCase):
                 'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp"\n'
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-subagent-start"\n'
                 'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-session-start"\n'
-                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n',
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-claude-pre-tool-use"\n'
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-antigravity-session-start"\n'
+                'cp "$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp" "$UV_PROJECT_ENVIRONMENT/bin/pinboard-antigravity-pre-tool-use"\n',
             )
             environment = {"TRACE_FILE": str(trace)}
 

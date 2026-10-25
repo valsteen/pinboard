@@ -25,7 +25,7 @@ from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, Immutab
 from pinboard.adapters.files.file_io import create_immutable
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.files.setting_resolution import SettingEffects, SettingResolutionError
-from pinboard.adapters.sqlite.errors import StorageError
+from pinboard.adapters.sqlite.errors import SQLiteSchemaError, StorageError
 from pinboard.diagnostic_codes import TraceEvent
 from pinboard.domain.errors import (
     EffectDisposition,
@@ -228,6 +228,46 @@ def _settings_recovery(  # noqa: C901, PLR0912 - one boundary distinguishes exac
     return resource, repair, retry
 
 
+def _schema_mismatch(error: SQLiteSchemaError, project_root: str) -> tuple[dict[str, JsonValue], str]:
+    """Present verified schema facts and a separately authorized, quiescent CLI preview."""
+    arguments: list[JsonValue] | None = None
+    if error.migration_supported:
+        arguments = [
+            "--project-root",
+            project_root,
+            "--work-root",
+            str(error.database_path.parent),
+            "migrate-schema",
+            "--json",
+        ]
+        command = " ".join(shlex.quote(str(value)) for value in arguments)
+        repair = (
+            "Obtain explicit human authorization for migration, then stop every Pinboard process using "
+            f"{error.database_path} before preview. Using the same Pinboard launcher from the original caller "
+            f"context, run `<launcher> {command}`. Preview is read-only; inspect its plan before any separately "
+            "authorized apply. Do not replay the refused operation or edit the database to bypass this failure."
+        )
+    else:
+        repair = (
+            f"Preserve {error.database_path} and report its sqlite-v{error.observed} schema and this installation's "
+            f"required sqlite-v{error.required} to the human. No supported migration preview exists for this schema; "
+            "do not edit metadata, apply another schema's plan or replay the refused operation."
+        )
+    return {
+        "database_path": str(error.database_path),
+        "observed_schema": f"sqlite-v{error.observed}",
+        "required_schema": f"sqlite-v{error.required}",
+        "preview_arguments": arguments,
+    }, repair
+
+
+@dataclass(frozen=True, slots=True)
+class AutomaticCaptureResolution:
+    capture: SemanticCapture | None
+    settings_effects: SettingEffects
+    directory_created: bool
+
+
 class AutomaticCapture:
     """Resolve the current project and item mode before every MCP callback."""
 
@@ -236,12 +276,12 @@ class AutomaticCapture:
 
     def resolve(  # noqa: C901, PLR0912, PLR0915 - one preflight owns settings, destination and partial effects
         self, project_root: str, arguments: dict[str, JsonValue]
-    ) -> SemanticCapture | OperationResult | None:
+    ) -> AutomaticCaptureResolution | OperationResult:
         request = arguments.get("request")
         selected = request if isinstance(request, dict) else arguments
         work_root = selected.get("work_root")
         if not isinstance(work_root, str):
-            return None
+            return AutomaticCaptureResolution(None, SettingEffects("none", "none", "none"), False)
         settings_path = Path(work_root) / contributor_traces.SETTINGS_NAME
         directory_path = Path(work_root) / contributor_traces.TRACE_DIRECTORY
         settings_effects = SettingEffects("none", "none", "none")
@@ -251,7 +291,7 @@ class AutomaticCapture:
         try:
             state = contributor_traces.read_project_trace_settings(Path(project_root), Path(work_root))
             if state is None:
-                return None
+                return AutomaticCaptureResolution(None, settings_effects, False)
             data_root, resolution = state
             settings_effects = resolution.effects
             settings = resolution.value
@@ -268,9 +308,11 @@ class AutomaticCapture:
             resource = directory_path
             directory = contributor_traces.automatic_trace_directory(data_root, settings, item_id)
             if directory is None:
-                return None
+                return AutomaticCaptureResolution(None, settings_effects, False)
             try:
-                return SemanticCapture(directory, automatic=True)
+                return AutomaticCaptureResolution(
+                    SemanticCapture(directory, automatic=True), settings_effects, not directory_existed
+                )
             except ValueError, OSError, FileIOError:
                 probe_effect = "unconfirmed"
                 raise
@@ -297,6 +339,7 @@ class AutomaticCapture:
             effect = "unconfirmed" if unconfirmed else "committed" if confirmed else "unchanged"
             resource_text = str(resource)
             retry = "correct-input"
+            schema_mismatch: dict[str, JsonValue] | None = None
             if isinstance(error, SettingResolutionError):
                 resource_text, repair, retry = _settings_recovery(error)
             elif isinstance(error, OSError) and error.filename == "git":
@@ -305,6 +348,9 @@ class AutomaticCapture:
                     "Restore access to the Git executable for the Pinboard MCP service, then retry the same request."
                 )
                 retry = "retry-same-input"
+            elif isinstance(error, SQLiteSchemaError):
+                schema_mismatch, repair = _schema_mismatch(error, project_root)
+                resource_text = str(error.database_path)
             elif isinstance(error, StorageError):
                 repair = f"Inspect Pinboard state under {resource} and resolve this read error before retrying."
             elif "work root must be a real directory" in str(error):
@@ -351,6 +397,7 @@ class AutomaticCapture:
                 "message": f"Automatic Pinboard trace preflight failed: {error}. The target callback did not run.",
                 "resource": resource_text,
                 "repair": repair,
+                "schema_mismatch": schema_mismatch,
                 "target_ran": False,
                 "state_changed": None if unconfirmed else confirmed,
                 "effect": effect,
@@ -545,12 +592,16 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
 
     def complete(token: CancellationToken) -> dict[str, JsonValue]:
         selected_capture = capture
+        settings_effects = SettingEffects("none", "none", "none")
+        trace_directory_created = False
         token.checkpoint()
         if isinstance(selected_capture, AutomaticCapture):
             resolved_capture = selected_capture.resolve(project_root, arguments)
             if isinstance(resolved_capture, OperationResult):
                 return contract_schemas.validate_result(operation, resolved_capture.content)
-            selected_capture = resolved_capture
+            selected_capture = resolved_capture.capture
+            settings_effects = resolved_capture.settings_effects
+            trace_directory_created = resolved_capture.directory_created
         captured_arguments = deepcopy(arguments) if selected_capture is not None else arguments
 
         def capture_effect(
@@ -579,6 +630,31 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
         try:
             token.checkpoint()
             result = callback(token)
+        except SQLiteSchemaError as error:
+            mismatch, repair = _schema_mismatch(error, project_root)
+            result = OperationResult(
+                {
+                    "schema": "pinboard-mcp-schema-result/v1",
+                    "status": "rejected",
+                    "code": error.code.value,
+                    "message": str(error),
+                    "resource": str(error.database_path),
+                    "repair": repair,
+                    "schema_mismatch": mismatch,
+                    "trace_preflight_effects": {
+                        "settings_parent_creation": settings_effects.parent_creation,
+                        "settings_file_creation": settings_effects.file_creation,
+                        "settings_mode_write": settings_effects.key_write,
+                        "trace_directory_creation": "confirmed" if trace_directory_created else "none",
+                    },
+                    "state_changed": False,
+                    "effect": "unchanged",
+                    "retry": "do-not-retry",
+                    "changed_surfaces": [],
+                },
+                "rejected",
+                None,
+            )
         except OperationCancelled as error:
             capture_effect(
                 lambda selected: selected.unavailable(operation, captured_arguments, "interrupted", "cancelled", None),

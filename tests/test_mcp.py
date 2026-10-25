@@ -4092,12 +4092,15 @@ class McpTransportTest(unittest.TestCase):
 
         def resolve(
             _capture: mcp_execution.AutomaticCapture, _project: str, _arguments: dict[str, contracts.JsonValue]
-        ) -> None:
+        ) -> mcp_execution.AutomaticCaptureResolution:
             resolutions.append(threading.get_ident())
             preflight_started.set()
             self.assertNotEqual(loop_thread, threading.get_ident())
             if not preflight_release.wait(10):
                 raise AssertionError("Trace preflight was not released.")
+            return mcp_execution.AutomaticCaptureResolution(
+                None, mcp_execution.SettingEffects("none", "none", "none"), False
+            )
 
         def target(token: mcp_execution.CancellationToken) -> mcp_execution.OperationResult:
             target_ran.set()

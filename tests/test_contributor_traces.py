@@ -768,7 +768,8 @@ class ContributorTraceTest(unittest.TestCase):
                 str(worktree),
                 {"request": {"project_root": str(worktree), "work_root": str(work_root), "attempt_id": "work-a-1"}},
             )
-            self.assertIsNotNone(capture)
+            assert isinstance(capture, execution.AutomaticCaptureResolution)
+            self.assertIsNotNone(capture.capture)
 
     def test_existing_shared_work_root_needs_no_parent_write_for_mcp_capture(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -786,7 +787,8 @@ class ContributorTraceTest(unittest.TestCase):
                 with self.subTest(mode=mode), patch.object(Path, "mkdir", deny_parent_write):
                     self.settings(primary, mode, {})
                     selected = capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "missing"})
-                    self.assertEqual(mode == "on", selected is not None)
+                    assert isinstance(selected, execution.AutomaticCaptureResolution)
+                    self.assertEqual(mode == "on", selected.capture is not None)
 
     def test_explicit_work_root_never_writes_shared_trace_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1221,10 +1223,16 @@ class ContributorTraceTest(unittest.TestCase):
                 "unmapped", common.select_capture_item(primary, None, {"action_id": {"subject": "unmapped"}})
             )
             capture = execution.AutomaticCapture(common.select_capture_item)
-            self.assertIsNone(capture.resolve(str(worktree), {"item_id": "work-a"}))
-            self.assertIsNone(capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "another"}))
-            self.assertIsNone(capture.resolve(str(Path(temporary)), {"work_root": str(work_root), "item_id": "work-a"}))
-            self.assertIsNotNone(capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"}))
+            selections: tuple[tuple[Path, dict[str, JsonValue], bool], ...] = (
+                (worktree, {"item_id": "work-a"}, False),
+                (worktree, {"work_root": str(work_root), "item_id": "another"}, False),
+                (Path(temporary), {"work_root": str(work_root), "item_id": "work-a"}, False),
+                (worktree, {"work_root": str(work_root), "item_id": "work-a"}, True),
+            )
+            for root, arguments, enabled in selections:
+                selected = capture.resolve(str(root), arguments)
+                assert isinstance(selected, execution.AutomaticCaptureResolution)
+                self.assertEqual(enabled, selected.capture is not None)
             item_leaf: dict[str, JsonValue] = {
                 "request": {"work_root": str(work_root), "operation": "item", "item_id": "work-a"}
             }
@@ -1232,8 +1240,10 @@ class ContributorTraceTest(unittest.TestCase):
                 "request": {"work_root": str(work_root), "operation": "branch", "branch": "codex/work-a"}
             }
             self.assertIsNone(common.select_capture_item(primary, str(work_root), branch_leaf))
-            self.assertIsNotNone(capture.resolve(str(worktree), item_leaf))
-            self.assertIsNone(capture.resolve(str(worktree), branch_leaf))
+            for leaf, enabled in ((item_leaf, True), (branch_leaf, False)):
+                selected = capture.resolve(str(worktree), leaf)
+                assert isinstance(selected, execution.AutomaticCaptureResolution)
+                self.assertEqual(enabled, selected.capture is not None)
             self.settings(primary, "off", {"work-a": "invalid"})
             rejected = capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"})
             assert isinstance(rejected, execution.OperationResult)

@@ -56,3 +56,27 @@ class SQLiteReadOnlyError(StorageError):
             f"{database_path.parent} and inspect current Pinboard state before retrying.",
             retryable=False,
         )
+
+
+class SQLiteSchemaError(StorageError):
+    """Exact connection schema facts; the receiving operation owns prior-effect accounting."""
+
+    database_path: Path
+    observed: int
+    required: int
+    migration_supported: bool
+
+    def __init__(self, database_path: Path, observed: int, required: int, migration_supported: bool) -> None:
+        self.database_path = database_path
+        self.observed = observed
+        self.required = required
+        self.migration_supported = migration_supported
+        super().__init__(
+            StorageErrorCode.SCHEMA_UNSUPPORTED,
+            f"Pinboard database {database_path} uses sqlite-v{observed}; this installation requires sqlite-v{required}. "
+            + (
+                "After explicit migration authorization and stopping every Pinboard process using this ledger, request a 'pinboard migrate-schema' preview with the same project and work roots."
+                if migration_supported
+                else "No supported migration is available for this schema; preserve the database and report these exact identities to the human."
+            ),
+        )

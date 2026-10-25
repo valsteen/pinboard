@@ -26,7 +26,7 @@ import msgspec
 
 from pinboard.adapters.files.errors import FileIOError
 from pinboard.adapters.files.file_io import DurableRoots, ensure_directory_chain
-from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.errors import SQLiteSchemaError, StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.application import stored_state
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
@@ -235,35 +235,20 @@ def _verify_v9_schema(connection: sqlite3.Connection) -> None:
 def _verify_current_schema(connection: sqlite3.Connection) -> None:
     version = _read_pinboard_schema_version(connection)
     if version != SCHEMA_VERSION:
+        _, _, database_file = msgspec.convert(
+            tuple(connection.execute("PRAGMA database_list").fetchone()), type=tuple[int, str, str], strict=True
+        )
         if version == 9:
             _verify_v9_schema(connection)
-            raise StorageError(
-                StorageErrorCode.SCHEMA_UNSUPPORTED,
-                "Schema sqlite-v9 requires a 'pinboard migrate-schema' preview and 'migrate-schema --apply <plan-id>' with the same project and work roots before ordinary commands can open it.",
-            )
-        if version == 8:
+        elif version == 8:
             _verify_v8_schema(connection)
-            raise StorageError(
-                StorageErrorCode.SCHEMA_UNSUPPORTED,
-                "Schema sqlite-v8 requires a 'pinboard migrate-schema' preview and 'migrate-schema --apply <plan-id>' with the same project and work roots before ordinary commands can open it.",
-            )
-        if version == 7:
+        elif version == 7:
             _verify_v7_schema(connection)
-            raise StorageError(
-                StorageErrorCode.SCHEMA_UNSUPPORTED,
-                "Schema sqlite-v7 requires a 'pinboard migrate-schema' preview and 'migrate-schema --apply <plan-id>' with the same project and work roots before ordinary commands can open it.",
-            )
-        if version == 6:
-            if _read_schema_signature(connection) != _build_v6_schema_signature():
-                raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v6 schema.")
-            raise StorageError(
-                StorageErrorCode.SCHEMA_UNSUPPORTED,
-                "Schema sqlite-v6 requires a 'pinboard migrate-schema' preview and 'migrate-schema --apply <plan-id>' with the same project and work roots before ordinary commands can open it.",
-            )
-        raise StorageError(
-            StorageErrorCode.SCHEMA_UNSUPPORTED,
-            f"Schema sqlite-v{version} is not the supported {SCHEMA_ID} schema.",
-        )
+        elif version != 6:
+            raise SQLiteSchemaError(Path(database_file), version, SCHEMA_VERSION, False)
+        elif _read_schema_signature(connection) != _build_v6_schema_signature():
+            raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v6 schema.")
+        raise SQLiteSchemaError(Path(database_file), version, SCHEMA_VERSION, True)
     try:
         if _read_schema_signature(connection) != _build_expected_schema_signature():
             raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact current schema.")

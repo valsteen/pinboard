@@ -2110,6 +2110,52 @@ class ArtifactVerified(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unk
             raise ValueError("verified must be true for a verified artifact result.")
 
 
+class SchemaMismatch(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    database_path: RootPath
+    observed_schema: NonEmptyText
+    required_schema: NonEmptyText
+    preview_arguments: (
+        tuple[
+            Literal["--project-root"],
+            RootPath,
+            Literal["--work-root"],
+            RootPath,
+            Literal["migrate-schema"],
+            Literal["--json"],
+        ]
+        | None
+    )
+
+
+class TracePreflightEffects(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Auxiliary effects before the callback, independent of its ledger effect."""
+
+    settings_parent_creation: Literal["none", "unconfirmed"]
+    settings_file_creation: Literal["none", "confirmed", "unconfirmed"]
+    settings_mode_write: Literal["none", "acknowledged", "unconfirmed"]
+    trace_directory_creation: Literal["none", "confirmed"]
+
+
+class SchemaUnsupportedResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Ledger and accepted evidence are unchanged; trace preflight effects are separate."""
+
+    schema: Literal["pinboard-mcp-schema-result/v1"]
+    status: Literal["rejected"]
+    code: Literal["SCHEMA_UNSUPPORTED"]
+    message: NonEmptyText
+    resource: RootPath
+    repair: NonEmptyText
+    schema_mismatch: SchemaMismatch
+    trace_preflight_effects: TracePreflightEffects
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: Empty
+
+    def __post_init__(self) -> None:
+        _require_fixed_state_changed(self)
+
+
 class TracePreflightResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-execution-result/v1"]
     status: Literal["rejected"]
@@ -2117,6 +2163,7 @@ class TracePreflightResult(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     message: NonEmptyText
     resource: NonEmptyText
     repair: NonEmptyText
+    schema_mismatch: SchemaMismatch | None
     target_ran: bool
     state_changed: bool | None
     effect: Literal["unchanged", "committed", "unconfirmed"]

@@ -5,7 +5,7 @@ from typing import Annotated, Literal, override
 import msgspec
 
 from pinboard.domain.errors import DecisionFailureCode, FailureDetails
-from pinboard.domain.history import DependencyPayload
+from pinboard.domain.history import DependencyPayload, OriginObligationPayload, WorkObligationPayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,15 +21,13 @@ class ProposalFailure:
 
 type ProposalJsonValue = bool | int | float | str | list[ProposalJsonValue] | dict[str, ProposalJsonValue] | None
 
-type ProposalSchema = Literal["pinboard-proposal/v2"]
 type ProposalIdentity = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
 type ProposalText = Annotated[str, msgspec.Meta(pattern=r"\A[^\s|\n](?:[^|\n]*[^\s|\n])?\z")]
 
 
-class ProposalObligation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ProposalObligation(WorkObligationPayload, frozen=True, forbid_unknown_fields=True):
     obligation_id: ProposalIdentity
     statement: ProposalText
-    deferral_policy: Literal["allowed", "forbidden"]
 
 
 def _proposal_datetime(value: str) -> datetime:
@@ -90,8 +88,7 @@ type ProposalRelation = (
 )
 
 
-class Proposal(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: ProposalSchema
+class _ProposalFields(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     proposal_id: ProposalIdentity
     created_at: ProposalText
     source_task_id: ProposalText
@@ -105,8 +102,6 @@ class Proposal(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     urgency_evidence: ProposalText
     freshness_assumptions: tuple[ProposalText, ...]
     checkout_policy: Literal["main", "isolated", "coordinator-selected"]
-    obligations: Annotated[tuple[ProposalObligation, ...], msgspec.Meta(min_length=1)]
-    position: Annotated[int, msgspec.Meta(ge=1)] | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -119,12 +114,40 @@ class Proposal(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
             raise ValueError("evidence entries must be ordered and unique.")
         if len(self.freshness_assumptions) != len(set(self.freshness_assumptions)):
             raise ValueError("freshness_assumptions entries must be ordered and unique.")
-        obligation_ids = tuple(value.obligation_id for value in self.obligations)
-        if len(obligation_ids) != len(set(obligation_ids)):
-            raise ValueError("obligation identities must be ordered and unique.")
 
     def created_at_utc(self) -> datetime:
         created_at = _proposal_datetime(self.created_at)
         if created_at.tzinfo is None:
             return created_at.replace(tzinfo=UTC)
         return created_at.astimezone(UTC)
+
+
+def _validate_obligations(values: tuple[WorkObligationPayload, ...]) -> None:
+    obligation_ids = tuple(value.obligation_id for value in values)
+    if len(obligation_ids) != len(set(obligation_ids)):
+        raise ValueError("obligation identities must be ordered and unique.")
+
+
+class Proposal(
+    _ProposalFields, frozen=True, forbid_unknown_fields=True, tag="pinboard-proposal/v2", tag_field="schema"
+):
+    obligations: Annotated[tuple[ProposalObligation, ...], msgspec.Meta(min_length=1)]
+    position: Annotated[int, msgspec.Meta(ge=1)] | None = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        _validate_obligations(self.obligations)
+
+
+class OriginProposal(
+    _ProposalFields, frozen=True, forbid_unknown_fields=True, tag="pinboard-proposal/v3", tag_field="schema"
+):
+    obligations: Annotated[tuple[OriginObligationPayload, ...], msgspec.Meta(min_length=1)]
+    position: Annotated[int, msgspec.Meta(ge=1)] | None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        _validate_obligations(self.obligations)
+
+
+type ProposalInput = Proposal | OriginProposal

@@ -10,6 +10,7 @@ from pinboard.adapters.sqlite.authority import (
 from pinboard.adapters.sqlite.database import decode_row, select_by_ids
 from pinboard.adapters.sqlite.lifecycle import read_current_definitions, set_attempt_state, set_item_state
 from pinboard.adapters.sqlite.models import ItemIdRow
+from pinboard.adapters.sqlite.obligation_coverage import planned_report
 from pinboard.application import cancellation_models as models
 from pinboard.application import stored_state
 from pinboard.application.mutation_models import CancellationMutation
@@ -88,7 +89,6 @@ def read_preview(connection: sqlite3.Connection, item_id: WorkItemId) -> models.
         )
     preparation = read_preparation_authority_status(connection, item_id)
     return models.CancellationPreview(
-        "pinboard-cancellation-preview/v1",
         item_id,
         definition.definition.title,
         item.state,
@@ -117,6 +117,7 @@ def read_preview(connection: sqlite3.Connection, item_id: WorkItemId) -> models.
         "Definitions, attempts, history, reviews, candidate evidence, code, branches and worktrees are retained.",
         "Whole-item dependencies on dropped items remain unsatisfied; matching accepted checkpoints remain satisfied; dependent commitments are retained.",
         "Pinboard authority is fenced; local processes are not stopped. Stop or await your known worker before confirming.",
+        planned_report(connection, item_id),
     )
 
 

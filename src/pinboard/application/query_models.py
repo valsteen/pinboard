@@ -1570,8 +1570,8 @@ class ListFieldChange:
 class ObligationChange:
     """One obligation identity whose statement or deferral policy differs between consecutive revisions."""
 
-    before: work_models.WorkObligation
-    after: work_models.WorkObligation
+    before: work_models.DefinitionObligation
+    after: work_models.DefinitionObligation
 
 
 @dataclass(frozen=True, slots=True)
@@ -1580,8 +1580,8 @@ class ScopeRevisionChanges:
 
     texts: tuple[TextFieldChange, ...]
     lists: tuple[ListFieldChange, ...]
-    obligations_added: tuple[work_models.WorkObligation, ...]
-    obligations_removed: tuple[work_models.WorkObligation, ...]
+    obligations_added: tuple[work_models.DefinitionObligation, ...]
+    obligations_removed: tuple[work_models.DefinitionObligation, ...]
     obligations_changed: tuple[ObligationChange, ...]
 
 
@@ -1704,6 +1704,10 @@ class WorkObligationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     deferral_policy: work_models.ObligationDeferralPolicy
 
 
+class OriginWorkObligationView(WorkObligationView, frozen=True, forbid_unknown_fields=True):
+    origin: history.ObligationOriginPayload | None
+
+
 class WorkItemDefinitionView(
     msgspec.Struct, tag="pinboard-work-item-definition/v2", tag_field="schema", frozen=True, forbid_unknown_fields=True
 ):
@@ -1721,7 +1725,19 @@ class WorkItemDefinitionView(
     obligations: tuple[WorkObligationView, ...]
 
 
-type DefinitionView = WorkItemDefinitionView | definition_compatibility.HistoricalDefinitionV1
+class OriginWorkItemDefinitionView(
+    WorkItemDefinitionView,
+    tag="pinboard-work-item-definition/v3",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    obligations: tuple[OriginWorkObligationView, ...]
+
+
+type DefinitionView = (
+    WorkItemDefinitionView | OriginWorkItemDefinitionView | definition_compatibility.HistoricalDefinitionV1
+)
 
 
 def project_definition(definition: stored_state.StoredDefinition) -> DefinitionView:
@@ -1729,6 +1745,33 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
         case definition_compatibility.HistoricalDefinitionV1():
             return definition
         case work_models.WorkItemDefinition():
+            if any(isinstance(value, work_models.CarriedWorkObligation) for value in definition.obligations):
+                return OriginWorkItemDefinitionView(
+                    definition.title,
+                    definition.objective,
+                    definition.hypothesis,
+                    definition.evidence,
+                    definition.scope,
+                    definition.non_scope,
+                    definition.acceptance_criteria,
+                    tuple(history.dependency_payload(value) for value in definition.dependencies),
+                    definition.effect,
+                    definition.unlock,
+                    definition.checkout_policy,
+                    tuple(
+                        OriginWorkObligationView(
+                            value.obligation_id,
+                            value.statement,
+                            value.deferral_policy,
+                            history.ObligationOriginPayload(
+                                value.origin.item_id, value.origin.definition_revision, value.origin.obligation_id
+                            )
+                            if isinstance(value, work_models.CarriedWorkObligation)
+                            else None,
+                        )
+                        for value in definition.obligations
+                    ),
+                )
             return WorkItemDefinitionView(
                 definition.title,
                 definition.objective,

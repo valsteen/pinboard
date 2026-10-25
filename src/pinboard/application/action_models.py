@@ -11,7 +11,7 @@ import msgspec
 
 from pinboard.application import decision_batches, pr_reviews
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.history import RecordText, WorkItemDefinitionPayload
+from pinboard.domain.history import DefinitionPayload, RecordText
 
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\n]+\z")]
 type Identity = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
@@ -169,7 +169,7 @@ class ReviseItemInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=
     expected_digest: Sha256
     source_task: NonEmptyLine
     reason: RecordText
-    definition: WorkItemDefinitionPayload
+    definition: DefinitionPayload
 
 
 type InputPayload = (

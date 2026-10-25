@@ -16,6 +16,7 @@ import msgspec
 
 from pinboard.adapters.sqlite import cancellation, pr_review
 from pinboard.adapters.sqlite import initiatives as initiative_storage
+from pinboard.adapters.sqlite import obligation_coverage as obligation_storage
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.artifacts import (
     decode_reference_rows,
@@ -90,6 +91,7 @@ from pinboard.application import (
     cancellation_models,
     candidate_snapshots,
     history_archives,
+    obligation_coverage,
     queries,
     query_models,
     roadmap,
@@ -765,6 +767,26 @@ def _read_integration_facts(
 
 
 class SQLiteWorkStore:
+    def read_obligation_origins(
+        self, origins: tuple[work_models.ObligationOrigin, ...]
+    ) -> frozenset[work_models.ObligationOrigin]:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return obligation_storage.read_origins(connection, origins)
+        finally:
+            connection.close()
+
+    def read_obligation_coverage(
+        self, source_item: WorkItemId, replacement_item: WorkItemId | None
+    ) -> obligation_coverage.CoverageFacts:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return obligation_storage.read_facts(connection, source_item, replacement_item)
+        finally:
+            connection.close()
+
     def read_roadmap(self) -> roadmap.Projection:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:

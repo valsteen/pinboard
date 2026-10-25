@@ -99,6 +99,24 @@ class WorkObligation:
     deferral_policy: ObligationDeferralPolicy
 
 
+@dataclass(frozen=True, slots=True)
+class ObligationOrigin:
+    item_id: WorkItemId
+    definition_revision: int
+    obligation_id: ObligationId
+
+
+@dataclass(frozen=True, slots=True)
+class CarriedWorkObligation:
+    obligation_id: ObligationId
+    statement: str
+    deferral_policy: ObligationDeferralPolicy
+    origin: ObligationOrigin
+
+
+type DefinitionObligation = WorkObligation | CarriedWorkObligation
+
+
 class ArtifactKind(Enum):
     REQUIREMENTS = "requirements"
     BRIEF = "brief"
@@ -426,7 +444,7 @@ class WorkItemDefinition:
     effect: str
     unlock: str
     checkout_policy: CheckoutPolicy
-    obligations: tuple[WorkObligation, ...]
+    obligations: tuple[DefinitionObligation, ...]
 
 
 @dataclass(frozen=True, slots=True)

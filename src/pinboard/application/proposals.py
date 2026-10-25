@@ -1,14 +1,14 @@
 from typing import assert_never
 
 from pinboard.application import proposal_models
-from pinboard.application.proposal_models import Proposal
+from pinboard.application.proposal_models import ProposalInput
 from pinboard.domain import proposal_models as domain_proposal_models
 from pinboard.domain import work_models
-from pinboard.domain.history import dependency_from_payload
+from pinboard.domain.history import dependency_from_payload, obligation_from_payload
 from pinboard.domain.identifiers import ProposalId, TaskId, WorkItemId
 
 
-def convert_proposal(value: Proposal) -> domain_proposal_models.CreateProposalOperation:
+def convert_proposal(value: ProposalInput) -> domain_proposal_models.CreateProposalOperation:
     match value.relation:
         case proposal_models.IndependentProposalRelation():
             relation = work_models.IndependentProposalRelation()
@@ -41,14 +41,7 @@ def convert_proposal(value: Proposal) -> domain_proposal_models.CreateProposalOp
             value.evidence,
             value.freshness_assumptions,
             work_models.CheckoutPolicy(value.checkout_policy),
-            tuple(
-                work_models.WorkObligation(
-                    work_models.ObligationId(obligation.obligation_id),
-                    obligation.statement,
-                    work_models.ObligationDeferralPolicy(obligation.deferral_policy),
-                )
-                for obligation in value.obligations
-            ),
+            tuple(obligation_from_payload(obligation) for obligation in value.obligations),
             value.position,
         )
     )

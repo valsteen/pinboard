@@ -13,6 +13,7 @@ from pinboard.application import (
     cancellation_models,
     decision_batches,
     dispatch_models,
+    obligation_coverage,
     pr_reviews,
     proposal_models,
     query_models,
@@ -20,7 +21,7 @@ from pinboard.application import (
 )
 from pinboard.domain import authority_models, decision_models, ordering
 from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
-from pinboard.domain.history import DependencyPayload, RecordText
+from pinboard.domain.history import DependencyPayload, Identity, RecordText
 
 type JsonScalar = bool | int | float | str | None
 
@@ -264,7 +265,7 @@ class ItemStatusEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True
 class ProposalCreateRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
-    proposal: proposal_models.Proposal
+    proposal: proposal_models.ProposalInput
     actor_task_id: RuntimeIdentity
     actor_host_id: RuntimeIdentity
 
@@ -1575,6 +1576,14 @@ class CompletionActionView(ActionView, frozen=True, forbid_unknown_fields=True):
 
 class CompletionActionsSuccess(ActionsSuccess, frozen=True, forbid_unknown_fields=True):
     actions: Annotated[tuple[CompletionActionView, ...], msgspec.Meta(min_length=1, max_length=1)]
+
+
+class CloseActionView(ActionView, frozen=True, forbid_unknown_fields=True):
+    replacement_coverage: obligation_coverage.CoverageReport | None
+
+
+class CloseActionsSuccess(ActionsSuccess, frozen=True, forbid_unknown_fields=True):
+    actions: Annotated[tuple[CloseActionView, ...], msgspec.Meta(min_length=1, max_length=1)]
 
 
 class AcceptedBriefIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -3309,6 +3318,7 @@ PARALLEL_PREVIEW_RESULT_TYPES = (ParallelPreviewSuccess, ParallelPreviewRejected
 ACTIONS_RESULT_TYPES = (
     ActionsSuccess,
     CompletionActionsSuccess,
+    CloseActionsSuccess,
     ActionsInvalid,
     ActionUnavailable,
     AttemptLeaseRequired,
@@ -3452,3 +3462,45 @@ class CancellationCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_
 
 
 CANCELLATION_RESULT_TYPES = (CancellationPreviewResult, CancellationRejected, CancellationCommitted, ExecutorBusyResult)
+
+
+class ObligationCoveragePairRequest(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pair", tag_field="operation"
+):
+    project_root: RootPath
+    work_root: RootPath
+    source_item: Identity
+    replacement_item: Identity
+
+
+class ObligationCoveragePlannedRequest(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="planned-replacement", tag_field="operation"
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: Identity
+
+
+class ObligationCoverageEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    request: ObligationCoveragePairRequest | ObligationCoveragePlannedRequest
+
+
+class ObligationCoverageSuccess(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-obligation-coverage-result/v1"]
+    status: Literal["ok"]
+    coverage: obligation_coverage.CoverageReport
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: tuple[()]
+
+
+class ObligationCoverageRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-obligation-coverage-result/v1"]
+    status: Literal["rejected"]
+    code: DecisionFailureCode
+    message: str
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["correct-input"]
+    changed_surfaces: tuple[()]

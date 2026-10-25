@@ -170,10 +170,7 @@ def _render_item(
     match accepted:
         case work_models.WorkItemDefinition():
             execution_details = "\n### Obligations\n\n" + _bullets(
-                tuple(
-                    f"{value.obligation_id} ({_deferral_label(value.deferral_policy)}): {value.statement}"
-                    for value in accepted.obligations
-                )
+                tuple(_obligation_text(value) for value in accepted.obligations)
             )
             policy_details = f"- Checkout policy: {accepted.checkout_policy.value}\n"
             format_details = ""
@@ -761,8 +758,14 @@ def _list_field_label(field: query_models.DefinitionListField) -> str:
             assert_never(unreachable)
 
 
-def _obligation_text(value: work_models.WorkObligation | query_models.WorkObligationView) -> str:
-    return f"{value.obligation_id} ({_deferral_label(value.deferral_policy)}): {value.statement}"
+def _obligation_text(value: work_models.DefinitionObligation | query_models.WorkObligationView) -> str:
+    origin = ""
+    if (
+        isinstance(value, work_models.CarriedWorkObligation | query_models.OriginWorkObligationView)
+        and value.origin is not None
+    ):
+        origin = f" [origin: {value.origin.item_id}@{value.origin.definition_revision}/obligation/{value.origin.obligation_id}]"
+    return f"{value.obligation_id} ({_deferral_label(value.deferral_policy)}): {value.statement}{origin}"
 
 
 def _scope_revision(value: query_models.BoardScopeRevision) -> _BoardPageScopeRevision:

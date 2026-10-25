@@ -30,6 +30,7 @@ from pinboard.mcp import (
     initiative_operations,
     job_operations,
     mutation_operations,
+    obligation_operations,
     pr_review_operations,
     read_operations,
     startup_text,
@@ -56,6 +57,7 @@ from pinboard.mcp.tool_names import (
     INITIATIVE_TOOL,
     ITEM_DEFINITION_TOOL,
     ITEM_STATUS_TOOL,
+    OBLIGATION_COVERAGE_TOOL,
     ORDER_TOOL,
     OVERVIEW_TOOL,
     PARALLEL_PREVIEW_TOOL,
@@ -223,6 +225,24 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             partial(read_operations._brief_contract, {"request": request}),
             arguments={"request": request},
             capture=capture,
+        )
+
+    @server.tool(
+        name=OBLIGATION_COVERAGE_TOOL,
+        description="Read exact current obligation coverage for a named pair (source_item, replacement_item) or an item's planned-replacement. Lists every source obligation and all exact carrying obligations or uncovered. Does not infer equivalence or authorize ending work.",
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    async def obligation_coverage(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        arguments: dict[str, JsonValue] = {"request": request}
+        return await execution._run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            OBLIGATION_COVERAGE_TOOL,
+            str(request.get("project_root", "")),
+            partial(obligation_operations.read, arguments),
+            arguments=arguments,
+            capture=None,
         )
 
     @server.tool(
@@ -988,6 +1008,17 @@ def _install_boundary_contracts(server: MCPServer) -> None:
             BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
             contract_schemas.schema_for(contracts.BriefSourcePlanOutputEnvelope),
             contract_schemas.union_schema_for(contract_schemas.BRIEF_SOURCE_PLAN_OUTPUT_RESULT_TYPES),
+        ),
+        (
+            OBLIGATION_COVERAGE_TOOL,
+            contract_schemas.schema_for(contracts.ObligationCoverageEnvelope),
+            contract_schemas.union_schema_for(
+                (
+                    contracts.ObligationCoverageSuccess,
+                    contracts.ObligationCoverageRejected,
+                    contracts.ExecutorBusyResult,
+                )
+            ),
         ),
         (
             ITEM_DEFINITION_TOOL,

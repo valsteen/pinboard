@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 import msgspec
 
-from pinboard.application import stored_state
+from pinboard.application import obligation_coverage, stored_state
 from pinboard.domain import work_models
 from pinboard.domain.history import RecordText
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, LeaseId, TaskId, WorkItemId
@@ -58,8 +58,11 @@ type CompatibilityCancellationDependencyEffectV1 = Literal[
 ]
 
 
-class CancellationPreview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-cancellation-preview/v1"]
+# The shared fields stay here because current preview/binding logic also owns retained receipt verification.
+# Remove the compatibility forms only when no retained v1 cancellation receipts remain.
+class CompatibilityCancellationPreviewV1(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-cancellation-preview/v1", tag_field="schema"
+):
     item_id: WorkItemId
     title: str
     state: stored_state.StoredWorkItemState
@@ -87,6 +90,16 @@ class CancellationPreview(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     ]
 
 
+class CancellationPreview(
+    CompatibilityCancellationPreviewV1,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="pinboard-cancellation-preview/v2",
+    tag_field="schema",
+):
+    replacement_coverage: obligation_coverage.CoverageReport | None
+
+
 class CancellationBinding(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     work_root: Annotated[str, msgspec.Meta(min_length=1)]
     schema: Literal["pinboard-cancellation-binding/v1"]
@@ -94,10 +107,11 @@ class CancellationBinding(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     preview_sha256: Digest
 
 
-class CancellationRecord(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-cancellation/v1"]
+class CompatibilityCancellationRecordV1(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-cancellation/v1", tag_field="schema"
+):
     binding: CancellationBinding
-    preview: CancellationPreview
+    preview: CompatibilityCancellationPreviewV1
     human_confirmation: RecordText
 
     def __post_init__(self) -> None:
@@ -109,3 +123,16 @@ class CancellationRecord(msgspec.Struct, frozen=True, forbid_unknown_fields=True
             or self.binding.preview_sha256 != sha256(msgspec.json.encode(self.preview, order="sorted")).hexdigest()
         ):
             raise ValueError("cancellation binding differs from its recorded preview")
+
+
+class CurrentCancellationRecord(
+    CompatibilityCancellationRecordV1,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="pinboard-cancellation/v2",
+    tag_field="schema",
+):
+    preview: CancellationPreview
+
+
+type CancellationRecord = CurrentCancellationRecord | CompatibilityCancellationRecordV1

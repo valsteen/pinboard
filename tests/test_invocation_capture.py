@@ -767,6 +767,7 @@ class McpCaptureTest(unittest.TestCase):
                         server.FIXTURE_REVIEW_TOOL,
                         server.STARTUP_TEXT_TOOL,
                         server.BRIEF_LOOKUP_TOOL,
+                        server.OBLIGATION_COVERAGE_TOOL,
                     }
                     else globals_capture,
                 )

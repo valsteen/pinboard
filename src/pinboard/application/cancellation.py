@@ -15,7 +15,7 @@ from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, Decisio
 from pinboard.domain.identifiers import ActionId, HistorySubjectId, HostId, TaskId, WorkItemId
 
 
-def binding(preview: models.CancellationPreview, work_root: Path) -> models.CancellationBinding:
+def binding(preview: models.CompatibilityCancellationPreviewV1, work_root: Path) -> models.CancellationBinding:
     return models.CancellationBinding(
         str(work_root),
         "pinboard-cancellation-binding/v1",
@@ -54,7 +54,7 @@ def confirm(
                 None,
             )
         allocation = transaction.read_mutation_allocation()
-        record = models.CancellationRecord("pinboard-cancellation/v1", expected, current, human_confirmation)
+        record = models.CurrentCancellationRecord(expected, current, human_confirmation)
         receipt = MutationReceipt(
             decision_models.TransitionReceipt(
                 ActionId(f"cancel:{item_id}"), item_id, "dropped", human_confirmation, now
@@ -67,14 +67,14 @@ def confirm(
             decision_models.AuthorizationKind.PROJECT,
             actor_task_id,
             actor_host_id,
-            record.schema,
+            "pinboard-cancellation/v2",
             work_models.CanonicalJson(msgspec.json.encode(record, order="sorted")),
         )
         return transaction.commit(CancellationMutation(receipt, current))
 
 
 def receipt_failure(receipt: stored_state.StoredTransitionReceipt) -> str | None:
-    if receipt.input_schema != "pinboard-cancellation/v1":
+    if receipt.input_schema not in ("pinboard-cancellation/v1", "pinboard-cancellation/v2"):
         return "Cancellation receipt has an unsupported input schema."
     try:
         record = msgspec.json.decode(bytes(receipt.input_payload), type=models.CancellationRecord)
@@ -82,6 +82,12 @@ def receipt_failure(receipt: stored_state.StoredTransitionReceipt) -> str | None
         return f"Cancellation receipt cannot be decoded: {error}"
     if msgspec.json.encode(record, order="sorted") != bytes(receipt.input_payload):
         return "Cancellation receipt is not canonical."
+    if receipt.input_schema != (
+        "pinboard-cancellation/v2"
+        if isinstance(record, models.CurrentCancellationRecord)
+        else "pinboard-cancellation/v1"
+    ):
+        return "Cancellation receipt schema differs from its recorded input."
     if receipt.subject_id != record.preview.item_id or receipt.action_id != f"cancel:{record.preview.item_id}":
         return "Cancellation receipt does not name its previewed item."
     if (

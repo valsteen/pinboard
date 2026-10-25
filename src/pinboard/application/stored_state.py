@@ -7,11 +7,10 @@ import msgspec
 
 from pinboard.application import artifact_identity, definition_compatibility, released_v6_compatibility
 from pinboard.domain import authority_models, decision_models, initiatives, work_models
-from pinboard.domain.errors import DecisionResult
+from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.history import (
-    WorkItemDefinitionPayload,
+    decode_work_item_definition,
     work_item_definition_bytes,
-    work_item_definition_from_payload,
 )
 from pinboard.domain.identifiers import (
     ActionId,
@@ -32,20 +31,15 @@ type StoredDefinition = work_models.WorkItemDefinition | definition_compatibilit
 
 def decode_stored_definition(payload: bytes) -> StoredDefinition:
     schema = msgspec.json.decode(payload, type=dict[str, msgspec.Raw]).get("schema")
-    record: WorkItemDefinitionPayload | definition_compatibility.HistoricalDefinitionV1
     if schema is not None and msgspec.json.decode(schema, type=str) == "pinboard-work-item-definition/v1":
         record = msgspec.json.decode(payload, type=definition_compatibility.HistoricalDefinitionV1, strict=True)
-    else:
-        record = msgspec.json.decode(payload, type=WorkItemDefinitionPayload, strict=True)
-    if msgspec.json.encode(record, order="sorted") + b"\n" != payload:
-        raise ValueError("Definition JSON must use the canonical encoding.")
-    match record:
-        case WorkItemDefinitionPayload():
-            return work_item_definition_from_payload(record)
-        case definition_compatibility.HistoricalDefinitionV1():
-            return record
-        case _ as unreachable:
-            assert_never(unreachable)
+        if msgspec.json.encode(record, order="sorted") + b"\n" != payload:
+            raise ValueError("Definition JSON must use the canonical encoding.")
+        return record
+    definition = decode_work_item_definition(payload)
+    if isinstance(definition, DecisionFailure):
+        raise ValueError(definition.message)
+    return definition
 
 
 def stored_definition_bytes(definition: StoredDefinition) -> DecisionResult[bytes]:

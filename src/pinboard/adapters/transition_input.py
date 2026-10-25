@@ -82,14 +82,7 @@ def _revise_item_input(payload: transition_models.ReviseItemInputPayload) -> wor
             definition.effect,
             definition.unlock,
             work_models.CheckoutPolicy(definition.checkout_policy),
-            tuple(
-                work_models.WorkObligation(
-                    work_models.ObligationId(obligation.obligation_id),
-                    obligation.statement,
-                    work_models.ObligationDeferralPolicy(obligation.deferral_policy),
-                )
-                for obligation in definition.obligations
-            ),
+            tuple(history.obligation_from_payload(obligation) for obligation in definition.obligations),
         ),
     )
 

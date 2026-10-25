@@ -14,7 +14,7 @@ from pinboard.application import (
     stored_state,
     work_brief_models,
 )
-from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.errors import DescribedCode
 from pinboard.domain.identifiers import (
     ActionId,
@@ -98,7 +98,7 @@ class DecisionFacts:
 @dataclass(frozen=True, slots=True)
 class ItemProjectionFacts:
     work_item: stored_state.StoredWorkItem
-    dependencies: tuple[WorkItemId, ...]
+    dependencies: tuple[work_models.Dependency, ...]
     overview: OverviewItem | None
     definition: stored_state.ItemDefinitionRevision
     review_history: tuple[stored_state.StoredTransitionReceipt, ...]
@@ -108,7 +108,8 @@ class ItemProjectionFacts:
 @dataclass(frozen=True, slots=True)
 class ItemOverviewFacts:
     work_item: work_models.WorkItem
-    dependency_unsatisfied: tuple[tuple[WorkItemId, bool], ...]
+    dependency_unsatisfied: tuple[tuple[work_models.Dependency, bool], ...]
+    accepted_checkpoints: frozenset[work_models.CheckpointDependency]
     definition: work_models.DefinitionAnchor
     proposals: tuple[stored_state.StoredProposal, ...]
     preparation: PreparationAuthorityStatus | None
@@ -286,7 +287,7 @@ class ReviewContinuation(
 class DependencyContinuation(
     msgspec.Struct, tag="wait-for-dependencies", tag_field="kind", frozen=True, forbid_unknown_fields=True
 ):
-    dependencies: tuple[str, ...]
+    dependencies: tuple[history.DependencyPayload, ...]
 
 
 class RefreshTargetContinuation(
@@ -618,7 +619,7 @@ class AttemptContextItemFacts:
     state: NonterminalItemState
     current_definition_revision: int
     current_definition_digest: str
-    unsatisfied_dependencies: tuple[WorkItemId, ...]
+    unsatisfied_dependencies: tuple[work_models.Dependency, ...]
     current_replacement_revision: int | None
     replacement_resolved: bool
 
@@ -719,7 +720,7 @@ class CompletionRecoveryRequired:
 
 
 type ItemStatusSchema = Literal["pinboard-item-status/v3"]
-type ItemStatusAuthority = Literal["sqlite-v9"]
+type ItemStatusAuthority = Literal["sqlite-v10"]
 
 
 type DamagedReceiptActionKind = Literal[
@@ -835,6 +836,7 @@ class ItemStatusLifecycleFacts:
     definition_title: str | None
     attempts: tuple[ItemStatusAttemptFacts, ...]
     closure: ItemClosureFacts | None
+    dependencies: tuple[DependencyStatus, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -845,6 +847,7 @@ class ItemStatusFacts:
     attempts: tuple[ItemStatusAttemptFacts, ...]
     closure: ItemClosureFacts | None
     preparation: PreparationAuthorityStatus | None
+    dependencies: tuple[DependencyStatus, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -977,6 +980,7 @@ class ItemStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     closure: ItemClosure | None
     preparation: PreparationStatusView | None
     board: BoardPages
+    dependencies: tuple[DependencyStatus, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1188,9 +1192,10 @@ class ParallelPreviewItemFacts:
     work_item_id: WorkItemId
     label: str
     state: work_models.WorkState
-    unsatisfied_dependencies: tuple[WorkItemId, ...]
+    unsatisfied_dependencies: tuple[work_models.Dependency, ...]
     preparation: ParallelPreparationFacts | None
     attempt: ParallelAttemptFacts | None
+    dependency_conditions: tuple[DependencyStatus, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1202,6 +1207,26 @@ class ParallelPreviewFacts:
 class DependencyReason(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: str
     reason: str
+    checkpoint: str | None
+    checkpoint_accepted: bool
+
+    @property
+    def target(self) -> history.DependencyPayload:
+        if self.checkpoint is None:
+            return self.item_id
+        return history.CheckpointDependencyPayload(self.item_id, self.checkpoint)
+
+
+class DependencyStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    target: history.DependencyPayload
+    satisfied: bool
+    checkpoint_accepted: bool
+
+
+def dependency_label(value: history.DependencyPayload) -> str:
+    if isinstance(value, str):
+        return value
+    return f"{value.item} checkpoint {value.checkpoint}"
 
 
 class ProposalOrigin(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1230,8 +1255,8 @@ class OverviewItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     position: int | None
     eligible: bool
     timing: str | None
-    depends_on: tuple[str, ...]
-    unsatisfied_dependencies: tuple[str, ...]
+    depends_on: tuple[history.DependencyPayload, ...]
+    unsatisfied_dependencies: tuple[history.DependencyPayload, ...]
     dependency_reasons: tuple[DependencyReason, ...]
     proposal_origin: ProposalOrigin | None
     attempt_id: str | None
@@ -1595,12 +1620,12 @@ class BoardPortfolio:
 
 class NextUnstarted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: str
-    unsatisfied_dependencies: tuple[str, ...]
+    unsatisfied_dependencies: tuple[history.DependencyPayload, ...]
 
 
 class WorkOverview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-overview/v7"]
-    authority: Literal["sqlite-v9"]
+    authority: Literal["sqlite-v10"]
     revision: str
     active_attempts: tuple[str, ...]
     items: tuple[OverviewItem, ...]
@@ -1621,6 +1646,7 @@ class LaunchableParallelItem:
     label: str
     state: work_models.WorkState
     attempt_id: str | None
+    dependency_conditions: tuple[DependencyStatus, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1629,6 +1655,7 @@ class ExcludedParallelItem:
     label: str
     state: work_models.WorkState
     attempt_id: str | None
+    dependency_conditions: tuple[DependencyStatus, ...]
     reasons: tuple[ParallelReason, ...]
 
 
@@ -1651,6 +1678,7 @@ class ParallelItemView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: str | None
     outcome: Literal["launchable", "excluded"]
     reasons: tuple[ParallelReason, ...]
+    dependency_conditions: tuple[DependencyStatus, ...]
 
 
 class ParallelPreviewView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1678,7 +1706,7 @@ class WorkItemDefinitionView(
     scope: tuple[str, ...]
     non_scope: tuple[str, ...]
     acceptance_criteria: tuple[str, ...]
-    dependencies: tuple[str, ...]
+    dependencies: tuple[history.DependencyPayload, ...]
     effect: str
     unlock: str
     checkout_policy: work_models.CheckoutPolicy
@@ -1701,7 +1729,7 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
                 definition.scope,
                 definition.non_scope,
                 definition.acceptance_criteria,
-                tuple(definition.dependencies),
+                tuple(history.dependency_payload(value) for value in definition.dependencies),
                 definition.effect,
                 definition.unlock,
                 definition.checkout_policy,
@@ -1720,7 +1748,7 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition/v1"]
-    authority: Literal["sqlite-v9"]
+    authority: Literal["sqlite-v10"]
     project_revision: int
     item_id: str
     item_subject_revision: int
@@ -1743,7 +1771,7 @@ class ItemDefinitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class ItemDefinitionHistory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition-history/v1"]
-    authority: Literal["sqlite-v9"]
+    authority: Literal["sqlite-v10"]
     project_revision: int
     item_id: str
     revisions: tuple[ItemDefinitionHistoryRow, ...]

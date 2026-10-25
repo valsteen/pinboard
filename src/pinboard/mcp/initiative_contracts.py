@@ -5,8 +5,9 @@ from typing import Annotated, Literal
 
 import msgspec
 
-from pinboard.application import stored_state
+from pinboard.application import query_models, stored_state
 from pinboard.application.initiative_records import InitiativeRecord
+from pinboard.domain.history import DependencyPayload
 from pinboard.domain.initiatives import Judgment, RejectionCode
 
 Text = Annotated[str, msgspec.Meta(min_length=1)]
@@ -161,9 +162,10 @@ class RoadmapItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: Text
     title: Text
     state: stored_state.StoredWorkItemState
-    dependencies: tuple[Text, ...]
+    dependencies: tuple[DependencyPayload, ...]
     queue_position: int | None
     placement: Wave | Blocked | Unknown | Terminal
+    dependency_conditions: tuple[query_models.DependencyStatus, ...]
 
 
 class Counts(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

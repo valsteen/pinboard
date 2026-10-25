@@ -350,6 +350,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
                     ),
                     (),
                     (dataclasses.replace(definition, item_id=item_id),),
+                    checkpoint_acceptances=(),
                 ),
             )
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'ready'")
@@ -387,7 +388,15 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         )
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             _insert_lifecycle(
-                connection, stored_state.LifecycleRecords(state.lifecycle.project, (), (), (attempt,), ())
+                connection,
+                stored_state.LifecycleRecords(
+                    state.lifecycle.project,
+                    (),
+                    (),
+                    (attempt,),
+                    (),
+                    checkpoint_acceptances=(),
+                ),
             )
             connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = ?", (str(item_id),))
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'ready'")

@@ -12,7 +12,12 @@ from contextlib import closing, redirect_stdout
 from datetime import timedelta
 from pathlib import Path
 
-from pinboard.adapters.sqlite.database import migrate_v6_database, migrate_v7_database, read_schema_bytes
+from pinboard.adapters.sqlite.database import (
+    SCHEMA_VERSION,
+    migrate_v6_database,
+    migrate_v7_database,
+    read_schema_bytes,
+)
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import queries, query_models, service, stored_state
@@ -51,9 +56,13 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                 "SELECT name FROM predecessor.sqlite_schema WHERE type = 'table' AND name != 'project_meta'"
             ).fetchall()
             for (name,) in tables:
-                connection.execute(f'INSERT INTO "{name}" SELECT * FROM predecessor."{name}"')
+                columns = ", ".join(
+                    f'"{row[1]}"' for row in connection.execute(f'PRAGMA predecessor.table_info("{name}")')
+                )
+                connection.execute(f'INSERT INTO "{name}" ({columns}) SELECT {columns} FROM predecessor."{name}"')
             connection.execute(
-                "INSERT INTO project_meta SELECT singleton, application, 9, revision, host_epoch, created_at, updated_at FROM predecessor.project_meta"
+                "INSERT INTO project_meta SELECT singleton, application, ?, revision, host_epoch, created_at, updated_at FROM predecessor.project_meta",
+                (SCHEMA_VERSION,),
             )
         current.replace(destination)
         return SQLiteWorkStore(destination)
@@ -196,6 +205,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                     actor_task_id=None,
                     actor_host_id=None,
                     transition_brief_identity=identity,
+                    dependency_brief_pins=(),
                 )
                 self.assertNotIsInstance(committed, DecisionFailure)
                 reloaded = SQLiteWorkStore(database).validated_snapshot()
@@ -240,6 +250,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                         read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=1),
                         actor_task_id=TaskId("project"),
                         actor_host_id=HostId("local"),
+                        dependency_brief_pins=(),
                     )
                     self.assertNotIsInstance(committed, DecisionFailure)
                     reloaded = SQLiteWorkStore(database).validated_snapshot()
@@ -286,6 +297,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                     read_authorization_time=lambda: SQLITE_NOW,
                     actor_task_id=TaskId("project"),
                     actor_host_id=HostId("local"),
+                    dependency_brief_pins=(),
                 )
             )
             prepared = expect_success(
@@ -340,6 +352,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                         authority.definition_revision,
                         authority.definition_digest,
                     ),
+                    dependency_brief_pins=(),
                 )
             )
             fresh = SQLiteWorkStore(database)
@@ -361,6 +374,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                 read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=2),
                 actor_task_id=TaskId("project"),
                 actor_host_id=HostId("local"),
+                dependency_brief_pins=(),
             )
             self.assertIsInstance(rejected, DecisionFailure)
             self.assertEqual(before, SQLiteWorkStore(database).validated_snapshot())

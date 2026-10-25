@@ -23,7 +23,7 @@ from pinboard.application import released_v6_compatibility, stored_state
 from pinboard.application.mutation_models import ProposalCreationMutation
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.identifiers import ProposalId, TaskId, WorkItemId
+from pinboard.domain.identifiers import CheckpointId, ProposalId, TaskId, WorkItemId
 
 
 class _StoredProposalRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -37,6 +37,7 @@ class _StoredProposalRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     relation_kind: work_models.ProposalRelationKind
     relation_item_id: WorkItemId | None
     relation_replacement_cost: str | None
+    relation_checkpoint_id: CheckpointId | None
     effect: str
     unlock: str
     urgency_evidence: str
@@ -55,7 +56,9 @@ class _StoredProposalRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True
             self.user_label,
             self.trigger,
             self.why_it_matters,
-            decode_proposal_relation(self.relation_kind, self.relation_item_id, self.relation_replacement_cost),
+            decode_proposal_relation(
+                self.relation_kind, self.relation_item_id, self.relation_replacement_cost, self.relation_checkpoint_id
+            ),
             self.effect,
             self.unlock,
             self.urgency_evidence,
@@ -88,9 +91,12 @@ def decode_proposal_relation(
     kind: work_models.ProposalRelationKind,
     value: WorkItemId | None,
     replacement_cost: str | None,
+    checkpoint_id: CheckpointId | None,
 ) -> work_models.ProposalRelation:
     if kind != work_models.ProposalRelationKind.PLANNED_REPLACEMENT and replacement_cost is not None:
         raise StorageError(StorageErrorCode.INVALID_STATE, f"{kind.value} proposal has replacement cost.")
+    if kind != work_models.ProposalRelationKind.FOLLOW_UP and checkpoint_id is not None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, f"{kind.value} proposal has a checkpoint target.")
     match kind:
         case work_models.ProposalRelationKind.INDEPENDENT:
             _reject_relation_item(kind, value)
@@ -98,7 +104,10 @@ def decode_proposal_relation(
         case work_models.ProposalRelationKind.PREREQUISITE:
             return work_models.PrerequisiteProposalRelation(_require_relation_item(kind, value))
         case work_models.ProposalRelationKind.FOLLOW_UP:
-            return work_models.FollowUpProposalRelation(_require_relation_item(kind, value))
+            item_id = _require_relation_item(kind, value)
+            return work_models.FollowUpProposalRelation(
+                item_id if checkpoint_id is None else work_models.CheckpointDependency(item_id, checkpoint_id)
+            )
         case work_models.ProposalRelationKind.DUPLICATE:
             return work_models.DuplicateProposalRelation(_require_relation_item(kind, value))
         case work_models.ProposalRelationKind.CONTRADICTION:
@@ -218,7 +227,7 @@ def _read_proposal_records(
         for row in connection.execute(
             f"""
             SELECT proposal_id, created_at, recorded_at, source_task_id, user_label, trigger, why_it_matters,
-                   relation_kind, relation_item_id, relation_replacement_cost, effect, unlock, urgency_evidence, disposition,
+                   relation_kind, relation_item_id, relation_replacement_cost, relation_checkpoint_id, effect, unlock, urgency_evidence, disposition,
                    disposition_target_item_id, disposition_reason, subject_revision, disposition_recorded_at
             FROM proposals
             {condition}
@@ -278,7 +287,7 @@ def read_proposals_by_ids(
             for row in select_by_ids(
                 connection,
                 """SELECT proposal_id, created_at, recorded_at, source_task_id, user_label, trigger,
-                          why_it_matters, relation_kind, relation_item_id, relation_replacement_cost,
+                          why_it_matters, relation_kind, relation_item_id, relation_replacement_cost, relation_checkpoint_id,
                           effect, unlock, urgency_evidence, disposition, disposition_target_item_id,
                           disposition_reason, subject_revision, disposition_recorded_at
                    FROM proposals WHERE proposal_id IN ({ids})""",
@@ -391,9 +400,9 @@ def create_proposal(
         """
         INSERT INTO proposals (
             proposal_id, created_at, recorded_at, source_task_id, user_label, trigger, why_it_matters,
-            relation_kind, relation_item_id, relation_replacement_cost, effect, unlock, urgency_evidence, disposition,
+            relation_kind, relation_item_id, relation_replacement_cost, relation_checkpoint_id, effect, unlock, urgency_evidence, disposition,
             disposition_target_item_id, disposition_reason, disposition_recorded_at, subject_revision
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
         """,
         (
             intake.proposal_id,
@@ -406,6 +415,10 @@ def create_proposal(
             relation.kind.value,
             relation.work_item_id,
             replacement_cost,
+            relation.dependency.checkpoint_id
+            if isinstance(relation, work_models.FollowUpProposalRelation)
+            and isinstance(relation.dependency, work_models.CheckpointDependency)
+            else None,
             intake.effect,
             intake.unlock,
             intake.urgency_evidence,

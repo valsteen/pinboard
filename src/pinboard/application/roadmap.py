@@ -7,7 +7,7 @@ from types import MappingProxyType
 from typing import assert_never
 
 from pinboard.application import stored_state
-from pinboard.domain import initiatives
+from pinboard.domain import initiatives, work_models
 from pinboard.domain.identifiers import WorkItemId
 
 
@@ -16,7 +16,7 @@ class Item:
     item_id: WorkItemId
     title: str
     state: stored_state.StoredWorkItemState
-    dependencies: tuple[WorkItemId, ...]
+    dependencies: tuple[work_models.Dependency, ...]
     queue_position: int | None
 
 
@@ -25,6 +25,7 @@ class Facts:
     project_revision: int
     initiatives: tuple[initiatives.Initiative, ...]
     items: tuple[Item, ...]
+    accepted_checkpoints: frozenset[work_models.CheckpointDependency]
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,12 @@ class Counts:
 
 
 @dataclass(frozen=True, slots=True)
+class DependencyCondition:
+    target: work_models.Dependency
+    satisfied: bool
+
+
+@dataclass(frozen=True, slots=True)
 class Projection:
     facts: Facts
     placements: Mapping[WorkItemId, Placement]
@@ -61,6 +68,7 @@ class Projection:
     unassigned: tuple[WorkItemId, ...]
     external_prerequisites: tuple[WorkItemId, ...]
     totals: Counts
+    dependency_conditions: Mapping[WorkItemId, tuple[DependencyCondition, ...]]
 
 
 def is_unfinished(state: stored_state.StoredWorkItemState) -> bool:
@@ -107,10 +115,34 @@ def project(facts: Facts) -> Projection:  # noqa: C901, PLR0912 - one global gra
     )
     included = members | frozenset(unassigned)
     unfinished = {item.item_id: item for item in facts.items if is_unfinished(item.state)}
+    conditions = {
+        item.item_id: tuple(
+            DependencyCondition(
+                target,
+                work_models.dependency_satisfied(
+                    target,
+                    (producer := by_id.get(work_models.dependency_item(target))) is not None
+                    and producer.state
+                    in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED},
+                    facts.accepted_checkpoints,
+                ),
+            )
+            for target in item.dependencies
+        )
+        for item in facts.items
+    }
+    remaining_dependencies = {
+        item_id: tuple(
+            work_models.dependency_item(condition.target)
+            for condition in conditions[item_id]
+            if not condition.satisfied
+        )
+        for item_id in unfinished
+    }
     dependents: dict[WorkItemId, list[WorkItemId]] = {item_id: [] for item_id in by_id}
     invalid: dict[WorkItemId, Blocked | Unknown] = {}
     for item in unfinished.values():
-        for prerequisite in item.dependencies:
+        for prerequisite in remaining_dependencies[item.item_id]:
             dependency = by_id.get(prerequisite)
             if dependency is None:
                 invalid[item.item_id] = Unknown(f"Missing prerequisite '{prerequisite}' for '{item.item_id}'.")
@@ -136,14 +168,14 @@ def project(facts: Facts) -> Projection:  # noqa: C901, PLR0912 - one global gra
     placements: dict[WorkItemId, Placement] = dict(invalid)
     remaining = {item_id: item for item_id, item in unfinished.items() if item_id not in placements}
     indegree = {
-        item_id: sum(dependency in remaining for dependency in item.dependencies) for item_id, item in remaining.items()
+        item_id: sum(dependency in remaining for dependency in remaining_dependencies[item_id]) for item_id in remaining
     }
     ready = deque(item_id for item_id, degree in indegree.items() if degree == 0)
     while ready:
         item_id = ready.popleft()
         levels = [
             placement.number
-            for dependency in remaining[item_id].dependencies
+            for dependency in remaining_dependencies[item_id]
             if isinstance(placement := placements.get(dependency), Wave)
         ]
         placements[item_id] = Wave(1 + max(levels, default=0))
@@ -155,9 +187,11 @@ def project(facts: Facts) -> Projection:  # noqa: C901, PLR0912 - one global gra
     for item_id in remaining:
         if item_id not in placements:
             placements[item_id] = Unknown(
-                f"Cyclic or invalid dependency graph reaches '{item_id}' through {', '.join(remaining[item_id].dependencies)}."
+                f"Cyclic or invalid dependency graph reaches '{item_id}' through {', '.join(remaining_dependencies[item_id])}."
             )
-    prerequisite_ids = frozenset(dependency for item in unfinished.values() for dependency in item.dependencies)
+    prerequisite_ids = frozenset(
+        work_models.dependency_item(dependency) for item in unfinished.values() for dependency in item.dependencies
+    )
     external_prerequisites = tuple(
         item.item_id for item in facts.items if item.item_id in prerequisite_ids and item.item_id not in included
     )
@@ -168,6 +202,7 @@ def project(facts: Facts) -> Projection:  # noqa: C901, PLR0912 - one global gra
         unassigned,
         external_prerequisites,
         counts(tuple(item for item in facts.items if item.item_id in included)),
+        MappingProxyType(conditions),
     )
 
 
@@ -185,9 +220,9 @@ def from_state(state: stored_state.StoredWorkState) -> Projection:
         current = definitions.get(revision.item_id)
         if current is None or current.revision < revision.revision:
             definitions[revision.item_id] = revision
-    dependencies: dict[WorkItemId, list[WorkItemId]] = {}
+    dependencies: dict[WorkItemId, list[work_models.Dependency]] = {}
     for dependency in sorted(state.lifecycle.dependencies, key=_dependency_order):
-        dependencies.setdefault(dependency.item_id, []).append(dependency.dependency_id)
+        dependencies.setdefault(dependency.item_id, []).append(dependency.target)
     selected = {item.item_id for item in state.lifecycle.work_items if item.queue_position is not None}
     selected.update(member.item_id for initiative in state.initiatives for member in initiative.memberships)
     items = {item.item_id: item for item in state.lifecycle.work_items}
@@ -197,7 +232,8 @@ def from_state(state: stored_state.StoredWorkState) -> Projection:
         item = items.get(item_id)
         if item is None or not is_unfinished(item.state):
             continue
-        for dependency in dependencies.get(item_id, ()):
+        for target in dependencies.get(item_id, ()):
+            dependency = work_models.dependency_item(target)
             if dependency not in selected:
                 selected.add(dependency)
                 pending.append(dependency)
@@ -215,6 +251,10 @@ def from_state(state: stored_state.StoredWorkState) -> Projection:
                 )
                 for item in sorted(state.lifecycle.work_items, key=item_order)
                 if item.item_id in selected
+            ),
+            frozenset(
+                work_models.CheckpointDependency(value.item_id, value.checkpoint_id)
+                for value in state.lifecycle.checkpoint_acceptances
             ),
         )
     )

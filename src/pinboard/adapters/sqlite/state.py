@@ -29,9 +29,10 @@ from pinboard.adapters.sqlite.lifecycle import (
 from pinboard.adapters.sqlite.pr_review import validate_review_history
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
 from pinboard.application import project_export, stored_state
-from pinboard.domain import authority_models, work_models
+from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.identifiers import (
     AttemptId,
+    CheckpointId,
     HistoryId,
     WorkItemId,
 )
@@ -249,18 +250,18 @@ def _validate_dependencies(
     current_definitions: Mapping[WorkItemId, stored_state.ItemDefinitionRevision],
     error_code: StorageErrorCode,
 ) -> None:
-    dependency_groups: dict[WorkItemId, list[WorkItemId]] = {item_id: [] for item_id in item_ids}
+    dependency_groups: dict[WorkItemId, list[work_models.Dependency]] = {item_id: [] for item_id in item_ids}
     for value in sorted(state.lifecycle.dependencies, key=_dependency_identity_position):
         if value.item_id not in item_ids or value.dependency_id not in item_ids:
             raise StorageError(error_code, "A dependency names an unknown work item.")
-        dependency_groups[value.item_id].append(value.dependency_id)
+        dependency_groups[value.item_id].append(value.target)
     if any(
         tuple(dependency_groups[item_id]) != current.definition.dependencies
         for item_id, current in current_definitions.items()
     ):
         raise StorageError(error_code, "Current definition dependencies do not match relational dependencies.")
     for item_id in item_ids:
-        pending = list(dependency_groups[item_id])
+        pending = [work_models.dependency_item(target) for target in dependency_groups[item_id]]
         visited: set[WorkItemId] = set()
         while pending:
             dependency = pending.pop()
@@ -268,7 +269,33 @@ def _validate_dependencies(
                 raise StorageError(error_code, "Current definition dependencies contain a cycle.")
             if dependency not in visited:
                 visited.add(dependency)
-                pending.extend(dependency_groups[dependency])
+                pending.extend(work_models.dependency_item(target) for target in dependency_groups[dependency])
+
+
+def _validate_checkpoint_acceptances(state: stored_state.StoredWorkState, error_code: StorageErrorCode) -> None:
+    attempts = {value.attempt_id: value.item_id for value in state.lifecycle.attempts}
+    expected: list[stored_state.CheckpointAcceptance] = []
+    for receipt in state.transition_receipts:
+        if receipt.outcome_schema != "checkpoint-acceptance/v2":
+            continue
+        try:
+            outcome = msgspec.json.decode(bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome)
+        except msgspec.DecodeError as error:
+            raise StorageError(error_code, f"Checkpoint acceptance receipt {receipt.history_id} is invalid.") from error
+        producer = attempts.get(AttemptId(receipt.subject_id))
+        if receipt.action_kind != decision_models.ActionKind.ACCEPT_CHECKPOINT or producer is None:
+            raise StorageError(
+                error_code, f"Checkpoint acceptance receipt {receipt.history_id} has no producer attempt."
+            )
+        expected.append(
+            stored_state.CheckpointAcceptance(receipt.history_id, producer, CheckpointId(outcome.checkpoint))
+        )
+    if tuple(sorted(expected, key=lambda value: value.history_id)) != tuple(
+        sorted(state.lifecycle.checkpoint_acceptances, key=lambda value: value.history_id)
+    ):
+        raise StorageError(
+            error_code, "Checkpoint acceptance facts do not match committed receipt provenance in both directions."
+        )
 
 
 def _replacement_revision(value: stored_state.StoredPlannedReplacement) -> int:
@@ -344,6 +371,7 @@ def _validate_current_state(state: stored_state.StoredWorkState, error_code: Sto
         ):
             raise StorageError(error_code, "An active preparation lease must pin the current item definition.")
     _validate_dependencies(state, item_ids, current_definitions, error_code)
+    _validate_checkpoint_acceptances(state, error_code)
 
 
 def _validate_item_state_counts(
@@ -442,3 +470,17 @@ def append_history(
             for value in records
         ),
     )
+    for receipt in records:
+        if receipt.outcome_schema != "checkpoint-acceptance/v2":
+            continue
+        outcome = msgspec.json.decode(bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome)
+        cursor = connection.execute(
+            """INSERT INTO checkpoint_acceptances(history_id, item_id, checkpoint_id)
+               SELECT ?, item_id, ? FROM attempts WHERE attempt_id = ?""",
+            (receipt.history_id, outcome.checkpoint, receipt.subject_id),
+        )
+        if cursor.rowcount != 1:
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE,
+                f"Checkpoint acceptance receipt {receipt.history_id} has no producer attempt.",
+            )

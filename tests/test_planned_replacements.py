@@ -73,6 +73,7 @@ class PlannedReplacementTests(unittest.TestCase):
             ),
             planned_replacements=() if relation_value is None else (relation_value,),
             replacement_dispositions=dispositions,
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
@@ -277,6 +278,7 @@ class PlannedReplacementTests(unittest.TestCase):
                 work_models.SubjectRevision(WorkItemId("replace-cache"), "1"),
                 work_models.SubjectRevision(WorkItemId("replace-cache-again"), "1"),
             ),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )

@@ -310,6 +310,7 @@ def _race_preparation_and_prerequisite_proposal(
             SQLITE_NOW,
             actor_task_id=TaskId("discovering-task"),
             actor_host_id=HostId("host-a"),
+            dependency_brief_pins=(),
         )
     results.put(result.code.value if isinstance(result, DecisionFailure) else "committed")
 
@@ -360,6 +361,7 @@ def _activate_same_prepared_item(
         actor_task_id=None,
         actor_host_id=None,
         transition_brief_identity=identity,
+        dependency_brief_pins=(),
     )
     results.put(result.code.value if isinstance(result, DecisionFailure) else f"committed:{state_artifact_ref_id}")
 

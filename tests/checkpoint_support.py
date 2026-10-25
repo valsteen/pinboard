@@ -975,7 +975,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         assert package_reference is not None
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             revision = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()[0] + 1
-            connection.execute(
+            receipt = connection.execute(
                 """INSERT INTO transition_history(history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id, artifact_kind, authorization_kind, actor_task_id, actor_host_id, input_schema, input_json, outcome_schema, outcome_json, committed_at)
                 SELECT (SELECT max(history_id) + 1 FROM transition_history), ?, action_id, action_kind, subject_id, ?, 'evidence', authorization_kind, actor_task_id, actor_host_id, input_schema, ?, outcome_schema, ?, committed_at FROM transition_history WHERE outcome_schema = 'checkpoint-acceptance/v2' LIMIT 1""",
                 (
@@ -999,6 +999,10 @@ class CheckpointPackageSupport(unittest.TestCase):
                         order="sorted",
                     ).decode(),
                 ),
+            )
+            connection.execute(
+                "INSERT INTO checkpoint_acceptances(history_id, item_id, checkpoint_id) VALUES (?, ?, ?)",
+                (receipt.lastrowid, brief.item_id, checkpoint.checkpoint_id),
             )
             connection.execute(
                 "UPDATE project_meta SET revision = ?, updated_at = ? WHERE singleton = 1",

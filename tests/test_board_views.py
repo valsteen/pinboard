@@ -94,7 +94,7 @@ def _item(
 
 
 def _definition(
-    item_id: WorkItemId, dependencies: tuple[WorkItemId, ...], title: str | None = None
+    item_id: WorkItemId, dependencies: tuple[work_models.Dependency, ...], title: str | None = None
 ) -> stored_state.ItemDefinitionRevision:
     definition, _digest = test_definition(item_id)
     definition = replace(definition, dependencies=dependencies, title=definition.title if title is None else title)
@@ -144,7 +144,15 @@ def _every_state() -> stored_state.StoredWorkState:
                 _item(blocked, stored_state.StoredWorkItemState.BLOCKED, 8),
                 _item(deferred, stored_state.StoredWorkItemState.DEFERRED, 9),
             ),
-            dependencies=(*lifecycle.dependencies, stored_state.ItemDependency(blocked, needed, 0)),
+            dependencies=(
+                *lifecycle.dependencies,
+                stored_state.ItemDependency(
+                    blocked,
+                    needed,
+                    0,
+                    checkpoint_id=None,
+                ),
+            ),
             attempts=(
                 *lifecycle.attempts,
                 replace(
@@ -190,7 +198,12 @@ def _every_state() -> stored_state.StoredWorkState:
 def _with_hostile_text(state: stored_state.StoredWorkState, item_id: WorkItemId) -> stored_state.StoredWorkState:
     revisions = tuple(
         _definition(
-            item_id, tuple(WorkItemId(dependency) for dependency in value.definition.dependencies), HOSTILE_TITLE
+            item_id,
+            tuple(
+                WorkItemId(dependency) if isinstance(dependency, str) else dependency
+                for dependency in value.definition.dependencies
+            ),
+            HOSTILE_TITLE,
         )
         if value.item_id == item_id
         else value
@@ -332,7 +345,7 @@ class _GatedBoard:
 
 class _FixedBoard:
     def read_roadmap(self) -> roadmap.Projection:
-        return roadmap.project(roadmap.Facts(0, (), ()))
+        return roadmap.project(roadmap.Facts(0, (), (), frozenset()))
 
     """A board reader returning one already projected board, for presentation tests."""
 
@@ -848,7 +861,7 @@ class BoardProjectionTest(unittest.TestCase):
         assert isinstance(definition, query_models.WorkItemDefinitionView)
         retained = definition_compatibility.HistoricalDefinitionV1(
             definition.acceptance_criteria,
-            definition.dependencies,
+            tuple(value for value in definition.dependencies if isinstance(value, str)),
             definition.effect,
             definition.evidence,
             definition.hypothesis,
@@ -1010,6 +1023,7 @@ class BoardProjectionTest(unittest.TestCase):
             SQLITE_NOW,
             actor_task_id=TaskId("discovering-task"),
             actor_host_id=HostId("host-a"),
+            dependency_brief_pins=(),
         )
         assert not isinstance(committed, DecisionFailure)
 
@@ -1090,6 +1104,7 @@ class BoardProjectionTest(unittest.TestCase):
                 SQLITE_NOW,
                 actor_task_id=TaskId("discovering-task"),
                 actor_host_id=HostId("host-a"),
+                dependency_brief_pins=(),
             )
             assert not isinstance(committed, DecisionFailure)
             later_thread.start()
@@ -1527,6 +1542,7 @@ class BoardHistoryTest(ItemLifecycleSupport):
     def test_milestones_list_only_the_open_attempts_acceptances_newest_first(self) -> None:
         fixture = self.accepted_package_fixture()
         accepted = self.latest_history_id(fixture)
+        accepted_at = self.committed_at(fixture, accepted)
         condition = self.condition(fixture)
         self.assertEqual(("checkpoint-accepted", "Accepted evidence."), (condition["kind"], condition["text"]))
         self.assert_board_parity(fixture)
@@ -1567,7 +1583,7 @@ class BoardHistoryTest(ItemLifecycleSupport):
             [
                 ("unreadable", _utc_instant(LATER + timedelta(minutes=3))),
                 ("accepted", _utc_instant(LATER)),
-                ("accepted", self.committed_at(fixture, accepted)),
+                ("accepted", accepted_at),
             ],
             [(value["kind"], value.get("accepted_at", value.get("committed_at"))) for value in milestones],
         )

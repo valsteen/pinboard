@@ -202,7 +202,9 @@ class HistoricalDefinitionTest(unittest.TestCase):
         historical["schema"] = "pinboard-work-item-definition/v1"
         self.replace_original("work-b", msgspec.json.encode(historical, order="sorted") + b"\n")
         with closing(sqlite3.connect(self.roots.database_path)) as connection, connection:
-            connection.execute("INSERT INTO item_dependencies VALUES ('work-b', 'work-c', 0)")
+            connection.execute(
+                "INSERT INTO item_dependencies(item_id, dependency_id, position) VALUES ('work-b', 'work-c', 0)"
+            )
         live = self.current("work-c")["definition"]
         assert isinstance(live, dict)
         rejected = self.revise("work-c", {**live, "dependencies": ["work-b"]})

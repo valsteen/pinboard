@@ -16,6 +16,7 @@ from pinboard.adapters.sqlite import database
 from pinboard.adapters.sqlite.artifact_ownership import accept_ownership
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
+from pinboard.adapters.sqlite.schema_dependencies_v9 import _upgrade_v9_connection
 from pinboard.adapters.sqlite.state import read_state
 from pinboard.application import (
     artifact_identity,
@@ -188,8 +189,17 @@ def _backfill_completion(
         )
 
 
+def _read_compatibility_v9_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
+    """Project predecessor facts through current readers without changing its retained schema meaning."""
+    with closing(sqlite3.connect(":memory:", isolation_level=None)) as projection:
+        projection.executescript("\n".join(connection.iterdump()))
+        database._configure_connection(projection)
+        _upgrade_v9_connection(projection, None)
+        return read_state(projection)
+
+
 def _verify_backfill(connection: sqlite3.Connection, data: dict[ArtifactRefId, bytes]) -> None:
-    migrated = read_state(connection)
+    migrated = _read_compatibility_v9_state(connection)
     verified_archives = history_archives.verify_archives(migrated, data)
     if isinstance(verified_archives, work_brief_models.WorkBriefFailure):
         raise ValueError(verified_archives.message)
@@ -213,7 +223,7 @@ def _verify_backfill(connection: sqlite3.Connection, data: dict[ArtifactRefId, b
 
 def backfill_ownership(connection: sqlite3.Connection, work_root: Path) -> None:
     """Reject inconsistent predecessor facts before the caller's authority commit."""
-    state = read_state(connection)
+    state = _read_compatibility_v9_state(connection)
     references = {(value.kind.value, value.key, value.revision): value for value in state.artifact_references}
     by_id = {value.artifact_ref_id: value for value in state.artifact_references}
     data = {value.artifact_ref_id: read_reference(work_root, value) for value in state.artifact_references}
@@ -253,29 +263,29 @@ def _upgrade_v8_connection(connection: sqlite3.Connection, work_root: Path, expe
     connection.row_factory = sqlite3.Row
     with database.write_transaction(connection):
         version = database._read_pinboard_schema_version(connection)
-        if version == database.SCHEMA_VERSION:
-            database._verify_current_schema(connection)
+        if version == 9:
+            database._verify_v9_schema(connection)
             return False
         database._verify_v8_schema(connection)
         database.verify_database_integrity(connection)
         connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v8")
-        statement = ""
-        for line in database.read_schema_bytes().decode("utf-8").splitlines(keepends=True):
-            statement += line
-            if not sqlite3.complete_statement(statement):
-                continue
-            sql = "\n".join(part for part in statement.splitlines() if not part.lstrip().startswith("--")).strip()
-            if sql.startswith(
-                ("CREATE TABLE project_meta", "CREATE TABLE artifact_ownership", "CREATE INDEX artifact_ownership")
+        for _, name, _, statement in sorted(
+            database._build_v9_schema_signature(), key=lambda value: value[0] != "table"
+        ):
+            if name in (
+                "project_meta",
+                "artifact_ownership",
+                "artifact_ownership_by_attempt",
+                "artifact_ownership_by_identity",
             ):
-                connection.execute(sql)
-            statement = ""
+                assert statement is not None
+                connection.execute(statement)
         connection.execute(
             "INSERT INTO project_meta SELECT singleton, application, 9, revision, host_epoch, created_at, updated_at FROM project_meta_v8"
         )
         connection.execute("DROP TABLE project_meta_v8")
         backfill_ownership(connection, work_root)
-        database._verify_current_schema(connection)
+        database._verify_v9_schema(connection)
         database.verify_database_integrity(connection)
         if expected_postimage is not None and database.schema_logical_digest(connection) != expected_postimage:
             raise StorageError(
@@ -286,7 +296,7 @@ def _upgrade_v8_connection(connection: sqlite3.Connection, work_root: Path, expe
 
 
 def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
-    """Observe exact v7/current identities and predict current output without effects."""
+    """Observe exact supported identities and predict the next explicit advancement without effects."""
     try:
         source = sha256(path.read_bytes()).hexdigest()
         with closing(
@@ -300,7 +310,9 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
                 database._verify_current_schema(connection)
                 database.verify_database_integrity(connection)
                 return version, source, None
-            if version == 8:
+            if version == 9:
+                database._verify_v9_schema(connection)
+            elif version == 8:
                 database._verify_v8_schema(connection)
             elif version == 7:
                 database._verify_v7_schema(connection)
@@ -312,7 +324,9 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
             with closing(sqlite3.connect(":memory:", isolation_level=None)) as simulation:
                 connection.backup(simulation)
                 database._configure_connection(simulation)
-                if version == 8:
+                if version == 9:
+                    _upgrade_v9_connection(simulation, None)
+                elif version == 8:
                     _upgrade_v8_connection(simulation, path.parent, None)
                 else:
                     database._upgrade_v7_connection(simulation)
@@ -326,12 +340,5 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
 
 
 def migrate_v8_database(path: Path, expected_postimage: str) -> bool:
-    with closing(
-        sqlite3.connect(database._build_database_uri(path, OpenMode.READ_WRITE), uri=True, isolation_level=None)
-    ) as connection:
-        database._configure_connection(connection)
-        connection.execute("PRAGMA synchronous = FULL")
-        try:
-            return _upgrade_v8_connection(connection, path.parent, expected_postimage)
-        except sqlite3.Error as error:
-            raise database.translate_database_error(error).with_database_path(path) from error
+    with database.migration_connection(path) as connection:
+        return _upgrade_v8_connection(connection, path.parent, expected_postimage)

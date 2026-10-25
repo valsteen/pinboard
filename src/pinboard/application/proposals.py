@@ -4,6 +4,7 @@ from pinboard.application import proposal_models
 from pinboard.application.proposal_models import Proposal
 from pinboard.domain import proposal_models as domain_proposal_models
 from pinboard.domain import work_models
+from pinboard.domain.history import dependency_from_payload
 from pinboard.domain.identifiers import ProposalId, TaskId, WorkItemId
 
 
@@ -14,7 +15,7 @@ def convert_proposal(value: Proposal) -> domain_proposal_models.CreateProposalOp
         case proposal_models.PrerequisiteProposalRelation(item=item):
             relation = work_models.PrerequisiteProposalRelation(WorkItemId(item))
         case proposal_models.FollowUpProposalRelation(item=item):
-            relation = work_models.FollowUpProposalRelation(WorkItemId(item))
+            relation = work_models.FollowUpProposalRelation(dependency_from_payload(item))
         case proposal_models.DuplicateProposalRelation(item=item):
             relation = work_models.DuplicateProposalRelation(WorkItemId(item))
         case proposal_models.ContradictionProposalRelation(item=item):

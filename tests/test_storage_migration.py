@@ -30,14 +30,41 @@ from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initial
 class StorageMigrationTests(unittest.TestCase):
     def predecessor_rows(self, path: Path) -> tuple[str, ...]:
         with contextlib.closing(sqlite3.connect(path)) as connection:
-            return tuple(
-                sorted(
-                    statement
-                    for statement in connection.iterdump()
-                    if statement.startswith("INSERT")
-                    and not statement.startswith(('INSERT INTO "project_meta"', 'INSERT INTO "artifact_ownership"'))
+            facts: list[str] = []
+            for (table,) in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'table'"):
+                if table in {"project_meta", "artifact_ownership", "checkpoint_acceptances"}:
+                    continue
+                columns = tuple(
+                    row[1]
+                    for row in connection.execute(f'PRAGMA table_info("{table}")')
+                    if (table, row[1])
+                    not in {
+                        ("item_dependencies", "checkpoint_id"),
+                        ("proposals", "relation_checkpoint_id"),
+                    }
                 )
+                selected = ", ".join(f'"{column}"' for column in columns)
+                facts.extend(
+                    repr((table, tuple(row))) for row in connection.execute(f'SELECT {selected} FROM "{table}"')
+                )
+            return tuple(sorted(facts))
+
+    def downgrade_v9(self, path: Path) -> None:
+        with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("DROP TABLE checkpoint_acceptances")
+            connection.execute("ALTER TABLE item_dependencies DROP COLUMN checkpoint_id")
+            connection.execute("ALTER TABLE proposals DROP COLUMN relation_checkpoint_id")
+            connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v10")
+            statement = next(
+                sql for _, name, _, sql in sqlite_database._build_v9_schema_signature() if name == "project_meta"
             )
+            assert statement is not None
+            connection.execute(statement)
+            connection.execute(
+                "INSERT INTO project_meta SELECT singleton, application, 9, revision, host_epoch, created_at, updated_at FROM project_meta_v10"
+            )
+            connection.execute("DROP TABLE project_meta_v10")
+            sqlite_database._verify_v9_schema(connection)
 
     def initialize_v8(self, project: Path) -> Path:
         subprocess.run(["git", "init", "-b", "main", str(project)], check=True, capture_output=True)
@@ -47,6 +74,7 @@ class StorageMigrationTests(unittest.TestCase):
         return path
 
     def downgrade_v8(self, path: Path) -> None:
+        self.downgrade_v9(path)
         with contextlib.closing(sqlite3.connect(path)) as connection, connection:
             connection.execute("DROP TABLE artifact_ownership")
             connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v9")
@@ -89,7 +117,7 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(11, code, failed)
             self.assertEqual(original, path.read_bytes())
             self.assertEqual(original, (path.parent / "migration" / f"{plan_id}.v8").read_bytes())
-            verify = sqlite_database._verify_current_schema
+            verify = sqlite_database._verify_v9_schema
             interrupted: list[bool] = []
 
             def reject_live_postimage(connection: sqlite3.Connection) -> None:
@@ -98,7 +126,7 @@ class StorageMigrationTests(unittest.TestCase):
                     interrupted.append(True)
                     raise StorageError(StorageErrorCode.INVALID_STATE, "controlled failure before authority commit")
 
-            with patch.object(sqlite_database, "_verify_current_schema", side_effect=reject_live_postimage):
+            with patch.object(sqlite_database, "_verify_v9_schema", side_effect=reject_live_postimage):
                 self.assertEqual(11, self.run_cli(project, "migrate-schema", "--apply", plan_id)[0])
             self.assertEqual([True], interrupted)
             self.assertEqual(original, path.read_bytes())
@@ -107,7 +135,11 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", reverse)[0])
             self.assertEqual(original, path.read_bytes())
             self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", plan_id)[0])
-            self.assertEqual(9, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
+            with contextlib.closing(sqlite3.connect(path)) as connection:
+                self.assertEqual(9, connection.execute("SELECT schema_version FROM project_meta").fetchone()[0])
+            current = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
+            self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
+            self.assertEqual(10, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
             roots = resolve_durable_roots(project)
             publication = ArtifactRepository(roots).publish(
                 NewArtifact(work_models.ArtifactKind.EVIDENCE, "later", 1, ".txt", b"later")
@@ -123,6 +155,7 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(later, path.read_bytes())
 
     def downgrade_schema(self, database_path: Path) -> None:
+        self.downgrade_v9(database_path)
         with contextlib.closing(sqlite3.connect(database_path)) as connection, connection:
             for table in (
                 "artifact_ownership",

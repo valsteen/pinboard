@@ -75,6 +75,7 @@ class RoadmapTest(unittest.TestCase):
                 self.initiative("keyboard-navigation", ("p", "a", "k", "c", "s")),
             ),
             items,
+            frozenset(),
         )
 
     def test_shared_unique_counts_and_global_remaining_waves_reflow_without_assessment(self) -> None:

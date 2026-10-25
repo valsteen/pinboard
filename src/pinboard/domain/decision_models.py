@@ -815,14 +815,14 @@ class BlockAttemptChange:
     item_before: work_models.WorkState
     attempt: AttemptId
     attempt_before: work_models.AttemptState
-    dependencies_after: tuple[WorkItemId, ...]
+    dependencies_after: tuple[work_models.Dependency, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class BlockWorkItemChange:
     work_item_id: WorkItemId
     item_before: work_models.WorkState
-    dependencies_after: tuple[WorkItemId, ...]
+    dependencies_after: tuple[work_models.Dependency, ...]
 
 
 @dataclass(frozen=True, slots=True)

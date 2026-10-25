@@ -40,7 +40,7 @@ def decide_proposal_creation(  # noqa: C901, PLR0912 - exhaustive proposal relat
             None,
         )
     match intake.relation:
-        case work_models.FollowUpProposalRelation(work_item_id=dependency):
+        case work_models.FollowUpProposalRelation(dependency=dependency):
             dependencies = (dependency,)
         case (
             work_models.IndependentProposalRelation()

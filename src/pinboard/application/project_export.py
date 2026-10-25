@@ -27,7 +27,7 @@ class ContentEncoding(Enum):
 
 class ProjectExportProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[9]
+    schema_version: Literal[10]
     created_at: str
     updated_at: str
 
@@ -63,6 +63,7 @@ class ProjectExportDependency(msgspec.Struct, frozen=True, forbid_unknown_fields
     item_id: str
     dependency_id: str
     position: int
+    checkpoint_id: str | None
 
 
 class ProjectExportAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -129,6 +130,7 @@ class FollowUpProposalRelation(
 ):
     proposal_id: str
     target_item_id: str
+    checkpoint_id: str | None
 
 
 class DuplicateProposalRelation(
@@ -394,7 +396,7 @@ class ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_u
 
 class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-project-export/v3"]
-    authority: Literal["sqlite-v9"]
+    authority: Literal["sqlite-v10"]
     revision: int
     project: ProjectExportProject
     work_items: tuple[ProjectExportWorkItem, ...]
@@ -471,6 +473,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
             tuple(dependencies),
             tuple(attempts),
             tuple(definition_revisions),
+            checkpoint_acceptances=(),
         ),
         stored_state.ProposalRecords(tuple(proposal_values), tuple(evidence), tuple(freshness)),
         stored_state.ReplacementRecords(tuple(planned_replacements), tuple(replacement_dispositions)),
@@ -508,8 +511,10 @@ def _project_proposal_relation(value: stored_state.StoredProposal) -> ProjectExp
             return IndependentProposalRelation(proposal_id)
         case work_models.PrerequisiteProposalRelation(work_item_id=item):
             return PrerequisiteProposalRelation(proposal_id, str(item))
-        case work_models.FollowUpProposalRelation(work_item_id=item):
-            return FollowUpProposalRelation(proposal_id, str(item))
+        case work_models.FollowUpProposalRelation(work_item_id=item, dependency=dependency):
+            return FollowUpProposalRelation(
+                proposal_id, str(item), None if isinstance(dependency, str) else dependency.checkpoint_id
+            )
         case work_models.DuplicateProposalRelation(work_item_id=item):
             return DuplicateProposalRelation(proposal_id, str(item))
         case work_models.ContradictionProposalRelation(work_item_id=item):
@@ -574,7 +579,7 @@ def project_export_from_state(
     }
     return ProjectExport(
         "pinboard-project-export/v3",
-        "sqlite-v9",
+        "sqlite-v10",
         state.lifecycle.project.revision,
         ProjectExportProject(
             state.lifecycle.project.application,
@@ -614,7 +619,7 @@ def project_export_from_state(
             for value in state.lifecycle.definition_revisions
         ),
         tuple(
-            ProjectExportDependency(str(value.item_id), str(value.dependency_id), value.position)
+            ProjectExportDependency(str(value.item_id), str(value.dependency_id), value.position, value.checkpoint_id)
             for value in state.lifecycle.dependencies
         ),
         tuple(

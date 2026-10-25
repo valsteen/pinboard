@@ -137,6 +137,7 @@ class ServiceTest(unittest.TestCase):
             actor_task_id=TaskId("project-task") if is_project else None,
             actor_host_id=HostId("host-a") if is_project else None,
             transition_brief_identity=transition_brief_identity,
+            dependency_brief_pins=(),
         )
 
     def _create_proposal(
@@ -148,6 +149,7 @@ class ServiceTest(unittest.TestCase):
             now,
             actor_task_id=TaskId("discovering-task"),
             actor_host_id=HostId("host-a"),
+            dependency_brief_pins=(),
         )
 
     def _worker_action[ActionT: decision_models.Action](
@@ -413,6 +415,7 @@ class ServiceTest(unittest.TestCase):
             read_authorization_time=read_authorization_time,
             actor_task_id=None,
             actor_host_id=None,
+            dependency_brief_pins=(),
         )
         self.assertIsInstance(result, DecisionFailure)
         assert isinstance(result, DecisionFailure)

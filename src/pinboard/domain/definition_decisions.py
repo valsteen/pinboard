@@ -21,9 +21,9 @@ class DefinitionRevisionDecision:
 
 
 def introduces_dependency_cycle(
-    snapshot: LedgerSnapshot, work_item_id: WorkItemId, dependencies: tuple[WorkItemId, ...]
+    snapshot: LedgerSnapshot, work_item_id: WorkItemId, dependencies: tuple[work_models.Dependency, ...]
 ) -> bool:
-    pending = list(dependencies)
+    pending = [work_models.dependency_item(value) for value in dependencies]
     visited: set[WorkItemId] = set()
     while pending:
         dependency = pending.pop()
@@ -34,7 +34,7 @@ def introduces_dependency_cycle(
         visited.add(dependency)
         recorded = snapshot.recorded_dependencies(dependency)
         if recorded is not None:
-            pending.extend(recorded)
+            pending.extend(work_models.dependency_item(value) for value in recorded)
     return False
 
 
@@ -69,7 +69,7 @@ def decide_definition_revision(
     if isinstance(digest, DecisionFailure):
         return digest
     known_items = {*snapshot.work_items_by_id(), *snapshot.history_items}
-    if any(dependency not in known_items for dependency in value.definition.dependencies):
+    if any(work_models.dependency_item(dependency) not in known_items for dependency in value.definition.dependencies):
         return DecisionFailure(
             DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
             "Definition dependencies must name existing work items.",

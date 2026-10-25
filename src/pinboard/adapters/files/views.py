@@ -42,7 +42,7 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
 
 
 def _render_header(kind: str) -> str:
-    return f"---\nkind: {kind}\nauthority: sqlite-v9\n---\n\n> {NOTICE}\n\n"
+    return f"---\nkind: {kind}\nauthority: sqlite-v10\n---\n\n> {NOTICE}\n\n"
 
 
 def _bullets(values: tuple[str, ...]) -> str:
@@ -63,7 +63,7 @@ def _deferral_label(policy: work_models.ObligationDeferralPolicy) -> str:
 class _ViewInputs:
     board: query_models.BoardPortfolio
     overview_items: Mapping[str, query_models.OverviewItem]
-    dependencies: Mapping[WorkItemId, tuple[WorkItemId, ...]]
+    dependencies: Mapping[WorkItemId, tuple[work_models.Dependency, ...]]
     definitions: Mapping[WorkItemId, stored_state.ItemDefinitionRevision]
 
 
@@ -71,9 +71,11 @@ def _project_view_inputs(
     state: stored_state.StoredWorkState, board_history: query_models.BoardHistoryFacts, now: datetime
 ) -> _ViewInputs:
     board = project_board_portfolio(state, board_history, now)
-    dependency_groups: dict[WorkItemId, list[WorkItemId]] = {item.item_id: [] for item in state.lifecycle.work_items}
+    dependency_groups: dict[WorkItemId, list[work_models.Dependency]] = {
+        item.item_id: [] for item in state.lifecycle.work_items
+    }
     for dependency in sorted(state.lifecycle.dependencies, key=_dependency_key):
-        dependency_groups[dependency.item_id].append(dependency.dependency_id)
+        dependency_groups[dependency.item_id].append(dependency.target)
     return _ViewInputs(
         board,
         MappingProxyType({value.overview.item_id: value.overview for value in board.items}),
@@ -84,7 +86,7 @@ def _project_view_inputs(
 
 def _render_item(
     item: stored_state.StoredWorkItem,
-    dependencies: tuple[WorkItemId, ...],
+    dependencies: tuple[work_models.Dependency, ...],
     overview_item: query_models.OverviewItem | None,
     definition: stored_state.ItemDefinitionRevision,
     review_history: tuple[stored_state.StoredTransitionReceipt, ...],
@@ -93,7 +95,7 @@ def _render_item(
     dependency_reasons = (
         tuple(f"{value.item_id}: {value.reason}" for value in overview_item.dependency_reasons)
         if overview_item is not None
-        else tuple(str(value) for value in dependencies)
+        else tuple(query_models.dependency_label(history.dependency_payload(value)) for value in dependencies)
     )
     origin = None if overview_item is None else overview_item.proposal_origin
     accepted = definition.definition
@@ -301,7 +303,7 @@ def _unsatisfied_dependencies(item: query_models.BoardItem) -> tuple[query_model
     """Name the live or dropped prerequisites whose obligations still apply."""
 
     return tuple(
-        value for value in item.overview.dependency_reasons if value.item_id in item.overview.unsatisfied_dependencies
+        value for value in item.overview.dependency_reasons if value.target in item.overview.unsatisfied_dependencies
     )
 
 
@@ -750,7 +752,7 @@ def _board_page_item(value: query_models.BoardItem, live_item_ids: frozenset[str
                     dependency.item_id,
                     dependency.reason,
                     dependency.item_id in live_item_ids,
-                    dependency.item_id in item.unsatisfied_dependencies,
+                    dependency.target in item.unsatisfied_dependencies,
                 )
                 for dependency in item.dependency_reasons
             )

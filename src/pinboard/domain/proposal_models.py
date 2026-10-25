@@ -28,7 +28,7 @@ class ProposalIntake:
 class ReadyProposalWorkItem:
     work_item_id: WorkItemId
     position: int
-    dependencies: tuple[WorkItemId, ...]
+    dependencies: tuple[work_models.Dependency, ...]
     definition_digest: str
     definition: work_models.WorkItemDefinition
 

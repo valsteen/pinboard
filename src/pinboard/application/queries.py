@@ -491,7 +491,7 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
             )
     if context.work_item.unsatisfied_dependencies:
         return query_models.DependencyContinuation(
-            tuple(str(value) for value in context.work_item.unsatisfied_dependencies)
+            tuple(history.dependency_payload(value) for value in context.work_item.unsatisfied_dependencies)
         )
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
@@ -592,8 +592,10 @@ def _dependency_reason(
     proposals: Mapping[WorkItemId, stored_state.StoredProposal],
     prerequisite_proposals: Mapping[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
     work_item_id: WorkItemId,
-    dependency_id: WorkItemId,
+    dependency: work_models.Dependency,
+    accepted_checkpoints: frozenset[work_models.CheckpointDependency],
 ) -> query_models.DependencyReason:
+    dependency_id = work_models.dependency_item(dependency)
     proposal = proposals.get(work_item_id)
     if (
         proposal is not None
@@ -608,7 +610,11 @@ def _dependency_reason(
             if prerequisite is not None
             else "Recorded dependency."
         )
-    return query_models.DependencyReason(str(dependency_id), reason)
+    checkpoint = None if isinstance(dependency, str) else str(dependency.checkpoint_id)
+    accepted = dependency in accepted_checkpoints
+    if checkpoint is not None:
+        reason = f"Checkpoint {checkpoint} {'accepted' if accepted else 'not yet accepted'}. {reason}"
+    return query_models.DependencyReason(str(dependency_id), reason, checkpoint, accepted)
 
 
 def _proposal_origin(
@@ -671,7 +677,7 @@ def present_overview(
     )
     return query_models.WorkOverview(
         "pinboard-overview/v7",
-        "sqlite-v9",
+        "sqlite-v10",
         revision,
         active_attempts,
         items,
@@ -710,6 +716,10 @@ def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tup
         for item in state.lifecycle.work_items
         if item.state not in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED}
     )
+    accepted = frozenset(
+        work_models.CheckpointDependency(value.item_id, value.checkpoint_id)
+        for value in state.lifecycle.checkpoint_acceptances
+    )
     current_replacements: dict[WorkItemId, stored_state.StoredPlannedReplacement] = {}
     for relation in state.replacements.planned_replacements:
         current = current_replacements.get(relation.affected_item_id)
@@ -727,16 +737,19 @@ def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tup
             definitions[item.item_id].unlock,
             live_state,
             item.queue_position,
-            not any(link.dependency_id in unsatisfied_ids for link in dependency_links[item.item_id]),
-            item.timing.value if item.timing is not None else None,
-            tuple(str(link.dependency_id) for link in dependency_links[item.item_id]),
-            tuple(
-                str(link.dependency_id)
+            not any(
+                link.dependency_id in unsatisfied_ids and link.target not in accepted
                 for link in dependency_links[item.item_id]
-                if link.dependency_id in unsatisfied_ids
+            ),
+            item.timing.value if item.timing is not None else None,
+            tuple(history.dependency_payload(link.target) for link in dependency_links[item.item_id]),
+            tuple(
+                history.dependency_payload(link.target)
+                for link in dependency_links[item.item_id]
+                if link.dependency_id in unsatisfied_ids and link.target not in accepted
             ),
             tuple(
-                _dependency_reason(proposals, prerequisite_proposals, item.item_id, link.dependency_id)
+                _dependency_reason(proposals, prerequisite_proposals, item.item_id, link.target, accepted)
                 for link in dependency_links[item.item_id]
             ),
             _proposal_origin(proposals, item.item_id),
@@ -762,7 +775,8 @@ def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tup
 def _project_overview_item(
     item: work_models.WorkItem,
     definition: work_models.WorkItemDefinition,
-    unsatisfied_dependencies: frozenset[WorkItemId],
+    unsatisfied_dependencies: frozenset[work_models.Dependency],
+    accepted_checkpoints: frozenset[work_models.CheckpointDependency],
     proposals: Mapping[WorkItemId, stored_state.StoredProposal],
     prerequisite_proposals: Mapping[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
     preparation: query_models.PreparationAuthorityStatus | None,
@@ -779,10 +793,11 @@ def _project_overview_item(
         item.queue_position,
         not any(dependency in unsatisfied_dependencies for dependency in item.depends_on),
         item.timing,
-        tuple(str(value) for value in item.depends_on),
-        tuple(str(value) for value in item.depends_on if value in unsatisfied_dependencies),
+        tuple(history.dependency_payload(value) for value in item.depends_on),
+        tuple(history.dependency_payload(value) for value in item.depends_on if value in unsatisfied_dependencies),
         tuple(
-            _dependency_reason(proposals, prerequisite_proposals, item.work_item_id, value) for value in item.depends_on
+            _dependency_reason(proposals, prerequisite_proposals, item.work_item_id, value, accepted_checkpoints)
+            for value in item.depends_on
         ),
         _proposal_origin(proposals, item.work_item_id),
         None if item.attempt is None else str(item.attempt),
@@ -806,15 +821,22 @@ def _project_current_items(
 ) -> tuple[query_models.OverviewItem, ...]:
     snapshot = facts.snapshot
     definitions = {value.work_item_id: value.definition for value in snapshot.definitions}
-    unsatisfied_ids = snapshot.unsatisfied_dependency_ids
     proposals, prerequisite_proposals = _proposal_maps(facts.proposals)
     preparations = {value.work_item_id: value for value in facts.preparations}
+    unsatisfied_ids = snapshot.unsatisfied_dependency_ids
 
     return tuple(
         _project_overview_item(
             item,
             definitions[item.work_item_id],
-            unsatisfied_ids,
+            frozenset(
+                target
+                for target in item.depends_on
+                if not work_models.dependency_satisfied(
+                    target, work_models.dependency_item(target) not in unsatisfied_ids, snapshot.accepted_checkpoints
+                )
+            ),
+            snapshot.accepted_checkpoints,
             proposals,
             prerequisite_proposals,
             preparations.get(item.work_item_id),
@@ -1125,7 +1147,15 @@ def _definition_fields(definition: stored_state.StoredDefinition) -> _Definition
             (query_models.DefinitionListField.NON_SCOPE, definition.non_scope),
             (query_models.DefinitionListField.ACCEPTANCE_CRITERIA, definition.acceptance_criteria),
             (query_models.DefinitionListField.EVIDENCE, definition.evidence),
-            (query_models.DefinitionListField.DEPENDENCIES, tuple(str(value) for value in definition.dependencies)),
+            (
+                query_models.DefinitionListField.DEPENDENCIES,
+                tuple(
+                    query_models.dependency_label(
+                        history.dependency_payload(WorkItemId(value) if isinstance(value, str) else value)
+                    )
+                    for value in definition.dependencies
+                ),
+            ),
         ),
         tuple(obligations),
     )
@@ -1231,12 +1261,15 @@ def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) 
     item = facts.work_item
     proposals, prerequisite_proposals = _proposal_maps(facts.proposals)
     unsatisfied_dependencies = frozenset(
-        dependency_id for dependency_id, is_unsatisfied in facts.dependency_unsatisfied if is_unsatisfied
+        dependency_id
+        for dependency_id, is_unsatisfied in facts.dependency_unsatisfied
+        if not work_models.dependency_satisfied(dependency_id, not is_unsatisfied, facts.accepted_checkpoints)
     )
     return _project_overview_item(
         item,
         facts.definition.definition,
         unsatisfied_dependencies,
+        facts.accepted_checkpoints,
         proposals,
         prerequisite_proposals,
         facts.preparation,
@@ -1563,7 +1596,7 @@ def project_item_status(
         verdict = selected_verdict
     return query_models.ItemStatus(
         "pinboard-item-status/v3",
-        "sqlite-v9",
+        "sqlite-v10",
         str(facts.project_revision),
         str(item.work_item_id),
         facts.definition_title,
@@ -1578,6 +1611,7 @@ def project_item_status(
         _project_closure(facts.closure),
         _project_selected_preparation_status(facts.preparation, now),
         board,
+        facts.dependencies,
     )
 
 
@@ -1589,7 +1623,7 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
         return None
     return query_models.BranchOwners(
         "pinboard-branch-owners/v1",
-        "sqlite-v9",
+        "sqlite-v10",
         str(facts.project_revision),
         branch,
         tuple(
@@ -1717,7 +1751,7 @@ def select_item_definition(
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
-        "sqlite-v9",
+        "sqlite-v10",
         selected.project_revision,
         work_item_id,
         selected.item_subject_revision,
@@ -1754,7 +1788,7 @@ def select_item_definition_history(
     )
     return query_models.ItemDefinitionHistory(
         "pinboard-item-definition-history/v1",
-        "sqlite-v9",
+        "sqlite-v10",
         selected.project_revision,
         work_item_id,
         rows,
@@ -1799,7 +1833,7 @@ def _classify_parallel_exclusion_reasons(
         return (
             query_models.ParallelReason(
                 query_models.ParallelReasonCode.DEPENDENCY_UNSATISFIED,
-                f"Item '{item_id}' has unsatisfied prerequisites: {', '.join(item.unsatisfied_dependencies)}.",
+                f"Item '{item_id}' has unsatisfied prerequisites: {', '.join(query_models.dependency_label(history.dependency_payload(value)) for value in item.unsatisfied_dependencies)}.",
             ),
         )
     if (
@@ -1832,6 +1866,7 @@ def _project_parallel_preview_facts(
             item.label,
             item.state,
             None if item.attempt is None else str(item.attempt.attempt_id),
+            item.dependency_conditions,
         )
         items.append(
             query_models.ExcludedParallelItem(*common, reasons)
@@ -1852,12 +1887,20 @@ def project_current_parallel_preview(snapshot: LedgerSnapshot, *, now: datetime)
     """Project all-safe parallel work from current decision facts only."""
 
     definitions = {value.work_item_id: value.definition for value in snapshot.definitions}
-    unsatisfied_ids = snapshot.unsatisfied_dependency_ids
     attempts = {value.attempt: value for value in snapshot.attempts}
     attempt_authorities = {value.attempt: value for value in snapshot.command_attempt_authorities}
     preparations = {value.work_item_id: value for value in snapshot.command_preparation_authorities}
+    unsatisfied_ids = snapshot.unsatisfied_dependency_ids
     items: list[query_models.ParallelPreviewItemFacts] = []
     for item in snapshot.items:
+        unsatisfied = tuple(
+            target
+            for target in item.depends_on
+            if not work_models.dependency_satisfied(
+                target, work_models.dependency_item(target) not in unsatisfied_ids, snapshot.accepted_checkpoints
+            )
+        )
+        unsatisfied_set = frozenset(unsatisfied)
         command_preparation = preparations.get(item.work_item_id)
         preparation = (
             None
@@ -1882,9 +1925,17 @@ def project_current_parallel_preview(snapshot: LedgerSnapshot, *, now: datetime)
                 item.work_item_id,
                 definitions[item.work_item_id].title,
                 item.state,
-                tuple(dependency for dependency in item.depends_on if dependency in unsatisfied_ids),
+                unsatisfied,
                 preparation,
                 attempt,
+                tuple(
+                    query_models.DependencyStatus(
+                        history.dependency_payload(target),
+                        target not in unsatisfied_set,
+                        target in snapshot.accepted_checkpoints,
+                    )
+                    for target in item.depends_on
+                ),
             )
         )
     return _project_parallel_preview_facts(
@@ -1915,13 +1966,25 @@ def present_parallel_preview(preview: query_models.ParallelPreview) -> query_mod
             case query_models.LaunchableParallelItem():
                 launchable.append(
                     query_models.ParallelItemView(
-                        item.item_id, item.label, item.state.value, item.attempt_id, "launchable", ()
+                        item.item_id,
+                        item.label,
+                        item.state.value,
+                        item.attempt_id,
+                        "launchable",
+                        (),
+                        item.dependency_conditions,
                     )
                 )
             case query_models.ExcludedParallelItem(reasons=reasons):
                 excluded.append(
                     query_models.ParallelItemView(
-                        item.item_id, item.label, item.state.value, item.attempt_id, "excluded", reasons
+                        item.item_id,
+                        item.label,
+                        item.state.value,
+                        item.attempt_id,
+                        "excluded",
+                        reasons,
+                        item.dependency_conditions,
                     )
                 )
             case _ as unreachable:

@@ -11,7 +11,7 @@ from pinboard.domain.errors import (
     DecisionFailureCode,
     DecisionResult,
 )
-from pinboard.domain.identifiers import WorkItemId
+from pinboard.domain.identifiers import CheckpointId, WorkItemId
 
 type CanonicalLine = Annotated[str, msgspec.Meta(pattern=r"\A\S(?:[^\r\n]*\S)?\z")]
 type Identity = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
@@ -54,9 +54,29 @@ class WorkObligationPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     deferral_policy: work_models.ObligationDeferralPolicy
 
 
+class CheckpointDependencyPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item: Identity
+    checkpoint: Identity
+
+
+type DependencyPayload = Identity | CheckpointDependencyPayload
+
+
+def dependency_from_payload(value: DependencyPayload) -> work_models.Dependency:
+    if isinstance(value, str):
+        return WorkItemId(value)
+    return work_models.CheckpointDependency(WorkItemId(value.item), CheckpointId(value.checkpoint))
+
+
+def dependency_payload(value: work_models.Dependency) -> DependencyPayload:
+    if isinstance(value, str):
+        return value
+    return msgspec.convert({"item": value.item_id, "checkpoint": value.checkpoint_id}, type=CheckpointDependencyPayload)
+
+
 class WorkItemDefinitionPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     acceptance_criteria: Annotated[tuple[CanonicalLine, ...], msgspec.Meta(min_length=1)]
-    dependencies: tuple[Identity, ...]
+    dependencies: tuple[DependencyPayload, ...]
     effect: CanonicalLine
     evidence: tuple[CanonicalLine, ...]
     hypothesis: CanonicalLine
@@ -72,7 +92,6 @@ class WorkItemDefinitionPayload(msgspec.Struct, frozen=True, forbid_unknown_fiel
     def __post_init__(self) -> None:
         for field, values in (
             ("acceptance_criteria", self.acceptance_criteria),
-            ("dependencies", self.dependencies),
             ("evidence", self.evidence),
             ("non_scope", self.non_scope),
             ("scope", self.scope),
@@ -82,6 +101,9 @@ class WorkItemDefinitionPayload(msgspec.Struct, frozen=True, forbid_unknown_fiel
         obligation_ids = tuple(value.obligation_id for value in self.obligations)
         if len(obligation_ids) != len(set(obligation_ids)):
             raise ValueError("obligation identities must be ordered and unique.")
+        dependency_ids = tuple(value if isinstance(value, str) else value.item for value in self.dependencies)
+        if len(dependency_ids) != len(set(dependency_ids)):
+            raise ValueError("dependencies must contain one entry per prerequisite item.")
 
 
 class TransitionReceiptOutcome(msgspec.Struct, frozen=True, forbid_unknown_fields=True, omit_defaults=True):
@@ -147,7 +169,7 @@ def _work_item_definition_payload(
         return msgspec.convert(
             {
                 "acceptance_criteria": definition.acceptance_criteria,
-                "dependencies": definition.dependencies,
+                "dependencies": tuple(dependency_payload(value) for value in definition.dependencies),
                 "effect": definition.effect,
                 "evidence": definition.evidence,
                 "hypothesis": definition.hypothesis,
@@ -213,7 +235,7 @@ def work_item_definition_from_payload(record: WorkItemDefinitionPayload) -> work
         record.scope,
         record.non_scope,
         record.acceptance_criteria,
-        tuple(WorkItemId(value) for value in record.dependencies),
+        tuple(dependency_from_payload(value) for value in record.dependencies),
         record.effect,
         record.unlock,
         work_models.CheckoutPolicy(record.checkout_policy),

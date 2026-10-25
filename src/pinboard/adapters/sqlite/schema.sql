@@ -1,10 +1,10 @@
--- SQLite authority schema version 9.
+-- SQLite authority schema version 10.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE project_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     application TEXT NOT NULL CHECK (application = 'pinboard'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 9),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 10),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
     created_at TEXT NOT NULL,
@@ -83,7 +83,7 @@ CREATE TABLE work_item_definition_revisions (
 CREATE TABLE item_dependencies (
     item_id TEXT NOT NULL REFERENCES work_items(item_id) ON DELETE CASCADE,
     dependency_id TEXT NOT NULL REFERENCES work_items(item_id),
-    position INTEGER NOT NULL CHECK (position >= 0),
+    position INTEGER NOT NULL CHECK (position >= 0), checkpoint_id TEXT CHECK (checkpoint_id IS NULL OR length(checkpoint_id) >= 1),
     PRIMARY KEY (item_id, dependency_id),
     UNIQUE (item_id, position),
     CHECK (item_id <> dependency_id)
@@ -175,7 +175,7 @@ CREATE TABLE proposals (
     disposition_target_item_id TEXT REFERENCES work_items(item_id),
     disposition_reason TEXT,
     subject_revision INTEGER NOT NULL CHECK (subject_revision >= 0),
-    disposition_recorded_at TEXT,
+    disposition_recorded_at TEXT, relation_checkpoint_id TEXT CHECK (relation_checkpoint_id IS NULL OR (relation_kind = 'follow-up' AND length(relation_checkpoint_id) >= 1)),
     CHECK ((disposition IS NULL) = (disposition_recorded_at IS NULL)),
     CHECK (
         (disposition IS NULL AND disposition_target_item_id IS NULL AND disposition_reason IS NULL)
@@ -290,6 +290,15 @@ CREATE TABLE transition_history (
 CREATE INDEX checkpoint_history_by_subject
 ON transition_history(subject_id, history_id)
 WHERE outcome_schema = 'checkpoint-acceptance/v2';
+
+CREATE TABLE checkpoint_acceptances (
+    history_id INTEGER PRIMARY KEY REFERENCES transition_history(history_id),
+    item_id TEXT NOT NULL REFERENCES work_items(item_id),
+    checkpoint_id TEXT NOT NULL CHECK (length(checkpoint_id) >= 1)
+) STRICT;
+
+CREATE INDEX checkpoint_acceptances_by_dependency
+ON checkpoint_acceptances(item_id, checkpoint_id, history_id);
 
 CREATE TABLE initiatives (
     initiative_id TEXT PRIMARY KEY,

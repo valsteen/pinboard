@@ -92,6 +92,10 @@ class WorkStore(Protocol):
         self, artifact_ref_id: ArtifactRefId
     ) -> stored_state.ArtifactReference | None: ...
 
+    def read_artifact_references_by_ids(
+        self, artifact_ref_ids: tuple[ArtifactRefId, ...]
+    ) -> Mapping[ArtifactRefId, stored_state.ArtifactReference]: ...
+
     def read_attempt_context(self, attempt_id: AttemptId) -> query_models.AttemptContextFacts | None: ...
 
     def read_candidate_snapshot_context(

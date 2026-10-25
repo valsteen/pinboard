@@ -190,7 +190,13 @@ def with_definition_dependencies(
         for value in state.lifecycle.attempts
     )
     links = tuple(value for value in state.lifecycle.dependencies if value.item_id != item_id) + tuple(
-        stored_state.ItemDependency(item_id, dependency, position) for position, dependency in enumerate(dependencies)
+        stored_state.ItemDependency(
+            item_id,
+            dependency,
+            position,
+            checkpoint_id=None,
+        )
+        for position, dependency in enumerate(dependencies)
     )
     return replace(
         state,
@@ -348,7 +354,20 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
                 source="proposal:zz-proposal-a",
             ),
         ),
-        (stored_state.ItemDependency(item_a, item_c, 0), stored_state.ItemDependency(proposal_item, item_c, 0)),
+        (
+            stored_state.ItemDependency(
+                item_a,
+                item_c,
+                0,
+                checkpoint_id=None,
+            ),
+            stored_state.ItemDependency(
+                proposal_item,
+                item_c,
+                0,
+                checkpoint_id=None,
+            ),
+        ),
         (
             stored_state.StoredAttempt(
                 attempt_id,
@@ -383,6 +402,7 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
             )
             for item in (intake_item, item_a, item_b, item_c, proposal_item)
         ),
+        checkpoint_acceptances=(),
     )
     proposal_id = ProposalId(proposal_item)
     proposals = stored_state.ProposalRecords(

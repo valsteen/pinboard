@@ -52,6 +52,12 @@ class CancellationRelatedItem(msgspec.Struct, frozen=True, forbid_unknown_fields
     definition_digest: Digest
 
 
+# Retained v1 receipts bind this shared preview literally; remove when none require the historical value.
+type CompatibilityCancellationDependencyEffectV1 = Literal[
+    "Dropped prerequisites remain unsatisfied; dependent commitments are retained."
+]
+
+
 class CancellationPreview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-cancellation-preview/v1"]
     item_id: WorkItemId
@@ -70,7 +76,12 @@ class CancellationPreview(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     retained: Literal[
         "Definitions, attempts, history, reviews, candidate evidence, code, branches and worktrees are retained."
     ]
-    dependency_effect: Literal["Dropped prerequisites remain unsatisfied; dependent commitments are retained."]
+    dependency_effect: (
+        Literal[
+            "Whole-item dependencies on dropped items remain unsatisfied; matching accepted checkpoints remain satisfied; dependent commitments are retained."
+        ]
+        | CompatibilityCancellationDependencyEffectV1
+    )
     process_effect: Literal[
         "Pinboard authority is fenced; local processes are not stopped. Stop or await your known worker before confirming."
     ]

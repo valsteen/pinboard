@@ -29,7 +29,10 @@ def read_preview(connection: sqlite3.Connection, item_id: WorkItemId) -> models.
     if stored_state.live_work_state(item.state) is None:
         return None
     definition = read_current_definitions(connection, (item_id,))[item_id]
-    prerequisite_ids = tuple(WorkItemId(value) for value in definition.definition.dependencies)
+    prerequisite_ids = tuple(
+        work_models.dependency_item(WorkItemId(value) if isinstance(value, str) else value)
+        for value in definition.definition.dependencies
+    )
     dependent_ids = tuple(
         decode_row(row, ItemIdRow).item_id
         for row in connection.execute(
@@ -112,7 +115,7 @@ def read_preview(connection: sqlite3.Connection, item_id: WorkItemId) -> models.
         tuple(related[value] for value in dependent_ids),
         "dropped",
         "Definitions, attempts, history, reviews, candidate evidence, code, branches and worktrees are retained.",
-        "Dropped prerequisites remain unsatisfied; dependent commitments are retained.",
+        "Whole-item dependencies on dropped items remain unsatisfied; matching accepted checkpoints remain satisfied; dependent commitments are retained.",
         "Pinboard authority is fenced; local processes are not stopped. Stop or await your known worker before confirming.",
     )
 

@@ -6,12 +6,14 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
+from pinboard.adapters.sqlite.dependencies import DependencyRow, read_accepted_checkpoints
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import read_current_definitions
 from pinboard.adapters.sqlite.models import ItemIdRow, ProjectRevisionRow
 from pinboard.application import initiative_records as records
 from pinboard.application import roadmap, stored_state
 from pinboard.domain import initiatives as models
+from pinboard.domain import work_models
 from pinboard.domain.identifiers import WorkItemId
 
 
@@ -338,11 +340,6 @@ class RoadmapItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     queue_position: int | None
 
 
-class DependencyRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: WorkItemId
-    dependency_id: WorkItemId
-
-
 def read_roadmap(connection: sqlite3.Connection) -> roadmap.Facts:
     """Read initiative history, live/unassigned items and selected member dependency closure with batched keys."""
     project_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
@@ -357,7 +354,7 @@ def read_roadmap(connection: sqlite3.Connection) -> roadmap.Facts:
     )
     items: dict[WorkItemId, RoadmapItemRow] = {}
     definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision] = {}
-    dependencies: dict[WorkItemId, list[WorkItemId]] = {}
+    dependencies: dict[WorkItemId, list[work_models.Dependency]] = {}
     pending = tuple(sorted(selected))
     while pending:
         batch = tuple(
@@ -374,11 +371,11 @@ def read_roadmap(connection: sqlite3.Connection) -> roadmap.Facts:
         discovered: set[WorkItemId] = set()
         for row in select_by_ids(
             connection,
-            "SELECT item_id, dependency_id FROM item_dependencies WHERE item_id IN ({ids}) ORDER BY item_id, position",
+            "SELECT item_id, dependency_id, checkpoint_id FROM item_dependencies WHERE item_id IN ({ids}) ORDER BY item_id, position",
             unfinished,
         ):
             dependency = decode_row(row, DependencyRow)
-            dependencies.setdefault(dependency.item_id, []).append(dependency.dependency_id)
+            dependencies.setdefault(dependency.item_id, []).append(dependency.target)
             if dependency.dependency_id not in selected:
                 discovered.add(dependency.dependency_id)
         selected.update(discovered)
@@ -401,6 +398,7 @@ def read_roadmap(connection: sqlite3.Connection) -> roadmap.Facts:
                 key=roadmap.item_order,
             )
         ),
+        read_accepted_checkpoints(connection, (target for targets in dependencies.values() for target in targets)),
     )
 
 

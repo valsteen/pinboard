@@ -8,6 +8,7 @@ from datetime import datetime
 import msgspec
 
 from pinboard.adapters.sqlite.database import decode_row, select_by_ids
+from pinboard.adapters.sqlite.dependencies import DependencyRow, read_accepted_checkpoints
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     current_definition_anchor,
@@ -22,6 +23,7 @@ from pinboard.domain.identifiers import (
     ArtifactRefId,
     AttemptId,
     CandidateId,
+    CheckpointId,
     HistoryId,
     HostId,
     LeaseId,
@@ -30,6 +32,23 @@ from pinboard.domain.identifiers import (
     WorkItemId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
+
+
+def _recorded_dependency_facts(
+    definitions: Iterable[stored_state.ItemDefinitionRevision],
+) -> tuple[work_models.DefinitionDependencies, ...]:
+    """Project current and retained item relationships into exact dependency targets."""
+
+    return tuple(
+        work_models.DefinitionDependencies(
+            value.item_id,
+            tuple(
+                WorkItemId(dependency) if isinstance(dependency, str) else dependency
+                for dependency in value.definition.dependencies
+            ),
+        )
+        for value in definitions
+    )
 
 
 class _ProjectRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -75,11 +94,6 @@ class _AttemptLineageRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     subject_revision: int
 
 
-class _DependencyRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: WorkItemId
-    dependency_id: WorkItemId
-
-
 class _ItemIdRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: WorkItemId
 
@@ -103,6 +117,7 @@ class _ProposalRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     relation_kind: work_models.ProposalRelationKind
     relation_item_id: WorkItemId | None
     relation_replacement_cost: str | None
+    relation_checkpoint_id: CheckpointId | None
     effect: str
     unlock: str
     urgency_evidence: str
@@ -401,7 +416,7 @@ def _read_preparation_authorities(
 
 def _work_item_record(
     item: _ItemRow,
-    dependencies: tuple[WorkItemId, ...],
+    dependencies: tuple[work_models.Dependency, ...],
     attempt_id: AttemptId | None,
 ) -> work_models.WorkItem:
     state = stored_state.live_work_state(item.state)
@@ -463,7 +478,12 @@ def _proposal_record(
         proposal.user_label,
         proposal.trigger,
         proposal.why_it_matters,
-        decode_proposal_relation(proposal.relation_kind, proposal.relation_item_id, proposal.relation_replacement_cost),
+        decode_proposal_relation(
+            proposal.relation_kind,
+            proposal.relation_item_id,
+            proposal.relation_replacement_cost,
+            proposal.relation_checkpoint_id,
+        ),
         proposal.effect,
         proposal.unlock,
         proposal.urgency_evidence,
@@ -538,16 +558,16 @@ def read_current_snapshot(
                 f"'{attempt.item_id}'; expected one matching live item; effect unchanged.",
             )
     dependency_rows = tuple(
-        decode_row(row, _DependencyRow)
+        decode_row(row, DependencyRow)
         for row in select_by_ids(
             connection,
-            "SELECT item_id, dependency_id FROM item_dependencies WHERE item_id IN ({ids}) ORDER BY item_id, position",
+            "SELECT item_id, dependency_id, checkpoint_id FROM item_dependencies WHERE item_id IN ({ids}) ORDER BY item_id, position",
             (item.item_id for item in item_rows),
         )
     )
-    dependencies: dict[WorkItemId, list[WorkItemId]] = defaultdict(list)
+    dependencies: dict[WorkItemId, list[work_models.Dependency]] = defaultdict(list)
     for row in dependency_rows:
-        dependencies[row.item_id].append(row.dependency_id)
+        dependencies[row.item_id].append(row.target)
     definitions_by_item = read_current_definitions(connection, tuple(item.item_id for item in item_rows))
     definitions = tuple(definitions_by_item[item.item_id] for item in item_rows if item.item_id in definitions_by_item)
     if definitions_by_item.keys() != live_item_ids:
@@ -568,7 +588,7 @@ def read_current_snapshot(
             for row in select_by_ids(
                 connection,
                 """SELECT proposal_id, created_at, source_task_id, user_label, trigger, why_it_matters,
-                          relation_kind, relation_item_id, relation_replacement_cost, effect, unlock,
+                          relation_kind, relation_item_id, relation_replacement_cost, relation_checkpoint_id, effect, unlock,
                           urgency_evidence, subject_revision
                    FROM proposals WHERE proposal_id IN ({ids}) AND disposition IS NULL""",
                 (item.item_id for item in item_rows) if include_proposals else (),
@@ -667,12 +687,10 @@ def read_current_snapshot(
         host_epoch=project.host_epoch,
         planned_replacements=planned_replacements,
         replacement_dispositions=replacement_dispositions,
-        dependency_facts=tuple(
-            work_models.DefinitionDependencies(
-                value.item_id, tuple(WorkItemId(dependency) for dependency in value.definition.dependencies)
-            )
-            for value in definitions
+        accepted_checkpoints=read_accepted_checkpoints(
+            connection, (target for targets in dependencies.values() for target in targets)
         ),
+        dependency_facts=_recorded_dependency_facts(definitions),
         dropped_item_ids=dropped,
     )
 
@@ -703,7 +721,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
     for row in select_by_ids(
         connection,
         """SELECT proposal_id, created_at, source_task_id, user_label, trigger, why_it_matters,
-                  relation_kind, relation_item_id, relation_replacement_cost,
+                  relation_kind, relation_item_id, relation_replacement_cost, relation_checkpoint_id,
                   effect, unlock, urgency_evidence, subject_revision
            FROM proposals WHERE proposal_id IN ({ids}) AND disposition IS NULL""",
         scope.proposal_ids,
@@ -743,14 +761,14 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         )
     )
     dependency_ids = tuple(dict.fromkeys((*dependency_ids, *dependent_ids)))
-    selected_dependencies: dict[WorkItemId, list[WorkItemId]] = defaultdict(list)
+    selected_dependencies: dict[WorkItemId, list[work_models.Dependency]] = defaultdict(list)
     for row in select_by_ids(
         connection,
-        "SELECT item_id, dependency_id FROM item_dependencies WHERE item_id IN ({ids}) ORDER BY item_id, position",
+        "SELECT item_id, dependency_id, checkpoint_id FROM item_dependencies WHERE item_id IN ({ids}) ORDER BY item_id, position",
         dependency_ids,
     ):
-        dependency = decode_row(row, _DependencyRow)
-        selected_dependencies[dependency.item_id].append(dependency.dependency_id)
+        dependency = decode_row(row, DependencyRow)
+        selected_dependencies[dependency.item_id].append(dependency.target)
     selected_definitions = read_current_definitions(connection, definition_ids)
     selected_items = {
         item.item_id: item
@@ -770,7 +788,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             (
                 *scope.related_work_item_ids,
                 *(
-                    dependency
+                    work_models.dependency_item(dependency)
                     for item_id in primary_item_ids
                     if (item := selected_items.get(item_id)) is not None
                     and stored_state.live_work_state(item.state) is not None
@@ -795,7 +813,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
 
     item_rows: dict[WorkItemId, _ItemRow] = {}
     history_items: list[WorkItemId] = []
-    dependencies: dict[WorkItemId, list[WorkItemId]] = defaultdict(list)
+    dependencies: dict[WorkItemId, list[work_models.Dependency]] = defaultdict(list)
     definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision] = {}
     contextual_item_ids: set[WorkItemId] = set()
     selected_replacement_item_ids: set[WorkItemId] = set()
@@ -855,11 +873,11 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         visited_closure.add(item_id)
         selected = read_item(item_id, include_dependencies=True, include_definition=True, context=False)
         if selected is not None:
-            pending_closure.extend(dependencies[item_id])
+            pending_closure.extend(work_models.dependency_item(target) for target in dependencies[item_id])
 
     related_item_ids = list(scope.related_work_item_ids)
     for item_id in contextual_item_ids:
-        related_item_ids.extend(dependencies[item_id])
+        related_item_ids.extend(work_models.dependency_item(target) for target in dependencies[item_id])
     for dependent_id in dependent_ids:
         read_item(dependent_id, include_dependencies=True, include_definition=False, context=False)
     for item_id in dict.fromkeys(related_item_ids):
@@ -995,12 +1013,10 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         checkpoint_history_ids=checkpoint_history_ids,
         planned_replacements=planned_replacements,
         replacement_dispositions=replacement_dispositions,
-        dependency_facts=tuple(
-            work_models.DefinitionDependencies(
-                value.item_id, tuple(WorkItemId(dependency) for dependency in value.definition.dependencies)
-            )
-            for value in definitions.values()
+        accepted_checkpoints=read_accepted_checkpoints(
+            connection, (target for targets in dependencies.values() for target in targets)
         ),
+        dependency_facts=_recorded_dependency_facts(definitions.values()),
         dropped_item_ids=frozenset(
             value.item_id
             for value in selected_items.values()

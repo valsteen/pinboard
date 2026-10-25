@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Literal, assert_never
@@ -17,6 +17,7 @@ from pinboard.domain.identifiers import (
     ActionId,
     ArtifactRefId,
     AttemptId,
+    CheckpointId,
     HistoryId,
     HistorySubjectId,
     HostId,
@@ -143,7 +144,7 @@ def stored_close_outcome(value: work_models.CloseOutcome) -> StoredWorkItemState
 @dataclass(frozen=True, slots=True)
 class ProjectRecord:
     application: Literal["pinboard"]
-    schema_version: Literal[9]
+    schema_version: Literal[10]
     revision: int
     host_epoch: int
     created_at: datetime
@@ -198,6 +199,20 @@ class ItemDependency:
     item_id: WorkItemId
     dependency_id: WorkItemId
     position: int
+    checkpoint_id: CheckpointId | None = field(kw_only=True)
+
+    @property
+    def target(self) -> work_models.Dependency:
+        if self.checkpoint_id is None:
+            return self.dependency_id
+        return work_models.CheckpointDependency(self.dependency_id, self.checkpoint_id)
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointAcceptance:
+    history_id: HistoryId
+    item_id: WorkItemId
+    checkpoint_id: CheckpointId
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +365,7 @@ class StoredTransitionReceipt:
 @dataclass(frozen=True, slots=True)
 class LifecycleRecords:
     project: ProjectRecord
+    checkpoint_acceptances: tuple[CheckpointAcceptance, ...] = field(kw_only=True)
     work_items: tuple[StoredWorkItem, ...] = ()
     dependencies: tuple[ItemDependency, ...] = ()
     attempts: tuple[StoredAttempt, ...] = ()

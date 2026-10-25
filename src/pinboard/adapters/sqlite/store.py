@@ -6,6 +6,7 @@ module never obtains time, reads artifact bytes directly, or invokes callbacks.
 """
 
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +44,7 @@ from pinboard.adapters.sqlite.decision_reads import (
     read_current_snapshot,
     read_selected_decision_facts,
 )
+from pinboard.adapters.sqlite.dependencies import read_accepted_checkpoints
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     NonterminalAttemptContextSelection,
@@ -246,6 +248,9 @@ def _read_generated_view_facts(
     }
     selected_definitions = read_current_definitions(connection, item_ids)
     selected_dependencies = read_selected_dependency_states(connection, item_ids)
+    accepted = read_accepted_checkpoints(
+        connection, (value.target for values in selected_dependencies.values() for value in values)
+    )
     live_item_ids = tuple(
         item_id
         for item_id in item_ids
@@ -284,13 +289,15 @@ def _read_generated_view_facts(
         if item is None or definition is None:
             raise StorageError(StorageErrorCode.INVALID_STATE, "An affected item projection is missing.")
         dependency_rows = selected_dependencies.get(item_id, ())
-        dependencies = tuple(value.dependency_id for value in dependency_rows)
+        dependencies = tuple(value.target for value in dependency_rows)
         live_state = stored_state.live_work_state(item.state)
         projected: query_models.OverviewItem | None = None
         if live_state is not None:
             attempt_id = selected_attempts.get(item_id)
             item_proposal_ids = tuple(
-                dict.fromkeys((ProposalId(item_id), *(ProposalId(value) for value in dependencies)))
+                dict.fromkeys(
+                    (ProposalId(item_id), *(ProposalId(work_models.dependency_item(value)) for value in dependencies))
+                )
             )
             selected_proposals = tuple(
                 proposal
@@ -313,12 +320,13 @@ def _read_generated_view_facts(
                     ),
                     tuple(
                         (
-                            value.dependency_id,
+                            value.target,
                             value.state
                             not in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED},
                         )
                         for value in dependency_rows
                     ),
+                    accepted,
                     current_definition_anchor(definition),
                     selected_proposals,
                     selected_preparations.get(item_id),
@@ -408,7 +416,9 @@ def _read_overview_proposals(
 ) -> tuple[stored_state.StoredProposal, ...]:
     proposal_ids = tuple(
         dict.fromkeys(
-            ProposalId(item_id) for item in snapshot.items for item_id in (item.work_item_id, *item.depends_on)
+            ProposalId(item_id)
+            for item in snapshot.items
+            for item_id in (item.work_item_id, *(work_models.dependency_item(value) for value in item.depends_on))
         )
     )
     selected = read_proposals_by_ids(connection, proposal_ids)
@@ -886,6 +896,16 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
+    def read_artifact_references_by_ids(
+        self, artifact_ref_ids: tuple[ArtifactRefId, ...]
+    ) -> Mapping[ArtifactRefId, stored_state.ArtifactReference]:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_artifact_references_by_ids(connection, artifact_ref_ids)
+        finally:
+            connection.close()
+
     def _read_current_project_snapshot(self, now: datetime, *, include_proposals: bool) -> LedgerSnapshot:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
@@ -1113,6 +1133,7 @@ class SQLiteWorkStore:
                     lifecycle.attempts,
                     lifecycle.closure,
                     preparation,
+                    lifecycle.dependencies,
                 )
         finally:
             connection.close()
@@ -1344,6 +1365,7 @@ class SQLiteWorkStore:
                             item.unsatisfied_dependencies,
                             preparation,
                             attempt,
+                            item.dependency_conditions,
                         )
                     )
                 return query_models.ParallelPreviewFacts(lifecycle.project_revision, tuple(items))

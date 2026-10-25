@@ -287,7 +287,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             return ActionSemantics(
                 "Preserve an active attempt without a named dependency condition.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.PROJECT,),
+                (Role.PROJECT, Role.WORKER),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT,
                 "Move the item and attempt to paused for later resume.",
@@ -612,7 +612,7 @@ class ActivateCommand:
 @dataclass(frozen=True, slots=True)
 class PauseCommand:
     action: PauseAction
-    value: work_models.ReasonInput
+    value: work_models.ReasonInput | work_models.DecisionBatchInput
 
 
 @dataclass(frozen=True, slots=True)
@@ -645,7 +645,7 @@ class CloseCommand:
 @dataclass(frozen=True, slots=True)
 class ResumeCommand:
     action: ResumeAction
-    value: work_models.ResumeInput
+    value: work_models.ResumeInput | work_models.ResolveDecisionsInput
 
 
 @dataclass(frozen=True, slots=True)
@@ -807,6 +807,7 @@ class AttemptStateChange:
     attempt: AttemptId
     attempt_before: work_models.AttemptState
     attempt_after: work_models.AttemptState
+    pause_input: work_models.ReasonInput | work_models.DecisionBatchInput
 
 
 @dataclass(frozen=True, slots=True)
@@ -839,6 +840,7 @@ class ResumeAttemptChange:
     attempt: AttemptId
     attempt_before: work_models.AttemptState
     revised_brief: RevisedAttemptBrief | None
+    resolved_decisions: work_models.ResolvedPauseDecisions | None
 
 
 @dataclass(frozen=True, slots=True)

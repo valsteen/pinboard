@@ -16,6 +16,7 @@ from pinboard.adapters.sqlite import database
 from pinboard.adapters.sqlite.artifact_ownership import accept_ownership
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
+from pinboard.adapters.sqlite.schema_decisions_v10 import _upgrade_v10_connection
 from pinboard.adapters.sqlite.schema_dependencies_v9 import _upgrade_v9_connection
 from pinboard.adapters.sqlite.state import read_state
 from pinboard.application import (
@@ -195,6 +196,7 @@ def _read_compatibility_v9_state(connection: sqlite3.Connection) -> stored_state
         projection.executescript("\n".join(connection.iterdump()))
         database._configure_connection(projection)
         _upgrade_v9_connection(projection, None)
+        _upgrade_v10_connection(projection, None)
         return read_state(projection)
 
 
@@ -295,7 +297,7 @@ def _upgrade_v8_connection(connection: sqlite3.Connection, work_root: Path, expe
     return True
 
 
-def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
+def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:  # noqa: PLR0912 - exact supported predecessor steps
     """Observe exact supported identities and predict the next explicit advancement without effects."""
     try:
         source = sha256(path.read_bytes()).hexdigest()
@@ -310,7 +312,9 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
                 database._verify_current_schema(connection)
                 database.verify_database_integrity(connection)
                 return version, source, None
-            if version == 9:
+            if version == 10:
+                database._verify_v10_schema(connection)
+            elif version == 9:
                 database._verify_v9_schema(connection)
             elif version == 8:
                 database._verify_v8_schema(connection)
@@ -324,7 +328,9 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
             with closing(sqlite3.connect(":memory:", isolation_level=None)) as simulation:
                 connection.backup(simulation)
                 database._configure_connection(simulation)
-                if version == 9:
+                if version == 10:
+                    _upgrade_v10_connection(simulation, None)
+                elif version == 9:
                     _upgrade_v9_connection(simulation, None)
                 elif version == 8:
                     _upgrade_v8_connection(simulation, path.parent, None)

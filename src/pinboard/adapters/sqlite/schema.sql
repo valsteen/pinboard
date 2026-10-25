@@ -1,14 +1,21 @@
--- SQLite authority schema version 10.
+-- SQLite authority schema version 11.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE project_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     application TEXT NOT NULL CHECK (application = 'pinboard'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 10),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 11),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE attempt_decision_batches (
+    attempt_id TEXT PRIMARY KEY REFERENCES attempts(attempt_id),
+    pause_history_id INTEGER NOT NULL UNIQUE REFERENCES transition_history(history_id),
+    resume_history_id INTEGER UNIQUE REFERENCES transition_history(history_id),
+    CHECK (resume_history_id IS NULL OR resume_history_id > pause_history_id)
 ) STRICT;
 
 CREATE TABLE artifact_refs (

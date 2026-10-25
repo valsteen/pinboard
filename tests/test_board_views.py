@@ -815,7 +815,10 @@ class BoardProjectionTest(unittest.TestCase):
                     replace(
                         value,
                         attempt=query_models.BoardAttemptProgress(
-                            query_models.UnreadableBrief(AttemptId("work-a-1"), "opaque"), condition, ()
+                            query_models.UnreadableBrief(AttemptId("work-a-1"), "opaque"),
+                            condition,
+                            (),
+                            decision_batch=None,
                         ),
                     )
                     if value.overview.item_id == "work-a"

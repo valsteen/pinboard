@@ -11,6 +11,7 @@ from typing import assert_never, override
 import msgspec
 
 from pinboard.application import action_models as transition_models
+from pinboard.application import decision_batches
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailureCode, EffectDisposition, FailureDetails, RetryDisposition
 from pinboard.domain.identifiers import (
@@ -223,16 +224,17 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             return decision_models.DeferCommand(
                 action, work_models.DeferInput(payload.timing, payload.reopen_condition)
             )
-        case decision_models.PauseAction() | decision_models.ReturnForCorrectionAction():
+        case decision_models.PauseAction():
+            plain = _decode(data, transition_models.ReasonInputPayload)
+            if not isinstance(plain, TransitionInputFailure):
+                return decision_models.PauseCommand(action, work_models.ReasonInput(plain.reason))
+            if isinstance(payload := _decode(data, decision_batches.PauseDecisionsInput), TransitionInputFailure):
+                return payload
+            return decision_models.PauseCommand(action, decision_batches.decisions_from_payload(payload))
+        case decision_models.ReturnForCorrectionAction():
             if isinstance(payload := _decode(data, transition_models.ReasonInputPayload), TransitionInputFailure):
                 return payload
-            match action:
-                case decision_models.PauseAction():
-                    return decision_models.PauseCommand(action, work_models.ReasonInput(payload.reason))
-                case decision_models.ReturnForCorrectionAction():
-                    return decision_models.ReturnForCorrectionCommand(action, work_models.ReasonInput(payload.reason))
-                case _ as unreachable:
-                    assert_never(unreachable)
+            return decision_models.ReturnForCorrectionCommand(action, work_models.ReasonInput(payload.reason))
         case decision_models.RejectProposalAction():
             if isinstance(
                 payload := _decode(data, transition_models.RejectProposalInputPayload), TransitionInputFailure
@@ -248,12 +250,21 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                 action, work_models.MergeProposalInput(WorkItemId(payload.target))
             )
         case decision_models.ResumeAction():
-            if isinstance(payload := _decode(data, transition_models.ResumeInputPayload), TransitionInputFailure):
-                return payload
+            plain = _decode(data, transition_models.ResumeInputPayload)
+            if isinstance(plain, TransitionInputFailure):
+                if isinstance(payload := _decode(data, decision_batches.ResolveDecisionsInput), TransitionInputFailure):
+                    return payload
+                return decision_models.ResumeCommand(
+                    action,
+                    work_models.ResolveDecisionsInput(
+                        None if payload.brief_artifact_ref_id is None else ArtifactRefId(payload.brief_artifact_ref_id),
+                        decision_batches.resolutions_from_payload(payload.resolutions),
+                    ),
+                )
             return decision_models.ResumeCommand(
                 action,
                 work_models.ResumeInput(
-                    None if payload.brief_artifact_ref_id is None else ArtifactRefId(payload.brief_artifact_ref_id)
+                    None if plain.brief_artifact_ref_id is None else ArtifactRefId(plain.brief_artifact_ref_id)
                 ),
             )
         case decision_models.RebindAttemptAction():

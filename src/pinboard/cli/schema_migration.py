@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Literal, assert_never
 
 from pinboard.adapters.files.file_io import DurableRoots
+from pinboard.adapters.sqlite.database import SCHEMA_VERSION
 from pinboard.adapters.sqlite.schema_ownership_v8 import inspect_current_schema_migration
 from pinboard.adapters.sqlite.schema_procedure import (
     AppliedSchema,
@@ -100,7 +101,7 @@ def migrate_schema(
         changed = bool(selected.changed_surfaces)
         version = selected.resulting_version
         warning: str | None = None
-        if "ledger" in selected.changed_surfaces and version == 10:
+        if "ledger" in selected.changed_surfaces and version == SCHEMA_VERSION:
             try:
                 refreshed = work_views.rebuild(roots, store, datetime.now(UTC))
                 if refreshed.warning is not None:
@@ -125,7 +126,7 @@ def migrate_schema(
     return 0
 
 
-def _authority(version: int) -> Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9", "sqlite-v10"]:
+def _authority(version: int) -> Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9", "sqlite-v10", "sqlite-v11"]:
     match version:
         case 6:
             return "sqlite-v6"
@@ -137,5 +138,7 @@ def _authority(version: int) -> Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "
             return "sqlite-v9"
         case 10:
             return "sqlite-v10"
+        case 11:
+            return "sqlite-v11"
         case _:
             raise ValueError(f"Unsupported schema authority version: {version}")

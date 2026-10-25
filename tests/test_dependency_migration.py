@@ -4,8 +4,11 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
+
+import msgspec
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import database, schema_procedure
@@ -18,6 +21,28 @@ from tests.support import SQLITE_NOW, test_definition
 
 
 class DependencyMigrationTest(unittest.TestCase):
+    def test_retained_v4_current_plan_still_means_unchanged_v10(self) -> None:
+        path = self.predecessor()
+        advancement = schema_procedure.preview_schema(path)
+        assert isinstance(advancement, schema_procedure.PlannedSchema), advancement
+        self.assertIsInstance(schema_procedure.apply_schema(path, advancement.plan_id), schema_procedure.AppliedSchema)
+        original = path.read_bytes()
+        retained = schema_procedure.DependencyCurrentPlan(
+            "pinboard-schema-plan/v4", str(path), sha256(original).hexdigest()
+        )
+        content = msgspec.json.encode(retained, order="sorted")
+        plan_id = sha256(content).hexdigest()
+        (path.parent / "migration" / f"{plan_id}.json").write_bytes(content)
+        result = schema_procedure.apply_schema(path, plan_id)
+        assert isinstance(result, schema_procedure.AppliedSchema), result
+        self.assertEqual((10, "unchanged", ()), (result.resulting_version, result.direction, result.changed_surfaces))
+        self.assertEqual(original, path.read_bytes())
+        with database.migration_connection(path) as connection:
+            database._verify_v10_schema(connection)
+        next_step = schema_procedure.preview_schema(path)
+        assert isinstance(next_step, schema_procedure.PlannedSchema), next_step
+        self.assertIsInstance(next_step.plan, schema_procedure.DecisionBatchAdvancePlan)
+
     def predecessor(self) -> Path:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -99,7 +124,8 @@ class DependencyMigrationTest(unittest.TestCase):
         assert isinstance(result, schema_procedure.AppliedSchema), result
         self.assertEqual(10, result.resulting_version)
         self.assertEqual(original, (path.parent / "migration" / f"{plan.plan_id}.v9").read_bytes())
-        with closing(database.open_database(path, OpenMode.READ_ONLY)) as connection:
+        with database.migration_connection(path) as connection:
+            database._verify_v10_schema(connection)
             self.assertEqual(
                 receipts,
                 [tuple(row) for row in connection.execute("SELECT * FROM transition_history ORDER BY history_id")],
@@ -152,14 +178,14 @@ class DependencyMigrationTest(unittest.TestCase):
         original = path.read_bytes()
         plan = schema_procedure.preview_schema(path)
         assert isinstance(plan, schema_procedure.PlannedSchema), plan
-        verify = database._verify_current_schema
+        verify = database._verify_v10_schema
 
         def reject_live_postimage(connection: sqlite3.Connection) -> None:
             verify(connection)
             if connection.execute("PRAGMA database_list").fetchone()[2] == str(path):
                 raise StorageError(StorageErrorCode.INVALID_STATE, "controlled failure before commit")
 
-        with patch.object(database, "_verify_current_schema", side_effect=reject_live_postimage):
+        with patch.object(database, "_verify_v10_schema", side_effect=reject_live_postimage):
             failed = schema_procedure.apply_schema(path, plan.plan_id)
         assert isinstance(failed, schema_procedure.SchemaProcedureFailure), failed
         self.assertEqual(("migration-evidence",), failed.changed_surfaces)
@@ -201,7 +227,7 @@ class DependencyMigrationTest(unittest.TestCase):
                 self.assertEqual(0, connection.execute("SELECT count(*) FROM checkpoint_acceptances").fetchone()[0])
             plan = schema_procedure.preview_schema(roots.database_path)
             assert isinstance(plan, schema_procedure.PlannedSchema), plan
-            self.assertIsInstance(plan.plan, schema_procedure.DependencyCurrentPlan)
+            self.assertIsInstance(plan.plan, schema_procedure.DecisionBatchCurrentPlan)
             unchanged = schema_procedure.apply_schema(roots.database_path, plan.plan_id)
             assert isinstance(unchanged, schema_procedure.AppliedSchema), unchanged
-            self.assertEqual((10, ()), (unchanged.resulting_version, unchanged.changed_surfaces))
+            self.assertEqual((11, ()), (unchanged.resulting_version, unchanged.changed_surfaces))

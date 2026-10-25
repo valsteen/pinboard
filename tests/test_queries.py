@@ -64,7 +64,7 @@ class SQLiteQueriesTest(unittest.TestCase):
 
         state = store.validated_snapshot()
         overview = project_overview(state, SQLITE_NOW, BOARD)
-        self.assertEqual("sqlite-v10", overview.authority)
+        self.assertEqual("sqlite-v11", overview.authority)
         self.assertEqual("12", overview.revision)
         self.assertEqual(("work-a-1",), overview.active_attempts)
         self.assertEqual(
@@ -255,7 +255,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual(
             query_models.ItemStatus(
                 "pinboard-item-status/v3",
-                "sqlite-v10",
+                "sqlite-v11",
                 "12",
                 "work-a",
                 "Work work-a",
@@ -267,7 +267,12 @@ class SQLiteQueriesTest(unittest.TestCase):
                 query_models.IntakeContext("original-context", "continue", "Current work remains bounded."),
                 (
                     query_models.ItemStatusAttempt(
-                        "work-a-1", work_models.AttemptState.ACTIVE, active.branch, None, None
+                        "work-a-1",
+                        work_models.AttemptState.ACTIVE,
+                        active.branch,
+                        None,
+                        None,
+                        decision_batch=None,
                     ),
                 ),
                 query_models.NoReviewVerdict(),
@@ -281,7 +286,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual(
             query_models.ItemStatus(
                 "pinboard-item-status/v3",
-                "sqlite-v10",
+                "sqlite-v11",
                 "12",
                 "work-b",
                 "Work work-b",
@@ -385,6 +390,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                 None,
                 None,
                 dependencies=(),
+                batches_by_attempt={},
             )
 
             with self.subTest(item_state=item_state.value, attempt_state=attempt_state):
@@ -443,6 +449,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                 None,
                 None,
                 dependencies=(),
+                batches_by_attempt={},
             )
 
             with self.subTest(item_state=selected_item.state.value, observed=observed):
@@ -536,6 +543,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             query_models.ActionContinuation("continue:attempt-1", decision_models.ActionKind.CONTINUE, "Continue."),
             ("continue:attempt-1", "revise-item:item-1"),
             forbidden,
+            decision_batch=None,
         )
         review = query_models.ReviewAttemptContinuation(
             "pinboard-attempt-continuation/v1",
@@ -548,6 +556,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             query_models.ReviewContinuation("attempt-1", "candidate-1", "runtime-subagent"),
             ("accept-checkpoint:attempt-1", "return-for-correction:attempt-1"),
             forbidden,
+            decision_batch=None,
         )
         paused = query_models.PausedAttemptContinuation(
             "pinboard-attempt-continuation/v1",
@@ -561,6 +570,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             ("resume:item-1",),
             forbidden,
             None,
+            None,
         )
         blocked = query_models.BlockedAttemptContinuation(
             "pinboard-attempt-continuation/v1",
@@ -573,6 +583,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             query_models.DependencyContinuation(("dependency-1",)),
             ("resume:item-1",),
             forbidden,
+            decision_batch=None,
         )
         terminal = query_models.TerminalAttemptContinuation(
             "pinboard-attempt-continuation/v1",

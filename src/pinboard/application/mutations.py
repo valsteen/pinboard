@@ -2,7 +2,7 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.application import stored_state
+from pinboard.application import decision_batches, stored_state
 from pinboard.application.artifacts import (
     ArtifactRef,
     CheckpointArtifacts,
@@ -230,7 +230,22 @@ def project_transition_mutation(
 
     input_schema = "decision/v1"
     input_payload = work_models.CanonicalJson(b"{}")
-    if decision.action.kind == decision_models.ActionKind.RETURN_FOR_CORRECTION:
+    if isinstance(decision.change, decision_models.AttemptStateChange) and isinstance(
+        decision.change.pause_input, work_models.DecisionBatchInput
+    ):
+        input_schema = "pinboard-pause-decisions/v1"
+        input_payload = work_models.CanonicalJson(
+            msgspec.json.encode(decision_batches.pause_payload(decision.change.pause_input), order="sorted")
+        )
+    elif (
+        isinstance(decision.change, decision_models.ResumeAttemptChange)
+        and decision.change.resolved_decisions is not None
+    ):
+        input_schema = "pinboard-resolved-pause-decisions/v1"
+        input_payload = work_models.CanonicalJson(
+            msgspec.json.encode(decision_batches.resolution_payload(decision.change.resolved_decisions), order="sorted")
+        )
+    elif decision.action.kind == decision_models.ActionKind.RETURN_FOR_CORRECTION:
         if decision.receipt.evidence is None:
             raise AssertionError("Returning for correction requires a reason.")
         input_schema = "return-for-correction/v1"

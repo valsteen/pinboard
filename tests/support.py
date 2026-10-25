@@ -403,6 +403,7 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
             for item in (intake_item, item_a, item_b, item_c, proposal_item)
         ),
         checkpoint_acceptances=(),
+        decision_batch_references=(),
     )
     proposal_id = ProposalId(proposal_item)
     proposals = stored_state.ProposalRecords(

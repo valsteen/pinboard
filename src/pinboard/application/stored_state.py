@@ -144,7 +144,7 @@ def stored_close_outcome(value: work_models.CloseOutcome) -> StoredWorkItemState
 @dataclass(frozen=True, slots=True)
 class ProjectRecord:
     application: Literal["pinboard"]
-    schema_version: Literal[10]
+    schema_version: Literal[11]
     revision: int
     host_epoch: int
     created_at: datetime
@@ -365,11 +365,19 @@ class StoredTransitionReceipt:
 @dataclass(frozen=True, slots=True)
 class LifecycleRecords:
     project: ProjectRecord
+    decision_batch_references: tuple[DecisionBatchReference, ...] = field(kw_only=True)
     checkpoint_acceptances: tuple[CheckpointAcceptance, ...] = field(kw_only=True)
     work_items: tuple[StoredWorkItem, ...] = ()
     dependencies: tuple[ItemDependency, ...] = ()
     attempts: tuple[StoredAttempt, ...] = ()
     definition_revisions: tuple[ItemDefinitionRevision, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionBatchReference:
+    attempt_id: AttemptId
+    pause_history_id: HistoryId
+    resume_history_id: HistoryId | None
 
 
 @dataclass(frozen=True, slots=True)

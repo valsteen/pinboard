@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
-from typing import NoReturn, assert_never
+from typing import Annotated, NoReturn, assert_never
 
 import msgspec
 
@@ -120,6 +120,21 @@ class TransitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     outcome_schema: str
     outcome_json: str
     committed_at: datetime
+
+
+class _DecisionBatchReferenceRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    pause_history_id: Annotated[HistoryId, msgspec.Meta(ge=1)]
+    resume_history_id: Annotated[HistoryId, msgspec.Meta(ge=1)] | None
+
+    def __post_init__(self) -> None:
+        if self.resume_history_id is not None and self.resume_history_id <= self.pause_history_id:
+            raise ValueError("A resolving resume must follow its decision-batch pause.")
+
+
+def decode_decision_batch_reference(row: sqlite3.Row) -> stored_state.DecisionBatchReference:
+    value = decode_row(row, _DecisionBatchReferenceRow)
+    return stored_state.DecisionBatchReference(value.attempt_id, value.pause_history_id, value.resume_history_id)
 
 
 _CONSUMED_RECEIPT_COLUMNS = """history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
@@ -1106,7 +1121,18 @@ def read_lifecycle(
         )
     )
     return stored_state.LifecycleRecords(
-        project, items, dependencies, attempts, definitions, checkpoint_acceptances=acceptances
+        project,
+        items,
+        dependencies,
+        attempts,
+        definitions,
+        checkpoint_acceptances=acceptances,
+        decision_batch_references=tuple(
+            decode_decision_batch_reference(row)
+            for row in connection.execute(
+                "SELECT attempt_id, pause_history_id, resume_history_id FROM attempt_decision_batches ORDER BY attempt_id"
+            )
+        ),
     )
 
 

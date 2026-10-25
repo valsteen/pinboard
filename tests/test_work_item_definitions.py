@@ -269,6 +269,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             1,
             accepted_digest,
             pause_reason=None,
+            pending_decision_batch=None,
         )
         authority = work_models.AttemptAuthority(attempt_id, item.work_item_id, LeaseId("worker-lease"), 1)
         snapshot = LedgerSnapshot(
@@ -322,7 +323,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         self.assertTrue(
             {"continue:build-map-1", "dispatch:build-map-1", "complete:build-map-1"}.isdisjoint(project_ids)
         )
-        self.assertEqual({"report-blocker:build-map-1"}, worker_ids)
+        self.assertEqual({"report-blocker:build-map-1", "pause:build-map-1"}, worker_ids)
 
         capability = decision_models.MutationActionCapability(attempt_id, "complete", "revision")
         rejected = decide(

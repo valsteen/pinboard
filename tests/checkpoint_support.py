@@ -238,6 +238,13 @@ class CheckpointPackageSupport(unittest.TestCase):
         kind, subject = action_id.split(":", 1)
         return self.native_actions(fixture, kind, subject)
 
+    def active_fixture(self) -> CheckpointFixture:
+        fixture = self.checkpoint_fixture()
+        action = self.project_action(fixture, "return-for-correction:work-a-1")
+        result = self.transition_result(fixture, action, {"reason": "Continue the current native attempt."})
+        self.assertEqual("committed", result["status"])
+        return fixture
+
     def native_attempt_acquire(self, fixture: CheckpointFixture, worker: str) -> JsonObject:
         result = mcp_mutations._attempt_authority(
             {

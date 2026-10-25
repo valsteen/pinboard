@@ -27,7 +27,7 @@ class ContentEncoding(Enum):
 
 class ProjectExportProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[10]
+    schema_version: Literal[11]
     created_at: str
     updated_at: str
 
@@ -396,7 +396,7 @@ class ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_u
 
 class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-project-export/v3"]
-    authority: Literal["sqlite-v10"]
+    authority: Literal["sqlite-v11"]
     revision: int
     project: ProjectExportProject
     work_items: tuple[ProjectExportWorkItem, ...]
@@ -446,6 +446,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
     dependencies = list(lifecycle.dependencies)
     attempts = list(lifecycle.attempts)
     definition_revisions = list(lifecycle.definition_revisions)
+    batch_references = list(lifecycle.decision_batch_references)
     proposal_values = list(proposals.proposals)
     evidence = list(proposals.evidence)
     freshness = list(proposals.freshness)
@@ -458,6 +459,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
         dependencies.extend(batch.lifecycle.dependencies)
         attempts.extend(batch.lifecycle.attempts)
         definition_revisions.extend(batch.lifecycle.definition_revisions)
+        batch_references.extend(batch.lifecycle.decision_batch_references)
         proposal_values.extend(batch.proposals.proposals)
         evidence.extend(batch.proposals.evidence)
         freshness.extend(batch.proposals.freshness)
@@ -474,6 +476,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
             tuple(attempts),
             tuple(definition_revisions),
             checkpoint_acceptances=(),
+            decision_batch_references=tuple(batch_references),
         ),
         stored_state.ProposalRecords(tuple(proposal_values), tuple(evidence), tuple(freshness)),
         stored_state.ReplacementRecords(tuple(planned_replacements), tuple(replacement_dispositions)),
@@ -579,7 +582,7 @@ def project_export_from_state(
     }
     return ProjectExport(
         "pinboard-project-export/v3",
-        "sqlite-v10",
+        "sqlite-v11",
         state.lifecycle.project.revision,
         ProjectExportProject(
             state.lifecycle.project.application,

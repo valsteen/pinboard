@@ -61,13 +61,13 @@ def _upgrade_v9_connection(connection: sqlite3.Connection, expected_postimage: s
     connection.row_factory = sqlite3.Row
     with database.write_transaction(connection):
         if database._read_pinboard_schema_version(connection) == 10:
-            database._verify_current_schema(connection)
+            database._verify_v10_schema(connection)
             return False
         database._verify_v9_schema(connection)
         database.verify_database_integrity(connection)
         connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v9")
         for _, name, _, statement in sorted(
-            database._build_expected_schema_signature(), key=lambda value: value[0] != "table"
+            database._build_v10_schema_signature(), key=lambda value: value[0] != "table"
         ):
             if name in ("project_meta", "checkpoint_acceptances", "checkpoint_acceptances_by_dependency"):
                 assert statement is not None
@@ -83,7 +83,7 @@ def _upgrade_v9_connection(connection: sqlite3.Connection, expected_postimage: s
             "ALTER TABLE proposals ADD COLUMN relation_checkpoint_id TEXT CHECK (relation_checkpoint_id IS NULL OR (relation_kind = 'follow-up' AND length(relation_checkpoint_id) >= 1))"
         )
         _backfill_checkpoint_acceptances(connection)
-        database._verify_current_schema(connection)
+        database._verify_v10_schema(connection)
         database.verify_database_integrity(connection)
         if expected_postimage is not None and database.schema_logical_digest(connection) != expected_postimage:
             raise StorageError(

@@ -178,19 +178,18 @@ class McpSchemaProjectionTest(unittest.TestCase):
         compare(canonical, advertised)
 
     def test_actions_payload_schemas_accept_record_text_only_for_record_fields(self) -> None:
-        for kind, field in (
-            (decision_models.ActionKind.PAUSE, "reason"),
-            (decision_models.ActionKind.RETURN_FOR_CORRECTION, "reason"),
-            (decision_models.ActionKind.ACCEPT_CHECKPOINT, "evidence"),
-            (decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE, "evidence"),
-            (decision_models.ActionKind.REVISE_ITEM, "reason"),
+        for kind, definition, field in (
+            (decision_models.ActionKind.PAUSE, "ReasonInputPayload", "reason"),
+            (decision_models.ActionKind.PAUSE, "PauseDecisionsInput", "reason"),
+            (decision_models.ActionKind.RETURN_FOR_CORRECTION, "ReasonInputPayload", "reason"),
+            (decision_models.ActionKind.ACCEPT_CHECKPOINT, "AcceptCheckpointInputPayload", "evidence"),
+            (decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE, "AcceptReviewAndContinueInputPayload", "evidence"),
+            (decision_models.ActionKind.REVISE_ITEM, "ReviseItemInputPayload", "reason"),
         ):
             with self.subTest(kind=kind):
                 schema = action_models.action_payload_schema(kind)
                 assert schema is not None
-                reference = schema["$ref"]
-                assert isinstance(reference, str)
-                self.assertTrue(accepts_record_text(schema_field(schema, reference.rpartition("/")[2], field)))
+                self.assertTrue(accepts_record_text(schema_field(schema, definition, field)))
         for kind, definition, field in (
             (decision_models.ActionKind.REJECT_PROPOSAL, "RejectProposalInputPayload", "reason"),
             (decision_models.ActionKind.BLOCK, "BlockInputPayload", "reason"),

@@ -797,4 +797,5 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
                         }
                     },
                 )
-                self.assertEqual(captured, selected is not None)
+                assert isinstance(selected, mcp_execution.AutomaticCaptureResolution)
+                self.assertEqual(captured, selected.capture is not None)

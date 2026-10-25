@@ -221,7 +221,7 @@ Updating plugin code does not migrate project data. For a separately authorized 
 <launcher-root>/scripts/pinboard --project-root <managed-project> --work-root <selected-work-root> migrate-schema --apply <plan-id> --json
 ```
 
-Preview returns a read-only plan and ID. Apply retains the exact predecessor backup before the atomic schema change. Current plans advance v8 to v9, verify original evidence, and add explicit artifact ownership without rewriting accepted artifacts or history. Preserve the plan and backup; inspect reported effects before resuming an interrupted apply with the same ID. A committed schema change with a view warning needs view repair, not migration replay. The [schema recovery procedure](skills/pinboard/references/state-and-recovery.md#authoritative-state) covers retained v6/v7 advancement, v8 ownership migration, and unchanged-state reversal.
+Preview returns a read-only plan and ID. Apply retains the exact predecessor backup before the atomic schema change. Current plans advance v9 to v10, preserving dependency facts and indexing accepted checkpoints. Retained steps advance v6 to v7, v7 to v8, and v8 to v9; request a fresh preview after each step. The v8 ownership step verifies original evidence without rewriting accepted artifacts or history. Preserve the plan and backup; inspect reported effects before resuming an interrupted apply with the same ID. A committed schema change with a view warning needs view repair, not migration replay. The [schema recovery procedure](skills/pinboard/references/state-and-recovery.md#authoritative-state) covers predecessor advancement and unchanged-state reversal.
 
 ## Direct CLI use from a source checkout
 

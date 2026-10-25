@@ -121,6 +121,7 @@ from pinboard.mcp.contracts import (
     ReviewJobInvalid,
     ReviewJobReady,
     ReviewJobRejected,
+    SchemaUnsupportedResult,
     StartupTextPage,
     StartupTextRejected,
     TerminalAttemptInspectionSuccess,
@@ -670,7 +671,7 @@ def _apply_job_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
 def union_schema_for(boundary_types: tuple[type[msgspec.Struct], ...]) -> dict[str, JsonSchemaValue]:
     """Return one closed MCP result schema from separate correlated records."""
     if ExecutorBusyResult in boundary_types:
-        boundary_types = (*boundary_types, TracePreflightResult)
+        boundary_types = (*boundary_types, TracePreflightResult, SchemaUnsupportedResult)
     components = msgspec.json.schema_components(boundary_types)
     schemas: tuple[dict[str, JsonSchemaValue], ...] = components[0]
     definitions: dict[str, JsonSchemaValue] = components[1]
@@ -808,7 +809,9 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     status = content.get("status")
     code = content.get("code")
     surfaces = content.get("changed_surfaces")
-    if schema == "pinboard-mcp-execution-result/v1":
+    if schema == "pinboard-mcp-schema-result/v1":
+        msgspec.convert(content, type=SchemaUnsupportedResult, strict=True)
+    elif schema == "pinboard-mcp-execution-result/v1":
         msgspec.convert(content, type=TracePreflightResult if status == "rejected" else ExecutorBusyResult, strict=True)
     elif tool_name == "pinboard_startup_text":
         msgspec.convert(content, type=StartupTextRejected if status == "rejected" else StartupTextPage, strict=True)

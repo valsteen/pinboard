@@ -237,6 +237,7 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
                 pause_reason=None
                 if (latest := receipts_by_revision.get(attempt.subject_revision)) is None
                 else _decision_pause_reason(attempt, latest),
+                pending_decision_batch=None,
             )
             for attempt in state.lifecycle.attempts
         ),

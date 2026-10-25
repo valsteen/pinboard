@@ -1485,6 +1485,7 @@ def _mcp_attempt_continuation(
                 operation,
                 legal_actions,
                 continuation.forbidden_routes,
+                continuation.decision_batch,
             )
             match continuation:
                 case query_models.ActiveAttemptContinuation():

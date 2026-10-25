@@ -28,7 +28,7 @@ from pinboard.adapters.sqlite.lifecycle import (
 )
 from pinboard.adapters.sqlite.pr_review import validate_review_history
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
-from pinboard.application import project_export, stored_state
+from pinboard.application import decision_batches, project_export, stored_state
 from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.identifiers import (
     AttemptId,
@@ -372,6 +372,10 @@ def _validate_current_state(state: stored_state.StoredWorkState, error_code: Sto
             raise StorageError(error_code, "An active preparation lease must pin the current item definition.")
     _validate_dependencies(state, item_ids, current_definitions, error_code)
     _validate_checkpoint_acceptances(state, error_code)
+    try:
+        decision_batches.validate_batch_history(state.lifecycle, state.transition_receipts)
+    except (ValueError, KeyError) as error:
+        raise StorageError(error_code, f"Stored decision batch history is invalid: {error}") from error
 
 
 def _validate_item_state_counts(
@@ -423,12 +427,19 @@ def read_project_export_state(connection: sqlite3.Connection) -> project_export.
     )
     initiative_values = initiatives.read_all(connection)
     initiatives.validate_all(connection, initiative_values, project.revision)
+    receipts = _read_history(connection)
+    try:
+        decision_batches.validate_batch_history(lifecycle, receipts)
+    except (ValueError, KeyError) as error:
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE, f"Stored decision batch history is invalid: {error}"
+        ) from error
     return project_export.ProjectExportState(
         lifecycle,
         read_pending_proposals(connection),
         replacements,
         read_artifacts(connection),
-        _read_history(connection),
+        receipts,
         initiative_values,
     )
 
@@ -471,6 +482,28 @@ def append_history(
         ),
     )
     for receipt in records:
+        if receipt.input_schema == "pinboard-pause-decisions/v1":
+            msgspec.json.decode(bytes(receipt.input_payload), type=decision_batches.PauseDecisionsInput)
+            if receipt.action_kind != decision_models.ActionKind.PAUSE:
+                raise StorageError(StorageErrorCode.INVALID_STATE, "A decision batch must be recorded by pause.")
+            connection.execute(
+                """INSERT INTO attempt_decision_batches(attempt_id, pause_history_id, resume_history_id)
+                   VALUES (?, ?, NULL) ON CONFLICT(attempt_id) DO UPDATE
+                   SET pause_history_id = excluded.pause_history_id, resume_history_id = NULL""",
+                (receipt.subject_id, receipt.history_id),
+            )
+        elif receipt.input_schema == "pinboard-resolved-pause-decisions/v1":
+            resolved = msgspec.json.decode(bytes(receipt.input_payload), type=decision_batches.ResolvedDecisionsReceipt)
+            cursor = connection.execute(
+                """UPDATE attempt_decision_batches SET resume_history_id = ?
+                   WHERE pause_history_id = ? AND resume_history_id IS NULL
+                   AND attempt_id IN (SELECT attempt_id FROM attempts WHERE item_id = ?)""",
+                (receipt.history_id, resolved.pause_history_id, receipt.subject_id),
+            )
+            if receipt.action_kind != decision_models.ActionKind.RESUME or cursor.rowcount != 1:
+                raise StorageError(
+                    StorageErrorCode.INVALID_STATE, "The resolving resume has no pending decision batch."
+                )
         if receipt.outcome_schema != "checkpoint-acceptance/v2":
             continue
         outcome = msgspec.json.decode(bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome)

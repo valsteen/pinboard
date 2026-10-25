@@ -39,6 +39,7 @@ from pinboard.adapters.sqlite.database import (
     select_by_ids,
     verify_database_integrity,
 )
+from pinboard.adapters.sqlite.decision_batches import read_decision_batches
 from pinboard.adapters.sqlite.decision_reads import (
     read_current_replacements,
     read_current_snapshot,
@@ -266,6 +267,7 @@ def _read_generated_view_facts(
         )
     )
     selected_attempts = {link.item_id: link.attempt_id for link in attempt_links}
+    batches = read_decision_batches(connection, selected_attempts.values())
     pause_reasons = read_recorded_pause_reasons(
         connection, ((link.attempt_id, link.state, link.subject_revision) for link in attempt_links)
     )
@@ -343,6 +345,7 @@ def _read_generated_view_facts(
                 definition,
                 review_history_by_item.get(item_id, ()),
                 None if (attempt_id := selected_attempts.get(item_id)) is None else pause_reasons.get(attempt_id),
+                None if attempt_id is None else batches.get(attempt_id),
             )
         )
     selected_attempt_records = {
@@ -468,6 +471,7 @@ def _read_board_records(connection: sqlite3.Connection, snapshot: LedgerSnapshot
             raise StorageError(StorageErrorCode.INVALID_STATE, "The live-attempt index selected a finished attempt.")
         attempts.append((attempt, open_state))
     attempt_ids = tuple(attempt.attempt_id for attempt, _state in attempts)
+    batches = read_decision_batches(connection, attempt_ids)
     briefs = read_artifact_references_by_ids(
         connection, tuple(attempt.brief_artifact_ref_id for attempt, _ in attempts)
     )
@@ -515,6 +519,7 @@ def _read_board_records(connection: sqlite3.Connection, snapshot: LedgerSnapshot
                 receipts.get(attempt.subject_revision),
                 tuple(reversed(acceptances.get(attempt.attempt_id, ()))),
                 None if snapshot_key is None else snapshots.get(snapshot_key),
+                batches.get(attempt.attempt_id),
             )
         )
     histories = read_definition_histories(connection, tuple(item.work_item_id for item in snapshot.items))
@@ -572,6 +577,7 @@ def _read_attempt_inspection_facts(
                 ),
                 reference,
                 selected.pause_reason,
+                read_decision_batches(connection, (selected.attempt_id,)).get(selected.attempt_id),
             )
         case _ as unreachable:
             assert_never(unreachable)
@@ -1134,6 +1140,7 @@ class SQLiteWorkStore:
                     lifecycle.closure,
                     preparation,
                     lifecycle.dependencies,
+                    read_decision_batches(connection, (attempt.attempt_id for attempt in lifecycle.attempts)),
                 )
         finally:
             connection.close()

@@ -860,13 +860,6 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             },
         )
 
-    def active_fixture(self) -> CheckpointFixture:
-        fixture = self.checkpoint_fixture()
-        action = self.project_action(fixture, "return-for-correction:work-a-1")
-        result = self.transition_result(fixture, action, {"reason": "Continue the current native attempt."})
-        self.assertEqual("committed", result["status"])
-        return fixture
-
     def test_direct_transition_preserves_its_receipt_before_or_after_disjoint_commit(self) -> None:
         for stage in ("before", "after"):
             with self.subTest(stage=stage):

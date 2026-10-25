@@ -9,6 +9,7 @@ from pinboard.domain.identifiers import (
     AttemptId,
     CandidateId,
     CheckpointId,
+    DecisionId,
     HistoryId,
     HostId,
     LeaseId,
@@ -247,6 +248,57 @@ class ResumeInput:
 
 
 @dataclass(frozen=True, slots=True)
+class PauseDecision:
+    decision_id: DecisionId
+    question: str
+    options: tuple[str, ...]
+    recommendation: str
+    unblocks: str
+    deferral_cost: str
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionBatchInput:
+    reason: str
+    decisions: tuple[PauseDecision, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionAnswer:
+    decision_id: DecisionId
+    human_decision: str
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionDeferral:
+    decision_id: DecisionId
+    human_decision: str
+    reopen_condition: str
+
+
+type DecisionResolution = DecisionAnswer | DecisionDeferral
+
+
+@dataclass(frozen=True, slots=True)
+class ResolveDecisionsInput:
+    brief_artifact_ref_id: ArtifactRefId | None
+    resolutions: tuple[DecisionResolution, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PendingDecisionBatch:
+    attempt_id: AttemptId
+    pause_history_id: HistoryId
+    decisions: tuple[PauseDecision, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedPauseDecisions:
+    pause_history_id: HistoryId
+    resolutions: tuple[DecisionResolution, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RebindAttemptInput:
     branch: str
     base_revision: str
@@ -477,6 +529,7 @@ class AttemptRecord:
     protected_candidate_revision: CandidateId | None = None
     brief_artifact_ref_id: ArtifactRefId | None = None
     pause_reason: str | None = field(kw_only=True)
+    pending_decision_batch: PendingDecisionBatch | None = field(kw_only=True)
     """The human reason recorded by the latest pause, or its rebind carry-forward, while the attempt is paused."""
 
 

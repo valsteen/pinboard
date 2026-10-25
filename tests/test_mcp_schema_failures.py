@@ -77,7 +77,7 @@ class NativeSchemaFailureTest(unittest.TestCase):
         self.assertIn("plan_id", preview)
 
     def test_exact_predecessors_reach_sdk_reads_mutations_and_preflight_with_executable_preview(self) -> None:
-        for version in (6, 7, 8, 9):
+        for version in (6, 7, 8, 9, 10):
             with self.subTest(version=version):
                 project, work, native = self.world(version)
                 path = work / "state.sqlite3"

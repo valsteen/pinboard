@@ -130,6 +130,11 @@ def _worker_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory) 
                 factory.make(attempt, f"Prepare blocker report for {item.work_item_id}", revision, command_authority)
             )
         )
+        result.append(
+            decision_models.PauseAction(
+                factory.make(attempt, f"Pause {item.work_item_id} for human decisions", revision, command_authority)
+            )
+        )
         if not _definition_stale(snapshot, item) and _replacement_resolved(snapshot, item.work_item_id):
             result.extend(
                 (
@@ -778,6 +783,7 @@ def _pause_or_block(
                 attempt_id,
                 work_models.AttemptState.ACTIVE,
                 work_models.AttemptState.PAUSED,
+                value,
             )
             evidence: str | None = value.reason
         case decision_models.BlockCommand(value=value):
@@ -938,6 +944,39 @@ def _close(
     )
 
 
+def _resolve_pause_decisions(
+    pending: work_models.PendingDecisionBatch | None,
+    value: work_models.ResumeInput | work_models.ResolveDecisionsInput,
+) -> DecisionResult[work_models.ResolvedPauseDecisions | None]:
+    if pending is None:
+        if isinstance(value, work_models.ResolveDecisionsInput):
+            return DecisionFailure(
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                "This item has no pending decision batch; use a plain resume payload. The ledger is unchanged.",
+                None,
+            )
+        return None
+    resolutions = value.resolutions if isinstance(value, work_models.ResolveDecisionsInput) else ()
+    answered = {resolution.decision_id for resolution in resolutions}
+    for decision in pending.decisions:
+        if decision.decision_id not in answered:
+            return DecisionFailure(
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                f"Decision '{decision.decision_id}' is unresolved. Provide the human's answer or an explicit "
+                "deferral with a reopening condition in the resume payload; the ledger is unchanged.",
+                None,
+            )
+    expected = {decision.decision_id for decision in pending.decisions}
+    if answered != expected:
+        unknown = next(identity for identity in answered if identity not in expected)
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            f"Decision '{unknown}' does not belong to the pending batch; the ledger is unchanged.",
+            None,
+        )
+    return work_models.ResolvedPauseDecisions(pending.pause_history_id, resolutions)
+
+
 def _resume(
     snapshot: LedgerSnapshot, command: decision_models.ResumeCommand, now: datetime
 ) -> DecisionResult[decision_models.TransitionDecision]:
@@ -963,6 +1002,11 @@ def _resume(
             f"Item '{item.work_item_id}' has an unresolved planned replacement.",
             None,
         )
+    attempt = None if item.attempt is None else snapshot.attempt(item.attempt)
+    pending = None if attempt is None else attempt.pending_decision_batch
+    resolved_decisions = _resolve_pause_decisions(pending, value)
+    if isinstance(resolved_decisions, DecisionFailure):
+        return resolved_decisions
     revised_brief: decision_models.RevisedAttemptBrief | None = None
     if value.brief_artifact_ref_id is not None:
         if item.attempt is None:
@@ -1006,6 +1050,7 @@ def _resume(
             item.attempt,
             before,
             revised_brief,
+            resolved_decisions,
         )
     else:
         change = decision_models.WorkItemStateChange(item.work_item_id, item.state, target)

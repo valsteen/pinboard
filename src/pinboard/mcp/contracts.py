@@ -11,6 +11,7 @@ from pinboard.application import (
     action_models,
     brief_source_models,
     cancellation_models,
+    decision_batches,
     dispatch_models,
     pr_reviews,
     proposal_models,
@@ -960,6 +961,11 @@ type MergeProposalTransitionRequest = ProjectTransitionRequest[
     Literal["merge-proposal"], action_models.MergeProposalInputPayload
 ]
 type PauseTransitionRequest = ProjectTransitionRequest[Literal["pause"], action_models.ReasonInputPayload]
+type WorkerPauseTransitionRequest = WorkerTransitionRequest[Literal["pause"], action_models.ReasonInputPayload]
+type DecisionPauseTransitionRequest = ProjectTransitionRequest[Literal["pause"], decision_batches.PauseDecisionsInput]
+type WorkerDecisionPauseTransitionRequest = WorkerTransitionRequest[
+    Literal["pause"], decision_batches.PauseDecisionsInput
+]
 type RejectProposalTransitionRequest = ProjectTransitionRequest[
     Literal["reject-proposal"], action_models.RejectProposalInputPayload
 ]
@@ -971,6 +977,9 @@ type RebindAttemptTransitionRequest = ProjectTransitionRequest[
     Literal["rebind-attempt"], action_models.RebindAttemptInputPayload
 ]
 type ResumeTransitionRequest = ProjectTransitionRequest[Literal["resume"], action_models.ResumeInputPayload]
+type ResolveDecisionsTransitionRequest = ProjectTransitionRequest[
+    Literal["resume"], decision_batches.ResolveDecisionsInput
+]
 type ReturnForCorrectionTransitionRequest = ProjectTransitionRequest[
     Literal["return-for-correction"], action_models.ReasonInputPayload
 ]
@@ -998,11 +1007,15 @@ type TransitionRequest = (
     | DeferTransitionRequest
     | MergeProposalTransitionRequest
     | PauseTransitionRequest
+    | WorkerPauseTransitionRequest
+    | DecisionPauseTransitionRequest
+    | WorkerDecisionPauseTransitionRequest
     | RejectProposalTransitionRequest
     | ReopenTransitionRequest
     | RecordReplacementTransitionRequest
     | RebindAttemptTransitionRequest
     | ResumeTransitionRequest
+    | ResolveDecisionsTransitionRequest
     | ReturnForCorrectionTransitionRequest
     | RetainTemporarilyTransitionRequest
     | ReviseItemTransitionRequest
@@ -1071,7 +1084,24 @@ def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest
         case "merge-proposal":
             request = msgspec.convert(raw, type=TransitionEnvelope[MergeProposalTransitionRequest], strict=True).request
         case "pause":
-            request = msgspec.convert(raw, type=TransitionEnvelope[PauseTransitionRequest], strict=True).request
+            payload = inner.get("payload") if isinstance(inner, dict) else None
+            schema = payload.get("schema") if isinstance(payload, dict) else None
+            role = inner.get("role") if isinstance(inner, dict) else None
+            if schema is not None:
+                if role == "worker":
+                    request = msgspec.convert(
+                        raw, type=TransitionEnvelope[WorkerDecisionPauseTransitionRequest], strict=True
+                    ).request
+                else:
+                    request = msgspec.convert(
+                        raw, type=TransitionEnvelope[DecisionPauseTransitionRequest], strict=True
+                    ).request
+            elif role == "worker":
+                request = msgspec.convert(
+                    raw, type=TransitionEnvelope[WorkerPauseTransitionRequest], strict=True
+                ).request
+            else:
+                request = msgspec.convert(raw, type=TransitionEnvelope[PauseTransitionRequest], strict=True).request
         case "reject-proposal":
             request = msgspec.convert(
                 raw, type=TransitionEnvelope[RejectProposalTransitionRequest], strict=True
@@ -1085,7 +1115,14 @@ def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest
         case "rebind-attempt":
             request = msgspec.convert(raw, type=TransitionEnvelope[RebindAttemptTransitionRequest], strict=True).request
         case "resume":
-            request = msgspec.convert(raw, type=TransitionEnvelope[ResumeTransitionRequest], strict=True).request
+            payload = inner.get("payload") if isinstance(inner, dict) else None
+            schema = payload.get("schema") if isinstance(payload, dict) else None
+            if schema is not None:
+                request = msgspec.convert(
+                    raw, type=TransitionEnvelope[ResolveDecisionsTransitionRequest], strict=True
+                ).request
+            else:
+                request = msgspec.convert(raw, type=TransitionEnvelope[ResumeTransitionRequest], strict=True).request
         case "return-for-correction":
             request = msgspec.convert(
                 raw, type=TransitionEnvelope[ReturnForCorrectionTransitionRequest], strict=True
@@ -1758,6 +1795,7 @@ class NonterminalAttemptContinuationBase(msgspec.Struct, frozen=True, forbid_unk
     next_operation: ContinuationOperation
     legal_actions: Annotated[tuple[RelativeActionIdentity, ...], msgspec.Meta(min_length=1)]
     forbidden_routes: tuple[Literal["create-user-task", "wake-user-task", "return-ownership-to-parent"], ...]
+    decision_batch: decision_batches.DecisionBatchView | None
 
     def _validate_common(self) -> None:
         if self.terminal or self.user_input_required:

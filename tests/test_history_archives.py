@@ -83,6 +83,8 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
                     self.run_json_cli(*fixture.common, "migrate-schema", "--apply", str(preview["plan_id"]))
                     dependencies = self.run_json_cli(*fixture.common, "migrate-schema")
                     self.run_json_cli(*fixture.common, "migrate-schema", "--apply", str(dependencies["plan_id"]))
+                    decisions = self.run_json_cli(*fixture.common, "migrate-schema")
+                    self.run_json_cli(*fixture.common, "migrate-schema", "--apply", str(decisions["plan_id"]))
                     after = SQLiteWorkStore(path).validated_snapshot()
                     self.assertEqual(before.artifact_references, after.artifact_references)
                     self.assertEqual(
@@ -122,6 +124,9 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
         dependencies = schema_procedure.preview_schema(path)
         assert isinstance(dependencies, schema_procedure.PlannedSchema), dependencies
         self.assertIsInstance(schema_procedure.apply_schema(path, dependencies.plan_id), schema_procedure.AppliedSchema)
+        decisions = schema_procedure.preview_schema(path)
+        assert isinstance(decisions, schema_procedure.PlannedSchema), decisions
+        self.assertIsInstance(schema_procedure.apply_schema(path, decisions.plan_id), schema_procedure.AppliedSchema)
         after = SQLiteWorkStore(path).validated_snapshot()
         shared = next(
             value for value in after.artifact_references if value.artifact_ref_id == accepted.reference.artifact_ref_id

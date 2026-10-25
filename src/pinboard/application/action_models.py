@@ -9,7 +9,7 @@ from typing import (
 
 import msgspec
 
-from pinboard.application import pr_reviews
+from pinboard.application import decision_batches, pr_reviews
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.history import RecordText, WorkItemDefinitionPayload
 
@@ -68,7 +68,7 @@ class DeclaredSubmitReviewInputPayload(msgspec.Struct, frozen=True, forbid_unkno
 
 
 class ReasonInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Pause and return-for-correction input; its reason is human-read record text."""
+    """Plain pause and return-for-correction input; its reason is human-read record text."""
 
     reason: RecordText
 
@@ -179,6 +179,8 @@ type InputPayload = (
     | pr_reviews.ReviewRound
     | pr_reviews.ReviewClose
     | ResumeInputPayload
+    | decision_batches.PauseDecisionsInput
+    | decision_batches.ResolveDecisionsInput
     | RebindAttemptInputPayload
     | ActivateInputPayload
     | SubmitReviewInputPayload
@@ -262,6 +264,19 @@ def action_input_model(kind: decision_models.ActionKind) -> InputModel | None:  
 def action_payload_schema(kind: decision_models.ActionKind) -> JsonSchema | None:
     """Return the canonical strict payload schema for one action kind."""
 
+    if kind in {decision_models.ActionKind.PAUSE, decision_models.ActionKind.RESUME}:
+        plain = msgspec.json.schema(
+            ReasonInputPayload if kind == decision_models.ActionKind.PAUSE else ResumeInputPayload
+        )
+        batch = msgspec.json.schema(
+            decision_batches.PauseDecisionsInput
+            if kind == decision_models.ActionKind.PAUSE
+            else decision_batches.ResolveDecisionsInput
+        )
+        return {
+            "oneOf": [{"$ref": plain["$ref"]}, {"$ref": batch["$ref"]}],
+            "$defs": {**plain["$defs"], **batch["$defs"]},
+        }
     if kind == decision_models.ActionKind.SUBMIT_REVIEW:
         legacy = msgspec.json.schema(SubmitReviewInputPayload)
         declared = msgspec.json.schema(DeclaredSubmitReviewInputPayload)

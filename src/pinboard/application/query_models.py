@@ -9,6 +9,7 @@ import msgspec
 
 from pinboard.application import (
     artifacts,
+    decision_batches,
     definition_compatibility,
     released_v6_compatibility,
     stored_state,
@@ -103,6 +104,7 @@ class ItemProjectionFacts:
     definition: stored_state.ItemDefinitionRevision
     review_history: tuple[stored_state.StoredTransitionReceipt, ...]
     pause_reason: RecordedPauseReason
+    decision_batch: decision_batches.DecisionBatchView | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,6 +450,7 @@ class NonterminalAttemptContinuationBase(AttemptContinuationIdentity, frozen=Tru
     next_operation: NonterminalContinuationOperation
     legal_actions: tuple[str, ...]
     forbidden_routes: tuple[Literal["create-user-task", "wake-user-task", "return-ownership-to-parent"], ...]
+    decision_batch: decision_batches.DecisionBatchView | None
 
     def _validate_common(self) -> None:
         if (
@@ -648,6 +651,7 @@ class NonterminalAttemptContextFacts:
     work_item: AttemptContextItemFacts
     brief_reference: artifacts.BriefArtifactRef
     pause_reason: str | None
+    decision_batch: decision_batches.DecisionBatchView | None
 
 
 type AttemptContextFacts = TerminalAttemptContextFacts | NonterminalAttemptContextFacts
@@ -720,7 +724,7 @@ class CompletionRecoveryRequired:
 
 
 type ItemStatusSchema = Literal["pinboard-item-status/v3"]
-type ItemStatusAuthority = Literal["sqlite-v10"]
+type ItemStatusAuthority = Literal["sqlite-v11"]
 
 
 type DamagedReceiptActionKind = Literal[
@@ -848,6 +852,7 @@ class ItemStatusFacts:
     closure: ItemClosureFacts | None
     preparation: PreparationAuthorityStatus | None
     dependencies: tuple[DependencyStatus, ...]
+    batches_by_attempt: dict[AttemptId, decision_batches.DecisionBatchView]
 
 
 @dataclass(frozen=True, slots=True)
@@ -862,6 +867,7 @@ class ItemStatusAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     branch: str
     candidate_revision: str | None
     pause_reason: str | None
+    decision_batch: decision_batches.DecisionBatchView | None
     """The reason recorded when the attempt was paused; null unless a recorded pause is current."""
 
 
@@ -1289,6 +1295,7 @@ class BoardAttemptRecords:
     latest_receipt: ConsumedTransitionReceipt | None
     checkpoint_acceptances: tuple[stored_state.StoredTransitionReceipt, ...]
     candidate_snapshot: stored_state.ArtifactReference | None
+    decision_batch: decision_batches.DecisionBatchView | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1523,6 +1530,7 @@ class BoardAttemptProgress:
     checkpoint: BoardCheckpoint | UnreadableBrief
     condition: BoardCondition
     milestones: tuple[BoardMilestone | UnreadableMilestone, ...]
+    decision_batch: decision_batches.DecisionBatchView | None
 
 
 class DefinitionTextField(Enum):
@@ -1625,7 +1633,7 @@ class NextUnstarted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class WorkOverview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-overview/v7"]
-    authority: Literal["sqlite-v10"]
+    authority: Literal["sqlite-v11"]
     revision: str
     active_attempts: tuple[str, ...]
     items: tuple[OverviewItem, ...]
@@ -1748,7 +1756,7 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition/v1"]
-    authority: Literal["sqlite-v10"]
+    authority: Literal["sqlite-v11"]
     project_revision: int
     item_id: str
     item_subject_revision: int
@@ -1771,7 +1779,7 @@ class ItemDefinitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class ItemDefinitionHistory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition-history/v1"]
-    authority: Literal["sqlite-v10"]
+    authority: Literal["sqlite-v11"]
     project_revision: int
     item_id: str
     revisions: tuple[ItemDefinitionHistoryRow, ...]

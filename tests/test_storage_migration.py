@@ -32,7 +32,12 @@ class StorageMigrationTests(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(path)) as connection:
             facts: list[str] = []
             for (table,) in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'table'"):
-                if table in {"project_meta", "artifact_ownership", "checkpoint_acceptances"}:
+                if table in {
+                    "project_meta",
+                    "artifact_ownership",
+                    "checkpoint_acceptances",
+                    "attempt_decision_batches",
+                }:
                     continue
                 columns = tuple(
                     row[1]
@@ -51,6 +56,7 @@ class StorageMigrationTests(unittest.TestCase):
 
     def downgrade_v9(self, path: Path) -> None:
         with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("DROP TABLE attempt_decision_batches")
             connection.execute("DROP TABLE checkpoint_acceptances")
             connection.execute("ALTER TABLE item_dependencies DROP COLUMN checkpoint_id")
             connection.execute("ALTER TABLE proposals DROP COLUMN relation_checkpoint_id")
@@ -92,7 +98,7 @@ class StorageMigrationTests(unittest.TestCase):
             )
             connection.execute("DROP TABLE project_meta_v9")
 
-    def test_v8_ownership_upgrade_is_bound_recoverable_and_reversible_until_a_new_write(self) -> None:
+    def test_v8_ownership_upgrade_is_bound_recoverable_and_reversible_until_a_new_write(self) -> None:  # noqa: PLR0915 - one retained recovery journey
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory).resolve()
             path = self.initialize_v8(project)
@@ -139,7 +145,11 @@ class StorageMigrationTests(unittest.TestCase):
                 self.assertEqual(9, connection.execute("SELECT schema_version FROM project_meta").fetchone()[0])
             current = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
             self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
-            self.assertEqual(10, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
+            with contextlib.closing(sqlite3.connect(path)) as connection:
+                sqlite_database._verify_v10_schema(connection)
+            current = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
+            self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
+            self.assertEqual(11, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
             roots = resolve_durable_roots(project)
             publication = ArtifactRepository(roots).publish(
                 NewArtifact(work_models.ArtifactKind.EVIDENCE, "later", 1, ".txt", b"later")

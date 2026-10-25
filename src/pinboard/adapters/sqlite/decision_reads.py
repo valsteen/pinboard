@@ -8,6 +8,7 @@ from datetime import datetime
 import msgspec
 
 from pinboard.adapters.sqlite.database import decode_row, select_by_ids
+from pinboard.adapters.sqlite.decision_batches import read_decision_batches
 from pinboard.adapters.sqlite.dependencies import DependencyRow, read_accepted_checkpoints
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
@@ -17,7 +18,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     validate_current_attempt_relation,
 )
 from pinboard.adapters.sqlite.proposals import decode_proposal_relation
-from pinboard.application import query_models, stored_state
+from pinboard.application import decision_batches, query_models, stored_state
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.identifiers import (
     ArtifactRefId,
@@ -443,6 +444,9 @@ def _attempt_records(
     include_pause_reasons: bool,
 ) -> tuple[work_models.AttemptRecord, ...]:
     selected = tuple(attempts)
+    batches = (
+        read_decision_batches(connection, (attempt.attempt_id for attempt in selected)) if include_pause_reasons else {}
+    )
     pause_reasons = (
         read_pause_reasons(
             connection, ((attempt.attempt_id, attempt.state, attempt.subject_revision) for attempt in selected)
@@ -460,6 +464,9 @@ def _attempt_records(
             None if attempt.candidate_revision is None else CandidateId(attempt.candidate_revision),
             attempt.brief_artifact_ref_id,
             pause_reason=pause_reasons.get(attempt.attempt_id),
+            pending_decision_batch=None
+            if (batch := batches.get(attempt.attempt_id)) is None
+            else decision_batches.pending_batch(attempt.attempt_id, batch),
         )
         for attempt in selected
     )

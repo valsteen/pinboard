@@ -55,7 +55,11 @@ class PlannedReplacementTests(unittest.TestCase):
             if attempt_state is None
             else (
                 work_models.AttemptRecord(
-                    AttemptId("old-work-1"), WorkItemId("old-work"), attempt_state, pause_reason=None
+                    AttemptId("old-work-1"),
+                    WorkItemId("old-work"),
+                    attempt_state,
+                    pause_reason=None,
+                    pending_decision_batch=None,
                 ),
             )
         )

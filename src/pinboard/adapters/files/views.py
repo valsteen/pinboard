@@ -24,7 +24,15 @@ from pinboard.adapters.files import roadmap as roadmap_files
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
-from pinboard.application import definition_compatibility, ports, pr_reviews, query_models, roadmap, stored_state
+from pinboard.application import (
+    decision_batches,
+    definition_compatibility,
+    ports,
+    pr_reviews,
+    query_models,
+    roadmap,
+    stored_state,
+)
 from pinboard.application.queries import (
     damaged_receipt_message,
     damaged_receipt_recovery,
@@ -42,7 +50,55 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
 
 
 def _render_header(kind: str) -> str:
-    return f"---\nkind: {kind}\nauthority: sqlite-v10\n---\n\n> {NOTICE}\n\n"
+    return f"---\nkind: {kind}\nauthority: sqlite-v11\n---\n\n> {NOTICE}\n\n"
+
+
+def _render_decision_questions(decisions: tuple[decision_batches.PauseDecision, ...]) -> str:
+    return "".join(
+        f"### {decision.decision_id}\n\n{decision.question}\n\n"
+        + "".join(f"- Option: {history.nest_record_text(option, '  ')}\n" for option in decision.options)
+        + f"- Recommendation: {history.nest_record_text(decision.recommendation, '  ')}\n"
+        + f"- Unblocks: {history.nest_record_text(decision.unblocks, '  ')}\n"
+        + f"- Cost of deferring: {history.nest_record_text(decision.deferral_cost, '  ')}\n\n"
+        for decision in decisions
+    )
+
+
+def _render_decision_resolutions(resolutions: tuple[decision_batches.DecisionResolution, ...]) -> str:
+    rendered: list[str] = []
+    for resolution in resolutions:
+        match resolution:
+            case decision_batches.DecisionAnswer():
+                rendered.append(f"### {resolution.decision_id}: answered\n\n{resolution.human_decision}\n\n")
+            case decision_batches.DecisionDeferral():
+                rendered.append(
+                    f"### {resolution.decision_id}: deferred\n\n{resolution.human_decision}\n\n"
+                    + f"- Reopen when: {history.nest_record_text(resolution.reopen_condition, '  ')}\n\n"
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+    return "".join(rendered)
+
+
+def _render_decision_batch(batch: decision_batches.DecisionBatchView | None) -> str:
+    if batch is None:
+        return ""
+    resolution = batch.resolution
+    return (
+        "## Latest decision batch\n\n"
+        + f"{'Pending' if resolution is None else 'Resolved'}; pause receipt {batch.pause_history_id}, "
+        + f"{_utc_label(batch.paused_at)}; recorded by {batch.actor_task_id or 'unrecorded'} "
+        + f"on {batch.actor_host_id or 'unrecorded'}.\n\n{batch.reason}\n\n"
+        + _render_decision_questions(batch.decisions)
+        + (
+            ""
+            if resolution is None
+            else f"Resolved in receipt {resolution.resume_history_id}, "
+            + f"{_utc_label(resolution.resolved_at)}; recorded by {resolution.actor_task_id or 'unrecorded'} "
+            + f"on {resolution.actor_host_id or 'unrecorded'}.\n\n"
+            + _render_decision_resolutions(resolution.resolutions)
+        )
+    )
 
 
 def _bullets(values: tuple[str, ...]) -> str:
@@ -91,6 +147,7 @@ def _render_item(
     definition: stored_state.ItemDefinitionRevision,
     review_history: tuple[stored_state.StoredTransitionReceipt, ...],
     pause_reason: str | None,
+    decision_batch: decision_batches.DecisionBatchView | None,
 ) -> bytes:
     dependency_reasons = (
         tuple(f"{value.item_id}: {value.reason}" for value in overview_item.dependency_reasons)
@@ -135,6 +192,7 @@ def _render_item(
         + ("" if pause_reason is None else f"- Pause reason: {history.nest_record_text(pause_reason, '  ')}\n")
         + f"- Dependency eligibility: {'yes' if overview_item is not None and overview_item.eligible else 'no'}\n\n"
         + next_step
+        + _render_decision_batch(decision_batch)
         + "## Original intake context\n\n"
         + "Recorded when this work was saved; original context, not the current plan.\n\n"
         + f"- Next action at intake: {item.next_action if item.next_action is not None else 'none'}\n"
@@ -209,12 +267,27 @@ def _render_history_row(receipt: stored_state.StoredTransitionReceipt) -> str:
 
 
 def _render_history(receipt: stored_state.StoredTransitionReceipt) -> bytes:
+    decisions = ""
+    if receipt.input_schema == "pinboard-pause-decisions/v1":
+        pause = msgspec.json.decode(bytes(receipt.input_payload), type=decision_batches.PauseDecisionsInput)
+        decisions = f"\n## Decision batch\n\n{pause.reason}\n\n" + _render_decision_questions(pause.decisions)
+    elif receipt.input_schema == "pinboard-resolved-pause-decisions/v1":
+        resolved = msgspec.json.decode(bytes(receipt.input_payload), type=decision_batches.ResolvedDecisionsReceipt)
+        decisions = (
+            f"\n## Recorded decisions\n\nPause receipt [{resolved.pause_history_id}]({resolved.pause_history_id}.md).\n\n"
+            + _render_decision_resolutions(resolved.resolutions)
+        )
+    if decisions:
+        decisions += (
+            f"Recorded by {receipt.actor_task_id or 'unrecorded'} on {receipt.actor_host_id or 'unrecorded'}.\n"
+        )
     return (
         _render_header("work-history-receipt-view")
         + f"# Transition {receipt.history_id}\n\n"
         + "| History | Revision | Action receipt | Recorded outcome | Subject | Committed |\n"
         + "| --- | --- | --- | --- | --- | --- |\n"
         + _render_history_row(receipt)
+        + decisions
     ).encode()
 
 
@@ -314,6 +387,11 @@ def _render_board_markdown(board: query_models.BoardPortfolio) -> bytes:
             f"- [{_markdown_link_text(item.overview.label)}](items/{item.overview.item_id}.md) "
             + f"`{item.overview.item_id}` ({item.overview.state.value}), changed {_utc_label(item.updated_at)}\n"
             + "".join(f"  - Depends on {value.item_id}: {value.reason}\n" for value in _unsatisfied_dependencies(item))
+            + (
+                ""
+                if item.attempt is None or item.attempt.decision_batch is None
+                else "  " + history.nest_record_text(_render_decision_batch(item.attempt.decision_batch), "  ") + "\n"
+            )
             for item in grouped
         )
         sections.append(f"## {group.value}\n\n{entries or '- None.\n'}\n")
@@ -397,6 +475,7 @@ class _BoardPageStanding(msgspec.Struct, tag="attempt", tag_field="kind", frozen
     checkpoint: _BoardPageCheckpoint | _BoardPageUnreadableBrief
     condition: _BoardPageCondition
     milestones: tuple[_BoardPageMilestone | _BoardPageUnreadableMilestone, ...]
+    decision_batch: decision_batches.DecisionBatchView | None
 
 
 class _BoardPageTextChange(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -644,6 +723,7 @@ def _standing(item: query_models.BoardItem) -> _BoardPageNextStep | _BoardPageSt
             else _BoardPageUnreadableMilestone(int(value.history_id), _utc_instant(value.committed_at), value.defect)
             for value in attempt.milestones
         ),
+        attempt.decision_batch,
     )
 
 
@@ -1073,6 +1153,37 @@ _BOARD_PAGE_TAIL = """</script>
     recordText(body, remaining.text);
   }
 
+  function decisionBatch(body, standing) {
+    if (standing.kind !== "attempt" || !standing.decision_batch) { return; }
+    var batch = standing.decision_batch;
+    body.appendChild(node("h3", null, "Latest decision batch"));
+    entryHead(body, batch.resolution ? "Resolved" : "Pending", batch.paused_at, "Decision batch paused");
+    field(body, "Recorded by", (batch.actor_task_id || "unrecorded") + " on " + (batch.actor_host_id || "unrecorded"));
+    recordText(body, batch.reason);
+    batch.decisions.forEach(function (decision) {
+      body.appendChild(node("h4", null, decision.decision_id));
+      recordText(body, decision.question);
+      decision.options.forEach(function (option) { recordText(body, "Option: " + option); });
+      recordText(body, "Recommendation: " + decision.recommendation);
+      recordText(body, "Unblocks: " + decision.unblocks);
+      recordText(body, "Cost of deferring: " + decision.deferral_cost);
+    });
+    if (batch.resolution) {
+      var resolved = batch.resolution;
+      entryHead(body, "Recorded decisions", resolved.resolved_at, "Decision batch resolved");
+      field(body, "Recorded by", (resolved.actor_task_id || "unrecorded") + " on " + (resolved.actor_host_id || "unrecorded"));
+      resolved.resolutions.forEach(function (resolution) {
+        var label;
+        if (resolution.kind === "answer") { label = "answered"; }
+        else if (resolution.kind === "defer") { label = "deferred"; }
+        else { throw new Error("Unsupported decision resolution: " + resolution.kind); }
+        body.appendChild(node("h4", null, resolution.decision_id + ": " + label));
+        recordText(body, resolution.human_decision);
+        if (resolution.kind === "defer") { recordText(body, "Reopen when: " + resolution.reopen_condition); }
+      });
+    }
+  }
+
   function section(body, title, build) {
     var details = node("details", "section");
     details.appendChild(node("summary", null, title));
@@ -1199,6 +1310,7 @@ _BOARD_PAGE_TAIL = """</script>
     var body = node("div", "body");
     whereItStands(body, item);
     remainingWork(body, item.standing);
+    decisionBatch(body, item.standing);
     field(body, "Expected result", item.effect);
     field(body, "What this unlocks", item.unlock);
     body.appendChild(node("h3", null, "Dependencies"));
@@ -1392,6 +1504,7 @@ def _write_facts(
                     selected.definition,
                     selected.review_history,
                     selected.pause_reason,
+                    selected.decision_batch,
                 ),
             )
     if facts.attempts:
@@ -1459,6 +1572,12 @@ def derive_expected_view_bytes(
 
     view_inputs = _project_view_inputs(state, board_history, now)
     receipts_by_revision = {receipt.project_revision: receipt for receipt in state.transition_receipts}
+    batches = decision_batches.batches_from_state(state)
+    batches_by_item = {
+        attempt.item_id: batches.get(attempt.attempt_id)
+        for attempt in state.lifecycle.attempts
+        if attempt.state != work_models.AttemptState.DONE
+    }
     pause_reasons: dict[WorkItemId, query_models.RecordedPauseReason] = {}
     for attempt in state.lifecycle.attempts:
         if attempt.state != work_models.AttemptState.DONE:
@@ -1490,6 +1609,7 @@ def derive_expected_view_bytes(
             view_inputs.definitions[item.item_id],
             tuple(receipt for receipt in state.transition_receipts if receipt.subject_id == item.item_id),
             pause_reason,
+            batches_by_item.get(item.item_id),
         )
     expected_views.update(
         (

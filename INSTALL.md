@@ -214,14 +214,14 @@ Refresh the installed code through the client's supported plugin update or reloa
 
 Each newly installed version needs its own [runtime preparation](#the-launcher-says-runtime-preparation-is-required). If Pinboard remains unavailable afterward, reconnect or restart the MCP service from an existing installed plugin directory. A fresh manifest version identifies a release; it does not guarantee uninterrupted service. A reported missing working directory does not establish what removed it.
 
-Updating plugin code does not migrate project data. For a separately authorized project migration, stop every Pinboard process using that ledger before preview or apply. Use the same exact selected project and work roots for both commands:
+Updating plugin code does not migrate project data. Update every client sharing an upgraded board before v11 access. For a separately authorized project migration, stop every Pinboard process using that ledger before preview or apply. Use the same exact selected project and work roots for both commands:
 
 ```sh
 <launcher-root>/scripts/pinboard --project-root <managed-project> --work-root <selected-work-root> migrate-schema --json
 <launcher-root>/scripts/pinboard --project-root <managed-project> --work-root <selected-work-root> migrate-schema --apply <plan-id> --json
 ```
 
-Preview returns a read-only plan and ID. Apply retains the exact predecessor backup before the atomic schema change. Current plans advance v9 to v10, preserving dependency facts and indexing accepted checkpoints. Retained steps advance v6 to v7, v7 to v8, and v8 to v9; request a fresh preview after each step. The v8 ownership step verifies original evidence without rewriting accepted artifacts or history. Preserve the plan and backup; inspect reported effects before resuming an interrupted apply with the same ID. A committed schema change with a view warning needs view repair, not migration replay. The [schema recovery procedure](skills/pinboard/references/state-and-recovery.md#authoritative-state) covers predecessor advancement and unchanged-state reversal.
+Preview returns a read-only plan and ID. Apply retains the exact predecessor backup before the atomic schema change. Current plans advance exact v10 to v11 and add indexed latest decision-batch references. Retained steps advance v6 to v7, v7 to v8, v8 to v9, and v9 to v10; request a fresh preview after each step. The v8 ownership step verifies original evidence without rewriting accepted artifacts or history. Preserve the plan and backup; inspect reported effects before resuming an interrupted apply with the same ID. A committed schema change with a view warning needs view repair, not migration replay. The [schema recovery procedure](skills/pinboard/references/state-and-recovery.md#authoritative-state) covers predecessor advancement and unchanged-state reversal.
 
 ## Direct CLI use from a source checkout
 

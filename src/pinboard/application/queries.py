@@ -16,6 +16,7 @@ import msgspec
 from pinboard.application import (
     candidate_snapshots,
     checkpoint_packages,
+    decision_batches,
     definition_compatibility,
     ports,
     query_models,
@@ -247,6 +248,9 @@ def project_attempt_continuation(
                 None if context.candidate_revision is None else CandidateId(context.candidate_revision),
                 context.brief_artifact_ref_id,
                 pause_reason=context.pause_reason,
+                pending_decision_batch=None
+                if context.decision_batch is None
+                else decision_batches.pending_batch(context.attempt_id, context.decision_batch),
             )
             groups = project_attempt_action_groups(
                 work_models.ProjectAttemptActionContext(
@@ -292,6 +296,7 @@ def project_attempt_continuation(
                 selected,
                 tuple(decision_models.action_id(value) for value in actions),
                 ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
+                context.decision_batch,
             )
             match context.state:
                 case work_models.AttemptState.ACTIVE:
@@ -677,7 +682,7 @@ def present_overview(
     )
     return query_models.WorkOverview(
         "pinboard-overview/v7",
-        "sqlite-v10",
+        "sqlite-v11",
         revision,
         active_attempts,
         items,
@@ -922,6 +927,7 @@ def select_board_records(state: stored_state.StoredWorkState) -> query_models.Bo
         ):
             latest_snapshots[reference.key] = reference
     receipts_by_revision = {receipt.project_revision: receipt for receipt in state.transition_receipts}
+    batches = decision_batches.batches_from_state(state)
     acceptances: dict[str, list[stored_state.StoredTransitionReceipt]] = {}
     for receipt in sorted(state.transition_receipts, key=_receipt_history_key, reverse=True):
         if receipt.outcome_schema == "checkpoint-acceptance/v2":
@@ -957,6 +963,7 @@ def select_board_records(state: stored_state.StoredWorkState) -> query_models.Bo
                 None if latest is None else _consumed_receipt(latest),
                 tuple(acceptances.get(str(attempt.attempt_id), ())),
                 snapshot,
+                batches.get(attempt.attempt_id),
             )
         )
     live_ids = frozenset(item.item_id for item, _live_state in _select_live_items(state))
@@ -1219,7 +1226,10 @@ def _board_items(
 
     attempts = {
         str(facts.records.item_id): query_models.BoardAttemptProgress(
-            _board_checkpoint(facts), _board_condition(facts), _board_milestones(facts.records)
+            _board_checkpoint(facts),
+            _board_condition(facts),
+            _board_milestones(facts.records),
+            facts.records.decision_batch,
         )
         for facts in history.attempts
     }
@@ -1588,6 +1598,7 @@ def project_item_status(
                 selected.branch,
                 selected.candidate_revision,
                 selected.pause_reason,
+                facts.batches_by_attempt.get(selected.attempt_id),
             )
         )
         selected_verdict = _review_verdict(selected, reviews)
@@ -1596,7 +1607,7 @@ def project_item_status(
         verdict = selected_verdict
     return query_models.ItemStatus(
         "pinboard-item-status/v3",
-        "sqlite-v10",
+        "sqlite-v11",
         str(facts.project_revision),
         str(item.work_item_id),
         facts.definition_title,
@@ -1623,7 +1634,7 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
         return None
     return query_models.BranchOwners(
         "pinboard-branch-owners/v1",
-        "sqlite-v10",
+        "sqlite-v11",
         str(facts.project_revision),
         branch,
         tuple(
@@ -1751,7 +1762,7 @@ def select_item_definition(
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
-        "sqlite-v10",
+        "sqlite-v11",
         selected.project_revision,
         work_item_id,
         selected.item_subject_revision,
@@ -1788,7 +1799,7 @@ def select_item_definition_history(
     )
     return query_models.ItemDefinitionHistory(
         "pinboard-item-definition-history/v1",
-        "sqlite-v10",
+        "sqlite-v11",
         selected.project_revision,
         work_item_id,
         rows,

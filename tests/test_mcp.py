@@ -118,6 +118,20 @@ def _representative_transition_requests() -> tuple[dict[str, contracts.JsonValue
     """Return one valid raw request for each exact transition leaf the decoder selects."""
 
     reason: dict[str, contracts.JsonValue] = {"reason": "Accepted reason."}
+    batch: dict[str, contracts.JsonValue] = {
+        "schema": "pinboard-pause-decisions/v1",
+        "reason": "Choose the input policy.",
+        "decisions": [
+            {
+                "decision_id": "input-policy",
+                "question": "How should invalid input behave?",
+                "options": ["Reject", "Replace"],
+                "recommendation": "Reject",
+                "unblocks": "Input handling",
+                "deferral_cost": "Input work waits.",
+            }
+        ],
+    }
     evidence: dict[str, contracts.JsonValue] = {"evidence": "Independent review evidence."}
     definition: dict[str, contracts.JsonValue] = {
         "schema": "pinboard-work-item-definition/v2",
@@ -164,6 +178,9 @@ def _representative_transition_requests() -> tuple[dict[str, contracts.JsonValue
         ("defer", "project", {"timing": "safe-to-defer", "reopen_condition": "A supported consumer needs it."}),
         ("merge-proposal", "project", {"target": "item-2"}),
         ("pause", "project", reason),
+        ("pause", "worker", reason),
+        ("pause", "project", batch),
+        ("pause", "worker", batch),
         ("reject-proposal", "project", reason),
         ("reopen", "project", evidence),
         (
@@ -188,6 +205,15 @@ def _representative_transition_requests() -> tuple[dict[str, contracts.JsonValue
             },
         ),
         ("resume", "project", {}),
+        (
+            "resume",
+            "project",
+            {
+                "schema": "pinboard-resolve-pause-decisions/v1",
+                "brief_artifact_ref_id": None,
+                "resolutions": [{"kind": "answer", "decision_id": "input-policy", "human_decision": "Reject it."}],
+            },
+        ),
         ("return-for-correction", "project", reason),
         (
             "retain-temporarily",
@@ -3097,6 +3123,7 @@ class McpTransportTest(unittest.TestCase):
             query_models.ActionContinuation("continue:attempt-1", decision_models.ActionKind.CONTINUE, "Continue."),
             ("continue:attempt-1", "pause:attempt-1", "revise-item:item-1"),
             ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
+            decision_batch=None,
         )
         absent = contracts.EvidenceAbsent("/work/attempts/attempt-1/result.md")
         presented_continuation = mcp_reads._mcp_attempt_continuation(continuation)
@@ -3140,6 +3167,7 @@ class McpTransportTest(unittest.TestCase):
                     ),
                     ("complete:attempt-1", "return-for-correction:attempt-1"),
                     ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
+                    decision_batch=None,
                 )
             ),
             candidate_review=contracts.CandidateReviewPresent(2, "artifacts/evidence/review/1.json", "c" * 64, 1, 1),
@@ -3466,18 +3494,21 @@ class McpTransportTest(unittest.TestCase):
                 query_models.ActionContinuation("continue:attempt-1", decision_models.ActionKind.CONTINUE, "Continue."),
                 ("continue:attempt-1", "revise-item:item-1"),
                 forbidden,
+                decision_batch=None,
             ),
             query_models.ReviewAttemptContinuation(
                 *common,
                 query_models.ReviewContinuation("attempt-1", "candidate-1", "runtime-subagent"),
                 ("accept-checkpoint:attempt-1", "return-for-correction:attempt-1"),
                 forbidden,
+                decision_batch=None,
             ),
             query_models.PausedAttemptContinuation(
                 *common,
                 query_models.ActionContinuation("resume:item-1", decision_models.ActionKind.RESUME, "Resume."),
                 ("resume:item-1",),
                 forbidden,
+                None,
                 "Waiting for the maintainer's choice.",
             ),
             query_models.BlockedAttemptContinuation(
@@ -3485,6 +3516,7 @@ class McpTransportTest(unittest.TestCase):
                 query_models.DependencyContinuation(("dependency-1",)),
                 ("resume:item-1",),
                 forbidden,
+                decision_batch=None,
             ),
             query_models.TerminalAttemptContinuation(
                 "pinboard-attempt-continuation/v1",
@@ -3536,9 +3568,15 @@ class McpTransportTest(unittest.TestCase):
             contracts.RelativeActionIdentity("item", decision_models.ActionKind.CLOSE),
         )
         with self.subTest(state="paused"), self.assertRaises(ValueError):
-            contracts.PausedAttemptContinuation(*common, resume, legal_actions, forbidden, None)
+            contracts.PausedAttemptContinuation(*common, resume, legal_actions, forbidden, None, None)
         with self.subTest(state="blocked"), self.assertRaises(ValueError):
-            contracts.BlockedAttemptContinuation(*common, resume, legal_actions, forbidden)
+            contracts.BlockedAttemptContinuation(
+                *common,
+                resume,
+                legal_actions,
+                forbidden,
+                decision_batch=None,
+            )
 
     def test_sdk_stdio_workflow_discovery_and_verification_are_read_only(self) -> None:
         temporary, project, roots = self._project()
@@ -3652,7 +3690,7 @@ class McpTransportTest(unittest.TestCase):
         overview_content = overview.structured_content
         assert isinstance(overview_content, dict)
         self.assertEqual("pinboard-overview/v7", overview_content["schema"])
-        self.assertEqual("sqlite-v10", overview_content["authority"])
+        self.assertEqual("sqlite-v11", overview_content["authority"])
         self.assertEqual(["work-a-1"], overview_content["active_attempts"])
         observer_content = observer.structured_content
         assert isinstance(observer_content, dict)

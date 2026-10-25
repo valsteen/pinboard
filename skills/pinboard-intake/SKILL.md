@@ -47,6 +47,8 @@ This conditional authority does not authorize a prerequisite relation, preparati
 
 If any proposal field or relation shape is uncertain, read the advertised `pinboard_proposal_create` input schema. Do not infer the schema from an old example or inspect Pinboard source.
 
+Before writing the proposal, establish what the work waits on: a human decision, a scarce shared resource, a human-hands step, or another item. Ask only for missing context that could change scope, execution shape, or dependency; a fully specified independent item needs no redundant question. Record known blockers in existing `trigger`, `evidence`, `effect`, `unlock`, or `freshness_assumptions` fields as appropriate, and use the relation rules below for an actual item dependency. Do not add a blocking-profile field. This context supports the main skill's [shared-phase suggestion](../pinboard/SKILL.md#match-detail-to-the-question); it grants no grouping or execution authority.
+
 Create a bounded JSON proposal containing:
 
 - `schema`: `pinboard-proposal/v2`;

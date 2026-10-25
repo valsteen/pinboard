@@ -333,7 +333,9 @@ class SQLiteStoreTest(unittest.TestCase):
         connection = open_database(path, OpenMode.READ_WRITE)
         try:
             with self.assertRaises(StorageError) as invariant_error, write_transaction(connection):
-                connection.execute("INSERT INTO item_dependencies VALUES ('missing', 'missing', 0)")
+                connection.execute(
+                    "INSERT INTO item_dependencies(item_id, dependency_id, position) VALUES ('missing', 'missing', 0)"
+                )
             self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, invariant_error.exception.code)
             self.assertEqual(0, connection.execute("SELECT revision FROM project_meta").fetchone()[0])
 

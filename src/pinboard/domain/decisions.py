@@ -159,7 +159,7 @@ def _preparer_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory
             or command is None
             or item.state != work_models.WorkState.READY
             or not _replacement_resolved(snapshot, item.work_item_id)
-            or any(dependency in snapshot.unsatisfied_dependency_ids for dependency in item.depends_on)
+            or bool(snapshot.unsatisfied_dependencies(item.depends_on))
         ):
             continue
         subject_revision = _subject_revision(snapshot, item.work_item_id)
@@ -364,7 +364,7 @@ def _project_attempt_context(
         snapshot.attempt(item.attempt),
         None if definition is None else definition.revision,
         None if definition is None else definition.digest,
-        tuple(dependency for dependency in item.depends_on if dependency in snapshot.unsatisfied_dependency_ids),
+        snapshot.unsatisfied_dependencies(item.depends_on),
         revision_available,
         None if replacement is None else replacement.relation_revision,
         _replacement_resolved(snapshot, item.work_item_id),
@@ -392,9 +392,7 @@ def _item_actions(
                 close,
             )
         case work_models.WorkState.PAUSED | work_models.WorkState.BLOCKED:
-            dependencies_unsatisfied = any(
-                dependency in snapshot.unsatisfied_dependency_ids for dependency in item.depends_on
-            )
+            dependencies_unsatisfied = bool(snapshot.unsatisfied_dependencies(item.depends_on))
             if not dependencies_unsatisfied and _replacement_resolved(snapshot, item.work_item_id):
                 return (
                     decision_models.ResumeAction(
@@ -679,7 +677,7 @@ def _activate(
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.work_item_id}' is not ready for activation.", None
         )
-    if any(dependency in snapshot.unsatisfied_dependency_ids for dependency in item.depends_on):
+    if bool(snapshot.unsatisfied_dependencies(item.depends_on)):
         return DecisionFailure(
             DecisionFailureCode.DEPENDENCY_NOT_SATISFIED, "Activation has unsatisfied prerequisites.", None
         )
@@ -737,7 +735,7 @@ def _block_dependencies(
     snapshot: LedgerSnapshot,
     item: work_models.WorkItem,
     value: work_models.BlockInput,
-) -> DecisionResult[tuple[WorkItemId, ...]]:
+) -> DecisionResult[tuple[work_models.Dependency, ...]]:
     if not value.depends_on:
         return item.depends_on
     definition = snapshot.definition(item.work_item_id)
@@ -747,7 +745,10 @@ def _block_dependencies(
             "The blocked item has no current definition.",
             None,
         )
-    if any(dependency not in definition.definition.dependencies for dependency in value.depends_on):
+    if any(
+        dependency not in tuple(work_models.dependency_item(target) for target in definition.definition.dependencies)
+        for dependency in value.depends_on
+    ):
         return DecisionFailure(
             DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
             "Blocker dependencies must be identities from the current definition.",
@@ -950,7 +951,7 @@ def _resume(
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.work_item_id}' is not paused or blocked.", None
         )
-    if any(dependency in snapshot.unsatisfied_dependency_ids for dependency in item.depends_on):
+    if bool(snapshot.unsatisfied_dependencies(item.depends_on)):
         return DecisionFailure(
             DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
             f"Item '{item.work_item_id}' still has an unsatisfied prerequisite.",

@@ -11,7 +11,7 @@ from typing import assert_never, override
 import msgspec
 
 from pinboard.application import action_models as transition_models
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailureCode, EffectDisposition, FailureDetails, RetryDisposition
 from pinboard.domain.identifiers import (
     ArtifactRefId,
@@ -77,7 +77,7 @@ def _revise_item_input(payload: transition_models.ReviseItemInputPayload) -> wor
             definition.scope,
             definition.non_scope,
             definition.acceptance_criteria,
-            tuple(WorkItemId(value) for value in definition.dependencies),
+            tuple(history.dependency_from_payload(value) for value in definition.dependencies),
             definition.effect,
             definition.unlock,
             work_models.CheckoutPolicy(definition.checkout_policy),

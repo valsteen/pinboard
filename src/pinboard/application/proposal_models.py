@@ -5,6 +5,7 @@ from typing import Annotated, Literal, override
 import msgspec
 
 from pinboard.domain.errors import DecisionFailureCode, FailureDetails
+from pinboard.domain.history import DependencyPayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +51,7 @@ class PrerequisiteProposalRelation(
 class FollowUpProposalRelation(
     msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="follow-up", tag_field="kind"
 ):
-    item: ProposalIdentity
+    item: DependencyPayload
 
 
 class DuplicateProposalRelation(

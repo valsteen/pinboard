@@ -9,7 +9,8 @@ import msgspec
 
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.models import AffectedViews
-from pinboard.application import initiative_records, initiatives, roadmap
+from pinboard.application import initiative_records, initiatives, query_models, roadmap
+from pinboard.domain import history
 from pinboard.domain import initiatives as models
 from pinboard.domain.identifiers import HostId, TaskId, WorkItemId
 from pinboard.mcp import common, execution
@@ -164,7 +165,20 @@ def _roadmap_result(value: roadmap.Projection) -> execution.OperationResult:
                 assert_never(unreachable)
         items.append(
             contracts.RoadmapItem(
-                item.item_id, item.title, item.state, item.dependencies, item.queue_position, placement
+                item.item_id,
+                item.title,
+                item.state,
+                tuple(history.dependency_payload(target) for target in item.dependencies),
+                item.queue_position,
+                placement,
+                tuple(
+                    query_models.DependencyStatus(
+                        history.dependency_payload(condition.target),
+                        condition.satisfied,
+                        condition.target in value.facts.accepted_checkpoints,
+                    )
+                    for condition in value.dependency_conditions[item.item_id]
+                ),
             )
         )
     result = contracts.RoadmapResult(

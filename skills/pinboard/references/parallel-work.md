@@ -12,8 +12,8 @@ Use [the coding-agent runtime adapters](runtime-adapters.md) for native task, su
 
 ## Build the preview
 
-1. Require authority `sqlite-v9`.
-2. Call `pinboard_parallel_preview` with exact roots and `selection: all-safe` inside `request`. This explicit leaf spans current portfolio facts, not proposal bodies or retained history; do not include `item_ids`.
+1. Require authority `sqlite-v10`.
+2. Call `pinboard_parallel_preview` with exact roots and `selection: all-safe` inside `request`. This explicit leaf spans current portfolio facts and exact checkpoint dependency matches without proposal bodies or scans of retained history; do not include `item_ids`.
 3. Present the result in two compact groups:
    - **Ready together:** the unambiguous all-safe set.
    - **Not ready:** excluded items with the command's exact reason translated into ordinary language.
@@ -24,6 +24,8 @@ Use [the coding-agent runtime adapters](runtime-adapters.md) for native task, su
 6. Explain the recommendation in one short phrase and identify the task the human should follow. Do not recommend a separate task merely because work is incomplete, interactive, approval-sensitive, or structurally independent.
 
 If the request was only to list or preview, stop after presenting the groups. A read-only preview is not launch permission.
+
+Use each returned dependency's target and acceptance status. An accepted checkpoint can unlock a consumer while its producer continues; a whole-item target still waits for completion or supersession. Keep whole-item serialization when a scarce resource must remain exclusive through the producer's remaining work. These conditions change structural eligibility, not batch or launch authority.
 
 ## Resolve batch authority
 

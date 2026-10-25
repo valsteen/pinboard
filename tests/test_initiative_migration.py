@@ -14,6 +14,7 @@ from tests.checkpoint_support import CheckpointPackageSupport
 class InitiativeMigrationTest(CheckpointPackageSupport):
     def v7(self, path: Path) -> None:
         # Remove the relations added after the released v7 shape.
+        test_storage_migration.StorageMigrationTests().downgrade_v9(path)
         with contextlib.closing(sqlite3.connect(path)) as connection, connection:
             for table in (
                 "artifact_ownership",
@@ -87,6 +88,9 @@ class InitiativeMigrationTest(CheckpointPackageSupport):
         ownership = schema_procedure.preview_schema(path)
         assert isinstance(ownership, schema_procedure.PlannedSchema)
         self.assertIsInstance(schema_procedure.apply_schema(path, ownership.plan_id), schema_procedure.AppliedSchema)
+        dependencies = schema_procedure.preview_schema(path)
+        assert isinstance(dependencies, schema_procedure.PlannedSchema)
+        self.assertIsInstance(schema_procedure.apply_schema(path, dependencies.plan_id), schema_procedure.AppliedSchema)
         operations = test_initiatives.InitiativeTest()
         operations.create(fixture)
         operations.mutate(fixture, "member-add", {"expected_revision": 1, "item_id": "work-a"})

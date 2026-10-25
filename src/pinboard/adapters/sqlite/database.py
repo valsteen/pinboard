@@ -32,8 +32,8 @@ from pinboard.application import stored_state
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 
 APPLICATION: Final = "pinboard"
-SCHEMA_VERSION: Final = 9
-SCHEMA_ID = "sqlite-v9"
+SCHEMA_VERSION: Final = 10
+SCHEMA_ID = "sqlite-v10"
 BUSY_TIMEOUT_MS = 2_000
 
 
@@ -217,9 +217,30 @@ def _verify_v8_schema(connection: sqlite3.Connection) -> None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v8 schema.")
 
 
+@cache
+def _build_v9_schema_signature() -> tuple[tuple[str, str, str, str | None], ...]:
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.executescript(Path(__file__).with_name("schema_compatibility_v9.sql").read_text(encoding="utf-8"))
+        return _read_schema_signature(connection)
+
+
+def _verify_v9_schema(connection: sqlite3.Connection) -> None:
+    if (
+        _read_pinboard_schema_version(connection) != 9
+        or _read_schema_signature(connection) != _build_v9_schema_signature()
+    ):
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v9 schema.")
+
+
 def _verify_current_schema(connection: sqlite3.Connection) -> None:
     version = _read_pinboard_schema_version(connection)
     if version != SCHEMA_VERSION:
+        if version == 9:
+            _verify_v9_schema(connection)
+            raise StorageError(
+                StorageErrorCode.SCHEMA_UNSUPPORTED,
+                "Schema sqlite-v9 requires a 'pinboard migrate-schema' preview and 'migrate-schema --apply <plan-id>' with the same project and work roots before ordinary commands can open it.",
+            )
         if version == 8:
             _verify_v8_schema(connection)
             raise StorageError(
@@ -582,6 +603,8 @@ def current_schema_logical_digest(path: Path) -> str:
                 _verify_v7_schema(connection)
             elif version == 8:
                 _verify_v8_schema(connection)
+            elif version == 9:
+                _verify_v9_schema(connection)
             else:
                 _verify_current_schema(connection)
             verify_database_integrity(connection)
@@ -647,6 +670,20 @@ def write_transaction(connection: sqlite3.Connection) -> Generator[sqlite3.Conne
             raise translate_database_error(error) from error
     except sqlite3.Error as error:
         raise translate_database_error(error) from error
+
+
+@contextmanager
+def migration_connection(path: Path) -> Generator[sqlite3.Connection]:
+    """Own a durable predecessor connection while the selected advancement owns its transaction."""
+    with closing(
+        sqlite3.connect(_build_database_uri(path, OpenMode.READ_WRITE), uri=True, isolation_level=None)
+    ) as connection:
+        _configure_connection(connection)
+        connection.execute("PRAGMA synchronous = FULL")
+        try:
+            yield connection
+        except sqlite3.Error as error:
+            raise translate_database_error(error).with_database_path(path) from error
 
 
 def _upgrade_v7_connection(connection: sqlite3.Connection) -> bool:

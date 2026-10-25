@@ -12,6 +12,7 @@ class LedgerSnapshot:
     items: tuple[work_models.WorkItem, ...]
     dropped_item_ids: frozenset[WorkItemId] = field(kw_only=True)
     dependency_facts: tuple[work_models.DefinitionDependencies, ...] = field(kw_only=True)
+    accepted_checkpoints: frozenset[work_models.CheckpointDependency] = field(kw_only=True)
     attempts: tuple[work_models.AttemptRecord, ...] = ()
     artifacts: tuple[work_models.ArtifactRecord, ...] = ()
     proposals: tuple[work_models.ProposalRecord, ...] = ()
@@ -31,6 +32,18 @@ class LedgerSnapshot:
     def unsatisfied_dependency_ids(self) -> frozenset[WorkItemId]:
         return self.dropped_item_ids | frozenset(item.work_item_id for item in self.items)
 
+    def unsatisfied_dependencies(
+        self, dependencies: tuple[work_models.Dependency, ...]
+    ) -> tuple[work_models.Dependency, ...]:
+        unsatisfied_items = self.unsatisfied_dependency_ids
+        return tuple(
+            dependency
+            for dependency in dependencies
+            if not work_models.dependency_satisfied(
+                dependency, work_models.dependency_item(dependency) not in unsatisfied_items, self.accepted_checkpoints
+            )
+        )
+
     def work_items_by_id(self) -> Mapping[WorkItemId, work_models.WorkItem]:
         return MappingProxyType({item.work_item_id: item for item in self.items})
 
@@ -43,7 +56,7 @@ class LedgerSnapshot:
     def definition(self, work_item_id: WorkItemId) -> work_models.DefinitionAnchor | None:
         return next((definition for definition in self.definitions if definition.work_item_id == work_item_id), None)
 
-    def recorded_dependencies(self, work_item_id: WorkItemId) -> tuple[WorkItemId, ...] | None:
+    def recorded_dependencies(self, work_item_id: WorkItemId) -> tuple[work_models.Dependency, ...] | None:
         return next((value.dependencies for value in self.dependency_facts if value.work_item_id == work_item_id), None)
 
     def attempts_by_id(self) -> Mapping[AttemptId, work_models.AttemptRecord]:

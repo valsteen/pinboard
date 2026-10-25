@@ -122,6 +122,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             (item,),
             definitions=(work_models.DefinitionAnchor(item.work_item_id, 3, current_digest, current),),
             history_items=(WorkItemId("survey-west"), WorkItemId("survey-east")),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
@@ -176,6 +177,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
                 ),
             ),
             history_items=(WorkItemId("survey-east"),),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(work_models.DefinitionDependencies(survey.work_item_id, (build.work_item_id,)),),
             dropped_item_ids=frozenset(),
         )
@@ -220,6 +222,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             (),
             definitions=(),
             history_items=(WorkItemId("done"),),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
@@ -278,6 +281,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
                 work_models.SubjectRevision(item.work_item_id, "2"),
                 work_models.SubjectRevision(attempt_id, "1"),
             ),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )

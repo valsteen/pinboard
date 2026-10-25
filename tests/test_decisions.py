@@ -92,7 +92,7 @@ def definition_anchor(
     item_id: str,
     revision: int,
     digest: str,
-    dependencies: tuple[WorkItemId, ...] = (),
+    dependencies: tuple[work_models.Dependency, ...] = (),
 ) -> work_models.DefinitionAnchor:
     return work_models.DefinitionAnchor(
         WorkItemId(item_id),
@@ -252,6 +252,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                             else ()
                         ),
                     ),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 )
@@ -342,6 +343,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             (review,),
             attempts=(attempt,),
             attempt_authorities=(authority,),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
@@ -420,6 +422,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             (review,),
             attempts=(attempt,),
             attempt_authorities=(authority,),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
@@ -454,6 +457,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     artifacts=(brief,),
                     definitions=(definition,),
                     attempt_authorities=(authority,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 )
@@ -510,6 +514,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     artifacts=(brief,),
                     definitions=(definition_anchor("target", 2, DIGEST_B, target.depends_on),),
                     attempt_authorities=(authority,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 )
@@ -561,6 +566,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     artifacts=(brief,),
                     definitions=(definition,),
                     attempt_authorities=(authority,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -574,6 +580,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     artifacts=(brief,),
                     definitions=(definition,),
                     attempt_authorities=(authority,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -587,6 +594,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     artifacts=(brief,),
                     definitions=(definition,),
                     attempt_authorities=(authority,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -599,6 +607,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     attempts=(AttemptRecord("target-1", "target", work_models.AttemptState.ACTIVE, 1, DIGEST_A),),
                     artifacts=(brief,),
                     definitions=(definition,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -634,6 +643,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             (paused, item("prerequisite", work_models.WorkState.READY)),
             attempts=(AttemptRecord("target-1", "target", work_models.AttemptState.PAUSED, 1, DIGEST_A),),
             definitions=(definition_anchor("target", 1, DIGEST_A, (dependency,)),),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
@@ -665,6 +675,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             attempt_authorities=(
                 work_models.AttemptAuthority(AttemptId("target-1"), WorkItemId("target"), LeaseId("worker-lease"), 4),
             ),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
@@ -784,6 +795,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 item("deferred", work_models.WorkState.DEFERRED),
             ),
             attempts=(AttemptRecord("paused-attempt-1", "paused-attempt", work_models.AttemptState.PAUSED),),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
@@ -815,7 +827,9 @@ class LifecycleDecisionTest(unittest.TestCase):
         )
 
     def test_missing_attempt_is_a_returned_failure(self) -> None:
-        snapshot = LedgerSnapshot("revision", (), dependency_facts=(), dropped_item_ids=frozenset())
+        snapshot = LedgerSnapshot(
+            "revision", (), accepted_checkpoints=frozenset(), dependency_facts=(), dropped_item_ids=frozenset()
+        )
         command = decision_models.PauseCommand(
             action(decision_models.PauseAction, AttemptId("missing-attempt")), work_models.ReasonInput("pause")
         )
@@ -840,6 +854,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     protected_candidate_revision="candidate",
                 ),
             ),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
@@ -869,6 +884,7 @@ class LifecycleDecisionTest(unittest.TestCase):
         intake = LedgerSnapshot(
             "revision",
             (item("obsolete", work_models.WorkState.READY),),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
@@ -908,6 +924,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 (active,),
                 attempts=(attempt,),
                 checkpoint_history_ids=(HistoryId(7),),
+                accepted_checkpoints=frozenset(),
                 dependency_facts=(),
                 dropped_item_ids=frozenset(),
             ),
@@ -919,6 +936,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "revision",
                 (active,),
                 attempts=(attempt,),
+                accepted_checkpoints=frozenset(),
                 dependency_facts=(),
                 dropped_item_ids=frozenset(),
             ),
@@ -943,6 +961,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "revision",
                 (review,),
                 attempts=(attempt,),
+                accepted_checkpoints=frozenset(),
                 dependency_facts=(),
                 dropped_item_ids=frozenset(),
             ),
@@ -954,6 +973,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "revision",
                 (review,),
                 attempts=(attempt,),
+                accepted_checkpoints=frozenset(),
                 dependency_facts=(),
                 dropped_item_ids=frozenset(),
             ),
@@ -983,6 +1003,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             (active,),
             attempts=(AttemptRecord("build-map-1", "build-map", work_models.AttemptState.ACTIVE, 1, DIGEST_A),),
             definitions=(current,),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
@@ -1015,7 +1036,9 @@ class LifecycleDecisionTest(unittest.TestCase):
         stale_definition = definition_anchor("target", 2, DIGEST_B)
         cases: tuple[tuple[LedgerSnapshot, decision_models.TransitionCommand, str], ...] = (
             (
-                LedgerSnapshot("r", (), dependency_facts=(), dropped_item_ids=frozenset()),
+                LedgerSnapshot(
+                    "r", (), accepted_checkpoints=frozenset(), dependency_facts=(), dropped_item_ids=frozenset()
+                ),
                 decision_models.ActivateCommand(
                     action(decision_models.ActivateAction, WorkItemId("missing")),
                     work_models.ActivateInput(AttemptId("missing-1"), "branch", "base", "owner", ArtifactRefId(1)),
@@ -1026,6 +1049,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 LedgerSnapshot(
                     "r",
                     (item("target", work_models.WorkState.READY),),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1039,6 +1063,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 LedgerSnapshot(
                     "r",
                     (ready,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1052,6 +1077,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "r",
                     (review,),
                     attempts=(attempt_review,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1064,6 +1090,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 LedgerSnapshot(
                     "r",
                     (paused,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1078,6 +1105,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     (active,),
                     attempts=(replace(attempt_active, accepted_scope_revision=1, accepted_scope_digest=DIGEST_A),),
                     definitions=(stale_definition,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1092,6 +1120,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     (review,),
                     attempts=(attempt_review,),
                     history_items=(WorkItemId("target"),),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1105,6 +1134,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "r",
                     (active,),
                     attempts=(attempt_active,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1119,6 +1149,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "r",
                     (paused,),
                     attempts=(replace(attempt_active, state=work_models.AttemptState.PAUSED),),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1134,6 +1165,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 LedgerSnapshot(
                     "r",
                     (ready, replace(item("dependent", work_models.WorkState.READY), depends_on=("target",))),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1150,6 +1182,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "r",
                     (ready,),
                     history_items=(WorkItemId("target"),),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1163,6 +1196,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 LedgerSnapshot(
                     "r",
                     (ready,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1175,6 +1209,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 LedgerSnapshot(
                     "r",
                     (replace(paused, depends_on=("source",)), item("source", work_models.WorkState.READY)),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1188,6 +1223,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "r",
                     (review,),
                     attempts=(attempt_review,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1203,6 +1239,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     (active,),
                     attempts=(replace(attempt_active, accepted_scope_revision=1, accepted_scope_digest=DIGEST_A),),
                     definitions=(stale_definition,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1216,6 +1253,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 LedgerSnapshot(
                     "r",
                     (active,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1228,6 +1266,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 LedgerSnapshot(
                     "r",
                     (item("target", work_models.WorkState.READY),),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1240,6 +1279,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 LedgerSnapshot(
                     "r",
                     (active,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 ),
@@ -1261,6 +1301,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             "r",
             (),
             proposals=(proposal,),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
@@ -1298,6 +1339,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "r",
                     (item("proposal", state), item("target", work_models.WorkState.READY)),
                     proposals=(proposal,),
+                    accepted_checkpoints=frozenset(),
                     dependency_facts=(),
                     dropped_item_ids=frozenset(),
                 )
@@ -1328,6 +1370,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             (item("proposal", work_models.WorkState.ACTIVE, attempt="proposal-1"),),
             attempts=(AttemptRecord("proposal-1", "proposal", work_models.AttemptState.ACTIVE),),
             proposals=(proposal,),
+            accepted_checkpoints=frozenset(),
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )

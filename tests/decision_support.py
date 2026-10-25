@@ -306,9 +306,17 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
             )
             for value in state.replacements.dispositions
         ),
+        accepted_checkpoints=frozenset(
+            work_models.CheckpointDependency(value.item_id, value.checkpoint_id)
+            for value in state.lifecycle.checkpoint_acceptances
+        ),
         dependency_facts=tuple(
             work_models.DefinitionDependencies(
-                value.item_id, tuple(WorkItemId(dependency) for dependency in value.definition.dependencies)
+                value.item_id,
+                tuple(
+                    WorkItemId(dependency) if isinstance(dependency, str) else dependency
+                    for dependency in value.definition.dependencies
+                ),
             )
             for value in latest_definitions.values()
         ),

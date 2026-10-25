@@ -71,8 +71,10 @@ def _insert_lifecycle(connection: sqlite3.Connection, records: stored_state.Life
         ),
     )
     connection.executemany(
-        "INSERT INTO item_dependencies (item_id, dependency_id, position) VALUES (?, ?, ?)",
-        tuple((value.item_id, value.dependency_id, value.position) for value in records.dependencies),
+        "INSERT INTO item_dependencies (item_id, dependency_id, position, checkpoint_id) VALUES (?, ?, ?, ?)",
+        tuple(
+            (value.item_id, value.dependency_id, value.position, value.checkpoint_id) for value in records.dependencies
+        ),
     )
     connection.executemany(
         """
@@ -121,10 +123,10 @@ def _insert_proposals(connection: sqlite3.Connection, records: stored_state.Prop
         """
         INSERT INTO proposals (
             proposal_id, created_at, recorded_at, source_task_id, user_label,
-            trigger, why_it_matters, relation_kind, relation_item_id, relation_replacement_cost, effect, unlock,
+            trigger, why_it_matters, relation_kind, relation_item_id, relation_replacement_cost, relation_checkpoint_id, effect, unlock,
             urgency_evidence, disposition, disposition_target_item_id, disposition_reason,
             disposition_recorded_at, subject_revision
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         tuple(
             (
@@ -139,6 +141,10 @@ def _insert_proposals(connection: sqlite3.Connection, records: stored_state.Prop
                 value.relation.work_item_id,
                 value.relation.replacement_cost
                 if isinstance(value.relation, work_models.PlannedReplacementProposalRelation)
+                else None,
+                value.relation.dependency.checkpoint_id
+                if isinstance(value.relation, work_models.FollowUpProposalRelation)
+                and isinstance(value.relation.dependency, work_models.CheckpointDependency)
                 else None,
                 value.effect,
                 value.unlock,

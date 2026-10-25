@@ -638,6 +638,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             expires_at - timedelta(microseconds=1),
             actor_task_id=TaskId("discovering-task"),
             actor_host_id=HostId("host-a"),
+            dependency_brief_pins=(),
         )
 
         self.assertIsInstance(rejected, DecisionFailure)
@@ -648,6 +649,7 @@ class PreparationAuthorityTest(unittest.TestCase):
             expires_at,
             actor_task_id=TaskId("discovering-task"),
             actor_host_id=HostId("host-a"),
+            dependency_brief_pins=(),
         )
         self.assertNotIsInstance(accepted, DecisionFailure)
         self.assertIn(
@@ -691,6 +693,7 @@ class PreparationAuthorityTest(unittest.TestCase):
                     SQLITE_NOW,
                     actor_task_id=TaskId("discovering-task"),
                     actor_host_id=HostId("host-a"),
+                    dependency_brief_pins=(),
                 )
             self.assertEqual(before, store.validated_snapshot())
             self.assertEqual(before, SQLiteWorkStore(database_path).validated_snapshot())

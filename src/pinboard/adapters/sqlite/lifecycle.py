@@ -16,9 +16,10 @@ from typing import NoReturn, assert_never
 import msgspec
 
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
+from pinboard.adapters.sqlite.dependencies import DependencyRow, DependencyTargetRow, read_accepted_checkpoints
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.application import queries, query_models, released_v6_compatibility, stored_state
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.history import (
     work_item_definition_bytes,
@@ -59,11 +60,6 @@ class _SubjectRevisionRow:
     subject_revision: int
 
 
-@dataclass(frozen=True, slots=True)
-class _DependencyRow:
-    dependency_id: WorkItemId
-
-
 class _AttemptItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: WorkItemId
     state: stored_state.StoredWorkItemState
@@ -83,8 +79,7 @@ class _AttemptContextRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     accepted_scope_digest: str
 
 
-class _DependencyStateRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    dependency_id: WorkItemId
+class _DependencyStateRow(DependencyTargetRow, frozen=True, forbid_unknown_fields=True):
     state: stored_state.StoredWorkItemState
 
 
@@ -93,9 +88,7 @@ class _ParallelPreviewItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields
     state: stored_state.StoredWorkItemState
 
 
-class _SelectedDependencyStateRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    item_id: WorkItemId
-    dependency_id: WorkItemId
+class _SelectedDependencyStateRow(DependencyRow, frozen=True, forbid_unknown_fields=True):
     state: stored_state.StoredWorkItemState
 
 
@@ -445,8 +438,9 @@ class ParallelPreviewLifecycleItem:
     item_id: WorkItemId
     label: str
     state: work_models.WorkState
-    unsatisfied_dependencies: tuple[WorkItemId, ...]
+    unsatisfied_dependencies: tuple[work_models.Dependency, ...]
     attempt: ParallelPreviewLifecycleAttempt | None
+    dependency_conditions: tuple[query_models.DependencyStatus, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -595,7 +589,7 @@ def _current_definition_with_dependency_states(
         decode_row(row, _DependencyStateRow)
         for row in connection.execute(
             """
-            SELECT dependency.dependency_id, item.state
+            SELECT dependency.dependency_id, dependency.checkpoint_id, item.state
             FROM item_dependencies AS dependency
             JOIN work_items AS item ON item.item_id = dependency.dependency_id
             WHERE dependency.item_id = ?
@@ -604,7 +598,7 @@ def _current_definition_with_dependency_states(
             (item_id,),
         ).fetchall()
     )
-    if tuple(value.dependency_id for value in dependencies) != definition.definition.dependencies:
+    if tuple(value.target for value in dependencies) != definition.definition.dependencies:
         raise StorageError(
             StorageErrorCode.INVALID_STATE,
             "Current definition dependencies do not match relational dependencies.",
@@ -636,10 +630,10 @@ def read_item_definition(connection: sqlite3.Connection, item_id: WorkItemId) ->
     selected_definition = None if definition is None else decode_definition_revision(definition)
     if selected_definition is not None:
         dependency_rows = connection.execute(
-            "SELECT dependency_id FROM item_dependencies WHERE item_id = ? ORDER BY position",
+            "SELECT dependency_id, checkpoint_id FROM item_dependencies WHERE item_id = ? ORDER BY position",
             (item_id,),
         ).fetchall()
-        dependencies = tuple(decode_row(row, _DependencyRow).dependency_id for row in dependency_rows)
+        dependencies = tuple(decode_row(row, DependencyTargetRow).target for row in dependency_rows)
         if dependencies != selected_definition.definition.dependencies:
             raise StorageError(
                 StorageErrorCode.INVALID_STATE,
@@ -716,12 +710,30 @@ def read_item_status(
         if stored_state.live_work_state(item.state) is None
         else None
     )
+    dependency_rows = read_selected_dependency_states(connection, (item_id,)).get(item_id, ())
+    if (
+        definition is not None
+        and tuple(value.target for value in dependency_rows) != definition.definition.dependencies
+    ):
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE, "Current definition dependencies do not match relational dependencies."
+        )
+    accepted = read_accepted_checkpoints(connection, (value.target for value in dependency_rows))
     return query_models.ItemStatusLifecycleFacts(
         project_revision,
         item,
         None if definition is None else definition.definition.title,
         attempts,
         closure,
+        tuple(
+            query_models.DependencyStatus(
+                history.dependency_payload(value.target),
+                value.state in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED}
+                or value.target in accepted,
+                value.target in accepted,
+            )
+            for value in dependency_rows
+        ),
     )
 
 
@@ -734,7 +746,7 @@ def read_selected_dependency_states(
     dependencies_by_item: dict[WorkItemId, list[_SelectedDependencyStateRow]] = {}
     for row in select_by_ids(
         connection,
-        """SELECT dependency.item_id, dependency.dependency_id, item.state
+        """SELECT dependency.item_id, dependency.dependency_id, dependency.checkpoint_id, item.state
            FROM item_dependencies AS dependency
            JOIN work_items AS item ON item.item_id = dependency.dependency_id
            WHERE dependency.item_id IN ({ids}) ORDER BY dependency.item_id, dependency.position""",
@@ -766,6 +778,9 @@ def read_parallel_preview_lifecycle(
     }
     definitions = read_current_definitions(connection, item_ids)
     dependencies_by_item = read_selected_dependency_states(connection, item_ids)
+    accepted = read_accepted_checkpoints(
+        connection, (value.target for values in dependencies_by_item.values() for value in values)
+    )
     attempts = {
         attempt.item_id: attempt
         for attempt in (
@@ -790,7 +805,7 @@ def read_parallel_preview_lifecycle(
         if definition is None:
             raise StorageError(StorageErrorCode.INVALID_STATE, "The selected work item has no definition.")
         dependencies = dependencies_by_item.get(item_id, ())
-        if tuple(value.dependency_id for value in dependencies) != definition.definition.dependencies:
+        if tuple(value.target for value in dependencies) != definition.definition.dependencies:
             raise StorageError(
                 StorageErrorCode.INVALID_STATE, "Current definition dependencies do not match relational dependencies."
             )
@@ -820,12 +835,26 @@ def read_parallel_preview_lifecycle(
                 definition.definition.title,
                 state,
                 tuple(
-                    value.dependency_id
+                    value.target
                     for value in dependencies
                     if value.state
                     not in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED}
+                    and value.target not in accepted
                 ),
                 attempt,
+                tuple(
+                    query_models.DependencyStatus(
+                        history.dependency_payload(value.target),
+                        work_models.dependency_satisfied(
+                            value.target,
+                            value.state
+                            in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED},
+                            accepted,
+                        ),
+                        value.target in accepted,
+                    )
+                    for value in dependencies
+                ),
             )
         )
     return ParallelPreviewLifecycleSelection(project_revision, tuple(selected))
@@ -902,6 +931,7 @@ def read_attempt_context(
         attempt.item_id,
         missing_message="The selected attempt item has no definition.",
     )
+    accepted = read_accepted_checkpoints(connection, (value.target for value in dependencies))
     return NonterminalAttemptContextSelection(
         project_revision,
         attempt.attempt_id,
@@ -921,10 +951,11 @@ def read_attempt_context(
             definition.revision,
             definition.digest,
             tuple(
-                value.dependency_id
+                value.target
                 for value in dependencies
                 if value.state
                 not in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED}
+                and value.target not in accepted
             ),
             None,
             True,
@@ -1041,7 +1072,7 @@ def read_lifecycle(
     dependencies = tuple(
         decode_row(row, stored_state.ItemDependency)
         for row in connection.execute(
-            "SELECT item_id, dependency_id, position FROM item_dependencies ORDER BY item_id, position"
+            "SELECT item_id, dependency_id, position, checkpoint_id FROM item_dependencies ORDER BY item_id, position"
         ).fetchall()
     )
     attempts = tuple(
@@ -1068,7 +1099,15 @@ def read_lifecycle(
             """
         ).fetchall()
     )
-    return stored_state.LifecycleRecords(project, items, dependencies, attempts, definitions)
+    acceptances = tuple(
+        decode_row(row, stored_state.CheckpointAcceptance)
+        for row in connection.execute(
+            "SELECT history_id, item_id, checkpoint_id FROM checkpoint_acceptances ORDER BY history_id"
+        )
+    )
+    return stored_state.LifecycleRecords(
+        project, items, dependencies, attempts, definitions, checkpoint_acceptances=acceptances
+    )
 
 
 def compact_queue(
@@ -1263,12 +1302,20 @@ def rebind_attempt(
 
 
 def replace_dependencies(
-    connection: sqlite3.Connection, item_id: WorkItemId, dependencies: tuple[WorkItemId, ...]
+    connection: sqlite3.Connection, item_id: WorkItemId, dependencies: tuple[work_models.Dependency, ...]
 ) -> None:
     connection.execute("DELETE FROM item_dependencies WHERE item_id = ?", (item_id,))
     connection.executemany(
-        "INSERT INTO item_dependencies (item_id, dependency_id, position) VALUES (?, ?, ?)",
-        tuple((item_id, dependency, position) for position, dependency in enumerate(dependencies)),
+        "INSERT INTO item_dependencies (item_id, dependency_id, position, checkpoint_id) VALUES (?, ?, ?, ?)",
+        tuple(
+            (
+                item_id,
+                work_models.dependency_item(dependency),
+                position,
+                None if isinstance(dependency, str) else dependency.checkpoint_id,
+            )
+            for position, dependency in enumerate(dependencies)
+        ),
     )
 
 

@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Literal
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -27,6 +27,7 @@ from pinboard.adapters.sqlite.database import (
     migrate_v7_database,
 )
 from pinboard.adapters.sqlite.errors import StorageError
+from pinboard.adapters.sqlite.schema_dependencies_v9 import migrate_v9_database
 from pinboard.adapters.sqlite.schema_ownership_v8 import inspect_current_schema_migration, migrate_v8_database
 
 
@@ -115,6 +116,35 @@ class OwnershipRestorePlan(
     backup_sha256: str
 
 
+class DependencyAdvancePlan(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="dependency-advance", tag_field="kind"
+):
+    schema: Literal["pinboard-schema-plan/v4"]
+    database_path: str
+    source_version: Literal[9]
+    target_version: Literal[10]
+    source_sha256: str
+    postimage_sha256: str
+
+
+class DependencyCurrentPlan(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="dependency-current", tag_field="kind"
+):
+    schema: Literal["pinboard-schema-plan/v4"]
+    database_path: str
+    source_sha256: str
+
+
+class DependencyRestorePlan(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="dependency-restore", tag_field="kind"
+):
+    schema: Literal["pinboard-schema-plan/v4"]
+    database_path: str
+    forward_plan_id: str
+    postimage_sha256: str
+    backup_sha256: str
+
+
 type SchemaPlan = (
     CompatibilityForwardPlan
     | CompatibilityUnchangedPlan
@@ -125,6 +155,9 @@ type SchemaPlan = (
     | OwnershipAdvancePlan
     | OwnershipCurrentPlan
     | OwnershipRestorePlan
+    | DependencyAdvancePlan
+    | DependencyCurrentPlan
+    | DependencyRestorePlan
 )
 
 
@@ -139,7 +172,7 @@ class AppliedSchema:
     plan_id: str
     direction: Literal["forward", "reverse", "unchanged"]
     changed_surfaces: tuple[str, ...]
-    resulting_version: Literal[6, 7, 8, 9]
+    resulting_version: Literal[6, 7, 8, 9, 10]
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,7 +191,9 @@ def _canonical(plan: SchemaPlan) -> bytes:
 
 def _identity(plan: SchemaPlan) -> str:
     digest = sha256(_canonical(plan)).hexdigest()
-    if isinstance(plan, (CompatibilityReversePlan, CompatibilityRestorePlanV2, OwnershipRestorePlan)):
+    if isinstance(
+        plan, (CompatibilityReversePlan, CompatibilityRestorePlanV2, OwnershipRestorePlan, DependencyRestorePlan)
+    ):
         return f"reverse-{plan.forward_plan_id}-{digest}"
     return digest
 
@@ -345,8 +380,10 @@ def _preview_advancement(path: Path) -> PlannedSchema | SchemaProcedureFailure:
         plan = CompatibilityAdvancePlanV2("pinboard-schema-plan/v2", str(path), 7, 8, source, postimage)
     elif version == 8 and postimage is not None:
         plan = OwnershipAdvancePlan("pinboard-schema-plan/v3", str(path), 8, 9, source, postimage)
+    elif version == 9 and postimage is not None:
+        plan = DependencyAdvancePlan("pinboard-schema-plan/v4", str(path), 9, 10, source, postimage)
     else:
-        plan = OwnershipCurrentPlan("pinboard-schema-plan/v3", str(path), source)
+        plan = DependencyCurrentPlan("pinboard-schema-plan/v4", str(path), source)
     return PlannedSchema(_identity(plan), plan)
 
 
@@ -359,9 +396,9 @@ def preview_schema(path: Path, reverse_forward_id: str | None = None) -> Planned
         forward = _read_plan(folder, reverse_forward_id)
         if isinstance(forward, CompatibilityForwardPlan):
             return _preview_v6_compatibility(path, reverse_forward_id)
-        if not isinstance(forward, (CompatibilityAdvancePlanV2, OwnershipAdvancePlan)) or forward.database_path != str(
-            path
-        ):
+        if not isinstance(
+            forward, (CompatibilityAdvancePlanV2, OwnershipAdvancePlan, DependencyAdvancePlan)
+        ) or forward.database_path != str(path):
             return SchemaProcedureFailure(
                 "The selected current forward schema plan is unavailable at this work root.", (), "correct-input"
             )
@@ -374,15 +411,21 @@ def preview_schema(path: Path, reverse_forward_id: str | None = None) -> Planned
                 "correct-input",
             )
         version, source, _ = inspect_current_schema_migration(path)
-        plan = (
-            CompatibilityRestorePlanV2(
-                "pinboard-schema-plan/v2", str(path), reverse_forward_id, forward.postimage_sha256, backup_digest
-            )
-            if isinstance(forward, CompatibilityAdvancePlanV2)
-            else OwnershipRestorePlan(
-                "pinboard-schema-plan/v3", str(path), reverse_forward_id, forward.postimage_sha256, backup_digest
-            )
-        )
+        match forward:
+            case CompatibilityAdvancePlanV2():
+                plan = CompatibilityRestorePlanV2(
+                    "pinboard-schema-plan/v2", str(path), reverse_forward_id, forward.postimage_sha256, backup_digest
+                )
+            case OwnershipAdvancePlan():
+                plan = OwnershipRestorePlan(
+                    "pinboard-schema-plan/v3", str(path), reverse_forward_id, forward.postimage_sha256, backup_digest
+                )
+            case DependencyAdvancePlan():
+                plan = DependencyRestorePlan(
+                    "pinboard-schema-plan/v4", str(path), reverse_forward_id, forward.postimage_sha256, backup_digest
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
         if version == forward.target_version:
             if current_schema_logical_digest(path) != forward.postimage_sha256:
                 return SchemaProcedureFailure(
@@ -403,7 +446,7 @@ def preview_schema(path: Path, reverse_forward_id: str | None = None) -> Planned
         return SchemaProcedureFailure(f"Schema reversal evidence is unavailable: {error}", (), "correct-input")
 
 
-def apply_schema(path: Path, plan_id: str) -> SchemaApplication:  # noqa: C901, PLR0912 - one bound migration commit point
+def apply_schema(path: Path, plan_id: str) -> SchemaApplication:  # noqa: C901, PLR0912, PLR0915 - one bound migration commit point
     folder = path.parent / "migration"
     changed: list[str] = []
     try:
@@ -425,14 +468,22 @@ def apply_schema(path: Path, plan_id: str) -> SchemaApplication:  # noqa: C901, 
         if selected.database_path != str(path):
             return SchemaProcedureFailure("The schema plan belongs to another selected database.", (), "correct-input")
         version, source, _ = inspect_current_schema_migration(path)
-        if isinstance(selected, (CompatibilityCurrentPlanV2, OwnershipCurrentPlan)):
-            expected_version = 8 if isinstance(selected, CompatibilityCurrentPlanV2) else 9
+        if isinstance(selected, (CompatibilityCurrentPlanV2, OwnershipCurrentPlan, DependencyCurrentPlan)):
+            match selected:
+                case CompatibilityCurrentPlanV2():
+                    expected_version = 8
+                case OwnershipCurrentPlan():
+                    expected_version = 9
+                case DependencyCurrentPlan():
+                    expected_version = 10
+                case _ as unreachable:
+                    assert_never(unreachable)
             if version != expected_version or source != selected.source_sha256:
                 return SchemaProcedureFailure(
                     "The unchanged current-schema plan no longer matches the database.", (), "correct-input"
                 )
             return AppliedSchema(plan_id, "unchanged", (), expected_version)
-        if isinstance(selected, (CompatibilityAdvancePlanV2, OwnershipAdvancePlan)):
+        if isinstance(selected, (CompatibilityAdvancePlanV2, OwnershipAdvancePlan, DependencyAdvancePlan)):
             backup_path = folder / f"{plan_id}.v{selected.source_version}"
             if version == selected.target_version:
                 if (
@@ -467,11 +518,15 @@ def apply_schema(path: Path, plan_id: str) -> SchemaApplication:  # noqa: C901, 
                 return SchemaProcedureFailure(
                     f"The retained exact v{selected.source_version} backup is invalid.", tuple(changed), "correct-input"
                 )
-            migrated = (
-                migrate_v7_database(path)
-                if isinstance(selected, CompatibilityAdvancePlanV2)
-                else migrate_v8_database(path, selected.postimage_sha256)
-            )
+            match selected:
+                case CompatibilityAdvancePlanV2():
+                    migrated = migrate_v7_database(path)
+                case OwnershipAdvancePlan():
+                    migrated = migrate_v8_database(path, selected.postimage_sha256)
+                case DependencyAdvancePlan():
+                    migrated = migrate_v9_database(path, selected.postimage_sha256)
+                case _ as unreachable:
+                    assert_never(unreachable)
             if migrated:
                 changed.append("ledger")
             if current_schema_logical_digest(path) != selected.postimage_sha256:
@@ -487,7 +542,7 @@ def apply_schema(path: Path, plan_id: str) -> SchemaApplication:  # noqa: C901, 
                 "The reverse schema plan no longer matches its predecessor; preserve later writes.", (), "correct-input"
             )
         forward = _read_plan(folder, selected.forward_plan_id)
-        if not isinstance(forward, (CompatibilityAdvancePlanV2, OwnershipAdvancePlan)):
+        if not isinstance(forward, (CompatibilityAdvancePlanV2, OwnershipAdvancePlan, DependencyAdvancePlan)):
             return SchemaProcedureFailure("The original forward migration is unavailable.", (), "correct-input")
         if version == forward.source_version and source == selected.backup_sha256:
             return AppliedSchema(plan_id, "reverse", (), forward.source_version)
@@ -516,9 +571,9 @@ def apply_schema(path: Path, plan_id: str) -> SchemaApplication:  # noqa: C901, 
 def _restore_predecessor(
     path: Path,
     plan_id: str,
-    selected: CompatibilityReversePlan | CompatibilityRestorePlanV2 | OwnershipRestorePlan,
+    selected: CompatibilityReversePlan | CompatibilityRestorePlanV2 | OwnershipRestorePlan | DependencyRestorePlan,
     backup: bytes,
-    version: Literal[6, 7, 8],
+    version: Literal[6, 7, 8, 9],
     changed: list[str],
 ) -> SchemaApplication:
     """Publish the bound reverse plan, replace exact predecessor bytes and retain confirmed effects."""

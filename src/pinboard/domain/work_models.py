@@ -1,7 +1,8 @@
+from collections.abc import Set
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import NewType
+from typing import NewType, assert_never
 
 from pinboard.domain.identifiers import (
     ArtifactRefId,
@@ -19,6 +20,31 @@ from pinboard.domain.identifiers import (
 ObligationId = NewType("ObligationId", str)
 
 CanonicalJson = NewType("CanonicalJson", bytes)
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointDependency:
+    item_id: WorkItemId
+    checkpoint_id: CheckpointId
+
+
+type Dependency = WorkItemId | CheckpointDependency
+
+
+def dependency_item(value: Dependency) -> WorkItemId:
+    match value:
+        case str():
+            return value
+        case CheckpointDependency(item_id=item_id):
+            return item_id
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def dependency_satisfied(
+    value: Dependency, prerequisite_satisfied: bool, accepted_checkpoints: Set[CheckpointDependency]
+) -> bool:
+    return prerequisite_satisfied or value in accepted_checkpoints
 
 
 class WorkState(Enum):
@@ -133,8 +159,12 @@ class PrerequisiteProposalRelation:
 
 @dataclass(frozen=True, slots=True)
 class FollowUpProposalRelation:
-    work_item_id: WorkItemId
+    dependency: Dependency
     kind: ProposalRelationKind = field(init=False, default=ProposalRelationKind.FOLLOW_UP)
+
+    @property
+    def work_item_id(self) -> WorkItemId:
+        return dependency_item(self.dependency)
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +232,7 @@ class WorkItem:
     work_item_id: WorkItemId
     state: WorkState
     timing: str | None
-    depends_on: tuple[WorkItemId, ...]
+    depends_on: tuple[Dependency, ...]
     attempt: AttemptId | None
     source: str | None
     next_action: str | None
@@ -340,7 +370,7 @@ class WorkItemDefinition:
     scope: tuple[str, ...]
     non_scope: tuple[str, ...]
     acceptance_criteria: tuple[str, ...]
-    dependencies: tuple[WorkItemId, ...]
+    dependencies: tuple[Dependency, ...]
     effect: str
     unlock: str
     checkout_policy: CheckoutPolicy
@@ -373,7 +403,7 @@ class DefinitionAnchor:
 @dataclass(frozen=True, slots=True)
 class DefinitionDependencies:
     work_item_id: WorkItemId
-    dependencies: tuple[WorkItemId, ...]
+    dependencies: tuple[Dependency, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,7 +490,7 @@ class ProjectAttemptActionContext:
     attempt_record: AttemptRecord | None
     current_definition_revision: int | None
     current_definition_digest: str | None
-    unsatisfied_dependencies: tuple[WorkItemId, ...]
+    unsatisfied_dependencies: tuple[Dependency, ...]
     revision_available: bool
     current_replacement_revision: int | None
     replacement_resolved: bool

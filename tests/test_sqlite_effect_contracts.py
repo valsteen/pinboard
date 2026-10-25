@@ -180,7 +180,15 @@ class SQLiteEffectContractTest(unittest.TestCase):
                 ),
                 dependencies=(
                     *state.lifecycle.dependencies,
-                    *(stored_state.ItemDependency(WorkItemId(value), WorkItemId("work-c"), 0) for value in ids),
+                    *(
+                        stored_state.ItemDependency(
+                            WorkItemId(value),
+                            WorkItemId("work-c"),
+                            0,
+                            checkpoint_id=None,
+                        )
+                        for value in ids
+                    ),
                 ),
             ),
             proposals=replace(

@@ -250,6 +250,18 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
             match decision.change:
                 case decision_models.ActivationChange(attempt=attempt):
                     attempt_ids = (*attempt_ids, attempt)
+                case decision_models.CheckpointAcceptanceChange(work_item_id=item, checkpoint=checkpoint):
+                    affected_items.extend(
+                        decode_row(row, ItemIdRow).item_id
+                        for row in connection.execute(
+                            """SELECT dependency.item_id FROM item_dependencies AS dependency
+                               INDEXED BY item_dependencies_by_dependency
+                               JOIN work_items AS owner ON owner.item_id = dependency.item_id
+                               WHERE dependency.dependency_id = ? AND dependency.checkpoint_id = ?
+                               AND owner.queue_position IS NOT NULL ORDER BY owner.queue_position""",
+                            (item, checkpoint),
+                        )
+                    )
                 case (
                     decision_models.CompletionChange(work_item_id=item)
                     | decision_models.CoveredCompletionChange(work_item_id=item)
@@ -281,7 +293,6 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
                     | decision_models.ReviewReturnChange()
                     | decision_models.ReviewAcceptanceChange()
                     | DefinitionRevisionDecision()
-                    | decision_models.CheckpointAcceptanceChange()
                     | decision_models.PlannedReplacementChange()
                     | decision_models.ReplacementDispositionChange()
                 ):

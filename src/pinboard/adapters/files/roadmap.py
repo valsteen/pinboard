@@ -4,8 +4,8 @@ from html import escape
 from typing import assert_never
 from urllib.parse import quote, urlsplit
 
-from pinboard.application import roadmap, stored_state
-from pinboard.domain import initiatives
+from pinboard.application import query_models, roadmap, stored_state
+from pinboard.domain import history, initiatives, work_models
 from pinboard.domain.identifiers import WorkItemId
 
 _PAGE_HEAD = """<!doctype html>
@@ -121,15 +121,24 @@ def render(projection: roadmap.Projection) -> tuple[bytes, bytes]:  # noqa: C901
             f'<article><strong>{_link(target, item.title)}</strong><p class="muted">{escape(item.state.value + " · " + position + shared)}</p>'
         )
         if item.dependencies:
-            text.append(f"  Prerequisites: {', '.join(item.dependencies)}")
+            labels = tuple(
+                query_models.dependency_label(history.dependency_payload(dependency))
+                + (
+                    f" ({'accepted' if dependency in projection.facts.accepted_checkpoints else 'not yet accepted'})"
+                    if isinstance(dependency, work_models.CheckpointDependency)
+                    else ""
+                )
+                for dependency in item.dependencies
+            )
+            text.append(f"  Prerequisites: {', '.join(labels)}")
             page.append(
                 "<p>Prerequisites: "
                 + ", ".join(
                     _link(
-                        f"items/{quote(dependency, safe='')}.md",
-                        f"{dependency} ({items[dependency].state.value if dependency in items else 'unavailable'})",
+                        f"items/{quote(work_models.dependency_item(dependency), safe='')}.md",
+                        f"{label} ({items[producer].state.value if (producer := work_models.dependency_item(dependency)) in items else 'unavailable'})",
                     )
-                    for dependency in item.dependencies
+                    for dependency, label in zip(item.dependencies, labels, strict=True)
                 )
                 + "</p>"
             )

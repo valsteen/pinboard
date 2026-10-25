@@ -10,10 +10,11 @@ from threading import Barrier
 from unittest.mock import patch
 
 import msgspec
+from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.sqlite.lifecycle import move_item_state_count
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import cancellation, cancellation_models, pr_reviews, service, stored_state
+from pinboard.application import cancellation, cancellation_models, pr_reviews, project_export, service, stored_state
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, HostId, LeaseId, TaskId, WorkItemId
@@ -555,6 +556,44 @@ class CancellationTest(CheckpointPackageSupport):
         self.assertIs(True, validated["valid"])
         exported = self.run_json_cli(*fixture.common, "export")
         self.assertEqual("pinboard-project-export/v3", exported["schema"])
+
+    def test_historical_v1_cancellation_keeps_exact_preview_binding_and_exported_bytes(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        preview = self.preview(fixture, "work-a")
+        self.assertEqual("committed", self.confirm(fixture, "work-a", preview)["status"])
+        receipt = fixture.store.validated_snapshot().transition_receipts[-1]
+        record = msgspec.json.decode(bytes(receipt.input_payload), type=cancellation_models.CancellationRecord)
+        historical_preview = replace_struct(
+            record.preview,
+            dependency_effect="Dropped prerequisites remain unsatisfied; dependent commitments are retained.",
+        )
+        historical_binding = cancellation.binding(historical_preview, fixture.work)
+        historical_record = replace_struct(record, preview=historical_preview, binding=historical_binding)
+        historical_bytes = msgspec.json.encode(historical_record, order="sorted")
+        with fixture.store.write() as transaction:
+            transaction.connection.execute(
+                "UPDATE transition_history SET input_json = ? WHERE history_id = ?",
+                (historical_bytes.decode(), receipt.history_id),
+            )
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        retained = fresh.transition_receipts[-1]
+        self.assertEqual(historical_bytes, bytes(retained.input_payload))
+        decoded = msgspec.json.decode(bytes(retained.input_payload), type=cancellation_models.CancellationRecord)
+        self.assertEqual(historical_binding, decoded.binding)
+        self.assertIsNone(cancellation.receipt_failure(retained))
+        tampered = msgspec.to_builtins(historical_record)
+        tampered["binding"]["preview_sha256"] = "0" * 64
+        with self.assertRaisesRegex(msgspec.ValidationError, "binding differs"):
+            msgspec.json.decode(msgspec.json.encode(tampered), type=cancellation_models.CancellationRecord)
+        rebuilt, output, error = self.run_cli(*fixture.common, "views", "rebuild")
+        self.assertEqual(0, rebuilt, (output, error))
+        self.assertIs(True, self.run_json_cli(*fixture.common, "validate")["valid"])
+        exported, output, error = self.run_cli(*fixture.common, "export", "--json")
+        self.assertEqual(0, exported, (output, error))
+        package = msgspec.json.decode(output, type=project_export.ProjectExport)
+        transition = next(value for value in package.transitions if value.history_id == receipt.history_id)
+        exported_record = msgspec.json.decode(transition.input, type=cancellation_models.CancellationRecord)
+        self.assertEqual(historical_bytes, msgspec.json.encode(exported_record, order="sorted"))
 
     def test_changed_item_or_dependency_preview_rejects_and_dropped_dependency_cannot_resume_or_prepare(self) -> None:
         fixture = self.checkpoint_fixture(local=True)

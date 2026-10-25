@@ -14,6 +14,7 @@ from pinboard.adapters import (
     lifecycle_artifacts,
     lifecycle_operations,
 )
+from pinboard.adapters.dependency_operations import resolve_dependency_brief_pins
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewWarning
@@ -31,7 +32,7 @@ from pinboard.application import (
 )
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.mutation_models import CommittedEffect
-from pinboard.domain import decision_models
+from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -176,12 +177,24 @@ def _proposal_created(
     store = common.compose_store(durable)
     token.checkpoint()
     now = datetime.now(UTC)
+    operation = proposals.convert_proposal(decoded)
+    dependencies = (
+        (operation.intake.relation.dependency,)
+        if isinstance(operation.intake.relation, work_models.FollowUpProposalRelation)
+        else ()
+    )
+    dependency_pins = resolve_dependency_brief_pins(store, ArtifactRepository(durable), dependencies, now)
+    if isinstance(dependency_pins, DecisionFailure):
+        return _proposal_failure(
+            proposal_models.ProposalFailure(dependency_pins.code, dependency_pins.message, dependency_pins.details)
+        )
     committed = service.create_proposal(
         store,
-        proposals.convert_proposal(decoded),
+        operation,
         now,
         actor_task_id=TaskId(request.actor_task_id),
         actor_host_id=HostId(request.actor_host_id),
+        dependency_brief_pins=dependency_pins,
     )
     if isinstance(committed, DecisionFailure):
         return _proposal_failure(committed)

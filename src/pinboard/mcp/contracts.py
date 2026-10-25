@@ -19,7 +19,7 @@ from pinboard.application import (
 )
 from pinboard.domain import authority_models, decision_models, ordering
 from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
-from pinboard.domain.history import RecordText
+from pinboard.domain.history import DependencyPayload, RecordText
 
 type JsonScalar = bool | int | float | str | None
 
@@ -1610,7 +1610,7 @@ class ContinuationReconcileRepository(
 class ContinuationDependencies(
     msgspec.Struct, tag="wait-for-dependencies", tag_field="kind", frozen=True, forbid_unknown_fields=True
 ):
-    dependencies: Annotated[tuple[PathComponent, ...], msgspec.Meta(min_length=1)]
+    dependencies: Annotated[tuple[DependencyPayload, ...], msgspec.Meta(min_length=1)]
 
     def __post_init__(self) -> None:
         if len(set(self.dependencies)) != len(self.dependencies):

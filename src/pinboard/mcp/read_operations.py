@@ -755,9 +755,31 @@ def _brief_review(raw: Mapping[str, JsonValue], token: execution.CancellationTok
     correction = _brief_review_correction(request.project_root, request.work_root, request.brief_artifact_ref_id)
     match request:
         case contracts.BriefReviewStatusRequest():
-            selected = work_briefs.read_brief_review_status(
-                store, repository, ArtifactRefId(request.brief_artifact_ref_id)
-            )
+            try:
+                selected = work_briefs.read_brief_review_status(
+                    store, repository, ArtifactRefId(request.brief_artifact_ref_id)
+                )
+            except ArtifactError as error:
+                return common._read_failure(
+                    schema,
+                    "ARTIFACT_BYTES_INVALID",
+                    f"Brief-review status for accepted brief {request.brief_artifact_ref_id} at work_root "
+                    f"'{request.work_root}' could not verify its accepted bytes: {error}. "
+                    "Report this exact reference and defect to the human; do not retry unchanged, "
+                    "reconstruct or overwrite accepted bytes.",
+                    FailureDetails(
+                        observed=(FailureFact("brief_artifact_ref_id", request.brief_artifact_ref_id),),
+                        mismatches=(
+                            FailureMismatch(
+                                "artifact_bytes", "match accepted size and SHA-256", "unreadable or mismatched"
+                            ),
+                        ),
+                        retry=RetryDisposition.DO_NOT_RETRY,
+                        effect=EffectDisposition.UNCHANGED,
+                        changed_surfaces=(),
+                        alternatives=(),
+                    ),
+                )
             if isinstance(selected, work_brief_models.WorkBriefFailure):
                 return common._read_failure(
                     schema,
@@ -767,9 +789,16 @@ def _brief_review(raw: Mapping[str, JsonValue], token: execution.CancellationTok
                     None,
                 )
             token.checkpoint()
+            checkpoint = selected.accepted_brief.brief.checkpoint
+            assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
             content: dict[str, JsonValue] = {
                 "schema": schema,
                 "accepted_brief": common._artifact_reference_json(selected.accepted_brief.reference),
+                "accepted_brief_sha256": selected.accepted_brief.reference.content_sha256,
+                "checkpoint_sha256": hashlib.sha256(work_briefs.canonical_checkpoint_bytes(checkpoint)).hexdigest(),
+                "reviewed_authority_set_sha256": hashlib.sha256(
+                    work_briefs.canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)
+                ).hexdigest(),
                 "brief": msgspec.to_builtins(selected.accepted_brief.brief),
                 "correction": correction,
                 "state_changed": False,

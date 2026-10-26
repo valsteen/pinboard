@@ -111,7 +111,7 @@ def _mcp_launch_envelope(
         "per outer response without aggregating pages. Concatenate text in order to read the complete exact task "
         "and follow it. Stop on rejection, unreadable text or identity/range mismatch. EOF establishes delivery "
         "only. Load complete skills/references through the native skill loader only when it delivers the complete "
-        "body; otherwise, including in Antigravity, which injects only the first 24000 bytes, use "
+        "body; otherwise, including in Antigravity, which delivers no skill body, use "
         "pinboard_startup_text file-start with the actual resolved absolute path and the same roots/budget, "
         f"following pages in the same way. This runtime's adapter is the pinboard skill's {_adapter_reference(runtime)}."
     )

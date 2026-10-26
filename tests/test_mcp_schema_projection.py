@@ -273,3 +273,71 @@ class McpSchemaProjectionTest(unittest.TestCase):
                                 re.search(canonical, sample) is not None, advertised_matches(field, sample)
                             )
         self.assertTrue(seen)
+
+
+REGEX_UNICODE_ESCAPE = re.compile(r"(?<!\\)(?:\\\\)*\\[uU]")
+
+
+def advertised_patterns(value: JsonSchemaValue) -> Iterator[str]:
+    if isinstance(value, dict):
+        if isinstance(pattern := value.get("pattern"), str):
+            yield pattern
+        for key, child in value.items():
+            if key not in {"const", "enum", "default", "examples"}:
+                yield from advertised_patterns(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from advertised_patterns(child)
+
+
+def unescape_unicode(pattern: str) -> str:
+    return re.sub(r"\\u([0-9a-fA-F]{4})", lambda match: chr(int(match[1], 16)), pattern)
+
+
+class PortableSchemaPatternTest(unittest.TestCase):
+    """RE2-compiling MCP clients such as Antigravity reject a \\u escape and refuse every Pinboard tool."""
+
+    def test_no_advertised_pattern_contains_a_unicode_regex_escape(self) -> None:
+        tools = advertised_tools()
+        self.assertTrue(tools)
+        checked = 0
+        for tool in tools.values():
+            for schema in (tool.input_schema, tool.output_schema):
+                assert schema is not None
+                for pattern in advertised_patterns(schema):
+                    checked += 1
+                    with self.subTest(tool=tool.name, pattern=pattern):
+                        self.assertIsNone(REGEX_UNICODE_ESCAPE.search(pattern))
+        self.assertGreater(checked, 0)
+        self.assertIsNotNone(REGEX_UNICODE_ESCAPE.search(r"[\u2028]"))
+        self.assertIsNone(REGEX_UNICODE_ESCAPE.search(r"[\\u]"))
+
+    def test_changed_patterns_equal_their_former_escaped_text_with_literal_characters(self) -> None:
+        component = r"[^./\\\x00-\x1f\x7f\u2028\u2029*?\[\]]|\.[^./\\\x00-\x1f\x7f\u2028\u2029*?\[\]]"
+        name = rf"(?:{component}|\.\.[^/\\\x00-\x1f\x7f\u2028\u2029*?\[\]])[^/\\\x00-\x1f\x7f\u2028\u2029*?\[\]]*"
+        space = r"\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
+        trimmed = (
+            rf"^(?:[^.{space}/\r\n\x00](?:[^/\r\n\x00]*[^{space}/\r\n\x00])?"
+            rf"|\.(?:[^.{space}/\r\n\x00]|[^./\r\n\x00][^/\r\n\x00]*[^{space}/\r\n\x00]"
+            rf"|\.[^/\r\n\x00]*[^{space}/\r\n\x00]))$"
+        )
+        task_id = schema_field(
+            advertised_tools()[server.ATTEMPT_AUTHORITY_TOOL].input_schema, "AttemptAuthorityAcquireRequest", "task_id"
+        )
+        excluded = task_id["not"]
+        assert isinstance(excluded, dict)
+        for current, former in (
+            (
+                action_models.CanonicalRepoRelativeFile.__value__.__metadata__[0].pattern,
+                rf"\A{name}(?:/{name})*\z",
+            ),
+            (
+                contracts.IntegrationTarget.__value__.__metadata__[0].pattern,
+                r"\A[^\r\n\x00\u2028\u2029-][^\r\n\x00\u2028\u2029]*\z",
+            ),
+            (task_id["pattern"], trimmed),
+            (excluded["pattern"], r"[\r\n\u2028\u2029]$"),
+        ):
+            with self.subTest(former=former):
+                self.assertIn(r"\u", former)
+                self.assertEqual(unescape_unicode(former), current)

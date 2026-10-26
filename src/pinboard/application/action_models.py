@@ -19,15 +19,10 @@ type Sha256 = Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
 type PositiveInt = Annotated[int, msgspec.Meta(ge=1)]
 type JsonSchema = dict[str, Any]
 type ActionAuthorization = Literal["observer", "project", "attempt", "preparation"]
-type CanonicalRepoRelativeFile = Annotated[
-    str,
-    msgspec.Meta(
-        pattern=(
-            r"\A(?:[^./\\\x00-\x1f\x7f\u2028\u2029*?\[\]]|\.[^./\\\x00-\x1f\x7f\u2028\u2029*?\[\]]|\.\.[^/\\\x00-\x1f\x7f\u2028\u2029*?\[\]])[^/\\\x00-\x1f\x7f\u2028\u2029*?\[\]]*"
-            r"(?:/(?:[^./\\\x00-\x1f\x7f\u2028\u2029*?\[\]]|\.[^./\\\x00-\x1f\x7f\u2028\u2029*?\[\]]|\.\.[^/\\\x00-\x1f\x7f\u2028\u2029*?\[\]])[^/\\\x00-\x1f\x7f\u2028\u2029*?\[\]]*)*\z"
-        )
-    ),
-]
+# Excluded path characters; U+2028 and U+2029 stay literal because RE2 rejects \u escapes in advertised patterns.
+_PATH_EXCLUDED = r"\\\x00-\x1f\x7f" "\u2028\u2029" r"*?\[\]"
+_PATH_COMPONENT = rf"(?:[^./{_PATH_EXCLUDED}]|\.[^./{_PATH_EXCLUDED}]|\.\.[^/{_PATH_EXCLUDED}])[^/{_PATH_EXCLUDED}]*"
+type CanonicalRepoRelativeFile = Annotated[str, msgspec.Meta(pattern=rf"\A{_PATH_COMPONENT}(?:/{_PATH_COMPONENT})*\z")]
 
 
 def require_canonical_excluded_paths(paths: tuple[str, ...]) -> None:

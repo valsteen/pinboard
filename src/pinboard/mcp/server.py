@@ -148,7 +148,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "A project's saved work lives in its board at <project_root>/.pinboard. Before answering about or acting "
             "on saved work, including quick read-only status and planning, load the complete pinboard main skill "
             "through this runtime's native skill loader only when it delivers the complete body; otherwise, including "
-            "in Antigravity, which injects only the first 24000 bytes, use pinboard_startup_text file-start with its "
+            "in Antigravity, which delivers no skill body, use pinboard_startup_text file-start with its "
             "actual resolved absolute SKILL.md path. Follow each exact continuation under request until null, one page per outer response without aggregation. EOF establishes delivery only. Then load only its reference for the requested phase; status uses status and "
             "selection. Read pinboard_overview; if no board exists, say that nothing was saved and offer "
             "Pinboard setup instead of claiming to remember. Before reading or editing source for a saved item, load "

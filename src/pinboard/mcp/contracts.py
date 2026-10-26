@@ -45,7 +45,8 @@ type RuntimeIdentity = Annotated[
     ),
 ]
 type IntegrationTarget = Annotated[
-    str, msgspec.Meta(min_length=1, pattern=r"\A[^\r\n\x00\u2028\u2029-][^\r\n\x00\u2028\u2029]*\z")
+    str,
+    msgspec.Meta(min_length=1, pattern=r"\A[^\r\n\x00" "\u2028\u2029" r"-][^\r\n\x00" "\u2028\u2029" r"]*\z"),
 ]
 type Empty = tuple[()]
 type LedgerSurface = tuple[Literal["ledger"]]

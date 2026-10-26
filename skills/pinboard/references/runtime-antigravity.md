@@ -10,7 +10,7 @@ Antigravity loads the repository root as a native plugin through `.antigravity-p
 - In headless `agy -p`, a refused action in an `invoke_subagent` worker or reviewer is never delivered: the child stalls and the parent waits with no message, an accepted limitation recorded in [ARCHITECTURE.md](../../../ARCHITECTURE.md#known-limitations-and-operating-assumptions). Reviewers compute artifact digests through a shell command, so unattended headless review needs the hash-command allow rule, such as `command(shasum)`, that [INSTALL.md](../../../INSTALL.md#unattended-headless-runs) documents. Interactive sessions are expected to ask the user instead, which is unconfirmed.
 - Antigravity injects only the first 24000 bytes of a skill body. The `pinboard-deliver` skill fits, so its injected body is complete; the main `pinboard` skill and every reference do not arrive that way. The skill catalog names each skill's absolute `SKILL.md` path. Before acting on the main skill or a reference, read that complete file through `pinboard_startup_text` operation `file-start` with exact roots and `max_batch_bytes: "host-profile"`, following each continuation until null. A truncated injected body is never a loaded skill.
 
-Antigravity shows the model only an MCP result's text block and saves a text block above about 10 KB to a file instead of showing it. Pinboard's measured Antigravity profile sizes startup pages to stay inline; do not open a saved output file to replace paging.
+Antigravity shows the model only an MCP result's text block and saves a text block above about 10 KB to a file instead of showing it. Pinboard's Antigravity page size, seeded with a measured default, keeps startup pages inline; do not open a saved output file to replace paging.
 
 ## Hooks
 

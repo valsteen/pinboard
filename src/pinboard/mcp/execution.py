@@ -171,10 +171,13 @@ class SemanticCapture:
         )
 
 
-def _settings_recovery(  # noqa: C901, PLR0912 - one boundary distinguishes exact settings failures and recovery
-    error: SettingResolutionError,
+def settings_recovery(  # noqa: C901, PLR0912 - one boundary distinguishes exact settings failures and recovery
+    error: SettingResolutionError, subject: str, correction: str
 ) -> tuple[str, str, Literal["correct-input", "retry-same-input"]]:
-    """Assign recovery from the original settings observation, independently of its effect account."""
+    """Assign recovery from the original settings observation, independently of its effect account.
+
+    `subject` names the settings in resources and repairs; `correction` is the repair for invalid content.
+    """
     resource = str(error.resource)
     retry: Literal["correct-input", "retry-same-input"] = "correct-input"
     cause = error.cause
@@ -203,7 +206,7 @@ def _settings_recovery(  # noqa: C901, PLR0912 - one boundary distinguishes exac
     else:
         match cause:
             case FileExistsError():
-                resource = f"Contributor trace settings edit at {error.resource}"
+                resource = f"{subject} edit at {error.resource}"
                 repair = f"Retry the same request after the settings edit at {error.resource} finishes."
                 retry = "retry-same-input"
             case PermissionError():
@@ -211,7 +214,7 @@ def _settings_recovery(  # noqa: C901, PLR0912 - one boundary distinguishes exac
                     case "read":
                         repair = f"Grant read access to {error.resource} for the Pinboard MCP service, then retry."
                     case "create" | "stage" | "publish":
-                        repair = f"Grant write access to {error.resource.parent} for Contributor trace settings initialization at {error.resource}, then retry."
+                        repair = f"Grant write access to {error.resource.parent} to initialize {subject} at {error.resource}, then retry."
                     case _ as unreachable:
                         assert_never(unreachable)
                 retry = "retry-same-input"
@@ -220,7 +223,7 @@ def _settings_recovery(  # noqa: C901, PLR0912 - one boundary distinguishes exac
                     f"Inspect access and resolve the reported filesystem failure at {error.resource} before retrying."
                 )
             case ValueError():
-                repair = f"Correct {error.path} and retry."
+                repair = correction
             case _ as unreachable:
                 assert_never(unreachable)
     if error.effects.key_write != "none" or error.effects.file_creation != "none":
@@ -341,7 +344,9 @@ class AutomaticCapture:
             retry = "correct-input"
             schema_mismatch: dict[str, JsonValue] | None = None
             if isinstance(error, SettingResolutionError):
-                resource_text, repair, retry = _settings_recovery(error)
+                resource_text, repair, retry = settings_recovery(
+                    error, "Contributor trace settings", f"Correct {error.path} and retry."
+                )
             elif isinstance(error, OSError) and error.filename == "git":
                 resource_text = "Git executable"
                 repair = (

@@ -301,11 +301,13 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "Each success binds complete source SHA-256/byte size and a character range. Follow continuation verbatim "
             "under request until null; concatenate text in order. EOF establishes delivery only, never understanding, "
             "readiness or authority. Every page rereads and verifies the complete selected input. max_batch_bytes "
-            '"host-profile" sizes pages for the connected host\'s measured profile; an integer is a ceiling under that '
-            "profile. The budget prices the compact SDK tool result as sent; arbitrary host wrappers and aggregation "
-            "remain outside it. Pages and continuations report the effective budget. Emit one page per outer response; never collect pages into "
-            "one unbounded output. Invalid input or a budget too small for metadata returns an explicit diagnosis. "
-            "No file discovery, source/ledger/artifact/settings writes or optional invocation capture."
+            '"host-profile" sizes pages for the connected host: a recognized host uses its page size in '
+            "~/.config/pinboard/hosts.config, which the first read seeds with that host's measured default; any other "
+            "client gets 8000 bytes. An integer is a ceiling under that size. The budget prices the compact SDK tool "
+            "result as sent; arbitrary host wrappers and aggregation remain outside it. Pages and continuations report "
+            "the effective budget. Emit one page per outer response; never collect pages into one unbounded output. "
+            "Invalid input, an unusable host setting or a budget too small for metadata returns an explicit diagnosis. "
+            "No file discovery, source/ledger/artifact/trace-settings writes or optional invocation capture."
         ),
         annotations=READ_ONLY_ANNOTATIONS,
     )

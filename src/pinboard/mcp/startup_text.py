@@ -1,4 +1,7 @@
-"""Verify selected startup bytes and present one bounded page; never grant authority or write state."""
+"""Verify selected startup bytes and present one bounded page; never grant authority or write project state.
+
+A recognized host's page size is its per-user host setting, seeded with the measured default on first use.
+"""
 
 from collections.abc import Mapping
 from pathlib import Path
@@ -7,7 +10,9 @@ from typing import assert_never
 import msgspec
 
 from pinboard import __version__
+from pinboard.adapters.files import host_settings
 from pinboard.adapters.files import startup_text as files
+from pinboard.adapters.files.setting_resolution import SettingEffects, SettingResolutionError
 from pinboard.mcp import contracts, execution, host_profiles, read_operations
 
 
@@ -35,7 +40,7 @@ def envelope_size(content: dict[str, contracts.JsonValue], representation: host_
 
 
 def _rejected(
-    resource: str, message: str, budget: int | None, profile: host_profiles.HostProfile
+    resource: str, message: str, budget: int | None, page_bytes: int, profile: host_profiles.HostProfile
 ) -> execution.OperationResult:
     result = contracts.StartupTextRejected(
         "pinboard-startup-text-result/v1",
@@ -60,7 +65,7 @@ def _rejected(
                 resource="max_batch_bytes",
                 message="The budget cannot fit source metadata or its diagnosis.",
                 recovery=(
-                    f'Use max_batch_bytes "host-profile" (this host allows {host_profiles.page_bytes(profile)}) '
+                    f'Use max_batch_bytes "host-profile" (this host allows {page_bytes}) '
                     "or shorten selected paths, then restart the exact source."
                 ),
             )
@@ -100,6 +105,61 @@ def _page(
     return content
 
 
+def _host_setting_failure(
+    path: Path | None, key: str, error: SettingResolutionError | RuntimeError, directory_created: bool
+) -> execution.OperationResult:
+    """Name the setting, the failed resource, this call's settings effects, retry and one safe next step."""
+    if isinstance(error, RuntimeError):
+        effects = SettingEffects("none", "none", "none")
+        resource = "home directory"
+        recovery = "Start the Pinboard MCP service with HOME set to your home directory, then retry the same request."
+        retry = "retry-same-input"
+    else:
+        effects = error.effects
+        resource, recovery, retry = execution.settings_recovery(
+            error,
+            "Host page-size settings",
+            f"Set {key} in {error.path} to a whole number of bytes from {host_settings.MIN_PAGE_BYTES} to "
+            f"{host_settings.MAX_PAGE_BYTES}, or remove that key so the measured default is written again, then retry.",
+        )
+    confirmed = directory_created or effects.file_creation == "confirmed" or effects.key_write == "acknowledged"
+    unconfirmed = effects.file_creation == "unconfirmed" or effects.key_write == "unconfirmed"
+    result = contracts.StartupHostSettingFailed(
+        "pinboard-startup-text-result/v1",
+        "rejected",
+        "HOST_PAGE_SETTING_UNAVAILABLE",
+        str(path) if path is not None else "~/.config/pinboard/hosts.config",
+        key,
+        resource,
+        f"Host page-size setting {key} is unavailable: {error}. No page was read.",
+        recovery,
+        "confirmed" if directory_created else "none",
+        effects.file_creation,
+        effects.key_write,
+        None if unconfirmed else confirmed,
+        "unconfirmed" if unconfirmed else "committed" if confirmed else "unchanged",
+        retry,
+        ("user-settings",) if confirmed else (),
+    )
+    return execution.OperationResult(msgspec.to_builtins(result), "rejected", None)
+
+
+def _page_bytes(profile: host_profiles.HostProfile) -> int | execution.OperationResult:
+    """The unmeasured size, or the recognized host's stored per-user setting seeded with its measured default."""
+    host = host_profiles.setting_host(profile)
+    if host is None:
+        return host_profiles.measured_page_bytes(profile)
+    key = host_settings.setting_key(host)
+    path: Path | None = None
+    directory_created = False
+    try:
+        path = host_settings.settings_path()
+        directory_created = host_settings.ensure_directory(path)
+        return host_settings.resolve(path, host, host_profiles.measured_page_bytes(profile)).value
+    except (SettingResolutionError, RuntimeError) as error:
+        return _host_setting_failure(path, key, error, directory_created)
+
+
 def read(
     raw: Mapping[str, contracts.JsonValue], profile: host_profiles.HostProfile, token: execution.CancellationToken
 ) -> execution.OperationResult:
@@ -108,8 +168,21 @@ def read(
         request = msgspec.convert(raw, type=contracts.StartupTextEnvelope, strict=True).request
         msgspec.json.encode(request)
     except (msgspec.ValidationError, ValueError) as error:
-        return _rejected("request", str(error), None, profile)
-    budget = host_profiles.effective_budget(request.max_batch_bytes, profile)
+        return _rejected("request", str(error), None, host_profiles.measured_page_bytes(profile), profile)
+    page_bytes = _page_bytes(profile)
+    if isinstance(page_bytes, execution.OperationResult):
+        return page_bytes
+    budget = host_profiles.effective_budget(request.max_batch_bytes, page_bytes)
+    return _read_selected(request, budget, page_bytes, profile, token)
+
+
+def _read_selected(
+    request: contracts.StartupArtifactStart | contracts.StartupFileStart | contracts.StartupContinue,
+    budget: int,
+    page_bytes: int,
+    profile: host_profiles.HostProfile,
+    token: execution.CancellationToken,
+) -> execution.OperationResult:
     start = request.start_character if isinstance(request, contracts.StartupContinue) else 0
     expected: contracts.StartupSource | None
     match request:
@@ -130,7 +203,9 @@ def read(
                         token,
                     )
                     if verified.content.get("verified") is not True:
-                        return _rejected(expected.selector, str(verified.content.get("message")), budget, profile)
+                        return _rejected(
+                            expected.selector, str(verified.content.get("message")), budget, page_bytes, profile
+                        )
                     path = Path(request.work_root) / expected.selector
                 case contracts.StartupFileSource():
                     path = Path(expected.path)
@@ -139,27 +214,30 @@ def read(
         case _ as unreachable:
             assert_never(unreachable)
     if not path.is_absolute():
-        return _rejected(str(path), "Select an explicit absolute resolved path.", budget, profile)
+        return _rejected(str(path), "Select an explicit absolute resolved path.", budget, page_bytes, profile)
     # Recheck the exact presented bytes after accepted-reference verification; EOF confers no authority.
     selected = files.read(path)
     if isinstance(selected, files.TextUnavailable):
-        return _rejected(selected.resource, selected.message, budget, profile)
+        return _rejected(selected.resource, selected.message, budget, page_bytes, profile)
     if expected is not None and (selected.sha256 != expected.sha256 or selected.size_bytes != expected.size_bytes):
-        return _rejected(str(path), "Source bytes changed; continuation cannot combine identities.", budget, profile)
+        return _rejected(
+            str(path), "Source bytes changed; continuation cannot combine identities.", budget, page_bytes, profile
+        )
     if isinstance(request, contracts.StartupContinue) and start >= len(selected.text):
-        return _rejected(str(path), "Continuation is outside this exact source.", budget, profile)
+        return _rejected(str(path), "Continuation is outside this exact source.", budget, page_bytes, profile)
     source = (
         expected
         if expected is not None
         else contracts.StartupFileSource(str(path), selected.sha256, selected.size_bytes)
     )
     token.checkpoint()
-    return _bounded_page(request, budget, profile, source, selected.text, start, token)
+    return _bounded_page(request, budget, page_bytes, profile, source, selected.text, start, token)
 
 
 def _bounded_page(
     request: contracts.StartupArtifactStart | contracts.StartupFileStart | contracts.StartupContinue,
     budget: int,
+    page_bytes: int,
     profile: host_profiles.HostProfile,
     source: contracts.StartupSource,
     text: str,
@@ -180,7 +258,11 @@ def _bounded_page(
             high = end - 1
     if low == start:
         return _rejected(
-            "max_batch_bytes", "The budget cannot fit source identity, continuation and one character.", budget, profile
+            "max_batch_bytes",
+            "The budget cannot fit source identity, continuation and one character.",
+            budget,
+            page_bytes,
+            profile,
         )
     token.checkpoint()
     return execution.OperationResult(_page(request, budget, source, text, start, low), "read", None)

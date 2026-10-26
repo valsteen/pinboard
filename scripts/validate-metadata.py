@@ -1,3 +1,4 @@
+import re
 import tomllib
 from pathlib import Path
 from typing import Annotated, Final, Literal
@@ -30,6 +31,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
+# Antigravity injects at most this many bytes of a skill body; these skills must arrive complete.
+ANTIGRAVITY_SKILL_BODY_BYTES: Final = 24000
+ANTIGRAVITY_INJECTED_SKILLS: Final = ("pinboard-deliver",)
+MARKDOWN_LINK: Final = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 EXPECTED_SKILLS: Final = frozenset(
     {
         "investigation-focus",
@@ -488,6 +493,42 @@ def validate_skill(path: Path) -> None:
         raise ValueError(f"{agent}: display name does not match the public skill identity")
 
 
+def heading_anchors(path: Path) -> frozenset[str]:
+    """GitHub heading anchors outside fenced code blocks."""
+    anchors: set[str] = set()
+    fenced = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and line.startswith("#"):
+            title = line.lstrip("#").strip().lower()
+            anchors.add(re.sub(r"[^\w\- ]", "", title).replace(" ", "-"))
+    return frozenset(anchors)
+
+
+def validate_markdown_links(paths: tuple[Path, ...]) -> None:
+    """Every relative Markdown link names an existing file and, when anchored, an existing heading."""
+    for path in paths:
+        for target in MARKDOWN_LINK.findall(path.read_text(encoding="utf-8")):
+            if target.startswith(("http://", "https://", "mailto:")):
+                continue
+            selected, _, anchor = target.partition("#")
+            destination = (path.parent / selected).resolve() if selected else path
+            if not destination.exists():
+                raise ValueError(f"{path}: link target {target} does not exist")
+            if anchor and destination.suffix == ".md" and anchor not in heading_anchors(destination):
+                raise ValueError(f"{path}: link anchor {target} names no heading")
+
+
+def validate_injected_skill_sizes() -> None:
+    for name in ANTIGRAVITY_INJECTED_SKILLS:
+        size = len((ROOT / "skills" / name / "SKILL.md").read_bytes())
+        if size > ANTIGRAVITY_SKILL_BODY_BYTES:
+            raise ValueError(
+                f"skills/{name}/SKILL.md is {size} bytes; Antigravity injects only {ANTIGRAVITY_SKILL_BODY_BYTES}"
+            )
+
+
 def main() -> None:
     if (ROOT / "LICENSE").read_text(encoding="utf-8") != EXPECTED_LICENSE_TEXT:
         raise ValueError("repository license must exactly match the canonical MIT license text")
@@ -506,6 +547,8 @@ def main() -> None:
         )
     for path in skill_paths:
         validate_skill(path)
+    validate_injected_skill_sizes()
+    validate_markdown_links((*sorted(ROOT.glob("*.md")), *sorted((ROOT / "skills").rglob("*.md"))))
     print(
         f"validated Codex, Claude and Antigravity plugins, Codex and Claude marketplaces, and {len(skill_paths)} skills"
     )

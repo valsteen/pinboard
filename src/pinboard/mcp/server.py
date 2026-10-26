@@ -7,12 +7,12 @@ import sys
 from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
-from typing import Any  # noqa: TID251 - SDK middleware exposes raw protocol mappings
+from typing import Any, assert_never  # noqa: TID251 - SDK middleware exposes raw protocol mappings
 
 import anyio
 import msgspec
 from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 
 from pinboard import __version__
@@ -26,6 +26,7 @@ from pinboard.mcp import (
     contract_schemas,
     contracts,
     execution,
+    host_profiles,
     initiative_contracts,
     initiative_operations,
     job_operations,
@@ -107,6 +108,26 @@ async def _compact_json_text(ctx: ServerRequestContext[Any, Any], call_next: Cal
     return result | {"content": [block | {"text": msgspec.json.encode(structured).decode()}]}
 
 
+async def _single_startup_representation(ctx: ServerRequestContext[Any, Any], call_next: CallNext) -> HandlerResult:
+    """Send startup-text results once when the connected host shows the model only structuredContent."""
+    result = await call_next(ctx)
+    if (
+        ctx.method != "tools/call"
+        or ctx.params is None
+        or ctx.params.get("name") != STARTUP_TEXT_TOOL
+        or not isinstance(result, dict)
+        or not isinstance(result.get("structuredContent"), dict)
+    ):
+        return result
+    match host_profiles.representation(host_profiles.select(ctx.session.client_params)):
+        case host_profiles.Representation.STRUCTURED_ONLY:
+            return result | {"content": []}
+        case host_profiles.Representation.STRUCTURED_AND_TEXT:
+            return result
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def create_server(  # noqa: C901 - explicit installed SDK tool registration
     executor: execution.BoundedExecutor,
     diagnostics: execution.Diagnostics,
@@ -116,7 +137,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         "pinboard",
         version=__version__,
         log_level="ERROR",
-        middleware=[_compact_json_text],
+        middleware=[_compact_json_text, _single_startup_representation],
         instructions=(
             "Pinboard coordinates local repository work: intake, canonical briefs, status, legal actions, "
             "own leases, dispatch, independent review and recovery.\n\n"
@@ -169,6 +190,10 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "Use this runtime's advertised native skill loader only when it delivers the complete body; otherwise, "
             "including in Antigravity, use pinboard_startup_text file-start with that skill's actual "
             "resolved absolute SKILL.md path and follow pages as above. Follow that owner's sequencing and runtime identity instructions.\n\n"
+            "Runtime adapter guidance is the pinboard skill's references/runtime-adapters.md plus the current runtime's "
+            "own reference: references/runtime-codex.md for Codex, references/runtime-claude-code.md for Claude Code, "
+            "or references/runtime-antigravity.md for Antigravity. Request startup-text pages with max_batch_bytes "
+            '"host-profile"; the server sizes them for this host.\n\n'
             "For deferred tools, find the required Pinboard operation in this host's actual announced tool "
             "inventory. Select its full advertised callable name, including the connector prefix, not its "
             "short wire name. Resolve each host's names independently. If the full name is unknown, use "
@@ -276,21 +301,27 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "Each success binds complete source SHA-256/byte size and a character range. Follow continuation verbatim "
             "under request until null; concatenate text in order. EOF establishes delivery only, never understanding, "
             "readiness or authority. Every page rereads and verifies the complete selected input. max_batch_bytes "
-            "(up to 8000) includes the compact SDK text/structured tool-result envelope; arbitrary host wrappers and "
-            "aggregation remain outside that ceiling. Emit one page per outer response; never collect pages into "
+            '"host-profile" sizes pages for the connected host\'s measured profile; an integer is a ceiling under that '
+            "profile. The budget prices the compact SDK tool result as sent; arbitrary host wrappers and aggregation "
+            "remain outside it. Pages and continuations report the effective budget. Emit one page per outer response; never collect pages into "
             "one unbounded output. Invalid input or a budget too small for metadata returns an explicit diagnosis. "
             "No file discovery, source/ledger/artifact/settings writes or optional invocation capture."
         ),
         annotations=READ_ONLY_ANNOTATIONS,
     )
-    async def startup_read(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    async def startup_read(request: dict[str, JsonValue], ctx: Context) -> dict[str, JsonValue]:
+        try:
+            client_params = ctx.request_context.session.client_params
+        except ValueError:  # An in-process call outside a client connection has no initialize clientInfo.
+            client_params = None
+        profile = host_profiles.select(client_params)
         return await execution._run_request(
             executor,
             diagnostics,
             next(request_ids),
             STARTUP_TEXT_TOOL,
             str(request.get("project_root", "")),
-            partial(startup_text.read, {"request": request}),
+            partial(startup_text.read, {"request": request}, profile),
             arguments={"request": request},
             capture=None,
         )

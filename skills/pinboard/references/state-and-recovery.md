@@ -1,6 +1,6 @@
 # State and recovery
 
-Use [the coding-agent runtime adapters](runtime-adapters.md) for trusted identity and runtime-native waiting or recovery operations. SQLite remains the only lifecycle authority.
+Use your own runtime's reference, [Codex](runtime-codex.md), [Claude Code](runtime-claude-code.md) or [Antigravity](runtime-antigravity.md), for trusted identity and runtime-native waiting or recovery operations; [the shared runtime adapters](runtime-adapters.md#handling-another-runtimes-attempt) govern an attempt another runtime started. SQLite remains the only lifecycle authority.
 
 ## Contents
 
@@ -83,7 +83,7 @@ The observable transaction contract remains binary: the previous valid revision 
 
 A session can inherit saved work from another session of the same runtime, for example a forked or resumed Codex thread that carries the original conversation. When the human asks the inheriting session to continue that work and the original session is unavailable, meaning it ended, was closed, or cannot be reached from the current runtime, the inheriting session becomes the outcome owner. A recorded `owner_task_id` that names the original session is the attempt's activation provenance, not a routing gate; continuation needs no matching owner and no reassignment.
 
-1. Obtain this session's own trusted task and host identity through the [runtime adapters](runtime-adapters.md). Never reuse the original session's task or host from inherited conversation, generated views, or earlier tool arguments, and never present its retained receipts, leases, or worker handles as your own.
+1. Obtain this session's own trusted task and host identity through your own runtime's reference, [Codex](runtime-codex.md), [Claude Code](runtime-claude-code.md) or [Antigravity](runtime-antigravity.md). Never reuse the original session's task or host from inherited conversation, generated views, or earlier tool arguments, and never present its retained receipts, leases, or worker handles as your own.
 2. Treat inherited conversation as context, not state. Follow the [interrupted-task](#interrupted-tasks) steps from current authority: validate, read item status, inspect the named attempt, and follow its returned continuation.
 3. Read preparation or attempt authority `status` before claiming work. An expired or released claim transfers through the ordinary `start` or `acquire` with this session's identity. A live claim held by the original session or one of its workers stays fenced: wait for it to lapse, or ask the human for forced revocation under [leases and revocation](#leases-and-revocation) when its holder demonstrably cannot release it.
 4. The original session's native worker and reviewer handles are unavailable. Do not attempt same-worker continuation through them. When the continuation selects worker or review work, launch a fresh worker or reviewer from this session through the returned dispatch or review job.

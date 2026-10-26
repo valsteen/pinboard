@@ -37,6 +37,15 @@ from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import contracts, execution, tool_names
 from pinboard.mcp.contracts import JsonValue
 
+# Shared by every lease-protected worker rejection so an expired lease is never replaced over another owner.
+ATTEMPT_LEASE_RECOVERY = (
+    "Read pinboard_attempt_authority operation status for this attempt_id. Reacquire with operation acquire, using "
+    "your own trusted task and host and the dispatched ttl_seconds, only when that status shows your own lease "
+    "expired; then reinspect the attempt and discover a fresh action through pinboard_actions with the new lease and "
+    "generation. If another owner holds live authority, or the lease was released or revoked, stop and report it; "
+    "never revoke it or reuse the old lease."
+)
+
 
 def _item_status_failure(
     code: str,

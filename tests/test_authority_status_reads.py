@@ -46,6 +46,7 @@ from pinboard.domain.identifiers import (
     WorkItemId,
 )
 from pinboard.domain.proposal_models import CreateProposalOperation
+from pinboard.mcp import common as mcp_common
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
 from tests.decision_support import discover_actions
@@ -280,6 +281,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.addCleanup(mutation_clock_patch.stop)
         self.addCleanup(clock_patch.stop)
         clock.now.return_value = SQLITE_NOW
+        self.clock = clock
 
     def initialized_state(self, state: stored_state.StoredWorkState) -> tuple[Path, Path, SQLiteWorkStore]:
         project = Path(tempfile.mkdtemp()).resolve()
@@ -1813,6 +1815,58 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 "expired" if retained_status == authority_models.AttemptLeaseStatus.ACTIVE else retained_status.value,
                 stdout["authority_status"],
             )
+
+    def test_expired_worker_lease_rejections_carry_the_owner_check_before_reacquiring(self) -> None:
+        project, work, _store = self.initialized_state(complete_sqlite_state())
+        self.clock.now.return_value = SQLITE_NOW + timedelta(minutes=10)
+        lease: JsonObject = {"lease_id": "attempt-lease-a", "generation": 3}
+        renewed = self.native(
+            mcp_server.ATTEMPT_AUTHORITY_TOOL,
+            str(project),
+            str(work),
+            {"operation": "renew", "attempt_id": "work-a-1", "ttl_seconds": 300, **lease},
+        )
+        self.assertEqual("reacquire-authority", renewed["retry"])
+        self.assertIn(mcp_common.ATTEMPT_LEASE_RECOVERY, str(renewed["message"]))
+        conflict = self.json_object(renewed["conflict"])
+        self.assertEqual(
+            ("worker", "host-a", "expired"), (conflict["task_id"], conflict["host_id"], conflict["authority_status"])
+        )
+
+        discovered = self.native(
+            mcp_server.ACTIONS_TOOL,
+            str(project),
+            str(work),
+            {"role": "worker", "action_id": {"kind": "continue", "subject": "work-a-1"}, **lease},
+        )
+        self.assertEqual("reacquire-authority", discovered["retry"])
+        observed = {
+            str(fact["field"]): fact["value"] for fact in map(self.json_object, self.json_array(discovered["observed"]))
+        }
+        self.assertEqual(mcp_common.ATTEMPT_LEASE_RECOVERY, observed["next_step"])
+        self.assertEqual(mcp_server.ATTEMPT_AUTHORITY_TOOL, observed["next_step_tool"])
+
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        transport = mcp_server.create_server(
+            executor, mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+        )
+        request: JsonObject = {
+            "project_root": str(project),
+            "work_root": str(work),
+            "role": "worker",
+            "receipt": {"action_id": {"kind": "pause", "subject": "work-a-1"}, "subject_revision": "11"},
+            "payload": {"reason": "Waiting on a human decision."},
+            **lease,
+        }
+        try:
+            result = asyncio.run(transport.call_tool(mcp_server.TRANSITION_TOOL, {"request": request}))
+        finally:
+            executor.shutdown()
+        assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)
+        transition = result.structured_content
+        self.assertEqual("rejected", transition["status"])
+        self.assertEqual(False, transition["state_changed"])
+        self.assertEqual(mcp_common.ATTEMPT_LEASE_RECOVERY, transition["continuation"])
 
     def test_selected_authority_corruption_remains_invalid(self) -> None:
         project, work, _store = self.initialized_state(self.state_with_preparation())

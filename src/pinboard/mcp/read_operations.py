@@ -1076,7 +1076,7 @@ def _action_failure_details(
                 inspection_input = {
                     "request": {**inspection_input, "operation": "status", "attempt_id": selected_action.subject}
                 }
-            note = "Read pinboard_attempt_authority operation status for your accepted task's attempt_id before reacquiring; a lease or overview alone supplies no authority."
+            note = common.ATTEMPT_LEASE_RECOVERY
         case decision_models.Role.PREPARER:
             if (
                 selected_action is not None

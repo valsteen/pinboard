@@ -7,7 +7,7 @@ description: Preserve one newly proposed piece of project work as a ready item o
 
 Convert one explicit concern into immutable proposal facts and a same-identity ready item. Do not claim that saving it made it active or current work.
 
-Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) for native MCP discovery, coding-agent identity and optional messaging. Intake persistence remains the correctness boundary.
+Use [the shared runtime adapters](../pinboard/references/runtime-adapters.md) with your own runtime's reference, [Codex](../pinboard/references/runtime-codex.md), [Claude Code](../pinboard/references/runtime-claude-code.md) or [Antigravity](../pinboard/references/runtime-antigravity.md), for native MCP discovery, coding-agent identity and optional messaging. Intake persistence remains the correctness boundary.
 
 Intake may be standalone or embedded in ongoing Pinboard work. Standalone intake may end after its persistence receipt only when the user did not also ask to begin the new work. Before embedded intake, retain the main skill's [continuation anchor](../pinboard/SKILL.md#safe-boundaries). Intake changes queue state but preserves active attempts, so return control to that anchor after persistence and any explicitly requested notification handling.
 
@@ -31,7 +31,7 @@ An explicitly requested notification remains subordinate to this continuation. S
 2. Resolve both roots before the first call. `project_root` is the selected checkout. Unless the user or an existing Pinboard receipt selected another work root, a normal checkout uses `<project_root>/.pinboard`; never substitute the checkout, its parent, or a containing fixture directory. Call `pinboard_overview` with those exact roots.
 3. Require authority `sqlite-v11`. Intake is a direct trusted-local project action; its task and host values are audit attribution, not credentials, and it does not require a lease.
 4. If the workflow or required MCP tool is unavailable, stop. Do not infer shared state from titles, recency, nearby tasks, branches, or old audit files. When overview reports no initialized board at the default work root, nothing can be saved yet: tell the human the concern is not saved and ask whether to set up Pinboard in this project, following the [setup rule](../pinboard/references/setup-and-transitions.md#start-from-executable-state). Never create board files or directories by hand, and never claim to remember the concern instead.
-5. Before constructing attributed proposal fields, read and follow the `Task and host identity` row in the [shared runtime adapters](../pinboard/references/runtime-adapters.md#packaged-connection-and-first-setup) to determine the current source task identity. If that source is unavailable, ask the human for the exact task ID rather than inventing one.
+5. Before constructing attributed proposal fields, read and follow the `Task and host identity` row in your own runtime's reference, [Codex](../pinboard/references/runtime-codex.md), [Claude Code](../pinboard/references/runtime-claude-code.md) or [Antigravity](../pinboard/references/runtime-antigravity.md), to determine the current source task identity. If that source is unavailable, ask the human for the exact task ID rather than inventing one.
 
 ## Resolve conditional follow-up authority
 
@@ -82,7 +82,7 @@ Before creating a proposal, distinguish exact prior coverage from a merely relat
 
 ## Persist, then deliver
 
-Before a first default initialization or after `SQLITE_READONLY`, follow the shared runtime adapter's [Codex protected project writes](../pinboard/references/runtime-adapters.md#codex-protected-project-writes) rule. A normal checkout uses relative `.pinboard`; a linked worktree or explicit root uses only the exact absolute effective work root reported by recovery. Do not substitute the whole shared repository or treat a denied proposal write as saved intake.
+Before a first default initialization or after `SQLITE_READONLY`, follow the Codex adapter's [protected project writes](../pinboard/references/runtime-codex.md#codex-protected-project-writes) rule. A normal checkout uses relative `.pinboard`; a linked worktree or explicit root uses only the exact absolute effective work root reported by recovery. Do not substitute the whole shared repository or treat a denied proposal write as saved intake.
 
 1. Call `pinboard_proposal_create` with the structured proposal, exact project and work roots, and current actor task and host identities. No temporary proposal file is needed.
 2. Treat `pinboard-mcp-proposal-result/v2` with status `committed` or `committed-with-warning` as proof that both the proposal facts and ready item persisted. Use its exact `proposal_id`, `position`, `item_state`, and `committed_revision`; do not scrape human output.

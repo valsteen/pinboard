@@ -1,6 +1,6 @@
 # Cross-boundary brief preservation
 
-Use [the coding-agent runtime adapters](runtime-adapters.md) for fresh reviewer launch and waiting. The preparation and review contract below is shared across integrations.
+Use [the shared runtime adapters](runtime-adapters.md) and your own runtime's reference, [Codex](runtime-codex.md), [Claude Code](runtime-claude-code.md) or [Antigravity](runtime-antigravity.md), for fresh reviewer launch and waiting. The preparation and review contract below is shared across integrations.
 
 Use this procedure only for a typed `cross-boundary` checkpoint. It projects named architecture, plans, and accepted evidence into a reviewable execution contract before implementation. A checkpoint is `local` only when ownership and dependency direction, stored and wire identities, and independently owned consumers remain unchanged, and one production entry point can observe the complete changed path. A README edit and its referenced image may stay local when they retain one owner and change none of those facts or product behavior. If any condition is false, use `cross-boundary`. A local checkpoint does not add contracts, reviewed-authority coverage, lifecycle declarations, or an independent brief review.
 

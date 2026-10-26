@@ -1,6 +1,6 @@
 # Setup and transitions
 
-Load this phase for setup, state contracts, mutations or nested intake. The [main conversation core](../SKILL.md) owns human decisions and replies. Use [runtime adapters](runtime-adapters.md) for identity, exact request shapes and host permissions.
+Load this phase for setup, state contracts, mutations or nested intake. The [main conversation core](../SKILL.md) owns human decisions and replies. Use [the shared runtime adapters](runtime-adapters.md) for exact request shapes and your own runtime's reference, [Codex](runtime-codex.md), [Claude Code](runtime-claude-code.md) or [Antigravity](runtime-antigravity.md), for identity and host permissions.
 
 ## Start from executable state
 
@@ -44,7 +44,7 @@ Focused project `close` action detail and cancellation preview include `replacem
 
 ## Apply a transition
 
-Before the first default initialization or when a routine mutation reports `SQLITE_READONLY`, follow the shared runtime adapter's [Codex protected project writes](runtime-adapters.md#codex-protected-project-writes) rule. Keep one-time Git exclusion authority separate from routine project-data access.
+Before the first default initialization or when a routine mutation reports `SQLITE_READONLY`, follow the Codex adapter's [protected project writes](runtime-codex.md#codex-protected-project-writes) rule. Keep one-time Git exclusion authority separate from routine project-data access.
 
 In a complete `revise-item` replacement, `definition.dependencies` accepts whole-item strings and checkpoint targets such as `["whole-item", {"item":"producer","checkpoint":"usable-api"}]`. Each prerequisite item may appear only once, regardless of target form. A checkpoint target must name the stable ID in that prerequisite's current accepted brief; inspect it rather than inventing a checkpoint or using an old brief's ID. A later brief change does not erase committed acceptance evidence for an already recorded dependency. Block payloads still confirm prerequisite item identities from the accepted definition and do not replace its targets.
 

@@ -14,6 +14,7 @@ from pinboard.adapters.files import git_config
 from pinboard.adapters.files.setting_resolution import (
     EntryProblem,
     InvalidEntry,
+    NotRegularFile,
     SettingEffects,
     SettingResolution,
     SettingResolutionError,
@@ -79,12 +80,13 @@ def _validated(path: Path, key: str, value: str, seen: set[str]) -> tuple[str, i
 def _read(path: Path, effects: SettingEffects, host: str) -> int | None:
     """Validate every stored entry, since all hosts share the file; return this host's value or None if absent."""
     try:
-        if not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
-            raise ValueError(f"Host settings {path} must be a regular file.")
+        mode = path.stat(follow_symlinks=False).st_mode
     except OSError as error:
         raise SettingResolutionError(str(error), path, effects, error, "read", path) from error
-    except ValueError as error:
-        raise SettingResolutionError(str(error), path, effects, error, "read", path) from error
+    if not stat.S_ISREG(mode):
+        raise SettingResolutionError(
+            f"Host settings {path} must be a regular file.", path, effects, NotRegularFile(path), "read", path
+        )
     listed = git_config.list_entries(path)
     if isinstance(listed, git_config.ReadFailed):
         raise SettingResolutionError(

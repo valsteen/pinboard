@@ -15,6 +15,7 @@ from pinboard.adapters.files import startup_text as files
 from pinboard.adapters.files.setting_resolution import (
     EntryProblem,
     InvalidEntry,
+    NotRegularFile,
     SettingEffects,
     SettingFailureCause,
     SettingResolutionError,
@@ -115,7 +116,8 @@ def _correction(path: Path, key: str, cause: SettingFailureCause) -> tuple[str, 
     """The setting key a repair must touch and the repair for invalid stored content.
 
     An invalid entry names its own key, which may belong to another host or be unknown or duplicated, so
-    that the repair clears the failure; other failures concern the connected host's key.
+    that the repair clears the failure; other failures report the connected host's key, the setting this read
+    could not verify.
     """
     if not isinstance(cause, InvalidEntry):
         return key, (
@@ -159,8 +161,13 @@ def _host_setting_failure(
         effects = error.effects
         key, correction = _correction(error.path, key, error.cause)
         resource, recovery, retry = execution.settings_recovery(error, "Host page-size settings", correction)
-        state = "invalid" if isinstance(error.cause, InvalidEntry) else "unavailable"
-        message = f"Host page-size setting {key} is {state}: {_sentence(str(error))} No page was read."
+        if isinstance(error.cause, NotRegularFile):
+            subject = f"Host page-size settings file {error.cause.path} is unusable"
+        elif isinstance(error.cause, InvalidEntry):
+            subject = f"Host page-size setting {key} is invalid"
+        else:
+            subject = f"Host page-size setting {key} is unavailable"
+        message = f"{subject}: {_sentence(str(error))} No page was read."
     confirmed = directory_created or effects.file_creation == "confirmed" or effects.key_write == "acknowledged"
     unconfirmed = effects.file_creation == "unconfirmed" or effects.key_write == "unconfirmed"
     result = contracts.StartupHostSettingFailed(

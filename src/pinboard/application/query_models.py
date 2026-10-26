@@ -949,6 +949,100 @@ class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     owners: Annotated[tuple[BranchOwner, ...], msgspec.Meta(min_length=1)]
 
 
+@dataclass(frozen=True, slots=True)
+class IntegrationSnapshotInvalid:
+    attempt_id: AttemptId
+    reference: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationFacts:
+    project_revision: int
+    item_state: stored_state.StoredWorkItemState
+    attempt_id: AttemptId | None
+    closing_action: decision_models.ActionKind | None
+    candidate_context: CandidateSnapshotContextFacts | IntegrationSnapshotInvalid | None
+    checkpoint_receipt: stored_state.StoredTransitionReceipt | DamagedTransitionReceipt | None
+    checkpoint_reference: stored_state.ArtifactReference | None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationUnavailable:
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectedIntegrationCandidate:
+    context: CandidateSnapshotContextFacts
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionIntegrationCandidate:
+    context: CandidateSnapshotContextFacts
+
+
+@dataclass(frozen=True, slots=True)
+class CheckpointIntegrationCandidate:
+    attempt_id: AttemptId
+    receipt: stored_state.StoredTransitionReceipt
+    reference: stored_state.ArtifactReference
+
+
+type IntegrationCandidateSelection = (
+    IntegrationUnavailable
+    | IntegrationSnapshotInvalid
+    | DamagedTransitionReceipt
+    | ProtectedIntegrationCandidate
+    | CompletionIntegrationCandidate
+    | CheckpointIntegrationCandidate
+)
+
+
+class IntegrationPresence(Enum):
+    CONTENT_PRESENT = "content-present"
+    CONTENT_NOT_PRESENT = "content-not-present"
+    NO_CHANGE = "no-change"
+
+
+type IntegrationLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\r\n\x00\u2028\u2029]+\z")]
+type IntegrationCommit = Annotated[str, msgspec.Meta(pattern=r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z")]
+
+
+class ProtectedReviewSource(
+    msgspec.Struct, tag="protected-review", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: IntegrationLine
+    candidate_revision: IntegrationLine
+    compared_from_revision: IntegrationLine
+
+
+class AcceptedCheckpointSource(
+    msgspec.Struct, tag="accepted-checkpoint", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: IntegrationLine
+    candidate_revision: IntegrationLine
+    compared_from_revision: IntegrationLine
+    checkpoint_id: IntegrationLine
+
+
+class CompletionSource(msgspec.Struct, tag="completion", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    attempt_id: IntegrationLine
+    candidate_revision: IntegrationLine
+    compared_from_revision: IntegrationLine
+
+
+class ItemIntegration(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-item-integration/v1"]
+    authority: ItemStatusAuthority
+    revision: str
+    item_id: IntegrationLine
+    target: IntegrationLine
+    target_revision: IntegrationCommit
+    source: ProtectedReviewSource | AcceptedCheckpointSource | CompletionSource
+    presence: IntegrationPresence
+
+
 class ParallelSelection(Enum):
     ALL_SAFE = "all-safe"
     SELECTED = "selected"

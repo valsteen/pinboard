@@ -14,9 +14,12 @@ from unittest.mock import patch
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
+    IntegrationObservation,
+    UnresolvedIntegrationTarget,
     classify_checkout,
     ensure_default_git_exclude,
     observe_checkout_identity,
+    observe_integration_content,
     read_current_head_candidate,
     resolve_shared_repository_root,
     resolve_source_checkout_root,
@@ -114,6 +117,57 @@ class RootResolutionTest(unittest.TestCase):
             resolve_shared_repository_root(directory)
         with self.assertRaisesRegex(RootError, "PROJECT_GIT_CHECKOUT_UNAVAILABLE"):
             observe_checkout_identity(directory)
+        with self.assertRaisesRegex(RootError, "PROJECT_GIT_ROOT_UNAVAILABLE"):
+            observe_integration_content(directory, "HEAD", b"diff")
+
+    def test_integration_content_reads_only_a_temporary_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary) / "repository"
+            repository.mkdir()
+            self.run_git(repository, "init", "-b", "main")
+            self.run_git(repository, "config", "user.name", "Test")
+            self.run_git(repository, "config", "user.email", "test@example.com")
+            self.run_git(repository, "config", "apply.whitespace", "error")
+            tracked = repository / "tracked.txt"
+            tracked.write_text("base\n", encoding="utf-8")
+            self.run_git(repository, "add", "tracked.txt")
+            with patch.dict(
+                os.environ, {"GIT_AUTHOR_DATE": "2001-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2001-01-01T00:00:00Z"}
+            ):
+                self.run_git(repository, "commit", "-m", "base")
+                base = self.run_git(repository, "rev-parse", "HEAD").strip()
+                tracked.write_text("candidate  \n", encoding="utf-8")
+                self.run_git(repository, "add", "tracked.txt")
+                self.run_git(repository, "commit", "-m", "candidate")
+            candidate = self.run_git(repository, "rev-parse", "HEAD").strip()
+            diff = subprocess.run(
+                ["git", "diff", "--binary", base, candidate], cwd=repository, capture_output=True, check=True
+            ).stdout
+            git_dir = repository / ".git"
+            before = {path.relative_to(git_dir): path.read_bytes() for path in git_dir.rglob("*") if path.is_file()}
+            worktree = tracked.read_bytes()
+            for path in git_dir.rglob("*"):
+                path.chmod(path.stat().st_mode & ~0o222)
+            try:
+                with patch.object(tempfile, "tempdir", temporary):
+                    self.assertEqual(
+                        IntegrationObservation(candidate, True), observe_integration_content(repository, "main", diff)
+                    )
+                    self.assertEqual(
+                        IntegrationObservation(base, False), observe_integration_content(repository, base, diff)
+                    )
+                    self.assertEqual(
+                        UnresolvedIntegrationTarget("missing"), observe_integration_content(repository, "missing", diff)
+                    )
+                self.assertEqual([repository], list(Path(temporary).iterdir()))
+                self.assertEqual(
+                    before,
+                    {path.relative_to(git_dir): path.read_bytes() for path in git_dir.rglob("*") if path.is_file()},
+                )
+                self.assertEqual(worktree, tracked.read_bytes())
+            finally:
+                for path in git_dir.rglob("*"):
+                    path.chmod(path.stat().st_mode | 0o700)
 
     def test_current_head_candidate_reads_the_exact_base_diff(self) -> None:
         repository = Path(tempfile.mkdtemp()).resolve()
@@ -141,6 +195,39 @@ class RootResolutionTest(unittest.TestCase):
         self.assertEqual(candidate_revision, observed.identity)
         self.assertIn(b"-base\n+candidate", observed.diff)
         self.assertEqual(original_index, index.read_bytes())
+
+    def test_integration_does_not_fetch_missing_objects_from_a_partial_clone(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source = directory / "source"
+            source.mkdir()
+            self.run_git(source, "init", "-b", "main")
+            self.run_git(source, "config", "user.name", "Test")
+            self.run_git(source, "config", "user.email", "test@example.com")
+            tracked = source / "tracked.txt"
+            with patch.dict(
+                os.environ, {"GIT_AUTHOR_DATE": "2001-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2001-01-01T00:00:00Z"}
+            ):
+                tracked.write_text("base\n", encoding="utf-8")
+                self.run_git(source, "add", "tracked.txt")
+                self.run_git(source, "commit", "-m", "base")
+                tracked.write_text("candidate\n", encoding="utf-8")
+                self.run_git(source, "commit", "-am", "candidate")
+            diff = subprocess.run(
+                ["git", "diff", "--binary", "HEAD^", "HEAD"], cwd=source, capture_output=True, check=True
+            ).stdout
+            remote = directory / "remote.git"
+            self.run_git(directory, "clone", "--bare", str(source), str(remote))
+            self.run_git(remote, "config", "uploadpack.allowFilter", "true")
+            partial = directory / "partial"
+            self.run_git(directory, "clone", "--filter=blob:none", "--no-checkout", remote.as_uri(), str(partial))
+            git_dir = partial / ".git"
+            before = {path.relative_to(git_dir): path.read_bytes() for path in git_dir.rglob("*") if path.is_file()}
+            with self.assertRaises(RootError):
+                observe_integration_content(partial, "HEAD", diff)
+            self.assertEqual(
+                before, {path.relative_to(git_dir): path.read_bytes() for path in git_dir.rglob("*") if path.is_file()}
+            )
 
     def test_returning_initialization_reads_an_existing_exclusion_without_write_access(self) -> None:
         repository = Path(tempfile.mkdtemp()).resolve()

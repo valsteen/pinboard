@@ -1,5 +1,7 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -22,6 +24,109 @@ class WorkingTreeCandidate:
 class CurrentHeadCandidate:
     identity: str
     diff: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationObservation:
+    target_revision: str
+    content_present: bool
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedIntegrationTarget:
+    target: str
+
+
+def observe_integration_content(
+    cwd: Path, target: str, diff: bytes
+) -> IntegrationObservation | UnresolvedIntegrationTarget:
+    """Compare accepted diff bytes against a local commit using a disposable index."""
+
+    try:
+        return _observe_integration_content(cwd, target, diff)
+    except OSError as error:
+        raise RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, str(error)) from error
+
+
+def _observe_integration_content(
+    cwd: Path, target: str, diff: bytes
+) -> IntegrationObservation | UnresolvedIntegrationTarget:
+    environment = os.environ.copy()
+    environment["GIT_NO_LAZY_FETCH"] = "1"
+    resolve_source_checkout_root(cwd)
+    resolved = _git_text_result(
+        cwd, "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}", environment=environment
+    )
+    if resolved.returncode == 1:
+        return UnresolvedIntegrationTarget(target)
+    if resolved.returncode != 0 or not resolved.stdout.strip():
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            resolved.stderr.strip() or f"Cannot resolve Git target '{target}'.",
+        )
+    revision = resolved.stdout.strip()
+    if not diff:
+        return IntegrationObservation(revision, True)
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
+        environment["GIT_INDEX_FILE"] = str(Path(directory) / "index")
+        environment["LC_ALL"] = "C"
+        tree = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", revision],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+        if tree.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                tree.stderr.decode(errors="replace").strip() or f"Cannot read target tree '{target}'.",
+            )
+        applied = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "apply.ignoreWhitespace=no",
+                "apply",
+                "--cached",
+                "--check",
+                "--reverse",
+                "--whitespace=nowarn",
+                "-",
+            ],
+            cwd=cwd,
+            env=environment,
+            input=diff,
+            capture_output=True,
+            check=False,
+        )
+        diagnostic = applied.stderr.decode(errors="replace").strip()
+        rejection = (
+            applied.returncode == 1
+            and bool(diagnostic)
+            and all(
+                any(
+                    text in line
+                    for text in (
+                        "patch does not apply",
+                        "patch failed",
+                        "does not exist in index",
+                        "already exists in index",
+                        "does not match index",
+                        "does not match the current contents",
+                    )
+                )
+                for line in diagnostic.splitlines()
+            )
+        )
+        if applied.returncode != 0 and not rejection:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                diagnostic or f"Cannot compare target '{target}'.",
+            )
+    return IntegrationObservation(revision, applied.returncode == 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,13 +232,7 @@ def classify_checkout(cwd: Path) -> work_models.CheckoutSelection:
 
 
 def _git_text(cwd: Path, *arguments: str) -> str:
-    result = subprocess.run(
-        ["git", *arguments],
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    result = _git_text_result(cwd, *arguments, environment=None)
     value = result.stdout.strip()
     if result.returncode != 0 or not value:
         raise RootError(
@@ -141,6 +240,12 @@ def _git_text(cwd: Path, *arguments: str) -> str:
             result.stderr.strip() or f"Cannot observe Git checkout at '{cwd}'.",
         )
     return value
+
+
+def _git_text_result(
+    cwd: Path, *arguments: str, environment: dict[str, str] | None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *arguments], cwd=cwd, env=environment, text=True, capture_output=True, check=False)
 
 
 def _git_bytes(cwd: Path, *arguments: str, unavailable_message: str) -> bytes:

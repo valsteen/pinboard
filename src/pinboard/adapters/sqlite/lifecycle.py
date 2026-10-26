@@ -245,6 +245,20 @@ def reject_damaged_pause_receipt(_damaged: query_models.DamagedTransitionReceipt
     raise StorageError(StorageErrorCode.INVALID_STATE, "A paused attempt's latest receipt is not canonical.")
 
 
+def read_latest_integration_checkpoint(
+    connection: sqlite3.Connection, attempt_id: AttemptId
+) -> stored_state.StoredTransitionReceipt | query_models.DamagedTransitionReceipt | None:
+    row = connection.execute(
+        f"SELECT {_CONSUMED_RECEIPT_COLUMNS} FROM transition_history "
+        "WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2' "
+        "ORDER BY history_id DESC LIMIT 1",
+        (attempt_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return queries.decode_integration_checkpoint_receipt(attempt_id, _consumed_receipt(row))
+
+
 def _read_review_event(
     connection: sqlite3.Connection,
     item_id: WorkItemId,

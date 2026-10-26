@@ -1162,6 +1162,43 @@ def project_item_status(
     )
 
 
+def select_integration_candidate(facts: query_models.IntegrationFacts) -> query_models.IntegrationCandidateSelection:
+    if facts.item_state == stored_state.StoredWorkItemState.DONE:
+        if facts.closing_action != decision_models.ActionKind.COMPLETE:
+            return query_models.IntegrationUnavailable("The item was closed directly, without a completion candidate.")
+        if facts.candidate_context is None:
+            return query_models.IntegrationUnavailable("The closing candidate has no accepted snapshot.")
+        if isinstance(facts.candidate_context, query_models.IntegrationSnapshotInvalid):
+            return facts.candidate_context
+        return query_models.CompletionIntegrationCandidate(facts.candidate_context)
+    if facts.item_state == stored_state.StoredWorkItemState.REVIEW and facts.attempt_id is not None:
+        if facts.candidate_context is None:
+            return query_models.IntegrationUnavailable("The protected candidate predates accepted snapshots.")
+        if isinstance(facts.candidate_context, query_models.IntegrationSnapshotInvalid):
+            return facts.candidate_context
+        return query_models.ProtectedIntegrationCandidate(facts.candidate_context)
+    if facts.attempt_id is None or facts.checkpoint_receipt is None:
+        return query_models.IntegrationUnavailable(
+            "There is no protected candidate or accepted checkpoint on the current attempt."
+        )
+    if isinstance(facts.checkpoint_receipt, query_models.DamagedTransitionReceipt):
+        return facts.checkpoint_receipt
+    if facts.checkpoint_reference is None:
+        return query_models.IntegrationUnavailable("The checkpoint package has no candidate snapshot reference.")
+    return query_models.CheckpointIntegrationCandidate(
+        facts.attempt_id, facts.checkpoint_receipt, facts.checkpoint_reference
+    )
+
+
+def decode_integration_checkpoint_receipt(
+    attempt_id: AttemptId, receipt: query_models.ConsumedTransitionReceipt
+) -> stored_state.StoredTransitionReceipt | query_models.DamagedTransitionReceipt:
+    verdict = _checkpoint_verdict(attempt_id, receipt)
+    if isinstance(verdict, query_models.DamagedTransitionReceipt):
+        return verdict
+    return _stored_receipt(attempt_id, receipt, decision_models.ActionKind.ACCEPT_CHECKPOINT)
+
+
 def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query_models.BranchOwners | None:
     """Return every retained item and attempt that recorded this exact branch, or None when none did."""
 

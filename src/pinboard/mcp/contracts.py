@@ -2862,6 +2862,9 @@ class BriefReviewCorrection(msgspec.Struct, frozen=True, forbid_unknown_fields=T
 class BriefReviewStatusResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
     accepted_brief: ArtifactReferenceResult
+    accepted_brief_sha256: Sha256
+    checkpoint_sha256: Sha256
+    reviewed_authority_set_sha256: Sha256
     correction: BriefReviewCorrection
     retry: Literal["safe-to-repeat"]
     state_changed: bool
@@ -2914,7 +2917,7 @@ class BriefReviewUnchanged(_UnchangedResult, msgspec.Struct, frozen=True, forbid
 class BriefReviewRejected(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
     code: diagnostic_codes.BriefReviewRejectedCode
-    retry: Literal["correct-input"]
+    retry: Literal["correct-input", "do-not-retry"]
     observed: tuple[FailureObservation, ...]
     mismatches: tuple[FailureMismatch, ...]
 

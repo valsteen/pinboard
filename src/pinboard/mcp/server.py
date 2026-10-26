@@ -120,6 +120,10 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         instructions=(
             "Pinboard coordinates local repository work: intake, canonical briefs, status, legal actions, "
             "own leases, dispatch, independent review and recovery.\n\n"
+            "For another project's workflow, use advertised tools, verified artifacts and loaded public skills; "
+            "do not inspect installed Pinboard implementation or database internals to derive missing protocol values. "
+            "Stop the affected operation and report its exact missing input and known effects; use supported recovery. "
+            "Explicitly assigned Pinboard development or human-authorized investigation may inspect its source.\n\n"
             "A project's saved work lives in its board at <project_root>/.pinboard. Before answering about or acting "
             "on saved work, including quick read-only status and planning, load the complete pinboard main skill "
             "through this runtime's native skill loader, or use pinboard_startup_text file-start with its actual resolved absolute SKILL.md path if no "
@@ -353,7 +357,18 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=BRIEF_REVIEW_TOOL,
-        description="Publish an independent needs-correction brief review or read exact verified findings; neither grants dispatch readiness or authority.",
+        description=(
+            "Publish independent needs-correction evidence, or read the verified accepted brief and latest findings. "
+            "Status takes request:{operation:'status',project_root,work_root,brief_artifact_ref_id}. "
+            "Both successful status variants supply accepted_brief_sha256, checkpoint_sha256 and "
+            "reviewed_authority_set_sha256 from verified accepted bytes; copy these exact initial-review bindings. "
+            "Supply independent reviewer identity and judgments separately. Local checkpoints do not use brief review. "
+            "Missing fields or capability stop the affected review: report the exact subject, missing input and "
+            "known effects to the human/coordinator without inspecting installed implementation. "
+            "Corrupt accepted bytes return ARTIFACT_BYTES_INVALID and do-not-retry. "
+            "Status callback effects are unchanged; optional trace preflight/capture can write separately. "
+            "Neither findings nor their absence grants readiness, lifecycle change or authority."
+        ),
     )
     async def brief_review(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return await execution._run_request(
@@ -800,7 +815,8 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "lifecycle change or implementation verdict; protect the current candidate and commission its complete review next.\n"
             "WorkBriefReview requires schema:'pinboard-work-brief-review/v3', attempt_id, checkpoint_id, "
             "accepted_brief_sha256, checkpoint_sha256, reviewed_authority_set_sha256, reviewer_task_id, status:'complete', "
-            "verdict:'ready', and nonempty coverage. Bind the current checkpoint and ordered reviewed "
+            "verdict:'ready', and nonempty coverage. Copy the three digest bindings from pinboard_brief_review "
+            "status for the exact accepted brief reference. Bind the current checkpoint and ordered reviewed "
             "authority set; the reviewer must be independent. Every coverage record requires authority_id, "
             "family, owner, verdict:'covered' and counterexample_result. owner is exactly one of "
             "{disposition:'contract',contract_invariant:<text>}, {disposition:'acceptance',criterion:<positive "

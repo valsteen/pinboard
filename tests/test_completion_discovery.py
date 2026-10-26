@@ -432,7 +432,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 contract = selected["input_contract"]
                 assert isinstance(contract, dict)
                 packages = contract["checkpoint_packages"]
-                assert isinstance(packages, list)
+                assert isinstance(packages, list) and packages
                 package_evidence: list[JsonValue] = []
                 for package in packages:
                     assert isinstance(package, dict)
@@ -476,6 +476,14 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 self.assertFalse(result.is_error)
                 assert isinstance(result.structured_content, dict)
                 self.assertIn(result.structured_content["status"], {"committed", "committed-with-warning"})
+                terminal = await session.call_tool(
+                    "pinboard_item_status",
+                    {"request": common | {"operation": "item", "item_id": "work-a"}},
+                )
+                self.assertFalse(terminal.is_error)
+                assert isinstance(terminal.structured_content, dict)
+                self.assertEqual("done", terminal.structured_content["state"])
+                self.assertEqual([], terminal.structured_content["attempts"])
 
         asyncio.run(complete())
         terminal = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()

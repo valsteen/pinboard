@@ -234,6 +234,7 @@ type PublicationInfrastructureUnchangedFailureResultCode = Literal[
 type BriefReviewRejectedCode = Annotated[
     Literal[
         "BRIEF_REVIEW_REQUEST_INVALID",
+        "ARTIFACT_BYTES_INVALID",
         "WORK_BRIEF_INVALID",
         "WORK_BRIEF_NOT_CANONICAL",
         "WORK_BRIEF_REVIEW_INVALID",

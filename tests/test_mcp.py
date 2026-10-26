@@ -30,7 +30,7 @@ from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters import candidate_evidence, lifecycle_artifacts
 from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode, RootError, RootErrorCode
+from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import AffectedViews, UnavailableViewRefresh, ViewRefreshResult, ViewWarning
 from pinboard.adapters.files.views import board_pages
@@ -1438,8 +1438,12 @@ class McpTransportTest(unittest.TestCase):
         selector = failed.content["published_selector"]
         assert isinstance(selector, str)
         (roots.work_root / selector).write_bytes(b"{}\n")
-        with self.assertRaises(ArtifactError):
-            mcp_reads._brief_review({"request": {**base, "operation": "status"}}, mcp_execution.CancellationToken())
+        damaged = mcp_reads._brief_review(
+            {"request": {**base, "operation": "status"}}, mcp_execution.CancellationToken()
+        )
+        self.assertEqual("ARTIFACT_BYTES_INVALID", damaged.content["code"])
+        self.assertEqual("do-not-retry", damaged.content["retry"])
+        contract_schemas.validate_result(mcp_server.BRIEF_REVIEW_TOOL, damaged.content)
 
     def test_negative_review_post_link_sync_reports_publication_phase(self) -> None:
         temporary, project, roots = self._project()

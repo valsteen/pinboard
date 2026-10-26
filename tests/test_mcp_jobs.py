@@ -43,7 +43,7 @@ from pinboard.mcp import read_operations as mcp_reads
 from pinboard.mcp import server as mcp_server
 from tests import test_correction_source_review, test_dispatch
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
-from tests.native_support import call_advertised_tool
+from tests.native_support import NativeTools, call_advertised_tool, native_tools
 from tests.work_brief_support import CHECKPOINT_ID, ready_review
 
 
@@ -479,6 +479,173 @@ class McpJobsTest(CheckpointPackageSupport):
         )
         assert isinstance(choice, dict)
         return project, roots.work_root, choice
+
+    def test_public_brief_status_supplies_review_bindings_for_ready_and_negative_consumers(self) -> None:  # noqa: PLR0915 - one public review-to-dispatch journey
+        project, work, choice = self.dispatch_fixture()
+        roots: dict[str, contracts.JsonValue] = {"project_root": str(project), "work_root": str(work)}
+        store = SQLiteWorkStore(work / "state.sqlite3")
+        with native_tools() as native:
+            inspected = native.call_advertised_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL, roots | {"attempt_id": "work-a-1", "reconciliation": None}
+            )
+            reference = self.json_object(inspected["accepted_brief"])
+            request = roots | {"operation": "status", "brief_artifact_ref_id": reference["artifact_ref_id"]}
+            before = store.validated_snapshot()
+            status = native.call_advertised_tool(mcp_server.BRIEF_REVIEW_TOOL, {"request": request})
+            self.assertEqual("no-needs-correction-evidence", status["status"])
+            brief = self.json_object(status["brief"])
+            checkpoint = self.json_object(brief["checkpoint"])
+            bindings = {
+                field: status[field]
+                for field in ("accepted_brief_sha256", "checkpoint_sha256", "reviewed_authority_set_sha256")
+            }
+            self.assertEqual(reference["sha256"], bindings["accepted_brief_sha256"])
+            for field, value in (
+                ("checkpoint_sha256", checkpoint),
+                ("reviewed_authority_set_sha256", checkpoint["reviewed_authorities"]),
+            ):
+                canonical = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+                self.assertEqual(sha256(canonical).hexdigest(), bindings[field])
+            self.assertEqual(before, store.validated_snapshot())
+            self.assertEqual(
+                (False, "unchanged", []), (status["state_changed"], status["effect"], status["changed_surfaces"])
+            )
+            ready: dict[str, contracts.JsonValue] = {
+                "schema": "pinboard-work-brief-review/v3",
+                "attempt_id": brief["attempt_id"],
+                "checkpoint_id": checkpoint["checkpoint_id"],
+                **bindings,
+                "reviewer_task_id": "public-contract-reviewer",
+                "status": "complete",
+                "verdict": "ready",
+                "coverage": [
+                    {key: self.json_object(row)[key] for key in ("authority_id", "family", "owner")}
+                    | {"verdict": "covered", "counterexample_result": "Selected counterexample rejected."}
+                    for row in self.json_array(checkpoint["coverage"])
+                ],
+            }
+            # Review conclusions are independently supplied; only subject bindings come from status.
+            negative: dict[str, contracts.JsonValue] = {
+                key: value for key, value in ready.items() if key != "coverage"
+            } | {
+                "schema": "pinboard-work-brief-review-needs-correction/v1",
+                "artifact_revision": 1,
+                "verdict": "needs-correction",
+                "findings": [
+                    {
+                        "finding_id": "missing-owner",
+                        "summary": "Owner is missing.",
+                        "detail": "A selected effect has no owner.",
+                        "correction": "Name the effect owner.",
+                    }
+                ],
+            }
+            for field, value in (
+                ("accepted_brief_sha256", "f" * 64),
+                ("checkpoint_sha256", "f" * 64),
+                ("reviewed_authority_set_sha256", "f" * 64),
+                ("reviewer_task_id", brief["owner_task_id"]),
+            ):
+                with self.subTest(field=field):
+                    rejected = native.call_advertised_tool(
+                        mcp_server.DISPATCH_TOOL,
+                        roots | {"dispatch": choice | {"brief_review": ready | {field: value}}},
+                    )
+                    self.assertEqual(
+                        "DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT"
+                        if field == "reviewer_task_id"
+                        else "DISPATCH_BRIEF_REVIEW_STALE",
+                        rejected["code"],
+                        rejected,
+                    )
+                    rejected = native.call_advertised_tool(
+                        mcp_server.BRIEF_REVIEW_TOOL,
+                        {"request": request | {"operation": "publish", "review": negative | {field: value}}},
+                    )
+                    self.assertEqual(
+                        "WORK_BRIEF_REVIEW_NOT_INDEPENDENT"
+                        if field == "reviewer_task_id"
+                        else "WORK_BRIEF_REVIEW_STALE",
+                        rejected["code"],
+                        rejected,
+                    )
+                    self.assertEqual(before, store.validated_snapshot())
+            published = native.call_advertised_tool(
+                mcp_server.BRIEF_REVIEW_TOOL, {"request": request | {"operation": "publish", "review": negative}}
+            )
+            self.assertEqual("committed", published["status"], published)
+            status = native.call_advertised_tool(mcp_server.BRIEF_REVIEW_TOOL, {"request": request})
+            self.assertEqual("needs-correction", status["status"])
+            self.assertEqual(bindings, {key: status[key] for key in bindings})
+            self.assertEqual(negative, status["review"])
+            dispatched = native.call_advertised_tool(
+                mcp_server.DISPATCH_TOOL, roots | {"dispatch": choice | {"brief_review": ready}}
+            )
+            self.assertEqual("ready", dispatched["status"], dispatched)
+            before = store.validated_snapshot()
+            for selected in (reference, self.json_object(published["reference"])):
+                path = work / str(selected["selector"])
+                accepted_bytes = path.read_bytes()
+                for damaged in (b"corrupt", None):
+                    self.assertEqual(accepted_bytes, path.read_bytes())
+                    try:
+                        if damaged is None:
+                            path.unlink()
+                        else:
+                            path.write_bytes(damaged)
+                        rejected = native.call_advertised_tool(mcp_server.BRIEF_REVIEW_TOOL, {"request": request})
+                        self.assertEqual("ARTIFACT_BYTES_INVALID", rejected["code"], rejected)
+                        self.assertEqual(
+                            (False, "unchanged", "do-not-retry", []),
+                            (
+                                rejected["state_changed"],
+                                rejected["effect"],
+                                rejected["retry"],
+                                rejected["changed_surfaces"],
+                            ),
+                        )
+                        self.assertIn(str(path), str(rejected["message"]))
+                        self.assertNotIn("checkpoint_sha256", rejected)
+                    finally:
+                        path.write_bytes(accepted_bytes)
+                    self.assertEqual(accepted_bytes, path.read_bytes())
+                    self.assertEqual(before, store.validated_snapshot())
+
+    def test_brief_status_separates_trace_preflight_and_capture_from_callback_effects(self) -> None:
+        project, work, _ = self.dispatch_fixture()
+        request: dict[str, contracts.JsonValue] = {
+            "project_root": str(project),
+            "work_root": str(work),
+            "operation": "status",
+            "brief_artifact_ref_id": 1,
+        }
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        server = mcp_server.create_server(
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
+            capture=mcp_execution.AutomaticCapture(mcp_common.select_capture_item),
+        )
+        native = NativeTools(server)
+        with (project / ".git" / "info" / "exclude").open("a") as exclusions:
+            exclusions.write("\n/.pinboard/\n")
+        settings = work / "contributor-traces.config"
+        settings.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\nmode = invalid\n')
+        store = SQLiteWorkStore(work / "state.sqlite3")
+        before = store.validated_snapshot()
+        with patch.object(work_briefs, "read_brief_review_status", side_effect=AssertionError("callback ran")):
+            rejected = native.call_advertised_tool(mcp_server.BRIEF_REVIEW_TOOL, {"request": request})
+        self.assertEqual("TRACE_PREFLIGHT_FAILED", rejected["code"])
+        self.assertFalse(rejected["target_ran"])
+        self.assertEqual(before, store.validated_snapshot())
+        settings.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\nmode = on\n')
+        status = native.call_advertised_tool(mcp_server.BRIEF_REVIEW_TOOL, {"request": request})
+        self.assertEqual("no-needs-correction-evidence", status["status"], status)
+        self.assertEqual(
+            (False, "unchanged", []), (status["state_changed"], status["effect"], status["changed_surfaces"])
+        )
+        self.assertTrue(tuple((work / "invocation-traces").glob("*.json")))
+        self.assertEqual(before, store.validated_snapshot())
 
     def test_dispatch_rejects_sibling_options_before_roots_or_store(self) -> None:
         project, work, choice = self.dispatch_fixture()
@@ -987,6 +1154,70 @@ class McpJobsTest(CheckpointPackageSupport):
 
         with patch.object(dispatch_operations, "prepare_dispatch", side_effect=block_at_publication(real_prepare)):
             asyncio.run(scenario())
+
+    def test_public_inspection_and_launch_supply_record_ready_inputs(self) -> None:
+        fixture = self.checkpoint_fixture()
+        roots: dict[str, contracts.JsonValue] = {
+            "project_root": str(fixture.project), "work_root": str(fixture.work)
+        }
+        with native_tools() as native:
+            inspected = native.call_advertised_tool(
+                "pinboard_attempt_inspect", roots | {"attempt_id": "work-a-1", "reconciliation": None}
+            )
+            self.assertEqual("review", self.json_object(inspected["continuation"])["state"])
+            snapshot = self.json_object(inspected["candidate_recovery"])
+            brief = self.json_object(inspected["accepted_brief"])
+            for reference in (snapshot, brief):
+                verified = native.call_advertised_tool(
+                    "pinboard_artifact_verify",
+                    roots | {key: reference[key] for key in ("artifact_ref_id", "selector", "sha256", "size_bytes")},
+                )
+                self.assertTrue(verified["verified"])
+            launched = native.call_advertised_tool(
+                "pinboard_review_job",
+                roots | {
+                    "review": {
+                        "kind": "initial",
+                        "attempt_id": "work-a-1",
+                        "candidate_revision": snapshot["candidate"],
+                        "runtime": "codex",
+                        "background": False,
+                    }
+                },
+            )
+            self.assertEqual("ready", launched["status"], launched)
+            prompt = self.json_object(launched["prompt_reference"])
+            # Deterministic review judgments test projection, not a real agent's semantic review.
+            recorded = native.call_advertised_tool(
+                "pinboard_review_job",
+                roots | {
+                    "review": {
+                        "kind": "record-ready",
+                        "attempt_id": "work-a-1",
+                        "candidate_revision": snapshot["candidate"],
+                        "candidate_snapshot_sha256": snapshot["sha256"],
+                        "accepted_brief_sha256": brief["sha256"],
+                        "result_sha256": self.json_object(inspected["result"])["sha256"],
+                        "review_sha256": self.json_object(inspected["review"])["sha256"],
+                        "reviewer_prompt_sha256": prompt["sha256"],
+                        "reviewer_task_id": "public-contract-reviewer",
+                        "verdict": "ready",
+                        "acceptance_evidence": "Independent fixture judgments cover the accepted criteria.",
+                    }
+                },
+            )
+            self.assertEqual(("recorded", "committed"), (recorded["status"], recorded["effect"]), recorded)
+            reference = self.json_object(recorded["candidate_review"])
+            verified = native.call_advertised_tool(
+                "pinboard_artifact_verify",
+                roots | {key: reference[key] for key in ("artifact_ref_id", "selector", "sha256", "size_bytes")},
+            )
+            self.assertTrue(verified["verified"])
+            fresh = native.call_advertised_tool(
+                "pinboard_attempt_inspect", roots | {"attempt_id": "work-a-1", "reconciliation": None}
+            )
+            self.assertEqual("present", self.json_object(fresh["candidate_review"])["kind"])
+            self.assertEqual(reference["sha256"], self.json_object(fresh["candidate_review"])["sha256"])
 
     def test_stdio_dispatch_and_historical_review_publish_verifiable_prompts(self) -> None:
         project, work, choice = self.dispatch_fixture()

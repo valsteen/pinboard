@@ -47,6 +47,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_attempt_context,
     read_branch_owners,
     read_current_definitions,
+    read_item_closure,
     read_item_status,
     read_parallel_preview_lifecycle,
     read_recorded_pause_reasons,
@@ -72,7 +73,7 @@ from pinboard.adapters.sqlite.persistence import accept_artifact_reference as pe
 from pinboard.adapters.sqlite.proposals import (
     read_proposals_by_ids,
 )
-from pinboard.application import candidate_snapshots, queries, query_models, stored_state, work_briefs
+from pinboard.application import candidate_snapshots, integration, queries, query_models, stored_state, work_briefs
 from pinboard.application.artifacts import ArtifactRef, BriefArtifactRef
 from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.application.project_export import ProjectExportState
@@ -93,6 +94,24 @@ class _SelectedAttemptLinkRow(msgspec.Struct, frozen=True, forbid_unknown_fields
     attempt_id: AttemptId
     state: work_models.AttemptState
     subject_revision: int
+
+
+class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    state: stored_state.StoredWorkItemState
+    subject_revision: int
+
+
+class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: AttemptId
+    state: work_models.AttemptState
+    candidate_revision: str | None
+
+
+class _IntegrationReceiptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: HistoryId
+    committed_at: datetime
+    input_json: str
+    outcome_json: str
 
 
 def _read_generated_view_facts(
@@ -351,10 +370,10 @@ def _read_attempt_context_facts(
     return selected
 
 
-def _read_candidate_snapshot_context_facts(
+def _read_candidate_snapshot_reference(
     connection: sqlite3.Connection,
     attempt_id: AttemptId,
-) -> query_models.CandidateSnapshotContextFacts | None:
+) -> tuple[CandidateSnapshotAttemptRow, stored_state.ArtifactReference | None] | None:
     attempt_row = connection.execute(
         """
         SELECT attempt_id, item_id, state, branch, base_revision,
@@ -378,6 +397,17 @@ def _read_candidate_snapshot_context_facts(
         work_models.ArtifactKind.EVIDENCE,
         artifact_key,
     )
+    return attempt, reference
+
+
+def _read_candidate_snapshot_context_facts(
+    connection: sqlite3.Connection,
+    attempt_id: AttemptId,
+) -> query_models.CandidateSnapshotContextFacts | None:
+    selected = _read_candidate_snapshot_reference(connection, attempt_id)
+    if selected is None:
+        return None
+    attempt, reference = selected
     if reference is None:
         history_row = connection.execute(
             "SELECT history_id FROM transition_history WHERE project_revision = ?",
@@ -431,6 +461,112 @@ def _read_candidate_snapshot_context_facts(
         receipt,
         reference,
     )
+
+
+def _read_integration_source(
+    connection: sqlite3.Connection, work_item_id: WorkItemId
+) -> tuple[int, stored_state.StoredWorkItemState, integration.SourceSelection] | None:
+    project_row = connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone()
+    if project_row is None:
+        raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
+    item_row = connection.execute(
+        "SELECT state, subject_revision FROM work_items WHERE item_id = ?", (work_item_id,)
+    ).fetchone()
+    if item_row is None:
+        return None
+    item = decode_row(item_row, _IntegrationItemRow)
+    live = stored_state.live_work_state(item.state) is not None
+    attempt_row = (
+        connection.execute(
+            """SELECT attempt_id, state, candidate_revision FROM attempts INDEXED BY one_live_attempt_per_item
+               WHERE item_id = ? AND state != 'done'""",
+            (work_item_id,),
+        ).fetchone()
+        if live
+        else None
+    )
+    attempt = None if attempt_row is None else decode_row(attempt_row, _IntegrationAttemptRow)
+    current = (
+        None
+        if attempt is None
+        else integration.CurrentAttempt(attempt.attempt_id, attempt.state, attempt.candidate_revision)
+    )
+    closure = read_item_closure(connection, work_item_id, item.subject_revision) if not live else None
+    return (
+        decode_row(project_row, ProjectRevisionRow).revision,
+        item.state,
+        integration.select_source(item.state, current, closure),
+    )
+
+
+def _damaged_snapshot_receipt(
+    connection: sqlite3.Connection, attempt_id: AttemptId
+) -> query_models.DamagedTransitionReceipt | None:
+    selected = _read_candidate_snapshot_reference(connection, attempt_id)
+    if selected is None:
+        return None
+    _, reference = selected
+    if reference is None:
+        return None
+    row = connection.execute(
+        "SELECT history_id, committed_at, input_json, outcome_json FROM transition_history WHERE project_revision = ?",
+        (reference.accepted_revision,),
+    ).fetchone()
+    if row is None:
+        return None
+    selected = decode_row(row, _IntegrationReceiptRow)
+    try:
+        msgspec.json.decode(
+            selected.input_json.encode(), type=candidate_snapshots.CandidateSnapshotReceiptInput, strict=True
+        )
+        msgspec.json.decode(selected.outcome_json.encode(), type=history.TransitionReceiptOutcome, strict=True)
+    except msgspec.DecodeError as error:
+        return query_models.DamagedTransitionReceipt(
+            attempt_id, selected.history_id, selected.committed_at, decision_models.ActionKind.SUBMIT_REVIEW, str(error)
+        )
+    return None
+
+
+def _read_integration_checkpoint(
+    connection: sqlite3.Connection,
+    revision: int,
+    state: stored_state.StoredWorkItemState,
+    source: integration.AcceptedCheckpoint,
+) -> integration.CheckpointContext | integration.DamagedReceiptContext:
+    row = connection.execute(
+        """SELECT history_id, committed_at, input_json, outcome_json FROM transition_history
+           WHERE subject_id = ? AND outcome_schema = 'checkpoint-acceptance/v2'
+           ORDER BY history_id DESC LIMIT 1""",
+        (source.attempt_id,),
+    ).fetchone()
+    if row is None:
+        return integration.CheckpointContext(revision, state, source, None, None, None)
+    selected = decode_row(row, _IntegrationReceiptRow)
+    try:
+        msgspec.json.decode(selected.input_json.encode(), type=msgspec.Raw)
+        encoded = selected.outcome_json.encode()
+        outcome = msgspec.json.decode(encoded, type=history.CheckpointAcceptanceOutcome, strict=True)
+        if msgspec.json.encode(outcome, order="sorted") != encoded:
+            raise ValueError("The checkpoint outcome is not canonical.")
+    except (msgspec.DecodeError, ValueError) as error:
+        damage = query_models.DamagedTransitionReceipt(
+            source.attempt_id,
+            selected.history_id,
+            selected.committed_at,
+            decision_models.ActionKind.ACCEPT_CHECKPOINT,
+            str(error),
+        )
+        return integration.DamagedReceiptContext(revision, state, damage)
+    receipt = sqlite_state.read_history_receipt(connection, selected.history_id)
+    if receipt is None:
+        return integration.CheckpointContext(revision, state, source, None, None, None)
+    package = (
+        None if receipt.artifact_ref_id is None else read_artifact_reference_by_id(connection, receipt.artifact_ref_id)
+    )
+    candidate = read_artifact_reference(
+        connection, work_models.ArtifactKind.EVIDENCE, f"{source.attempt_id}-{outcome.checkpoint}-candidate", 1
+    )
+    return integration.CheckpointContext(revision, state, source, receipt, package, candidate)
 
 
 class SQLiteWorkStore:
@@ -717,6 +853,37 @@ class SQLiteWorkStore:
                     lifecycle.closure,
                     preparation,
                 )
+        finally:
+            connection.close()
+
+    def read_integration_context(self, work_item_id: WorkItemId) -> integration.IntegrationContext | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                facts = _read_integration_source(connection, work_item_id)
+                if facts is None:
+                    return None
+                revision, state, source = facts
+                match source:
+                    case integration.CandidateUnavailable(reason=reason):
+                        return integration.UnavailableContext(revision, state, reason)
+                    case integration.ProtectedReview() | integration.Completion():
+                        try:
+                            snapshot = _read_candidate_snapshot_context_facts(connection, source.attempt_id)
+                        except StorageError as error:
+                            if error.code != StorageErrorCode.INVALID_STATE:
+                                raise
+                            damage = _damaged_snapshot_receipt(connection, source.attempt_id)
+                            if damage is not None:
+                                return integration.DamagedReceiptContext(revision, state, damage)
+                            return integration.InvalidSnapshotContext(
+                                revision, state, source.attempt_id, source.candidate, str(error)
+                            )
+                        return integration.SnapshotContext(revision, state, source, snapshot)
+                    case integration.AcceptedCheckpoint():
+                        return _read_integration_checkpoint(connection, revision, state, source)
+                    case _ as unreachable:
+                        assert_never(unreachable)
         finally:
             connection.close()
 

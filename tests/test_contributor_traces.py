@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp_types import CallToolResult
 
 from pinboard.adapters.files import contributor_traces, git_config
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
@@ -756,9 +757,44 @@ class ContributorTraceTest(unittest.TestCase):
             branch_leaf: dict[str, JsonValue] = {
                 "request": {"work_root": str(work_root), "operation": "branch", "branch": "codex/work-a"}
             }
+            integration_leaf: dict[str, JsonValue] = {
+                "request": {
+                    "work_root": str(work_root),
+                    "operation": "integration",
+                    "item_id": "work-a",
+                    "target": "main",
+                }
+            }
             self.assertIsNone(common.select_capture_item(primary, str(work_root), branch_leaf))
             self.assertIsNotNone(capture.resolve(str(worktree), item_leaf))
+            self.assertIsNotNone(capture.resolve(str(worktree), integration_leaf))
             self.assertIsNone(capture.resolve(str(worktree), branch_leaf))
+            executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+            try:
+                native = server.create_server(
+                    executor, execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256), capture
+                )
+                result = asyncio.run(
+                    native.call_tool(
+                        server.ITEM_STATUS_TOOL,
+                        {
+                            "request": {
+                                "project_root": str(worktree),
+                                "work_root": str(work_root),
+                                "operation": "integration",
+                                "item_id": "work-a",
+                                "target": "HEAD",
+                            }
+                        },
+                    )
+                )
+                assert isinstance(result, CallToolResult)
+                self.assertFalse(result.is_error)
+                traces = tuple((work_root / contributor_traces.TRACE_DIRECTORY).glob("pinboard-auto-mcp-*.json"))
+                self.assertEqual(1, len(traces))
+                self.assertEqual("integration", json.loads(traces[0].read_bytes())["request"]["request"]["operation"])
+            finally:
+                executor.shutdown()
             self.settings(primary, "off", {"work-a": "invalid"})
             rejected = capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"})
             self.assertIsInstance(rejected, execution.OperationResult)

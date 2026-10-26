@@ -6,7 +6,7 @@ import json
 import sqlite3
 import subprocess
 from datetime import UTC, datetime
-from typing import assert_never
+from typing import Literal, assert_never
 from unittest.mock import patch
 
 import msgspec
@@ -29,6 +29,13 @@ from tests.support import JsonObject, NoReadyCandidateReviews
 
 CLOSED_AT = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
 COMPLETED_AT = datetime(2030, 1, 3, 4, 5, 6, tzinfo=UTC)
+type ExistingDamagedReceipt = Literal[
+    decision_models.ActionKind.PAUSE,
+    decision_models.ActionKind.REBIND_ATTEMPT,
+    decision_models.ActionKind.RETURN_FOR_CORRECTION,
+    decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE,
+    decision_models.ActionKind.ACCEPT_CHECKPOINT,
+]
 
 
 class ItemStatusFactsTest(CheckpointPackageSupport):
@@ -344,7 +351,10 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                 self.rebind(fixture, fixture.brief.branch, 2)
                 self.assertTrue(self.verdict(fixture)["rebound_since_return"])
 
-    def damaged_receipt_fixture(self, receipt: query_models.DamagedReceiptActionKind) -> CheckpointFixture:
+    def damaged_receipt_fixture(
+        self,
+        receipt: ExistingDamagedReceipt,
+    ) -> CheckpointFixture:
         """Build an attempt whose consumed receipt of the named kind is its latest receipt."""
 
         match receipt:
@@ -401,7 +411,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
         )
         validation = query_models.DamagedReceiptDiagnosis.VALIDATION
         human = query_models.DamagedReceiptDiagnosis.HUMAN
-        receipts: tuple[tuple[query_models.DamagedReceiptActionKind, query_models.DamagedReceiptDiagnosis], ...] = (
+        receipts: tuple[tuple[ExistingDamagedReceipt, query_models.DamagedReceiptDiagnosis], ...] = (
             (decision_models.ActionKind.PAUSE, validation),
             (decision_models.ActionKind.REBIND_ATTEMPT, validation),
             (decision_models.ActionKind.RETURN_FOR_CORRECTION, human),
@@ -418,7 +428,7 @@ class ItemStatusFactsTest(CheckpointPackageSupport):
                     self.update_receipt(fixture, damaged_history, **columns)
 
                     status = self.item_leaf(fixture)
-                    self.assertEqual("pinboard-mcp-item-status-result/v2", status["schema"])
+                    self.assertEqual("pinboard-mcp-item-status-result/v3", status["schema"])
                     named = self.named_receipt(status, receipt)
                     self.assertEqual((AttemptId("work-a-1"), damaged_history), (named.attempt_id, named.history_id))
                     self.assertEqual(diagnosis, queries.damaged_receipt_diagnosis(receipt))

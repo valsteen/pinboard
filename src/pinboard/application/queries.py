@@ -130,7 +130,8 @@ def damaged_receipt_diagnosis(
         case decision_models.ActionKind.PAUSE | decision_models.ActionKind.REBIND_ATTEMPT:
             return query_models.DamagedReceiptDiagnosis.VALIDATION
         case (
-            decision_models.ActionKind.RETURN_FOR_CORRECTION
+            decision_models.ActionKind.SUBMIT_REVIEW
+            | decision_models.ActionKind.RETURN_FOR_CORRECTION
             | decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
             | decision_models.ActionKind.ACCEPT_CHECKPOINT
         ):

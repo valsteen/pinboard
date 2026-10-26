@@ -676,6 +676,7 @@ type ItemStatusAuthority = Literal["sqlite-v7"]
 
 
 type DamagedReceiptActionKind = Literal[
+    decision_models.ActionKind.SUBMIT_REVIEW,
     decision_models.ActionKind.PAUSE,
     decision_models.ActionKind.REBIND_ATTEMPT,
     decision_models.ActionKind.RETURN_FOR_CORRECTION,

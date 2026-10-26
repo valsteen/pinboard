@@ -1,10 +1,13 @@
 import fcntl
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
+from pinboard.application import integration
 from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.domain import work_models
 
@@ -33,6 +36,71 @@ class DifferentHeadCandidate:
 @dataclass(frozen=True, slots=True)
 class DirtyHeadCandidate:
     candidate_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContentObservation:
+    target_revision: str
+    presence: integration.Presence
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedTarget:
+    target: str
+
+
+def observe_content_at_target(cwd: Path, target: str, diff: bytes) -> ContentObservation | UnresolvedTarget:
+    """Check a recorded diff against a target tree without changing repository state."""
+    try:
+        return _observe_content_at_target(cwd, target, diff)
+    except OSError as error:
+        raise RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, str(error)) from error
+
+
+def _observe_content_at_target(cwd: Path, target: str, diff: bytes) -> ContentObservation | UnresolvedTarget:
+    resolve_source_checkout_root(cwd)
+    resolved = _git_text_result(cwd, "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}")
+    if resolved.returncode == 1:
+        return UnresolvedTarget(target)
+    revision = resolved.stdout.strip()
+    if resolved.returncode != 0 or not revision:
+        raise RootError(
+            RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+            resolved.stderr.strip() or f"Cannot resolve Git target at '{cwd}'.",
+        )
+    if not diff:
+        return ContentObservation(revision, integration.Presence.NO_CHANGE)
+    with tempfile.TemporaryDirectory(prefix="pinboard-integration-") as directory:
+        environment = os.environ.copy()
+        environment["GIT_INDEX_FILE"] = str(Path(directory) / "index")
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+        tree = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "read-tree", revision],
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        )
+        if tree.returncode != 0:
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                tree.stderr.decode(errors="replace").strip() or f"Cannot read target tree at '{cwd}'.",
+            )
+        applied = subprocess.run(
+            ["git", "-c", "core.splitIndex=false", "apply", "--cached", "--check", "--reverse", "--whitespace=nowarn"],
+            cwd=cwd,
+            env=environment,
+            input=diff,
+            capture_output=True,
+            check=False,
+        )
+        if applied.returncode not in (0, 1):
+            raise RootError(
+                RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
+                applied.stderr.decode(errors="replace").strip() or f"Cannot check target tree at '{cwd}'.",
+            )
+        presence = integration.Presence.PRESENT if applied.returncode == 0 else integration.Presence.NOT_PRESENT
+        return ContentObservation(revision, presence)
 
 
 type CommittedCandidateObservation = CurrentHeadCandidate | DifferentHeadCandidate | DirtyHeadCandidate
@@ -126,14 +194,18 @@ def classify_checkout(cwd: Path) -> work_models.CheckoutSelection:
     )
 
 
-def _git_text(cwd: Path, *arguments: str) -> str:
-    result = subprocess.run(
+def _git_text_result(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["git", *arguments],
         cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
     )
+
+
+def _git_text(cwd: Path, *arguments: str) -> str:
+    result = _git_text_result(cwd, *arguments)
     value = result.stdout.strip()
     if result.returncode != 0 or not value:
         raise RootError(

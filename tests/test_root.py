@@ -13,14 +13,18 @@ from unittest.mock import patch
 
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import (
+    ContentObservation,
     CurrentHeadCandidate,
+    UnresolvedTarget,
     classify_checkout,
     ensure_default_git_exclude,
     observe_checkout_identity,
+    observe_content_at_target,
     read_current_head_candidate,
     resolve_shared_repository_root,
     resolve_source_checkout_root,
 )
+from pinboard.application.integration import Presence
 from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
 from pinboard.mcp import server
@@ -141,6 +145,93 @@ class RootResolutionTest(unittest.TestCase):
         self.assertEqual(candidate_revision, observed.identity)
         self.assertIn(b"-base\n+candidate", observed.diff)
         self.assertEqual(original_index, index.read_bytes())
+
+    def test_content_observation_uses_a_temporary_index_without_changing_the_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repository"
+            repository.mkdir()
+            temporary = Path(directory) / "temporary"
+            temporary.mkdir()
+            with patch.dict(
+                os.environ,
+                {"GIT_AUTHOR_DATE": "2001-01-01T00:00:00+0000", "GIT_COMMITTER_DATE": "2001-01-01T00:00:00+0000"},
+            ):
+                self.run_git(repository, "init", "-b", "main")
+                tracked = repository / "tracked.txt"
+                tracked.write_text("base\n", encoding="utf-8")
+                self.run_git(repository, "add", "tracked.txt")
+                self.run_git(
+                    repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base"
+                )
+                base = self.run_git(repository, "rev-parse", "HEAD").strip()
+                tracked.write_text("candidate  \n", encoding="utf-8")
+                diff = subprocess.run(
+                    ["git", "diff", "--binary", "HEAD"], cwd=repository, check=True, capture_output=True
+                ).stdout
+                self.run_git(repository, "add", "tracked.txt")
+                self.run_git(
+                    repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "candidate"
+                )
+                candidate = self.run_git(repository, "rev-parse", "HEAD").strip()
+                self.run_git(repository, "config", "apply.whitespace", "error")
+            git_dir = repository / ".git"
+            before = {path.relative_to(git_dir): path.read_bytes() for path in git_dir.rglob("*") if path.is_file()}
+            modes = {path: path.stat().st_mode for path in git_dir.rglob("*")}
+            try:
+                for path in modes:
+                    path.chmod(0o500 if path.is_dir() else 0o400)
+                git_dir.chmod(0o500)
+                with patch.object(tempfile, "tempdir", str(temporary)):
+                    self.assertEqual(
+                        ContentObservation(candidate, Presence.PRESENT),
+                        observe_content_at_target(repository, "main", diff),
+                    )
+                    self.assertEqual(
+                        ContentObservation(base, Presence.NOT_PRESENT),
+                        observe_content_at_target(repository, base, diff),
+                    )
+                    self.assertEqual(
+                        ContentObservation(candidate, Presence.NO_CHANGE),
+                        observe_content_at_target(repository, "main", b""),
+                    )
+                    self.assertEqual(
+                        UnresolvedTarget("missing"), observe_content_at_target(repository, "missing", diff)
+                    )
+                    with self.assertRaises(RootError):
+                        observe_content_at_target(temporary, "main", diff)
+                self.assertEqual([], list(temporary.iterdir()))
+                self.assertEqual(
+                    before,
+                    {path.relative_to(git_dir): path.read_bytes() for path in git_dir.rglob("*") if path.is_file()},
+                )
+                self.assertEqual("candidate  \n", tracked.read_text(encoding="utf-8"))
+            finally:
+                git_dir.chmod(0o700)
+                for path, mode in modes.items():
+                    path.chmod(mode)
+
+    def test_content_observation_reports_temporary_directory_failure(self) -> None:
+        repository = Path(tempfile.mkdtemp()).resolve()
+        self.run_git(repository, "init", "-b", "main")
+        (repository / "tracked.txt").write_text("base\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        with patch.dict(
+            os.environ,
+            {"GIT_AUTHOR_DATE": "2001-01-01T00:00:00+0000", "GIT_COMMITTER_DATE": "2001-01-01T00:00:00+0000"},
+        ):
+            self.run_git(
+                repository, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base"
+            )
+        with (
+            patch(
+                "pinboard.adapters.files.root.tempfile.TemporaryDirectory",
+                side_effect=OSError("temporary directory denied"),
+            ),
+            self.assertRaisesRegex(RootError, "temporary directory denied"),
+        ):
+            observe_content_at_target(repository, "HEAD", b"nonempty")
+        with self.assertRaisesRegex(RootError, "PROJECT_GIT_CHECKOUT_UNAVAILABLE"):
+            observe_content_at_target(repository, "HEAD", b"not a patch")
 
     def test_returning_initialization_reads_an_existing_exclusion_without_write_access(self) -> None:
         repository = Path(tempfile.mkdtemp()).resolve()

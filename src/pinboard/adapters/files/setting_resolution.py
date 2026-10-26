@@ -1,11 +1,20 @@
-"""Verified settings and confirmed first-use effects at file boundaries."""
+"""Verified settings and confirmed first-use effects at file boundaries.
 
+Contributor trace settings and per-user host settings share one key-level seeding route: an absent file is
+created privately, a missing key is written through Git config on an exclusive lock copy that Git writers and
+the pre-runtime launcher also honor, and the stored value is read back before use.
+"""
+
+import os
+import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from pinboard.adapters.files import git_config
-from pinboard.adapters.files.errors import FileIOError
+from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
+from pinboard.adapters.files.file_io import create_immutable
 
 
 @dataclass(frozen=True)
@@ -40,3 +49,91 @@ class SettingResolutionError(ValueError):
         self.cause: git_config.ReadFailed | git_config.WriteUnconfirmed | ValueError | OSError | FileIOError = cause
         self.operation: Literal["read", "create", "stage", "publish"] = operation
         self.resource: Path = resource
+
+
+def observe_or_create_settings_file(path: Path) -> SettingEffects:
+    """Observe file presence without masking access errors; preserve this invocation's creation effect."""
+    effects = SettingEffects("none", "none", "none")
+    try:
+        path.stat(follow_symlinks=False)
+        missing = False
+    except FileNotFoundError:
+        missing = True
+    except OSError as error:
+        raise SettingResolutionError(str(error), path, effects, error, "read", path) from error
+    if missing:
+        try:
+            effects = SettingEffects("none", "confirmed" if create_immutable(path, b"") else "none", "none")
+        except ImmutableFilePublishedError as error:
+            raise SettingResolutionError(
+                str(error), path, SettingEffects("none", "confirmed", "none"), error, "create", path
+            ) from error
+        except FileIOError as error:
+            if error.code != FileIOErrorCode.FILE_ALREADY_EXISTS:
+                raise SettingResolutionError(str(error), path, effects, error, "create", path) from error
+    return effects
+
+
+def resolve_seeded_key[T](
+    path: Path,
+    read: Callable[[Path, SettingEffects], T | None],
+    key: str,
+    seed: str,
+    subject: str,
+) -> SettingResolution[T]:
+    """Read a setting, writing `seed` at `key` only when `read` reports the key missing, then read it back.
+
+    `read` raises SettingResolutionError for unreadable or invalid settings and returns None only when the
+    key this caller seeds is absent.
+    """
+    effects = observe_or_create_settings_file(path)
+    operation: Literal["read", "stage", "publish"] = "read"
+    resource = path
+    try:
+        settings = read(path, effects)
+        if settings is not None:
+            return SettingResolution(path, settings, effects)
+        # Recheck while holding the lock; a stale absence cannot replace an explicit choice.
+        lock = path.with_name(f"{path.name}.lock")
+        operation, resource = "stage", lock
+        with lock.open("xb") as staged:
+            published = False
+            try:
+                operation, resource = "read", path
+                mode = stat.S_IMODE(path.stat().st_mode)
+                operation, resource = "stage", lock
+                os.fchmod(staged.fileno(), mode)
+                settings = read(path, effects)
+                if settings is not None:
+                    return SettingResolution(path, settings, effects)
+                operation, resource = "read", path
+                content = path.read_bytes()
+                operation, resource = "stage", lock
+                staged.write(content)
+                staged.flush()
+                written = git_config.add(lock, key, seed)
+                if isinstance(written, git_config.WriteUnconfirmed):
+                    raise SettingResolutionError(
+                        f"Cannot write {subject} {key} in {path}: {written.cause.diagnostic}",
+                        path,
+                        effects,
+                        written,
+                        "stage",
+                        lock,
+                    )
+                operation, resource = "publish", path
+                lock.replace(path)
+                published = True
+                effects = SettingEffects(effects.parent_creation, effects.file_creation, "acknowledged")
+            finally:
+                if not published:
+                    lock.unlink(missing_ok=True)
+        operation, resource = "read", path
+        settings = read(path, effects)
+        if settings is None:
+            raise ValueError(f"{subject} {key} is still missing from {path} after its write.")
+        return SettingResolution(path, settings, effects)
+    except (ValueError, OSError) as error:
+        if isinstance(error, SettingResolutionError):
+            raise
+        raise SettingResolutionError(str(error), path, effects, error, operation, resource) from error

@@ -21,7 +21,7 @@ from unittest.mock import patch
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from pinboard.adapters.files import contributor_traces, git_config
+from pinboard.adapters.files import contributor_traces, git_config, setting_resolution
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.files.setting_resolution import SettingResolutionError
@@ -201,7 +201,7 @@ class ContributorTraceTest(unittest.TestCase):
                 path.write_bytes(b'[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = on\n')
                 raise FileIOError(FileIOErrorCode.FILE_ALREADY_EXISTS, "created by another caller")
 
-            with patch.object(contributor_traces, "create_immutable", side_effect=concurrent_writer):
+            with patch.object(setting_resolution, "create_immutable", side_effect=concurrent_writer):
                 state = contributor_traces.read_project_trace_settings(primary, None)
             self.assertIsNotNone(state)
             assert state is not None
@@ -209,7 +209,7 @@ class ContributorTraceTest(unittest.TestCase):
             setting_path.unlink()
             with (
                 patch.object(
-                    contributor_traces,
+                    setting_resolution,
                     "create_immutable",
                     side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "publication failed"),
                 ),
@@ -813,7 +813,7 @@ class ContributorTraceTest(unittest.TestCase):
             def identity_result(_operation: str, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
                 return value
 
-            original_create = contributor_traces.create_immutable
+            original_create = setting_resolution.create_immutable
 
             def deny_shared(path: Path, content: bytes) -> bool:
                 if path.is_relative_to(primary / ".pinboard"):
@@ -837,7 +837,7 @@ class ContributorTraceTest(unittest.TestCase):
                     executor.shutdown()
 
             with (
-                patch.object(contributor_traces, "create_immutable", side_effect=deny_shared),
+                patch.object(setting_resolution, "create_immutable", side_effect=deny_shared),
                 patch.object(execution.contract_schemas, "validate_result", side_effect=identity_result),
             ):
                 self.assertEqual({"ok": True}, asyncio.run(run()))

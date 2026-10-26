@@ -295,7 +295,7 @@ Agents read Pinboard skills, references and launch prompts in pages through the 
 	startup-page-bytes = 16000
 ```
 
-The first page read from a recognized host creates `~/.config/pinboard` (mode `0700`) and the file (mode `0600`) when they are missing, writes that host's measured default as one key, and reads it back. After that the value is yours; Pinboard never rewrites it. Any other MCP client gets 8000-byte pages and no setting.
+The first page read from a recognized host creates `~/.config/pinboard` (mode `0700`) and the file (mode `0600`) when they are missing, writes that host's measured default as one key, and reads it back, the same way Pinboard seeds contributor-trace settings. That per-user write is the only one `pinboard_startup_text` makes; it never writes your project or board. After that the value is yours; Pinboard never rewrites it. Any other MCP client gets 8000-byte pages and no setting.
 
 | Host | Client name | Seeded default | Measured on | Host limit the default assumes |
 | --- | --- | --- | --- | --- |
@@ -388,7 +388,7 @@ MCP startup and the SessionStart hook can prepare a new install automatically. W
 
 ### Pinboard reports a host page-size setting as unavailable
 
-A `HOST_PAGE_SETTING_UNAVAILABLE` result means Pinboard could not read, create or verify your page size for the connected host. It names the file, the key and one next step: usually correcting the value as described in [Startup page size per host](#startup-page-size-per-host), granting access to `~/.config/pinboard`, or waiting for another edit's `hosts.config.lock` to finish. No page is read until the setting is usable.
+A `HOST_PAGE_SETTING_UNAVAILABLE` result means Pinboard could not read, create or verify your page size for the connected host. Pinboard checks every entry in `hosts.config`, because all hosts share it, so the key the result names is the one to fix: an invalid value, a key set more than once or an unknown key can belong to another host's section. The next step it gives is usually correcting that value as described in [Startup page size per host](#startup-page-size-per-host), keeping one copy of a repeated key, removing or renaming an unknown key, granting access to `~/.config/pinboard`, or waiting for another edit's `hosts.config.lock` to finish. No page is read until the file is usable.
 
 ### The launcher says runtime preparation is required
 

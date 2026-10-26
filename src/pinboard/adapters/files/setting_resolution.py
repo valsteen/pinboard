@@ -9,6 +9,7 @@ import os
 import stat
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 from typing import Literal
 
@@ -22,6 +23,28 @@ class SettingEffects:
     parent_creation: Literal["none", "unconfirmed"]
     file_creation: Literal["none", "confirmed", "unconfirmed"]
     key_write: Literal["none", "acknowledged", "unconfirmed"]
+
+
+class EntryProblem(Enum):
+    """Why one stored settings entry was rejected."""
+
+    INVALID_VALUE = auto()
+    DUPLICATE_KEY = auto()
+    UNKNOWN_KEY = auto()
+
+
+@dataclass(frozen=True)
+class InvalidEntry:
+    """One stored settings entry that failed validation, named by its own key rather than the caller's."""
+
+    key: str
+    problem: EntryProblem
+    diagnostic: str
+
+
+type SettingFailureCause = (
+    git_config.ReadFailed | git_config.WriteUnconfirmed | InvalidEntry | ValueError | OSError | FileIOError
+)
 
 
 @dataclass(frozen=True)
@@ -39,14 +62,14 @@ class SettingResolutionError(ValueError):
         message: str,
         path: Path,
         effects: SettingEffects,
-        cause: git_config.ReadFailed | git_config.WriteUnconfirmed | ValueError | OSError | FileIOError,
+        cause: SettingFailureCause,
         operation: Literal["read", "create", "stage", "publish"],
         resource: Path,
     ) -> None:
         super().__init__(message)
         self.path: Path = path
         self.effects: SettingEffects = effects
-        self.cause: git_config.ReadFailed | git_config.WriteUnconfirmed | ValueError | OSError | FileIOError = cause
+        self.cause: SettingFailureCause = cause
         self.operation: Literal["read", "create", "stage", "publish"] = operation
         self.resource: Path = resource
 

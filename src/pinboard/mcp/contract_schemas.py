@@ -152,7 +152,8 @@ def _portable_pattern(pattern: str) -> tuple[str, str | None]:
         r"\A(?!\.{1,2}\z)[^/\r\n\x00]+\z": f"^{component}$",
         r"\A(?!\s)(?!\.{1,2}\z)[^/\r\n\x00]*[^\s/\r\n\x00]\z": f"^{trimmed_component}$",
     }
-    python_space = r"\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
+    # Advertised patterns carry these code points as literal characters, never as \u escapes, which RE2 rejects.
+    python_space = "\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
     projected = special.get(pattern, f"^{pattern[2:-2]}$")
     projected = projected.replace(r"\S", f"[^{python_space}]").replace(r"\s", python_space)
     if any(marker in projected for marker in (r"\A", r"\z", "(?=", "(?!", "(?<=", "(?<!")):
@@ -163,7 +164,7 @@ def _portable_pattern(pattern: str) -> tuple[str, str | None]:
         return projected, r"\n$"
     if pattern == r"\A(?!\.{1,2}\z)[^/\r\n\x00]+\z":
         return projected, r"[\r\n]$"
-    return projected, r"[\r\n\u2028\u2029]$"
+    return projected, r"[\r\n" "\u2028\u2029]$"
 
 
 def project_regex_patterns(schema: dict[str, JsonSchemaValue]) -> None:

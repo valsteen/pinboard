@@ -257,7 +257,7 @@ On the first session of a new install, the SessionStart hook prepares the plugin
 
 If Pinboard stays unavailable after preparation, start a new agy session so Antigravity reconnects the server.
 
-Antigravity loads only the first 24000 bytes of a skill body. Pinboard's hook tells each session, and each worker or reviewer it launches, to read complete skills through Pinboard's paged reader, so the two larger skills are still followed in full. Workers and reviewers run as Antigravity subagents in the same workspace; keeping each one inside its assigned checkout relies on its instructions, because Antigravity does not confine it.
+Antigravity shows the model only each skill's name, path and description and leaves reading the skill file to the model. The plugin's files sit outside your workspace, which headless agy will not let the model read directly, and agy warns that skill bodies above 24000 bytes are truncated. Pinboard's hook therefore tells each session, and each worker or reviewer it launches, to read every Pinboard skill completely through Pinboard's paged reader. Workers and reviewers run as Antigravity subagents in the same workspace; keeping each one inside its assigned checkout relies on its instructions, because Antigravity does not confine it.
 
 ### Upgrade or remove
 

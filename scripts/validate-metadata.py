@@ -31,9 +31,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
-# Antigravity injects at most this many bytes of a skill body; these skills must arrive complete.
+# agy plugin validate warns that skill bodies above this many bytes are truncated; these skills stay within it so a
+# host that loads them natively gets them whole. Antigravity agents still read every skill through paging.
 ANTIGRAVITY_SKILL_BODY_BYTES: Final = 24000
-ANTIGRAVITY_INJECTED_SKILLS: Final = ("pinboard-deliver",)
+ANTIGRAVITY_CAPPED_SKILLS: Final = ("pinboard-deliver",)
 MARKDOWN_LINK: Final = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 EXPECTED_SKILLS: Final = frozenset(
     {
@@ -520,12 +521,12 @@ def validate_markdown_links(paths: tuple[Path, ...]) -> None:
                 raise ValueError(f"{path}: link anchor {target} names no heading")
 
 
-def validate_injected_skill_sizes() -> None:
-    for name in ANTIGRAVITY_INJECTED_SKILLS:
+def validate_capped_skill_sizes() -> None:
+    for name in ANTIGRAVITY_CAPPED_SKILLS:
         size = len((ROOT / "skills" / name / "SKILL.md").read_bytes())
         if size > ANTIGRAVITY_SKILL_BODY_BYTES:
             raise ValueError(
-                f"skills/{name}/SKILL.md is {size} bytes; Antigravity injects only {ANTIGRAVITY_SKILL_BODY_BYTES}"
+                f"skills/{name}/SKILL.md is {size} bytes; agy truncates skill bodies above {ANTIGRAVITY_SKILL_BODY_BYTES}"
             )
 
 
@@ -547,7 +548,7 @@ def main() -> None:
         )
     for path in skill_paths:
         validate_skill(path)
-    validate_injected_skill_sizes()
+    validate_capped_skill_sizes()
     validate_markdown_links((*sorted(ROOT.glob("*.md")), *sorted((ROOT / "skills").rglob("*.md"))))
     print(
         f"validated Codex, Claude and Antigravity plugins, Codex and Claude marketplaces, and {len(skill_paths)} skills"

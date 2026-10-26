@@ -19,6 +19,7 @@ from unittest.mock import patch
 import msgspec
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
@@ -781,6 +782,8 @@ class McpCaptureTest(unittest.TestCase):
                     assert registered is not None
                     kwargs: dict[str, object] = {}
                     for name in inspect.signature(registered.fn).parameters:
+                        if name == registered.context_kwarg:
+                            continue
                         kwargs[name] = (
                             {"flag": True, "count": 3, "nested": [None, "value"]}
                             if name in {"request", "proposal", "brief", "dispatch", "review"}
@@ -788,7 +791,8 @@ class McpCaptureTest(unittest.TestCase):
                             if name in {"artifact_ref_id", "size_bytes"}
                             else f"decoded-{name}"
                         )
-                    asyncio.run(registered.fn(**kwargs))
+                    context = {} if registered.context_kwarg is None else {registered.context_kwarg: Context()}
+                    asyncio.run(registered.fn(**kwargs, **context))
                     expected = {"request": kwargs["request"]} if tuple(kwargs) == ("request",) else kwargs
                     self.assertEqual(expected, observed[tool.name])
             self.assertEqual({tool.name for tool in asyncio.run(transport.list_tools())}, observed.keys())

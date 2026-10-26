@@ -8,7 +8,7 @@ Use this workflow for requests such as:
 
 Do not use it merely because more than one item exists. Ordinary next-work selection uses [status and selection](status-and-selection.md).
 
-Use [the coding-agent runtime adapters](runtime-adapters.md) for native task, subagent, worktree, permission, and waiting operations. This reference owns only the shared selection and launch decisions.
+Use [the shared runtime adapters](runtime-adapters.md) and your own runtime's reference, [Codex](runtime-codex.md), [Claude Code](runtime-claude-code.md) or [Antigravity](runtime-antigravity.md), for native task, subagent, worktree, permission, and waiting operations. This reference owns only the shared selection and launch decisions.
 
 ## Build the preview
 

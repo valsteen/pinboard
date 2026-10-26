@@ -300,6 +300,15 @@ def _brief_published(
     )
 
 
+_ATTEMPT_LEASE_CODES = frozenset(
+    {
+        DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+        DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+        DecisionFailureCode.ATTEMPT_LEASE_EXPIRED,
+    }
+)
+
+
 def _transition_rejected(
     action_id: contracts.ActionIdentity,
     failure: DecisionFailure,
@@ -320,15 +329,8 @@ def _transition_rejected(
         case RetryDisposition.REFRESH_ACTION | RetryDisposition.RETRY_SAME_INPUT:
             continuation = "Discover this exact current action through pinboard_actions before another transition."
         case RetryDisposition.REACQUIRE_AUTHORITY:
-            if failure.code in {
-                DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
-                DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
-                DecisionFailureCode.ATTEMPT_LEASE_EXPIRED,
-            }:
-                continuation = (
-                    "Check pinboard_attempt_authority status, reacquire only if permitted, "
-                    "then discover this action through pinboard_actions."
-                )
+            if failure.code in _ATTEMPT_LEASE_CODES:
+                continuation = common.ATTEMPT_LEASE_RECOVERY
             else:
                 continuation = (
                     "Check the relevant authority status, reacquire only if permitted, "
@@ -806,7 +808,8 @@ def _authority_rejected(
             **identity,
             "code": failure.code.value,
             "message": failure.message
-            + " Follow next_step_tool with next_step_input in observed to inspect the current subject. This rejection grants no authority; do not borrow a conflicting owner's lease or revoke it without authorization.",
+            + " Follow next_step_tool with next_step_input in observed to inspect the current subject. This rejection grants no authority; do not borrow a conflicting owner's lease or revoke it without authorization."
+            + (" " + common.ATTEMPT_LEASE_RECOVERY if failure.code in _ATTEMPT_LEASE_CODES else ""),
             "conflict": conflict,
             "state_changed": False,
             **details,

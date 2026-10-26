@@ -398,7 +398,8 @@ class StartupFileSource(msgspec.Struct, tag="file", tag_field="kind", frozen=Tru
 
 
 type StartupSource = StartupArtifactSource | StartupFileSource
-type StartupBudget = Annotated[int, msgspec.Meta(ge=1, le=8000)]
+# An integer is a ceiling under the connected host profile; "host-profile" selects that profile's page size.
+type StartupBudget = PositiveInt | Literal["host-profile"]
 
 
 class StartupArtifactStart(
@@ -438,7 +439,7 @@ class StartupTextPage(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unkn
     start_character: NonNegativeInt
     end_character: NonNegativeInt
     text: str
-    max_batch_bytes: StartupBudget
+    max_batch_bytes: PositiveInt
     continuation: StartupContinue | None
     authority: Literal["delivery-only"]
     state_changed: bool

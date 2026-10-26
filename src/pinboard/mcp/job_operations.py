@@ -53,6 +53,19 @@ from pinboard.mcp import common, contracts, execution, tool_names
 from pinboard.mcp.contracts import JsonValue
 
 
+def _adapter_reference(runtime: dispatch_models.NativeRuntime) -> str:
+    """Name the launched runtime's own adapter guidance beside the shared runtime-adapters reference."""
+    match runtime:
+        case "codex":
+            return "references/runtime-codex.md"
+        case "claude-code":
+            return "references/runtime-claude-code.md"
+        case "antigravity":
+            return "references/runtime-antigravity.md"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _mcp_launch_envelope(
     project_root: Path,
     work_root: Path,
@@ -82,7 +95,7 @@ def _mcp_launch_envelope(
                 "kind": "artifact",
                 **{key: value for key, value in verification.items() if key not in {"project_root", "work_root"}},
             },
-            "max_batch_bytes": 8000,
+            "max_batch_bytes": "host-profile",
         }
     }
     message = (
@@ -100,7 +113,7 @@ def _mcp_launch_envelope(
         "only. Load complete skills/references through the native skill loader only when it delivers the complete "
         "body; otherwise, including in Antigravity, which injects only the first 24000 bytes, use "
         "pinboard_startup_text file-start with the actual resolved absolute path and the same roots/budget, "
-        "following pages in the same way."
+        f"following pages in the same way. This runtime's adapter is the pinboard skill's {_adapter_reference(runtime)}."
     )
     if environment is not None:
         acquisition = {

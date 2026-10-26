@@ -91,9 +91,10 @@ def session_start_main() -> int:
         "uses this task_id as its own post-launch identity together with the host named in its verified dispatch "
         "prompt, not this host_id. They are attribution, not authority or authenticated credentials, and grant no "
         "permissions or lease. Do not substitute another conversation's identity or enumerate environment variables. "
-        "Antigravity injects only the first 24000 bytes of a skill body, so before following any Pinboard skill or "
-        "reference, read the complete file through pinboard_startup_text file-start paging with its actual resolved "
-        "absolute path, following each continuation until it is null."
+        "Antigravity injects only the first 24000 bytes of a skill body, so before following the main pinboard skill "
+        "or any reference, read the complete file through pinboard_startup_text file-start paging with its actual "
+        'resolved absolute path and max_batch_bytes "host-profile", following each continuation until it is null. '
+        "Antigravity procedures for Pinboard are in the pinboard skill's references/runtime-antigravity.md."
     )
     if os.environ.get("PINBOARD_RUNTIME_PREPARED_NOW") == "1":
         context += (

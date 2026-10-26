@@ -106,7 +106,8 @@ def session_start_main() -> int:
         f"Pinboard native parent task_id: {identity}; host_id: {host}. "
         "Use these current local values for parent attribution, not a Remote Control link or model-derived host. "
         "They are attribution, not authority or authenticated credentials, and grant no permissions or lease. "
-        "A launched worker instead uses its own SubagentStart agent_id and verified dispatch host."
+        "A launched worker instead uses its own SubagentStart agent_id and verified dispatch host. "
+        "Claude Code procedures for Pinboard are in the pinboard skill's references/runtime-claude-code.md."
     )
     if os.environ.get("PINBOARD_RUNTIME_PREPARED_NOW") == "1":
         context += (

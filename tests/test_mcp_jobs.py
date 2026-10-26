@@ -1157,9 +1157,7 @@ class McpJobsTest(CheckpointPackageSupport):
 
     def test_public_inspection_and_launch_supply_record_ready_inputs(self) -> None:
         fixture = self.checkpoint_fixture()
-        roots: dict[str, contracts.JsonValue] = {
-            "project_root": str(fixture.project), "work_root": str(fixture.work)
-        }
+        roots: dict[str, contracts.JsonValue] = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
         with native_tools() as native:
             inspected = native.call_advertised_tool(
                 "pinboard_attempt_inspect", roots | {"attempt_id": "work-a-1", "reconciliation": None}
@@ -1175,7 +1173,8 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertTrue(verified["verified"])
             launched = native.call_advertised_tool(
                 "pinboard_review_job",
-                roots | {
+                roots
+                | {
                     "review": {
                         "kind": "initial",
                         "attempt_id": "work-a-1",
@@ -1190,7 +1189,8 @@ class McpJobsTest(CheckpointPackageSupport):
             # Deterministic review judgments test projection, not a real agent's semantic review.
             recorded = native.call_advertised_tool(
                 "pinboard_review_job",
-                roots | {
+                roots
+                | {
                     "review": {
                         "kind": "record-ready",
                         "attempt_id": "work-a-1",

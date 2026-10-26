@@ -150,13 +150,15 @@ def _page_bytes(profile: host_profiles.HostProfile) -> int | execution.Operation
     if host is None:
         return host_profiles.measured_page_bytes(profile)
     key = host_settings.setting_key(host)
-    path: Path | None = None
-    directory_created = False
     try:
         path = host_settings.settings_path()
+    except RuntimeError as error:
+        return _host_setting_failure(None, key, error, False)
+    directory_created = False
+    try:
         directory_created = host_settings.ensure_directory(path)
         return host_settings.resolve(path, host, host_profiles.measured_page_bytes(profile)).value
-    except (SettingResolutionError, RuntimeError) as error:
+    except SettingResolutionError as error:
         return _host_setting_failure(path, key, error, directory_created)
 
 

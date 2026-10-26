@@ -149,6 +149,50 @@ class HostSettingsTest(unittest.TestCase):
         page = self.assert_failure(self.read(), "correct-input", "unchanged")
         self.assertIn(f"Keep one {CLAUDE_KEY} entry in {self.settings}", str(page["recovery"]))
 
+    def test_a_non_regular_settings_path_names_the_file_and_a_repair_that_clears_it(self) -> None:
+        self.settings.parent.mkdir(parents=True)
+        elsewhere = self.root / "elsewhere.config"
+        elsewhere.write_text('[host "claude-code"]\n\tstartup-page-bytes = 9000\n')
+        for kind, occupy, apply_repair, budget in (
+            ("directory", self.settings.mkdir, self.settings.rmdir, 32000),
+            (
+                "symlink",
+                lambda: self.settings.symlink_to(elsewhere),
+                lambda: (self.settings.unlink(), self.settings.write_text(elsewhere.read_text())),
+                9000,
+            ),
+        ):
+            with self.subTest(kind=kind):
+                occupy()
+                page = self.read()
+                self.assertEqual("HOST_PAGE_SETTING_UNAVAILABLE", page["code"], page)
+                self.assertEqual(str(self.settings), page["resource"])
+                self.assertEqual(str(self.settings), page["setting_file"])
+                self.assertIn(f"Host page-size settings file {self.settings} is unusable", str(page["message"]))
+                self.assertIn("must be a regular file", str(page["message"]))
+                self.assertEqual(
+                    f"Replace {self.settings} with a regular file, or remove it so Pinboard creates it, then retry.",
+                    page["recovery"],
+                )
+                self.assertEqual("correct-input", page["retry"])
+                self.assertEqual("unchanged", page["effect"])
+                self.assertEqual("none", page["settings_file_creation"])
+                self.assertEqual("none", page["settings_key_write"])
+                self.assertIn("9000", elsewhere.read_text())
+                apply_repair()
+                self.assertEqual(budget, self.read()["max_batch_bytes"])
+                self.settings.unlink()
+
+    def test_a_seed_missing_when_read_back_asks_for_a_retry_rather_than_a_key_edit(self) -> None:
+        acknowledged = git_config.WriteAcknowledged(self.settings, CLAUDE_KEY)
+        with patch.object(git_config, "add", return_value=acknowledged):
+            page = self.assert_failure(self.read(), "retry-same-input", "committed")
+        self.assertEqual(str(self.settings), page["resource"])
+        self.assertEqual("acknowledged", page["settings_key_write"])
+        self.assertIn(f"after this request wrote {CLAUDE_KEY}; retry the same request.", str(page["recovery"]))
+        self.assertNotIn(f"Set {CLAUDE_KEY}", str(page["recovery"]))
+        self.assertEqual(32000, self.read()["max_batch_bytes"])
+
     def test_a_file_git_cannot_parse_names_the_diagnostic_command(self) -> None:
         self.store("9000")
         self.settings.write_text('[host "claude-code"\n')

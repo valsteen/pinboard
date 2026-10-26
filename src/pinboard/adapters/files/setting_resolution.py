@@ -42,8 +42,29 @@ class InvalidEntry:
     diagnostic: str
 
 
+@dataclass(frozen=True)
+class NotRegularFile:
+    """The settings path holds a directory, symlink or other non-regular file, so no key can be read there."""
+
+    path: Path
+
+
+@dataclass(frozen=True)
+class SeedNotReadBack:
+    """A seeded key was written and published but absent when the settings file was read back."""
+
+    key: str
+
+
 type SettingFailureCause = (
-    git_config.ReadFailed | git_config.WriteUnconfirmed | InvalidEntry | ValueError | OSError | FileIOError
+    git_config.ReadFailed
+    | git_config.WriteUnconfirmed
+    | InvalidEntry
+    | NotRegularFile
+    | SeedNotReadBack
+    | ValueError
+    | OSError
+    | FileIOError
 )
 
 
@@ -154,7 +175,14 @@ def resolve_seeded_key[T](
         operation, resource = "read", path
         settings = read(path, effects)
         if settings is None:
-            raise ValueError(f"{subject} {key} is still missing from {path} after its write.")
+            raise SettingResolutionError(
+                f"{subject} {key} is missing from {path} when read back after its write.",
+                path,
+                effects,
+                SeedNotReadBack(key),
+                "read",
+                path,
+            )
         return SettingResolution(path, settings, effects)
     except (ValueError, OSError) as error:
         if isinstance(error, SettingResolutionError):

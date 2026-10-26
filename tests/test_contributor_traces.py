@@ -927,17 +927,20 @@ class ContributorTraceTest(unittest.TestCase):
             self.settings(primary, "off", {})
             work_root = primary / ".pinboard"
             setting = (work_root / contributor_traces.SETTINGS_NAME).resolve()
-            for cause, resource, repair_fragment in (
-                (git_config.LaunchFailed("Git unavailable"), "Git executable", "Restore access"),
+            # Only a corrected file clears a read Git rejects; a restored Git or a retry can clear the others.
+            for cause, resource, repair_fragment, retry in (
+                (git_config.LaunchFailed("Git unavailable"), "Git executable", "Restore access", "retry-same-input"),
                 (
                     git_config.ProcessFailed(128, "write denied; working directory unavailable"),
                     str(setting),
                     "exit status 128",
+                    "correct-input",
                 ),
                 (
                     git_config.InvalidOutput("Invalid Git configuration entry framing."),
                     f"Git configuration output for {setting}",
                     "invalid output",
+                    "retry-same-input",
                 ),
             ):
                 with (
@@ -953,7 +956,7 @@ class ContributorTraceTest(unittest.TestCase):
                 self.assertIn(cause.diagnostic, str(result["message"]))
                 self.assertIn(repair_fragment, str(result["repair"]))
                 self.assertNotIn("Correct", str(result["repair"]))
-                self.assertEqual("retry-same-input", result["retry"])
+                self.assertEqual(retry, result["retry"])
                 self.assertEqual("unchanged", result["effect"])
             self.assertEqual("off", contributor_traces.read_configured_project_trace_mode(work_root))
 

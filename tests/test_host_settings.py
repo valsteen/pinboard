@@ -199,26 +199,69 @@ class HostSettingsTest(unittest.TestCase):
         self.assertNotIn(f"Set {CLAUDE_KEY}", str(page["recovery"]))
         self.assertEqual(32000, self.read()["max_batch_bytes"])
 
-    def test_a_file_git_cannot_parse_names_the_diagnostic_command(self) -> None:
+    def test_a_file_git_cannot_parse_names_the_diagnostic_command_and_asks_for_a_correction(self) -> None:
         self.store("9000")
         self.settings.write_text('[host "claude-code"\n')
-        page = self.assert_failure(self.read(), "retry-same-input", "unchanged")
+        page = self.assert_failure(self.read(), "correct-input", "unchanged")
+        self.assertEqual(str(self.settings), page["resource"])
         self.assertIn(f"git config --file {self.settings} --null --list", str(page["recovery"]))
+        self.assertIn("resolve the reported cause before retrying", str(page["recovery"]))
+        self.settings.write_text('[host "claude-code"]\n\tstartup-page-bytes = 9000\n')
+        self.assertEqual(9000, self.read()["max_batch_bytes"])
 
     def test_an_unwritable_settings_directory_reports_the_directory_and_creates_nothing(self) -> None:
         self.settings.parent.mkdir(parents=True)
         self.settings.parent.chmod(0o500)
-        page = self.assert_failure(self.read(), "correct-input", "unchanged")
+        page = self.assert_failure(self.read(), "retry-same-input", "unchanged")
         self.assertEqual(str(self.settings), page["resource"])
+        self.assertEqual(
+            f"Grant write access to {self.settings.parent} to initialize Host page-size settings at "
+            f"{self.settings}, then retry.",
+            page["recovery"],
+        )
+        self.assertIn("Permission denied", str(page["message"]))
         self.assertEqual("none", page["settings_file_creation"])
         self.assertFalse(self.settings.exists())
+        self.assertEqual([], [path.name for path in self.settings.parent.iterdir()])
         self.settings.parent.chmod(0o700)
+        self.assertEqual(32000, self.read()["max_batch_bytes"])
+        self.settings.unlink()
         self.settings.parent.rmdir()
         (self.root / "home" / ".config").chmod(0o500)
         self.addCleanup((self.root / "home" / ".config").chmod, 0o700)
         page = self.assert_failure(self.read(), "retry-same-input", "unchanged")
         self.assertEqual(str(self.settings.parent), page["resource"])
         self.assertIn(f"Grant write access to {self.settings.parent.parent}", str(page["recovery"]))
+
+    def test_a_non_directory_where_the_settings_directory_belongs_is_named_with_its_repair(self) -> None:
+        config = self.root / "home" / ".config"
+        config.mkdir(parents=True)
+        for blocking, remove in (
+            (self.settings.parent, self.settings.parent.unlink),
+            (config, lambda: (config.unlink(), config.mkdir())),
+        ):
+            with self.subTest(blocking=blocking.name):
+                if blocking == config:
+                    config.rmdir()
+                blocking.write_text("not a directory\n")
+                page = self.assert_failure(self.read(), "correct-input", "unchanged")
+                self.assertEqual(str(blocking), page["resource"])
+                self.assertIn(
+                    f"Cannot create the host settings directory {self.settings.parent}: {blocking} exists and is "
+                    "not a directory",
+                    str(page["message"]),
+                )
+                self.assertEqual(
+                    f"Replace {blocking} with a directory, or remove it so Pinboard creates it, then retry.",
+                    page["recovery"],
+                )
+                self.assertEqual("none", page["settings_directory_creation"])
+                self.assertEqual("none", page["settings_file_creation"])
+                self.assertEqual("not a directory\n", blocking.read_text())
+                remove()
+                self.assertEqual(32000, self.read()["max_batch_bytes"])
+                self.settings.unlink()
+                self.settings.parent.rmdir()
 
     def test_a_failed_or_locked_seeding_write_reports_its_confirmed_effects(self) -> None:
         with patch.object(

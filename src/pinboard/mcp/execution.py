@@ -26,6 +26,7 @@ from pinboard.adapters.files.file_io import create_immutable
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.files.setting_resolution import (
     InvalidEntry,
+    NotDirectory,
     NotRegularFile,
     SeedNotReadBack,
     SettingEffects,
@@ -211,8 +212,8 @@ def settings_recovery(  # noqa: C901, PLR0912, PLR0915 - one boundary distinguis
                 )
                 retry = "retry-same-input"
             case git_config.ProcessFailed(returncode=returncode):
+                # A read that Git rejects, such as unparseable syntax, clears only after the file is corrected.
                 repair = f"Run `{command}` to diagnose Git's exit status {returncode}; resolve the reported cause before retrying."
-                retry = "retry-same-input"
             case git_config.InvalidOutput():
                 resource = f"Git configuration output for {error.path}"
                 repair = f"Run `{command}` and resolve Git's invalid output before retrying the same request."
@@ -244,6 +245,8 @@ def settings_recovery(  # noqa: C901, PLR0912, PLR0915 - one boundary distinguis
                 )
             case NotRegularFile(path=path):
                 repair = f"Replace {path} with a regular file, or remove it so Pinboard creates it, then retry."
+            case NotDirectory(path=path):
+                repair = f"Replace {path} with a directory, or remove it so Pinboard creates it, then retry."
             case SeedNotReadBack(key=key):
                 repair = (
                     f"Another process may have changed {error.path} after this request wrote {key}; "

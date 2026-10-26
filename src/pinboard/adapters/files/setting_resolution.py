@@ -50,6 +50,13 @@ class NotRegularFile:
 
 
 @dataclass(frozen=True)
+class NotDirectory:
+    """A path where the settings directory belongs exists but is not a directory, so no file can be created."""
+
+    path: Path
+
+
+@dataclass(frozen=True)
 class SeedNotReadBack:
     """A seeded key was written and published but absent when the settings file was read back."""
 
@@ -61,6 +68,7 @@ type SettingFailureCause = (
     | git_config.WriteUnconfirmed
     | InvalidEntry
     | NotRegularFile
+    | NotDirectory
     | SeedNotReadBack
     | ValueError
     | OSError
@@ -114,6 +122,10 @@ def observe_or_create_settings_file(path: Path) -> SettingEffects:
             ) from error
         except FileIOError as error:
             if error.code != FileIOErrorCode.FILE_ALREADY_EXISTS:
+                # Publication wraps the filesystem cause; denied access needs the directory's write repair.
+                denied = error.__cause__
+                if isinstance(denied, PermissionError):
+                    raise SettingResolutionError(f"{error}: {denied}", path, effects, denied, "create", path) from error
                 raise SettingResolutionError(str(error), path, effects, error, "create", path) from error
     return effects
 

@@ -49,6 +49,15 @@ class ItemIntegrationTest(CheckpointPackageSupport):
             },
         )
 
+    def assert_rejection(self, result: JsonObject, code: str, retry: str) -> None:
+        self.assertEqual("pinboard-mcp-item-status-result/v3", result["schema"], result)
+        self.assertEqual("rejected", result["status"], result)
+        self.assertEqual(code, result["code"], result)
+        self.assertFalse(result["state_changed"], result)
+        self.assertEqual("unchanged", result["effect"], result)
+        self.assertEqual(retry, result["retry"], result)
+        self.assertEqual([], result["changed_surfaces"], result)
+
     def test_protected_working_tree_content_against_base_and_committed_target(self) -> None:
         with patch.dict(
             os.environ,
@@ -237,16 +246,18 @@ class ItemIntegrationTest(CheckpointPackageSupport):
     def test_rejections_name_conditions_and_safe_recovery(self) -> None:
         fixture = self.checkpoint_fixture()
         unresolved = self.integration(fixture, "not-a-ref")
-        self.assertEqual("INTEGRATION_TARGET_UNRESOLVED", unresolved["code"], unresolved)
-        self.assertEqual("unchanged", unresolved["effect"])
-        self.assertEqual("correct-input", unresolved["retry"])
+        self.assert_rejection(unresolved, "INTEGRATION_TARGET_UNRESOLVED", "correct-input")
+        self.assertIn("local branch", str(unresolved["recovery"]))
         self.assertIn("fetch outside Pinboard", str(unresolved["recovery"]))
         self.assertIn({"field": "target", "value": "not-a-ref"}, self.json_array(unresolved["observed"]))
         self.assertIn({"field": "project_root", "value": str(fixture.project)}, self.json_array(unresolved["observed"]))
-        self.assertEqual("ITEM_NOT_FOUND", self.integration(fixture, "HEAD", "missing")["code"])
+        missing = self.integration(fixture, "HEAD", "missing")
+        self.assert_rejection(missing, "ITEM_NOT_FOUND", "correct-input")
+        self.assertIn("missing", str(missing["message"]))
+        self.assertEqual([], missing["observed"])
         ready = self.integration(fixture, "HEAD", "work-c")
-        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", ready["code"], ready)
-        self.assertEqual("correct-input", ready["retry"])
+        self.assert_rejection(ready, "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input")
+        self.assertTrue(ready["message"])
         self.assertIn("operation item", str(ready["recovery"]))
         self.assertIn({"field": "item_id", "value": "work-c"}, self.json_array(ready["observed"]))
         self.assertIn({"field": "state", "value": "ready"}, self.json_array(ready["observed"]))
@@ -265,8 +276,11 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         )
         self.assertEqual(0, closed, error)
         direct = self.integration(fixture, "HEAD", "work-c")
-        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", direct["code"], direct)
+        self.assert_rejection(direct, "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input")
         self.assertIn("closed directly", str(direct["message"]))
+        self.assertIn("operation item", str(direct["recovery"]))
+        self.assertIn({"field": "item_id", "value": "work-c"}, self.json_array(direct["observed"]))
+        self.assertIn({"field": "state", "value": "done"}, self.json_array(direct["observed"]))
         invalid = call_native_tool(
             server.ITEM_STATUS_TOOL,
             {
@@ -279,14 +293,14 @@ class ItemIntegrationTest(CheckpointPackageSupport):
                 }
             },
         )
-        self.assertEqual("pinboard-mcp-item-status-result/v3", invalid["schema"])
-        self.assertEqual("ITEM_STATUS_INVALID", invalid["code"])
+        self.assert_rejection(invalid, "ITEM_STATUS_INVALID", "correct-input")
+        self.assertIn("target", str(invalid["message"]))
+        self.assertEqual([], invalid["observed"])
         snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
         assert snapshot is not None
         (fixture.work / snapshot.reference.selector).write_bytes(b"damaged")
         damaged = self.integration(fixture, "HEAD")
-        self.assertEqual("INTEGRATION_CANDIDATE_EVIDENCE_INVALID", damaged["code"], damaged)
-        self.assertEqual("do-not-retry", damaged["retry"])
+        self.assert_rejection(damaged, "INTEGRATION_CANDIDATE_EVIDENCE_INVALID", "do-not-retry")
         self.assertIn("pinboard validate", str(damaged["recovery"]))
         self.assertIn({"field": "attempt_id", "value": "work-a-1"}, self.json_array(damaged["observed"]))
         self.assertIn(
@@ -308,9 +322,9 @@ class ItemIntegrationTest(CheckpointPackageSupport):
                     }
                 },
             )
-        self.assertEqual("PROJECT_GIT_ROOT_UNAVAILABLE", result["code"], result)
-        self.assertEqual("unchanged", result["effect"])
-        self.assertEqual("correct-input", result["retry"])
+        self.assert_rejection(result, "PROJECT_GIT_ROOT_UNAVAILABLE", "correct-input")
+        self.assertIn({"field": "project_root", "value": directory}, self.json_array(result["observed"]))
+        self.assertTrue(result["message"])
         self.assertIn("checkout", str(result["recovery"]))
 
     def test_unreadable_target_tree_is_a_typed_git_failure(self) -> None:
@@ -319,17 +333,20 @@ class ItemIntegrationTest(CheckpointPackageSupport):
         tree = self.git(fixture, "rev-parse", "HEAD^{tree}")
         (fixture.project / ".git" / "objects" / tree[:2] / tree[2:]).unlink()
         result = self.integration(fixture, "HEAD")
-        self.assertEqual("PROJECT_GIT_CHECKOUT_UNAVAILABLE", result["code"], result)
-        self.assertEqual("unchanged", result["effect"])
-        self.assertEqual("correct-input", result["retry"])
+        self.assert_rejection(result, "PROJECT_GIT_CHECKOUT_UNAVAILABLE", "correct-input")
+        self.assertIn({"field": "project_root", "value": str(fixture.project)}, self.json_array(result["observed"]))
+        self.assertIn({"field": "diagnostic", "value": result["message"]}, self.json_array(result["observed"]))
         self.assertIn("checkout", str(result["recovery"]))
 
     def test_damaged_checkpoint_receipt_and_legacy_package_are_diagnosed(self) -> None:
         legacy = self.accepted_package_fixture(local=True, candidate_form="current-head")
         self.retain_v2_checkpoint(legacy)
         unavailable = self.integration(legacy, "HEAD")
-        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", unavailable["code"], unavailable)
+        self.assert_rejection(unavailable, "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input")
         self.assertIn("snapshot reference", str(unavailable["message"]))
+        self.assertIn("operation item", str(unavailable["recovery"]))
+        self.assertIn({"field": "item_id", "value": "work-a"}, self.json_array(unavailable["observed"]))
+        self.assertIn({"field": "state", "value": "paused"}, self.json_array(unavailable["observed"]))
         fixture = self.accepted_package_fixture()
         with closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             connection.execute(
@@ -337,10 +354,9 @@ class ItemIntegrationTest(CheckpointPackageSupport):
                 ("{",),
             )
         damaged = self.integration(fixture, "HEAD")
-        self.assertEqual("TRANSITION_RECEIPT_DAMAGED", damaged["code"], damaged)
-        self.assertEqual("unchanged", damaged["effect"])
-        self.assertEqual("do-not-retry", damaged["retry"])
-        self.assertTrue(damaged["recovery"])
+        self.assert_rejection(damaged, "TRANSITION_RECEIPT_DAMAGED", "do-not-retry")
+        self.assertIn("Report to the human", str(damaged["recovery"]))
+        self.assertIn({"field": "attempt_id", "value": "work-a-1"}, self.json_array(damaged["observed"]))
 
     def test_damaged_checkpoint_candidate_names_the_failed_reference(self) -> None:
         fixture = self.accepted_package_fixture()
@@ -426,8 +442,11 @@ class ItemIntegrationTest(CheckpointPackageSupport):
                 (context.receipt.project_revision,),
             )
         result = self.integration(fixture, "HEAD")
-        self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", result["code"], result)
+        self.assert_rejection(result, "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input")
         self.assertIn("no accepted snapshot", str(result["message"]))
+        self.assertIn("operation item", str(result["recovery"]))
+        self.assertIn({"field": "item_id", "value": "work-a"}, self.json_array(result["observed"]))
+        self.assertIn({"field": "state", "value": "review"}, self.json_array(result["observed"]))
 
     def test_status_read_leaves_repository_and_ledger_unchanged_with_read_only_git(self) -> None:
         fixture = self.checkpoint_fixture()
@@ -471,7 +490,11 @@ class ItemIntegrationTest(CheckpointPackageSupport):
                 changed = self.transition_result(fixture, self.project_action(fixture, f"{kind}:work-a-1"), payload)
                 self.assertEqual("committed", changed["status"], changed)
                 result = self.integration(fixture, "HEAD")
-                self.assertEqual("INTEGRATION_CANDIDATE_UNAVAILABLE", result["code"], result)
+                self.assert_rejection(result, "INTEGRATION_CANDIDATE_UNAVAILABLE", "correct-input")
+                self.assertIn("no checkpoint acceptance", str(result["message"]))
+                self.assertIn("operation item", str(result["recovery"]))
+                self.assertIn({"field": "item_id", "value": "work-a"}, self.json_array(result["observed"]))
+                self.assertIn({"field": "state", "value": "active"}, self.json_array(result["observed"]))
 
     def test_empty_recorded_diff_reports_no_change(self) -> None:
         fixture = self.checkpoint_fixture()

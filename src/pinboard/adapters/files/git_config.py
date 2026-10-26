@@ -32,8 +32,10 @@ type Failure = WorkingDirectoryUnavailable | LaunchFailed | ProcessFailed | Inva
 
 @dataclass(frozen=True)
 class Entry:
+    """One listed entry; `value` is None for a key written without `=`, which Git lists with no value."""
+
     key: str
-    value: str
+    value: str | None
 
 
 @dataclass(frozen=True)
@@ -104,9 +106,15 @@ def list_entries(path: Path) -> Entries | ReadFailed:
     if result.returncode != 0:
         return ReadFailed(path, ProcessFailed(result.returncode, result.stderr.decode(errors="replace").strip()))
     fields = _fields(result.stdout)
-    if fields is None or any("\n" not in field for field in fields):
+    if fields is None or any(not field.partition("\n")[0] for field in fields):
         return ReadFailed(path, InvalidOutput("Invalid Git configuration entry framing."))
-    return Entries(path, tuple(Entry(*field.split("\n", 1)) for field in fields))
+    return Entries(path, tuple(_entry(field) for field in fields))
+
+
+def _entry(field: str) -> Entry:
+    """With --null, Git ends a valued key with a newline and prints a key written without `=` alone."""
+    key, separator, value = field.partition("\n")
+    return Entry(key, value if separator else None)
 
 
 def add(path: Path, key: str, value: str) -> WriteAcknowledged | WriteUnconfirmed:

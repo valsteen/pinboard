@@ -57,7 +57,7 @@ def ensure_directory(path: Path) -> bool:
     return True
 
 
-def _validated(path: Path, key: str, value: str, seen: set[str]) -> tuple[str, int] | InvalidEntry:
+def _validated(path: Path, key: str, value: str | None, seen: set[str]) -> tuple[str, int] | InvalidEntry:
     """One entry's host and page size, or the rejection naming that entry's own key."""
     if key in seen:
         return InvalidEntry(key, EntryProblem.DUPLICATE_KEY, f"{path} sets key {key} more than once.")
@@ -68,11 +68,12 @@ def _validated(path: Path, key: str, value: str, seen: set[str]) -> tuple[str, i
             EntryProblem.UNKNOWN_KEY,
             f"{path} contains unknown key {key}; host settings keys are host.<host>.startup-page-bytes.",
         )
-    if _PAGE_BYTES.fullmatch(value) is None or not MIN_PAGE_BYTES <= int(value) <= MAX_PAGE_BYTES:
+    if value is None or _PAGE_BYTES.fullmatch(value) is None or not MIN_PAGE_BYTES <= int(value) <= MAX_PAGE_BYTES:
+        found = "no value" if value is None else repr(value)
         return InvalidEntry(
             key,
             EntryProblem.INVALID_VALUE,
-            f"{path} key {key} must be a whole number of bytes from {MIN_PAGE_BYTES} to {MAX_PAGE_BYTES}; found {value!r}.",
+            f"{path} key {key} must be a whole number of bytes from {MIN_PAGE_BYTES} to {MAX_PAGE_BYTES}; found {found}.",
         )
     return matched[1], int(value)
 

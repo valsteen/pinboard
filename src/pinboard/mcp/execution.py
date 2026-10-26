@@ -25,6 +25,7 @@ from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, Immutab
 from pinboard.adapters.files.file_io import create_immutable
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.files.setting_resolution import (
+    DanglingLink,
     InvalidEntry,
     NotDirectory,
     NotRegularFile,
@@ -233,7 +234,10 @@ def settings_recovery(  # noqa: C901, PLR0912, PLR0915 - one boundary distinguis
             case PermissionError():
                 match error.operation:
                     case "read":
-                        repair = f"Grant read access to {error.resource} for the Pinboard MCP service, then retry."
+                        repair = (
+                            f"Grant read access to {error.resource} and access to its directory "
+                            f"{error.resource.parent} for the Pinboard MCP service, then retry."
+                        )
                     case "create" | "stage" | "publish":
                         repair = f"Grant write access to {error.resource.parent} to initialize {subject} at {error.resource}, then retry."
                     case _ as unreachable:
@@ -247,6 +251,8 @@ def settings_recovery(  # noqa: C901, PLR0912, PLR0915 - one boundary distinguis
                 repair = f"Replace {path} with a regular file, or remove it so Pinboard creates it, then retry."
             case NotDirectory(path=path):
                 repair = f"Replace {path} with a directory, or remove it so Pinboard creates it, then retry."
+            case DanglingLink(link=link, target=target):
+                repair = f"Create {target}, or fix or remove the link {link}, then retry."
             case SeedNotReadBack(key=key):
                 repair = (
                     f"Another process may have changed {error.path} after this request wrote {key}; "

@@ -1,6 +1,7 @@
 """A recognized host's startup page size is the user's stored setting, seeded once and never silently replaced."""
 
 import asyncio
+import errno
 import io
 import os
 import stat
@@ -27,7 +28,8 @@ class HostSettingsTest(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        # The real location, since settings are reached through any links (macOS links /var to /private/var).
+        self.root = Path(temporary.name).resolve()
         home = patch.dict(os.environ, {"HOME": str(self.root / "home")})
         home.start()
         self.addCleanup(home.stop)
@@ -155,39 +157,97 @@ class HostSettingsTest(unittest.TestCase):
         page = self.assert_failure(self.read(), "correct-input", "unchanged")
         self.assertIn(f"Keep one {CLAUDE_KEY} entry in {self.settings}", str(page["recovery"]))
 
-    def test_a_non_regular_settings_path_names_the_file_and_a_repair_that_clears_it(self) -> None:
+    def test_a_directory_at_the_settings_path_names_the_file_and_a_repair_that_clears_it(self) -> None:
+        self.settings.mkdir(parents=True)
+        page = self.read()
+        self.assertEqual("HOST_PAGE_SETTING_UNAVAILABLE", page["code"], page)
+        self.assertEqual(str(self.settings), page["resource"])
+        self.assertEqual(str(self.settings), page["setting_file"])
+        self.assertIn(f"Host page-size settings file {self.settings} is unusable", str(page["message"]))
+        self.assertIn("must be a regular file", str(page["message"]))
+        self.assertEqual(
+            f"Replace {self.settings} with a regular file, or remove it so Pinboard creates it, then retry.",
+            page["recovery"],
+        )
+        self.assertEqual("correct-input", page["retry"])
+        self.assertEqual("unchanged", page["effect"])
+        self.assertEqual("none", page["settings_file_creation"])
+        self.assertEqual("none", page["settings_key_write"])
+        self.settings.rmdir()
+        self.assertEqual(32000, self.read()["max_batch_bytes"])
+
+    def test_a_linked_settings_directory_is_seeded_and_read_through_its_link(self) -> None:
+        dotfiles = self.root / "dotfiles" / "pinboard"
+        dotfiles.mkdir(parents=True)
+        self.settings.parent.parent.mkdir(parents=True)
+        self.settings.parent.symlink_to(dotfiles, target_is_directory=True)
+        page = self.read()
+        self.assertEqual(32000, page["max_batch_bytes"], page)
+        self.assertTrue(self.settings.parent.is_symlink())
+        real = dotfiles / "hosts.config"
+        self.assertEqual(
+            git_config.Entries(real, (git_config.Entry(CLAUDE_KEY, "32000"),)), git_config.list_entries(real)
+        )
+        self.assertEqual(["hosts.config"], [path.name for path in dotfiles.iterdir()])
+        real.write_text('[host "claude-code"]\n\tstartup-page-bytes = 9000\n')
+        self.assertEqual(9000, self.read()["max_batch_bytes"])
+        self.assertTrue(self.settings.parent.is_symlink())
+
+    def test_a_linked_settings_file_is_seeded_and_read_through_its_link_and_stays_a_link(self) -> None:
+        real = self.root / "dotfiles" / "hosts.config"
+        real.parent.mkdir()
+        real.write_text('[host "codex"]\n\tstartup-page-bytes = 12000\n')
         self.settings.parent.mkdir(parents=True)
-        elsewhere = self.root / "elsewhere.config"
-        elsewhere.write_text('[host "claude-code"]\n\tstartup-page-bytes = 9000\n')
-        for kind, occupy, apply_repair, budget in (
-            ("directory", self.settings.mkdir, self.settings.rmdir, 32000),
-            (
-                "symlink",
-                lambda: self.settings.symlink_to(elsewhere),
-                lambda: (self.settings.unlink(), self.settings.write_text(elsewhere.read_text())),
-                9000,
-            ),
+        self.settings.symlink_to(real)
+        self.assertEqual(32000, self.read()["max_batch_bytes"])
+        self.assertTrue(self.settings.is_symlink())
+        listed = git_config.list_entries(real)
+        assert isinstance(listed, git_config.Entries)
+        self.assertEqual(
+            (git_config.Entry("host.codex.startup-page-bytes", "12000"), git_config.Entry(CLAUDE_KEY, "32000")),
+            listed.entries,
+        )
+        self.assertEqual(12000, self.read(host_profiles.HostProfile.CODEX)["max_batch_bytes"])
+        self.assertEqual(["hosts.config"], [path.name for path in self.settings.parent.iterdir()])
+
+    def test_a_dangling_settings_link_names_the_link_and_its_missing_target(self) -> None:
+        self.settings.parent.parent.mkdir(parents=True)
+        missing = self.root / "dotfiles" / "pinboard"
+        for link, target, create in (
+            (self.settings.parent, missing, lambda: missing.mkdir(parents=True)),
+            (self.settings, missing / "hosts.config", lambda: (missing / "hosts.config").touch()),
         ):
-            with self.subTest(kind=kind):
-                occupy()
-                page = self.read()
-                self.assertEqual("HOST_PAGE_SETTING_UNAVAILABLE", page["code"], page)
-                self.assertEqual(str(self.settings), page["resource"])
-                self.assertEqual(str(self.settings), page["setting_file"])
-                self.assertIn(f"Host page-size settings file {self.settings} is unusable", str(page["message"]))
-                self.assertIn("must be a regular file", str(page["message"]))
-                self.assertEqual(
-                    f"Replace {self.settings} with a regular file, or remove it so Pinboard creates it, then retry.",
-                    page["recovery"],
-                )
-                self.assertEqual("correct-input", page["retry"])
-                self.assertEqual("unchanged", page["effect"])
+            with self.subTest(link=link.name):
+                if link == self.settings:
+                    self.settings.parent.mkdir()
+                link.symlink_to(target)
+                page = self.assert_failure(self.read(), "correct-input", "unchanged")
+                self.assertEqual(str(link), page["resource"])
+                self.assertIn(f"{link} is a symbolic link to {target}, which does not exist.", str(page["message"]))
+                self.assertEqual(f"Create {target}, or fix or remove the link {link}, then retry.", page["recovery"])
+                self.assertEqual("none", page["settings_directory_creation"])
                 self.assertEqual("none", page["settings_file_creation"])
-                self.assertEqual("none", page["settings_key_write"])
-                self.assertIn("9000", elsewhere.read_text())
-                apply_repair()
-                self.assertEqual(budget, self.read()["max_batch_bytes"])
-                self.settings.unlink()
+                self.assertTrue(link.is_symlink())
+                self.assertFalse(target.exists())
+                create()
+                self.assertEqual(32000, self.read()["max_batch_bytes"])
+                self.assertTrue(link.is_symlink())
+                link.unlink()
+                (missing / "hosts.config").unlink()
+
+    def test_a_failed_file_creation_carries_the_filesystem_cause(self) -> None:
+        self.settings.parent.mkdir(parents=True)
+        for code in (errno.EROFS, errno.ENOSPC):
+            with self.subTest(cause=os.strerror(code)):
+                failure = OSError(code, os.strerror(code))
+                with patch("pinboard.adapters.files.file_io.os.link", side_effect=failure):
+                    page = self.assert_failure(self.read(), "correct-input", "unchanged")
+                self.assertIn(f"Immutable file could not be published: {self.settings}", str(page["message"]))
+                self.assertIn(os.strerror(code), str(page["message"]))
+                self.assertEqual(str(self.settings), page["resource"])
+                self.assertEqual("none", page["settings_file_creation"])
+                self.assertFalse(self.settings.exists())
+                self.assertEqual([], [path.name for path in self.settings.parent.iterdir()])
 
     def test_a_seed_missing_when_read_back_asks_for_a_retry_rather_than_a_key_edit(self) -> None:
         acknowledged = git_config.WriteAcknowledged(self.settings, CLAUDE_KEY)
@@ -320,7 +380,9 @@ class HostSettingsTest(unittest.TestCase):
         page = self.assert_failure(self.read(), "retry-same-input", "unchanged")
         self.assertEqual(str(self.settings), page["resource"])
         self.assertEqual(
-            f"Grant read access to {self.settings} for the Pinboard MCP service, then retry.", page["recovery"]
+            f"Grant read access to {self.settings} and access to its directory {self.settings.parent} for the "
+            "Pinboard MCP service, then retry.",
+            page["recovery"],
         )
         self.settings.chmod(0o600)
         self.assertEqual(9000, self.read()["max_batch_bytes"])

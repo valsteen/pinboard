@@ -202,6 +202,7 @@ def _page_bytes(profile: host_profiles.HostProfile) -> int | execution.Operation
         return _host_setting_failure(None, key, error, False)
     directory_created = False
     try:
+        path = host_settings.real_location(path)
         directory_created = host_settings.ensure_directory(path)
         return host_settings.resolve(path, host, host_profiles.measured_page_bytes(profile)).value
     except SettingResolutionError as error:

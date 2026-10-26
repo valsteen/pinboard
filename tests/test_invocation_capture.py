@@ -791,7 +791,9 @@ class McpCaptureTest(unittest.TestCase):
                             if name in {"artifact_ref_id", "size_bytes"}
                             else f"decoded-{name}"
                         )
-                    context = {} if registered.context_kwarg is None else {registered.context_kwarg: Context()}
+                    context: dict[str, Context] = (
+                        {} if registered.context_kwarg is None else {registered.context_kwarg: Context()}
+                    )
                     asyncio.run(registered.fn(**kwargs, **context))
                     expected = {"request": kwargs["request"]} if tuple(kwargs) == ("request",) else kwargs
                     self.assertEqual(expected, observed[tool.name])

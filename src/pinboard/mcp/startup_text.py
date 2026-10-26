@@ -12,7 +12,13 @@ import msgspec
 from pinboard import __version__
 from pinboard.adapters.files import host_settings
 from pinboard.adapters.files import startup_text as files
-from pinboard.adapters.files.setting_resolution import SettingEffects, SettingResolutionError
+from pinboard.adapters.files.setting_resolution import (
+    EntryProblem,
+    InvalidEntry,
+    SettingEffects,
+    SettingFailureCause,
+    SettingResolutionError,
+)
 from pinboard.mcp import contracts, execution, host_profiles, read_operations
 
 
@@ -105,6 +111,40 @@ def _page(
     return content
 
 
+def _correction(path: Path, key: str, cause: SettingFailureCause) -> tuple[str, str]:
+    """The setting key a repair must touch and the repair for invalid stored content.
+
+    An invalid entry names its own key, which may belong to another host or be unknown or duplicated, so
+    that the repair clears the failure; other failures concern the connected host's key.
+    """
+    if not isinstance(cause, InvalidEntry):
+        return key, (
+            f"Set {key} in {path} to a whole number of bytes from {host_settings.MIN_PAGE_BYTES} to "
+            f"{host_settings.MAX_PAGE_BYTES}, or remove that key so the measured default is written again, then retry."
+        )
+    match cause.problem:
+        case EntryProblem.INVALID_VALUE:
+            repair = (
+                f"Set {cause.key} in {path} to a whole number of bytes from {host_settings.MIN_PAGE_BYTES} to "
+                f"{host_settings.MAX_PAGE_BYTES}, or remove that key so its host's measured default is written "
+                "again when that host next reads startup text, then retry."
+            )
+        case EntryProblem.DUPLICATE_KEY:
+            repair = f"Keep one {cause.key} entry in {path} and delete the others, then retry."
+        case EntryProblem.UNKNOWN_KEY:
+            repair = (
+                f"Remove {cause.key} from {path}, or rename it to host.<host>.startup-page-bytes for the host it "
+                "was meant for, then retry."
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    return cause.key, repair
+
+
+def _sentence(text: str) -> str:
+    return text if text.endswith(".") else f"{text}."
+
+
 def _host_setting_failure(
     path: Path | None, key: str, error: SettingResolutionError | RuntimeError, directory_created: bool
 ) -> execution.OperationResult:
@@ -114,14 +154,13 @@ def _host_setting_failure(
         resource = "home directory"
         recovery = "Start the Pinboard MCP service with HOME set to your home directory, then retry the same request."
         retry = "retry-same-input"
+        message = f"Host page-size setting {key} is unavailable: {_sentence(str(error))} No page was read."
     else:
         effects = error.effects
-        resource, recovery, retry = execution.settings_recovery(
-            error,
-            "Host page-size settings",
-            f"Set {key} in {error.path} to a whole number of bytes from {host_settings.MIN_PAGE_BYTES} to "
-            f"{host_settings.MAX_PAGE_BYTES}, or remove that key so the measured default is written again, then retry.",
-        )
+        key, correction = _correction(error.path, key, error.cause)
+        resource, recovery, retry = execution.settings_recovery(error, "Host page-size settings", correction)
+        state = "invalid" if isinstance(error.cause, InvalidEntry) else "unavailable"
+        message = f"Host page-size setting {key} is {state}: {_sentence(str(error))} No page was read."
     confirmed = directory_created or effects.file_creation == "confirmed" or effects.key_write == "acknowledged"
     unconfirmed = effects.file_creation == "unconfirmed" or effects.key_write == "unconfirmed"
     result = contracts.StartupHostSettingFailed(
@@ -131,7 +170,7 @@ def _host_setting_failure(
         str(path) if path is not None else "~/.config/pinboard/hosts.config",
         key,
         resource,
-        f"Host page-size setting {key} is unavailable: {error}. No page was read.",
+        message,
         recovery,
         "confirmed" if directory_created else "none",
         effects.file_creation,

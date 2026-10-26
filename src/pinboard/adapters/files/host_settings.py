@@ -12,6 +12,8 @@ from pathlib import Path
 
 from pinboard.adapters.files import git_config
 from pinboard.adapters.files.setting_resolution import (
+    EntryProblem,
+    InvalidEntry,
     SettingEffects,
     SettingResolution,
     SettingResolutionError,
@@ -54,15 +56,28 @@ def ensure_directory(path: Path) -> bool:
     return True
 
 
-def _page_bytes(path: Path, key: str, value: str) -> int:
-    if _PAGE_BYTES.fullmatch(value) is None or not MIN_PAGE_BYTES <= int(value) <= MAX_PAGE_BYTES:
-        raise ValueError(
-            f"{path} key {key} must be a whole number of bytes from {MIN_PAGE_BYTES} to {MAX_PAGE_BYTES}; found {value!r}."
+def _validated(path: Path, key: str, value: str, seen: set[str]) -> tuple[str, int] | InvalidEntry:
+    """One entry's host and page size, or the rejection naming that entry's own key."""
+    if key in seen:
+        return InvalidEntry(key, EntryProblem.DUPLICATE_KEY, f"{path} sets key {key} more than once.")
+    matched = _KEY.fullmatch(key)
+    if matched is None:
+        return InvalidEntry(
+            key,
+            EntryProblem.UNKNOWN_KEY,
+            f"{path} contains unknown key {key}; host settings keys are host.<host>.startup-page-bytes.",
         )
-    return int(value)
+    if _PAGE_BYTES.fullmatch(value) is None or not MIN_PAGE_BYTES <= int(value) <= MAX_PAGE_BYTES:
+        return InvalidEntry(
+            key,
+            EntryProblem.INVALID_VALUE,
+            f"{path} key {key} must be a whole number of bytes from {MIN_PAGE_BYTES} to {MAX_PAGE_BYTES}; found {value!r}.",
+        )
+    return matched[1], int(value)
 
 
 def _read(path: Path, effects: SettingEffects, host: str) -> int | None:
+    """Validate every stored entry, since all hosts share the file; return this host's value or None if absent."""
     try:
         if not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
             raise ValueError(f"Host settings {path} must be a regular file.")
@@ -78,20 +93,12 @@ def _read(path: Path, effects: SettingEffects, host: str) -> int | None:
     selected: int | None = None
     seen: set[str] = set()
     for entry in listed.entries:
-        try:
-            if entry.key in seen:
-                raise ValueError(f"{path} sets key {entry.key} more than once; keep one value.")
-            seen.add(entry.key)
-            matched = _KEY.fullmatch(entry.key)
-            if matched is None:
-                raise ValueError(
-                    f"{path} contains unknown key {entry.key}; host settings keys are host.<host>.startup-page-bytes."
-                )
-            page_bytes = _page_bytes(path, entry.key, entry.value)
-        except ValueError as error:
-            raise SettingResolutionError(str(error), path, effects, error, "read", path) from error
-        if matched[1] == host:
-            selected = page_bytes
+        validated = _validated(path, entry.key, entry.value, seen)
+        if isinstance(validated, InvalidEntry):
+            raise SettingResolutionError(validated.diagnostic, path, effects, validated, "read", path)
+        seen.add(entry.key)
+        if validated[0] == host:
+            selected = validated[1]
     return selected
 
 

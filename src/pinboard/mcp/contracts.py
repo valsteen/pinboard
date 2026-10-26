@@ -474,8 +474,10 @@ class StartupTextRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_
 class StartupHostSettingFailed(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """The connected host's per-user page size could not be verified; no page was read.
 
-    Effects report this call's own directory creation, file creation and seeding write in the user's host
-    settings, separately from the unchanged Pinboard project state.
+    `setting_key` is the key the repair concerns: the offending entry's own key when stored content is
+    invalid, which may belong to another host, otherwise the connected host's key. Effects report this
+    call's own directory creation, file creation and seeding write in the user's host settings, separately
+    from the unchanged Pinboard project state.
     """
 
     schema: Literal["pinboard-startup-text-result/v1"]

@@ -53,12 +53,13 @@ class HostSettingsTest(unittest.TestCase):
         self.settings.write_text(f'[host "claude-code"]\n\tstartup-page-bytes = {value}\n')
 
     def assert_failure(
-        self, page: dict[str, contracts.JsonValue], retry: str, effect: str
+        self, page: dict[str, contracts.JsonValue], retry: str, effect: str, key: str = CLAUDE_KEY
     ) -> dict[str, contracts.JsonValue]:
         self.assertEqual("HOST_PAGE_SETTING_UNAVAILABLE", page["code"], page)
         self.assertEqual(str(self.settings), page["setting_file"])
-        self.assertEqual(CLAUDE_KEY, page["setting_key"])
-        self.assertIn(CLAUDE_KEY, str(page["message"]))
+        self.assertEqual(key, page["setting_key"])
+        self.assertIn(key, str(page["message"]))
+        self.assertNotIn("..", str(page["message"]))
         self.assertEqual(retry, page["retry"])
         self.assertEqual(effect, page["effect"])
         self.assertNotIn("text", page)
@@ -101,21 +102,52 @@ class HostSettingsTest(unittest.TestCase):
 
     def test_malformed_and_out_of_bounds_values_fail_without_falling_back(self) -> None:
         self.settings.parent.mkdir(parents=True)
-        for content in (
-            '[host "claude-code"]\n\tstartup-page-bytes = big\n',
-            '[host "claude-code"]\n\tstartup-page-bytes = 3999\n',
-            '[host "claude-code"]\n\tstartup-page-bytes = 200001\n',
-            '[host "claude-code"]\n\tstartup-page-bytes = 9000\n\tstartup-page-bytes = 9000\n',
-            '[host "codex"]\n\tstartup-page-bytes = -1\n[host "claude-code"]\n\tstartup-page-bytes = 9000\n',
-            '[host "claude-code"]\n\tpage-size = 9000\n',
-        ):
-            with self.subTest(content=content):
+        for value in ("big", "3999", "200001"):
+            with self.subTest(value=value):
+                content = f'[host "claude-code"]\n\tstartup-page-bytes = {value}\n'
                 self.settings.write_text(content)
                 page = self.assert_failure(self.read(), "correct-input", "unchanged")
                 self.assertEqual(str(self.settings), page["resource"])
                 self.assertIn(f"Set {CLAUDE_KEY} in {self.settings}", str(page["recovery"]))
                 self.assertIn("4000 to 200000", str(page["recovery"]))
                 self.assertEqual(content, self.settings.read_text())
+
+    def test_an_invalid_entry_names_its_own_key_and_a_repair_that_clears_it(self) -> None:
+        self.settings.parent.mkdir(parents=True)
+        codex = "host.codex.startup-page-bytes"
+        unknown = "host.claude-code.page-size"
+        claude = '[host "claude-code"]\n\tstartup-page-bytes = 9000\n'
+        for content, key, repair, fixed in (
+            (
+                f'{claude}[host "codex"]\n\tstartup-page-bytes = 12k\n',
+                codex,
+                f"Set {codex} in {self.settings} to a whole number of bytes from 4000 to 200000",
+                f'{claude}[host "codex"]\n\tstartup-page-bytes = 12000\n',
+            ),
+            (
+                f'{claude}[host "codex"]\n\tstartup-page-bytes = 12000\n\tstartup-page-bytes = 12000\n',
+                codex,
+                f"Keep one {codex} entry in {self.settings}",
+                f'{claude}[host "codex"]\n\tstartup-page-bytes = 12000\n',
+            ),
+            (
+                f"{claude}\tpage-size = 9000\n",
+                unknown,
+                f"Remove {unknown} from {self.settings}",
+                claude,
+            ),
+        ):
+            with self.subTest(key=key, repair=repair):
+                self.settings.write_text(content)
+                page = self.assert_failure(self.read(), "correct-input", "unchanged", key)
+                self.assertIn(repair, str(page["recovery"]))
+                self.assertNotIn(CLAUDE_KEY + " ", str(page["recovery"]))
+                self.assertEqual(content, self.settings.read_text())
+                self.settings.write_text(fixed)
+                self.assertEqual(9000, self.read()["max_batch_bytes"])
+        self.settings.write_text(f"{claude}\tstartup-page-bytes = 9000\n")
+        page = self.assert_failure(self.read(), "correct-input", "unchanged")
+        self.assertIn(f"Keep one {CLAUDE_KEY} entry in {self.settings}", str(page["recovery"]))
 
     def test_a_file_git_cannot_parse_names_the_diagnostic_command(self) -> None:
         self.store("9000")

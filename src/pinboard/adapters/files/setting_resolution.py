@@ -44,9 +44,17 @@ class InvalidEntry:
 
 @dataclass(frozen=True)
 class NotRegularFile:
-    """The settings path holds a directory, symlink or other non-regular file, so no key can be read there."""
+    """The settings path holds a directory or other non-regular file, so no key can be read there."""
 
     path: Path
+
+
+@dataclass(frozen=True)
+class DanglingLink:
+    """A symbolic link on the settings path points to a target that does not exist."""
+
+    link: Path
+    target: Path
 
 
 @dataclass(frozen=True)
@@ -69,6 +77,7 @@ type SettingFailureCause = (
     | InvalidEntry
     | NotRegularFile
     | NotDirectory
+    | DanglingLink
     | SeedNotReadBack
     | ValueError
     | OSError
@@ -103,6 +112,16 @@ class SettingResolutionError(ValueError):
         self.resource: Path = resource
 
 
+def _with_filesystem_cause(error: FileIOError) -> tuple[str, OSError | None]:
+    """The publication failure's text with its underlying filesystem cause, such as a read-only file system."""
+    cause = error.__cause__
+    while cause is not None and not isinstance(cause, OSError):
+        cause = cause.__cause__
+    if cause is None:
+        return str(error), None
+    return f"{error}: {cause.strerror or cause}", cause
+
+
 def observe_or_create_settings_file(path: Path) -> SettingEffects:
     """Observe file presence without masking access errors; preserve this invocation's creation effect."""
     effects = SettingEffects("none", "none", "none")
@@ -117,16 +136,17 @@ def observe_or_create_settings_file(path: Path) -> SettingEffects:
         try:
             effects = SettingEffects("none", "confirmed" if create_immutable(path, b"") else "none", "none")
         except ImmutableFilePublishedError as error:
+            message, _ = _with_filesystem_cause(error)
             raise SettingResolutionError(
-                str(error), path, SettingEffects("none", "confirmed", "none"), error, "create", path
+                message, path, SettingEffects("none", "confirmed", "none"), error, "create", path
             ) from error
         except FileIOError as error:
             if error.code != FileIOErrorCode.FILE_ALREADY_EXISTS:
                 # Publication wraps the filesystem cause; denied access needs the directory's write repair.
-                denied = error.__cause__
-                if isinstance(denied, PermissionError):
-                    raise SettingResolutionError(f"{error}: {denied}", path, effects, denied, "create", path) from error
-                raise SettingResolutionError(str(error), path, effects, error, "create", path) from error
+                message, cause = _with_filesystem_cause(error)
+                if isinstance(cause, PermissionError):
+                    raise SettingResolutionError(message, path, effects, cause, "create", path) from error
+                raise SettingResolutionError(message, path, effects, error, "create", path) from error
     return effects
 
 

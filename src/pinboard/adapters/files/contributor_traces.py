@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import secrets
 import stat
 import subprocess
@@ -15,10 +14,14 @@ from typing import Literal
 import msgspec
 
 from pinboard.adapters.files import git_config
-from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError, RootError
-from pinboard.adapters.files.file_io import create_immutable
+from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
-from pinboard.adapters.files.setting_resolution import SettingEffects, SettingResolution, SettingResolutionError
+from pinboard.adapters.files.setting_resolution import (
+    SettingEffects,
+    SettingResolution,
+    SettingResolutionError,
+    resolve_seeded_key,
+)
 
 SETTINGS_NAME = "contributor-traces.config"
 TRACE_DIRECTORY = "invocation-traces"
@@ -99,83 +102,14 @@ def _decode_settings(path: Path) -> ContributorTraceSettings | git_config.ReadFa
     return ContributorTraceSettings(project_mode, MappingProxyType(overrides)) if project_mode is not None else None
 
 
-def _observe_or_create_settings_file(path: Path) -> SettingEffects:
-    """Observe file presence without masking access errors; preserve this invocation's creation effect."""
-    effects = SettingEffects("none", "none", "none")
-    try:
-        path.stat(follow_symlinks=False)
-        missing = False
-    except FileNotFoundError:
-        missing = True
-    except OSError as error:
-        raise SettingResolutionError(str(error), path, effects, error, "read", path) from error
-    if missing:
-        try:
-            effects = SettingEffects("none", "confirmed" if create_immutable(path, b"") else "none", "none")
-        except ImmutableFilePublishedError as error:
-            raise SettingResolutionError(
-                str(error), path, SettingEffects("none", "confirmed", "none"), error, "create", path
-            ) from error
-        except FileIOError as error:
-            if error.code != FileIOErrorCode.FILE_ALREADY_EXISTS:
-                raise SettingResolutionError(str(error), path, effects, error, "create", path) from error
-    return effects
-
-
 def _settings(data_root: Path) -> SettingResolution[ContributorTraceSettings]:
-    path = data_root / SETTINGS_NAME
-    effects = _observe_or_create_settings_file(path)
-    operation: Literal["read", "stage", "publish"] = "read"
-    resource = path
-    try:
-        settings = _read_settings(path, effects)
-        if settings is not None:
-            return SettingResolution(path, settings, effects)
-        # Git writers and the pre-runtime launcher honor this same exclusive lock.
-        # Recheck while holding it; a stale absence cannot replace an explicit choice.
-        lock = path.with_name(f"{path.name}.lock")
-        operation, resource = "stage", lock
-        with lock.open("xb") as staged:
-            published = False
-            try:
-                operation, resource = "read", path
-                mode = stat.S_IMODE(path.stat().st_mode)
-                operation, resource = "stage", lock
-                os.fchmod(staged.fileno(), mode)
-                settings = _read_settings(path, effects)
-                if settings is not None:
-                    return SettingResolution(path, settings, effects)
-                operation, resource = "read", path
-                content = path.read_bytes()
-                operation, resource = "stage", lock
-                staged.write(content)
-                staged.flush()
-                written = git_config.add(lock, "pinboard.unsafe_persist_exact_pinboard_traces.mode", "off")
-                if isinstance(written, git_config.WriteUnconfirmed):
-                    raise SettingResolutionError(
-                        f"Cannot write Contributor trace project mode in {path}: {written.cause.diagnostic}",
-                        path,
-                        effects,
-                        written,
-                        "stage",
-                        lock,
-                    )
-                operation, resource = "publish", path
-                lock.replace(path)
-                published = True
-                effects = SettingEffects(effects.parent_creation, effects.file_creation, "acknowledged")
-            finally:
-                if not published:
-                    lock.unlink(missing_ok=True)
-        operation, resource = "read", path
-        settings = _read_settings(path, effects)
-        if settings is None:
-            raise ValueError("Contributor trace settings must declare the project mode.")
-        return SettingResolution(path, settings, effects)
-    except (ValueError, OSError) as error:
-        if isinstance(error, SettingResolutionError):
-            raise
-        raise SettingResolutionError(str(error), path, effects, error, operation, resource) from error
+    return resolve_seeded_key(
+        data_root / SETTINGS_NAME,
+        _read_settings,
+        "pinboard.unsafe_persist_exact_pinboard_traces.mode",
+        "off",
+        "Contributor trace project mode",
+    )
 
 
 def _read_settings(path: Path, effects: SettingEffects) -> ContributorTraceSettings | None:

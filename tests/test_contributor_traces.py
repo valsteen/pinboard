@@ -495,6 +495,29 @@ class ContributorTraceTest(unittest.TestCase):
             finally:
                 work_root.chmod(0o700)
 
+    def test_preflight_names_a_stale_git_lock_on_the_staged_settings_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            primary, worktree = self.project(Path(temporary))
+            work_root = primary / ".pinboard"
+            settings = work_root / contributor_traces.SETTINGS_NAME
+            settings.touch()
+            git_lock = settings.with_name(f"{settings.name}.lock.lock")
+            git_lock.touch()
+            rejected = self.preflight_result(worktree, work_root)
+            staged = settings.resolve().with_name(f"{settings.name}.lock")
+            self.assertEqual(str(staged), rejected["resource"])
+            self.assertIn(f"to the staged copy {staged}", str(rejected["repair"]))
+            self.assertIn(f"If Git's lock {git_lock.resolve()} exists", str(rejected["repair"]))
+            self.assertIn("report it to the human, who can remove it", str(rejected["repair"]))
+            self.assertNotIn("--null --list", str(rejected["repair"]))
+            self.assertEqual("retry-same-input", rejected["retry"])
+            self.assertFalse(rejected["target_ran"])
+            self.assertEqual(b"", settings.read_bytes())
+            git_lock.unlink()
+            resolution = contributor_traces.read_project_trace_settings(worktree, work_root)
+            assert resolution is not None
+            self.assertEqual("off", resolution[1].value.unsafe_persist_exact_pinboard_traces)
+
     def test_unprepared_initializer_rechecks_a_mode_selected_after_its_first_read(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             primary, worktree = self.project(Path(temporary))

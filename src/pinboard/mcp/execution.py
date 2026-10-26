@@ -200,6 +200,16 @@ def settings_recovery(  # noqa: C901, PLR0912, PLR0915 - one boundary distinguis
                     "Restore access to the Git executable for the Pinboard MCP service, then retry the same request."
                 )
                 retry = "retry-same-input"
+            case git_config.ProcessFailed(returncode=returncode) if isinstance(cause, git_config.WriteUnconfirmed):
+                # Git locks the staged copy through its own `<staged>.lock`, which a killed write leaves behind.
+                git_lock = cause.path.with_name(f"{cause.path.name}.lock")
+                repair = (
+                    f"Git exited with status {returncode} while adding {cause.key} to the staged copy {cause.path}. "
+                    f"If Git's lock {git_lock} exists and no settings edit is in progress, it is a stale lock left by "
+                    "an interrupted process: report it to the human, who can remove it; do not delete it while an "
+                    "edit may be active. Otherwise resolve the reported cause, then retry the same request."
+                )
+                retry = "retry-same-input"
             case git_config.ProcessFailed(returncode=returncode):
                 repair = f"Run `{command}` to diagnose Git's exit status {returncode}; resolve the reported cause before retrying."
                 retry = "retry-same-input"

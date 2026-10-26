@@ -225,7 +225,9 @@ class HostSettingsTest(unittest.TestCase):
             git_config,
             "add",
             return_value=git_config.WriteUnconfirmed(
-                self.settings, CLAUDE_KEY, git_config.ProcessFailed(255, "could not lock config file")
+                self.settings.with_name("hosts.config.lock"),
+                CLAUDE_KEY,
+                git_config.ProcessFailed(255, "could not lock config file"),
             ),
         ):
             page = self.assert_failure(self.read(), "retry-same-input", "committed")
@@ -247,6 +249,38 @@ class HostSettingsTest(unittest.TestCase):
         self.assertTrue(lock.exists())
         lock.unlink()
         self.assertEqual(32000, self.read()["max_batch_bytes"])
+
+    def test_a_stale_git_lock_on_the_staged_copy_is_named_in_the_repair(self) -> None:
+        self.settings.parent.mkdir(parents=True)
+        self.settings.touch()
+        git_lock = self.settings.with_name("hosts.config.lock.lock")
+        git_lock.touch()
+        page = self.assert_failure(self.read(), "retry-same-input", "unchanged")
+        staged = self.settings.with_name("hosts.config.lock")
+        self.assertEqual(str(staged), page["resource"])
+        self.assertIn(f"while adding {CLAUDE_KEY} to the staged copy {staged}", str(page["recovery"]))
+        self.assertIn(
+            f"If Git's lock {git_lock} exists and no settings edit is in progress, it is a stale lock left by "
+            "an interrupted process: report it to the human, who can remove it",
+            str(page["recovery"]),
+        )
+        self.assertNotIn("--null --list", str(page["recovery"]))
+        self.assertFalse(staged.exists())
+        self.assertTrue(git_lock.exists())
+        git_lock.unlink()
+        self.assertEqual(32000, self.read()["max_batch_bytes"])
+
+    def test_an_unreadable_settings_file_asks_for_read_access(self) -> None:
+        self.store("9000")
+        self.settings.chmod(0o200)
+        self.addCleanup(self.settings.chmod, 0o600)
+        page = self.assert_failure(self.read(), "retry-same-input", "unchanged")
+        self.assertEqual(str(self.settings), page["resource"])
+        self.assertEqual(
+            f"Grant read access to {self.settings} for the Pinboard MCP service, then retry.", page["recovery"]
+        )
+        self.settings.chmod(0o600)
+        self.assertEqual(9000, self.read()["max_batch_bytes"])
 
     def test_a_missing_working_directory_asks_for_a_service_restart(self) -> None:
         self.store("9000")

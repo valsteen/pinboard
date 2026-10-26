@@ -88,6 +88,11 @@ def _read(path: Path, effects: SettingEffects, host: str) -> int | None:
         raise SettingResolutionError(
             f"Host settings {path} must be a regular file.", path, effects, NotRegularFile(path), "read", path
         )
+    # Git reports an unreadable file only through its exit status; opening it first names the denied access.
+    try:
+        path.open("rb").close()
+    except OSError as error:
+        raise SettingResolutionError(str(error), path, effects, error, "read", path) from error
     listed = git_config.list_entries(path)
     if isinstance(listed, git_config.ReadFailed):
         raise SettingResolutionError(

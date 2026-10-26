@@ -14,6 +14,7 @@ from pinboard.adapters.files import git_config
 from pinboard.adapters.files.setting_resolution import (
     EntryProblem,
     InvalidEntry,
+    NotDirectory,
     NotRegularFile,
     SettingEffects,
     SettingResolution,
@@ -36,20 +37,39 @@ def setting_key(host: str) -> str:
     return f"host.{host}.startup-page-bytes"
 
 
+def _blocking_path(directory: Path) -> Path | None:
+    """The nearest existing path at or above `directory` that is not a directory, which prevents its creation."""
+    for candidate in (directory, *directory.parents):
+        if candidate.exists(follow_symlinks=False) and not candidate.is_dir():
+            return candidate
+    return None
+
+
 def ensure_directory(path: Path) -> bool:
     """Create the settings file's parent privately when missing; report whether this call created it."""
     directory = path.parent
     if directory.is_dir():
         return False
+    unchanged = SettingEffects("none", "none", "none")
     try:
         directory.mkdir(mode=0o700, parents=True)
-    except FileExistsError:
-        return False
     except OSError as error:
+        blocking = _blocking_path(directory) if isinstance(error, FileExistsError | NotADirectoryError) else None
+        if blocking is not None:
+            raise SettingResolutionError(
+                f"Cannot create the host settings directory {directory}: {blocking} exists and is not a directory.",
+                path,
+                unchanged,
+                NotDirectory(blocking),
+                "create",
+                blocking,
+            ) from error
+        if isinstance(error, FileExistsError) and directory.is_dir():
+            return False
         raise SettingResolutionError(
             f"Cannot create the host settings directory {directory}: {error}",
             path,
-            SettingEffects("none", "none", "none"),
+            unchanged,
             error,
             "create",
             directory,

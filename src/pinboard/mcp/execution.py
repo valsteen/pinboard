@@ -213,7 +213,11 @@ def settings_recovery(  # noqa: C901, PLR0912, PLR0915 - one boundary distinguis
         match cause:
             case FileExistsError():
                 resource = f"{subject} edit at {error.resource}"
-                repair = f"Retry the same request after the settings edit at {error.resource} finishes."
+                repair = (
+                    f"Retry the same request after the settings edit at {error.resource} finishes. "
+                    f"If no edit is in progress, {error.resource} is a stale lock left by an interrupted process: "
+                    "report it to the human, who can remove it; do not delete it while an edit may be active."
+                )
                 retry = "retry-same-input"
             case PermissionError():
                 match error.operation:

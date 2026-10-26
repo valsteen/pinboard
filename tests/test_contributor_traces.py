@@ -345,6 +345,8 @@ class ContributorTraceTest(unittest.TestCase):
                 self.assertFalse(rejected["target_ran"])
                 self.assertEqual("retry-same-input", rejected["retry"])
                 self.assertIn(".lock", str(rejected["resource"]))
+                self.assertIn("If no edit is in progress", str(rejected["repair"]))
+                self.assertIn("report it to the human, who can remove it", str(rejected["repair"]))
                 shell = subprocess.run(
                     [str(launcher), "--project-root", str(worktree), "root"], capture_output=True, check=False
                 )
@@ -958,6 +960,11 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertIn("unknown key or mode", str(invalid["message"]))
             self.assertIn("Correct", str(invalid["repair"]))
             self.assertEqual("correct-input", invalid["retry"])
+            settings = work_root / contributor_traces.SETTINGS_NAME
+            settings.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode\n')
+            valueless = self.preflight_result(worktree, work_root)
+            self.assertIn("unknown key or mode", str(valueless["message"]))
+            self.assertEqual("correct-input", valueless["retry"])
 
     def test_preflight_preserves_syntax_diagnostics_without_claiming_a_precise_git_cause(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

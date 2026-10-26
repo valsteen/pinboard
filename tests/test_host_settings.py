@@ -125,6 +125,12 @@ class HostSettingsTest(unittest.TestCase):
                 f'{claude}[host "codex"]\n\tstartup-page-bytes = 12000\n',
             ),
             (
+                f'{claude}[host "codex"]\n\tstartup-page-bytes\n',
+                codex,
+                f"Set {codex} in {self.settings} to a whole number of bytes from 4000 to 200000",
+                f'{claude}[host "codex"]\n\tstartup-page-bytes = 12000\n',
+            ),
+            (
                 f'{claude}[host "codex"]\n\tstartup-page-bytes = 12000\n\tstartup-page-bytes = 12000\n',
                 codex,
                 f"Keep one {codex} entry in {self.settings}",
@@ -233,6 +239,11 @@ class HostSettingsTest(unittest.TestCase):
         lock.touch()
         page = self.assert_failure(self.read(), "retry-same-input", "unchanged")
         self.assertEqual(f"Host page-size settings edit at {lock}", page["resource"])
+        self.assertIn(
+            f"If no edit is in progress, {lock} is a stale lock left by an interrupted process: "
+            "report it to the human, who can remove it",
+            str(page["recovery"]),
+        )
         self.assertTrue(lock.exists())
         lock.unlink()
         self.assertEqual(32000, self.read()["max_batch_bytes"])

@@ -59,7 +59,7 @@ class GitConfigTest(unittest.TestCase):
         self.assertIn("direct cwd observation", unavailable.cause.diagnostic)
 
     def test_successful_process_with_invalid_output_is_a_distinct_observation(self) -> None:
-        for output in (b"unframed", b"key\n\xff\0", b"entry-without-value\0"):
+        for output in (b"unframed", b"key\n\xff\0", b"\0", b"\nvalue\0"):
             with (
                 self.subTest(output=output),
                 patch.object(git_config.subprocess, "run", return_value=CompletedProcess([], 0, output, b"")),
@@ -67,6 +67,21 @@ class GitConfigTest(unittest.TestCase):
                 result = git_config.list_entries(Path("config"))
             assert isinstance(result, git_config.ReadFailed)
             self.assertIsInstance(result.cause, git_config.InvalidOutput)
+
+    def test_a_key_written_without_a_value_is_an_entry_with_no_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config"
+            path.write_text('[host "codex"]\n\tstartup-page-bytes\n\tempty =\n')
+            self.assertEqual(
+                git_config.Entries(
+                    path,
+                    (
+                        git_config.Entry("host.codex.startup-page-bytes", None),
+                        git_config.Entry("host.codex.empty", ""),
+                    ),
+                ),
+                git_config.list_entries(path),
+            )
 
 
 if __name__ == "__main__":

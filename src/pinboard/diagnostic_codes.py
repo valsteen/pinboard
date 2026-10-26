@@ -47,6 +47,18 @@ type StartupTextRejectedCode = Annotated[
 ]
 
 
+type StartupHostSettingFailedCode = Annotated[
+    Literal["HOST_PAGE_SETTING_UNAVAILABLE"],
+    CodeMeanings(
+        (
+            (
+                0,
+                "The connected host's per-user startup page size could not be read, seeded or verified; no page was read.",
+            ),
+        )
+    ),
+]
+
 type FixtureReviewRejectedCode = Annotated[
     Literal["FIXTURE_REVIEW_INVALID"],
     CodeMeanings(((0, "The selected fixture, repetition recipe or bound review page could not be verified."),)),

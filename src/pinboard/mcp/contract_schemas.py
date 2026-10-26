@@ -125,6 +125,7 @@ from pinboard.mcp.contracts import (
     ReviewJobReady,
     ReviewJobRejected,
     SchemaUnsupportedResult,
+    StartupHostSettingFailed,
     StartupTextPage,
     StartupTextRejected,
     TerminalAttemptInspectionSuccess,
@@ -820,7 +821,15 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
     elif schema == "pinboard-mcp-execution-result/v1":
         msgspec.convert(content, type=TracePreflightResult if status == "rejected" else ExecutorBusyResult, strict=True)
     elif tool_name == "pinboard_startup_text":
-        msgspec.convert(content, type=StartupTextRejected if status == "rejected" else StartupTextPage, strict=True)
+        msgspec.convert(
+            content,
+            type=StartupTextPage
+            if status != "rejected"
+            else StartupHostSettingFailed
+            if code == "HOST_PAGE_SETTING_UNAVAILABLE"
+            else StartupTextRejected,
+            strict=True,
+        )
     elif tool_name == "pinboard_fixture_review":
         msgspec.convert(content, type=FixtureReviewRejected if status == "rejected" else FixtureReviewPage, strict=True)
     elif tool_name == "pinboard_initiative" and schema == "pinboard-roadmap-result/v1":

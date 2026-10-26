@@ -471,6 +471,43 @@ class StartupTextRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_
     changed_surfaces: Empty
 
 
+class StartupHostSettingFailed(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """The connected host's per-user page size could not be verified; no page was read.
+
+    Effects report this call's own directory creation, file creation and seeding write in the user's host
+    settings, separately from the unchanged Pinboard project state.
+    """
+
+    schema: Literal["pinboard-startup-text-result/v1"]
+    status: Literal["rejected"]
+    code: diagnostic_codes.StartupHostSettingFailedCode
+    setting_file: NonEmptyText
+    setting_key: NonEmptyText
+    resource: NonEmptyText
+    message: NonEmptyText
+    recovery: NonEmptyText
+    settings_directory_creation: Literal["none", "confirmed"]
+    settings_file_creation: Literal["none", "confirmed", "unconfirmed"]
+    settings_key_write: Literal["none", "acknowledged", "unconfirmed"]
+    state_changed: bool | None
+    effect: Literal["unchanged", "committed", "unconfirmed"]
+    retry: Literal["correct-input", "retry-same-input"]
+    changed_surfaces: tuple[Literal["user-settings"], ...]
+
+    def __post_init__(self) -> None:
+        confirmed = (
+            self.settings_directory_creation == "confirmed"
+            or self.settings_file_creation == "confirmed"
+            or self.settings_key_write == "acknowledged"
+        )
+        unconfirmed = self.settings_file_creation == "unconfirmed" or self.settings_key_write == "unconfirmed"
+        effect = "unconfirmed" if unconfirmed else "committed" if confirmed else "unchanged"
+        if self.effect != effect or self.state_changed != (None if unconfirmed else confirmed):
+            raise ValueError("Host-setting effect and state_changed must follow the reported settings effects.")
+        if self.changed_surfaces != (("user-settings",) if confirmed else ()):
+            raise ValueError("Host-setting changed surfaces must name user settings exactly when they changed.")
+
+
 class FixtureSource(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     path: RootPath
     sha256: Sha256
@@ -3395,7 +3432,7 @@ TRANSITION_RESULT_TYPES = (
     TransitionFailedAfterPublication,
     ExecutorBusyResult,
 )
-STARTUP_TEXT_RESULT_TYPES = (StartupTextPage, StartupTextRejected, ExecutorBusyResult)
+STARTUP_TEXT_RESULT_TYPES = (StartupTextPage, StartupTextRejected, StartupHostSettingFailed, ExecutorBusyResult)
 FIXTURE_REVIEW_RESULT_TYPES = (FixtureReviewPage, FixtureReviewRejected, ExecutorBusyResult)
 
 

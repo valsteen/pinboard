@@ -282,6 +282,35 @@ Agent workflows use local stdio MCP tools for intake, briefs, inspection, author
 
 An installed plugin keeps its private Python environment at `<launcher-root>/.pinboard-runtime/environment`, while Pinboard source development uses `<pinboard-source>/.venv`. Neither environment is created in or borrowed from the managed project.
 
+## Startup page size per host
+
+Agents read Pinboard skills, references and launch prompts in pages through the `pinboard_startup_text` tool. Each page is sized so the connected host shows it to the model whole rather than saving it to a file or cutting it. Pinboard recognizes the host by the client name it sends when it connects, and keeps one page size per recognized host, for every version of that host, in `~/.config/pinboard/hosts.config`:
+
+```ini
+[host "claude-code"]
+	startup-page-bytes = 32000
+[host "codex"]
+	startup-page-bytes = 20000
+[host "antigravity"]
+	startup-page-bytes = 16000
+```
+
+The first page read from a recognized host creates `~/.config/pinboard` (mode `0700`) and the file (mode `0600`) when they are missing, writes that host's measured default as one key, and reads it back. After that the value is yours; Pinboard never rewrites it. Any other MCP client gets 8000-byte pages and no setting.
+
+| Host | Client name | Seeded default | Measured on | Host limit the default assumes |
+| --- | --- | --- | --- | --- |
+| Claude Code | `claude-code` | 32000 | Claude Code 2.1.293 | `MAX_MCP_OUTPUT_TOKENS` at its default of 25000 tokens; larger results are saved to a file |
+| Codex | `codex-mcp-client` | 20000 | Codex 0.164.0 | `tool_output_token_limit` at its default of 10000 tokens; larger results lose their middle |
+| Antigravity | `antigravity-client` | 16000 | agy 1.4.7 | Inline text results of about 10 KB, which agy offers no setting for; larger results are saved to a file |
+
+If you lowered a host's output limit, lower its page size to match; if you raised the limit, you can raise the page size. Values are whole numbers of bytes from 4000 to 200000, and a change applies to the next page. For example:
+
+```sh
+git config --file ~/.config/pinboard/hosts.config host.codex.startup-page-bytes 12000
+```
+
+Remove a key to have Pinboard write the measured default again. A malformed or out-of-range value, an unreadable file, or a failed first write stops page reads with a diagnostic that names the file and key and gives one next step; Pinboard does not fall back to another size. Antigravity sends the same client version for every agy release, so if a new agy release changes how much it shows inline, adjust the `antigravity` value yourself.
+
 ## Upgrade an installed plugin
 
 Refresh the installed code through the client's supported plugin update or reload mechanism. Codex loads a cached copy; marketplace refresh can replace files for configured plugins, including disabled ones. See [Codex plugin refresh](https://developers.openai.com/plugins/build/plugins#enable-or-disable-a-plugin-for-a-repo). In Claude Code, use `claude plugin update pinboard@pinboard`. In Antigravity, [reinstall from the updated clone](#upgrade-or-remove).
@@ -356,6 +385,10 @@ Check that `~/.gemini/antigravity-cli/settings.json` contains `mcp(pinboard_pinb
 ### Antigravity reports the pinboard MCP server as unavailable
 
 MCP startup and the SessionStart hook can prepare a new install automatically. When hook preparation fails, the session's injected context names the observed cause and the exact manual command from [First setup](#first-antigravity-session). After preparation, check tool availability and start a new agy session if the connection remains unavailable.
+
+### Pinboard reports a host page-size setting as unavailable
+
+A `HOST_PAGE_SETTING_UNAVAILABLE` result means Pinboard could not read, create or verify your page size for the connected host. It names the file, the key and one next step: usually correcting the value as described in [Startup page size per host](#startup-page-size-per-host), granting access to `~/.config/pinboard`, or waiting for another edit's `hosts.config.lock` to finish. No page is read until the setting is usable.
 
 ### The launcher says runtime preparation is required
 

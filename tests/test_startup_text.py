@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import override
+from unittest.mock import patch
 
 import msgspec
 from mcp import Client
@@ -17,6 +18,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver import MCPServer
 from mcp_types import ClientCapabilities, Implementation, InitializeRequestParams, TextContent
 
+from pinboard.adapters.files import git_config, host_settings
 from pinboard.domain import work_models
 from pinboard.mcp import common, contract_schemas, contracts, execution, host_profiles, server, startup_text
 from tests.checkpoint_support import CheckpointPackageSupport
@@ -247,6 +249,10 @@ class HostProfileTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        home = patch.dict(os.environ, {"HOME": str(self.root / "home")})
+        home.start()
+        self.addCleanup(home.stop)
+        self.settings = self.root / "home" / ".config" / "pinboard" / "hosts.config"
         self.path = self.root / "selected.txt"
         self.path.write_text("Pinboard guidance line with ordinary prose.\n" * 3000)
         self.request: dict[str, contracts.JsonValue] = {
@@ -263,29 +269,22 @@ class HostProfileTest(unittest.TestCase):
         result = startup_text.read({"request": request}, profile, execution.CancellationToken())
         return contract_schemas.validate_result("pinboard_startup_text", result.content)
 
-    def test_measured_clients_select_their_profile_and_others_stay_unmeasured(self) -> None:
+    def test_recognized_hosts_select_their_profile_at_every_version_and_others_stay_unmeasured(self) -> None:
         for name, version, profile in MEASURED_CLIENTS:
-            with self.subTest(name=name):
-                self.assertEqual(profile, host_profiles.select(client_params(name, version)))
-        for name, version in (
-            ("claude-code", "2.2.0"),
-            ("claude-code", "2.1.292"),
-            ("claude-code", "2.1.293-beta"),
-            ("codex-mcp-client", "0.165.0"),
-            ("antigravity-client", "v1.0.1"),
-            ("Claude Code", "2.1.293"),
-            ("mcp", "0.1.0"),
-        ):
+            for observed in (version, "3.0.0", "0.1.0-beta"):
+                with self.subTest(name=name, version=observed):
+                    self.assertEqual(profile, host_profiles.select(client_params(name, observed)))
+        for name, version in (("Claude Code", "2.1.293"), ("mcp", "0.1.0"), ("claude-code", "")):
             with self.subTest(name=name, version=version):
                 self.assertEqual(
                     host_profiles.HostProfile.UNMEASURED, host_profiles.select(client_params(name, version))
                 )
         self.assertEqual(host_profiles.HostProfile.UNMEASURED, host_profiles.select(None))
-        self.assertEqual(8000, host_profiles.page_bytes(host_profiles.HostProfile.UNMEASURED))
+        self.assertEqual(8000, host_profiles.measured_page_bytes(host_profiles.HostProfile.UNMEASURED))
 
     def test_pages_fit_the_effective_budget_and_continuations_preserve_it(self) -> None:
         for profile in host_profiles.HostProfile:
-            ceiling = host_profiles.page_bytes(profile)
+            ceiling = host_profiles.measured_page_bytes(profile)
             representation = host_profiles.representation(profile)
             for requested, effective in (("host-profile", ceiling), (ceiling + 5000, ceiling), (3000, 3000)):
                 with self.subTest(profile=profile, requested=requested):
@@ -333,9 +332,9 @@ class HostProfileTest(unittest.TestCase):
                     page = result.structured_content
                     assert isinstance(page, dict)
                     self.assertEqual("ok", page["status"], page)
-                    self.assertEqual(host_profiles.page_bytes(expected), page["max_batch_bytes"])
+                    self.assertEqual(host_profiles.measured_page_bytes(expected), page["max_batch_bytes"])
                     sent = len(result.model_dump_json(by_alias=True, exclude_none=True).encode())
-                    self.assertLessEqual(sent, host_profiles.page_bytes(expected))
+                    self.assertLessEqual(sent, host_profiles.measured_page_bytes(expected))
                     match host_profiles.representation(expected):
                         case host_profiles.Representation.STRUCTURED_ONLY:
                             self.assertEqual([], result.content)
@@ -349,3 +348,16 @@ class HostProfileTest(unittest.TestCase):
                     asyncio.run(scenario(transport, Implementation(name=name, version=version), profile))
                 finally:
                     executor.shutdown()
+                host = host_profiles.setting_host(profile)
+                if host is not None:
+                    listed = git_config.list_entries(self.settings)
+                    assert isinstance(listed, git_config.Entries)
+                    self.assertIn(
+                        git_config.Entry(
+                            host_settings.setting_key(host), str(host_profiles.measured_page_bytes(profile))
+                        ),
+                        listed.entries,
+                    )
+        listed = git_config.list_entries(self.settings)
+        assert isinstance(listed, git_config.Entries)
+        self.assertEqual(3, len(listed.entries))

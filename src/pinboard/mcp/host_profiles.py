@@ -1,13 +1,13 @@
-"""Identify the connected MCP host and select its measured startup-text page profile.
+"""Identify the connected MCP host and select its startup-text page profile.
 
 The MCP initialize clientInfo is an accepted externally owned boundary: only its name and version are
-decoded and validated, and every other field is ignored. Each measured profile names the page budget its
-host delivers to the model whole, with margin under the host's default limit, and which result
-representation that host passes to the model. A measurement applies only to the client version range it
-was taken on; any other client, version or missing clientInfo selects the unmeasured profile.
+decoded and validated, and every other field is ignored. A recognized host is identified by name for every
+version, because Antigravity reports a constant version and the user owns each recognized host's page size in
+the per-user host settings file. Each recognized profile names the measured default seeded into that file,
+sized with margin under the host's default delivery limit, and which result representation the host passes to
+the model. Any other client or a missing clientInfo selects the unmeasured profile, which has no setting.
 """
 
-import re
 from enum import Enum
 from typing import Annotated, assert_never
 
@@ -15,8 +15,6 @@ import msgspec
 from mcp.types import InitializeRequestParams
 
 from pinboard.mcp import contracts
-
-_VERSION = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
 
 
 class HostProfile(Enum):
@@ -39,31 +37,27 @@ class ClientInfo(msgspec.Struct, frozen=True):
 
 
 def select(client_params: InitializeRequestParams | None) -> HostProfile:
-    """Select the profile measured for this exact client name and version range."""
+    """Select the profile for this client name; a valid clientInfo must also carry a nonempty version."""
     if client_params is None:
         return HostProfile.UNMEASURED
     try:
         client = msgspec.convert(client_params.client_info, ClientInfo, from_attributes=True)
     except msgspec.ValidationError:
         return HostProfile.UNMEASURED
-    matched = _VERSION.fullmatch(client.version)
-    if matched is None:
-        return HostProfile.UNMEASURED
-    version = (int(matched[1]), int(matched[2]), int(matched[3]))
-    # Measured on Claude Code 2.1.293, Codex 0.164.0 and agy 1.4.7, which reports antigravity-client v1.0.0.
     match client.name:
-        case "claude-code" if (2, 1, 293) <= version < (2, 2, 0):
+        case "claude-code":
             return HostProfile.CLAUDE_CODE
-        case "codex-mcp-client" if (0, 164, 0) <= version < (0, 165, 0):
+        case "codex-mcp-client":
             return HostProfile.CODEX
-        case "antigravity-client" if version == (1, 0, 0):
+        case "antigravity-client":
             return HostProfile.ANTIGRAVITY
         case _:
             return HostProfile.UNMEASURED
 
 
-def page_bytes(profile: HostProfile) -> int:
-    """Largest priced startup page for the profile, sized under the host's default delivery limit."""
+def measured_page_bytes(profile: HostProfile) -> int:
+    """The measured default page size: the seed for a recognized host's setting, or the unmeasured budget."""
+    # Measured on Claude Code 2.1.293, Codex 0.164.0 and agy 1.4.7 (antigravity-client v1.0.0) at their defaults.
     match profile:
         case HostProfile.CLAUDE_CODE:
             # MAX_MCP_OUTPUT_TOKENS (default 25000) moves larger results to a file; 32 KB pages arrived whole.
@@ -76,6 +70,21 @@ def page_bytes(profile: HostProfile) -> int:
             return 16000
         case HostProfile.UNMEASURED:
             return 8000
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def setting_host(profile: HostProfile) -> str | None:
+    """The host name keying this profile's per-user page size; the unmeasured profile has no setting."""
+    match profile:
+        case HostProfile.CLAUDE_CODE:
+            return "claude-code"
+        case HostProfile.CODEX:
+            return "codex"
+        case HostProfile.ANTIGRAVITY:
+            return "antigravity"
+        case HostProfile.UNMEASURED:
+            return None
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -95,12 +104,12 @@ def representation(profile: HostProfile) -> Representation:
             assert_never(unreachable)
 
 
-def effective_budget(requested: contracts.StartupBudget, profile: HostProfile) -> int:
-    """An integer request is a ceiling; the profile's page size bounds every request."""
+def effective_budget(requested: contracts.StartupBudget, page_bytes: int) -> int:
+    """An integer request is a ceiling; the selected profile's page size bounds every request."""
     match requested:
         case "host-profile":
-            return page_bytes(profile)
+            return page_bytes
         case int():
-            return min(requested, page_bytes(profile))
+            return min(requested, page_bytes)
         case _ as unreachable:
             assert_never(unreachable)

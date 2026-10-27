@@ -34,12 +34,12 @@ Use these nonterminal states:
 - `intake`: admitted but not yet ready for selection;
 - `ready`: eligible for activation;
 - `active`: one current execution attempt for that item; several disjoint items may be active concurrently;
-- `paused`: preserved attempt intentionally preempted;
+- `paused`: preserved active attempt intentionally stopped mid-implementation;
 - `blocked`: waiting for named work, evidence, or a decision;
 - `deferred`: deliberately unscheduled with a concrete reopen condition;
 - `review`: a frozen attempt awaiting independent acceptance.
 
-Terminal state remains queryable as history and does not appear as live work.
+All nonterminal states—including `ready`, `active`, and `review`—and their accepted briefs, candidate snapshots, and review evidence already persist durably on disk in `.pinboard/state.sqlite3` and `.pinboard/artifacts/` across sessions, models, and runtimes. Reserve `pause` for genuine mid-implementation stops in `active` rather than saving state, switching sessions or models, or holding a reviewed PR. Terminal state remains queryable as history and does not appear as live work.
 
 ## Leases and revocation
 
@@ -81,7 +81,7 @@ The observable transaction contract remains binary: the previous valid revision 
 
 ## Inherited sessions
 
-A session can inherit saved work from another session of the same runtime, for example a forked or resumed Codex thread that carries the original conversation. When the human asks the inheriting session to continue that work and the original session is unavailable, meaning it ended, was closed, or cannot be reached from the current runtime, the inheriting session becomes the outcome owner. A recorded `owner_task_id` that names the original session is the attempt's activation provenance, not a routing gate; continuation needs no matching owner and no reassignment.
+A session can inherit saved work from another session of the same runtime—for example a forked or resumed Codex thread, or a fresh session started after a long or drifted chat—or continue work after switching models (such as Sol to Opus) or runtimes. Because `ready`, `active`, and `review` states are already saved durably on disk, continuing in a fresh session or switching models or runtimes resumes directly from the recorded `ready`, `active`, or `review` state without pausing first; do not run `pause` or `return-for-correction` merely to save state, hand off a session, or hold a reviewed PR. When the human asks the inheriting or fresh session to continue that work and the original session is unavailable, meaning it ended, was closed, or cannot be reached from the current runtime, the inheriting session becomes the outcome owner. A recorded `owner_task_id` that names the original session is the attempt's activation provenance, not a routing gate; continuation needs no matching owner and no reassignment.
 
 1. Obtain this session's own trusted task and host identity through your own runtime's reference, [Codex](runtime-codex.md), [Claude Code](runtime-claude-code.md) or [Antigravity](runtime-antigravity.md). Never reuse the original session's task or host from inherited conversation, generated views, or earlier tool arguments, and never present its retained receipts, leases, or worker handles as your own.
 2. Treat inherited conversation as context, not state. Follow the [interrupted-task](#interrupted-tasks) steps from current authority: validate, read item status, inspect the named attempt, and follow its returned continuation.

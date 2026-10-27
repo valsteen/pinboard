@@ -220,17 +220,22 @@ def _validate_reconciliation_phase(relation: IntegrationRelation, phase: Reposit
             IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE
             | IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE
         ):
-            valid = phase == RepositoryPhase.DISPOSITION
+            legal: tuple[RepositoryPhase, ...] = (RepositoryPhase.DISPOSITION,)
         case IntegrationRelation.CANDIDATE_INTEGRATED:
-            valid = phase in (RepositoryPhase.CLEANUP, RepositoryPhase.TERMINAL)
+            legal = (RepositoryPhase.CLEANUP, RepositoryPhase.TERMINAL)
         case IntegrationRelation.CANDIDATE_RESIDUAL | IntegrationRelation.DIVERGED:
-            valid = phase == RepositoryPhase.CORRECTION
+            legal = (RepositoryPhase.CORRECTION,)
         case IntegrationRelation.TARGET_STALE:
-            valid = phase == RepositoryPhase.REFRESH
+            legal = (RepositoryPhase.REFRESH,)
         case _ as unreachable:
             assert_never(unreachable)
-    if not valid:
-        raise ValueError("integration relation and repository phase do not describe one legal continuation")
+    if phase not in legal:
+        phases = " or ".join(value.value for value in legal)
+        raise ValueError(
+            f"integration relation {relation.value} does not continue in repository phase {phase.value}; "
+            f"it continues only in phase {phases}. Resend the same reconciliation with phase {phases} "
+            "and the effect statuses that phase requires"
+        )
 
 
 def _required_runtime_effects(phase: RepositoryPhase) -> tuple[bool, bool, bool]:

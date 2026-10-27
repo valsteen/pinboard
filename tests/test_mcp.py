@@ -1060,7 +1060,7 @@ class McpTransportTest(unittest.TestCase):
 
         _run_async(scenario())
 
-    def test_attempt_inspect_names_each_reconciliation_effect_the_phase_rejects(self) -> None:
+    def test_attempt_inspect_rejection_names_the_reconciliation_correction(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
         server = mcp_server.create_server(
@@ -1125,6 +1125,16 @@ class McpTransportTest(unittest.TestCase):
                     self.assertIn(f"{effect} was sent as {sent}", diagnosis)
                     self.assertIn(f"{effect} as not-required", next_step)
             self.assertNotIn("shared-work-root", message)
+
+            integrated_sent_disposition = await rejection(
+                "candidate-integrated", "disposition", ("allowed", "allowed", "allowed")
+            )
+            message = integrated_sent_disposition["message"]
+            assert isinstance(message, str)
+            diagnosis, next_step = message.split("Resend", 1)
+            self.assertIn("candidate-integrated", diagnosis)
+            self.assertIn("disposition", diagnosis)
+            self.assertIn("cleanup or terminal", next_step)
 
         _run_async(scenario())
 

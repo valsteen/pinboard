@@ -257,7 +257,7 @@ On the first session of a new install, the SessionStart hook prepares the plugin
 
 If Pinboard stays unavailable after preparation, start a new agy session so Antigravity reconnects the server.
 
-Antigravity shows the model only each skill's name, path and description and leaves reading the skill file to the model. The plugin's files sit outside your workspace, which headless agy will not let the model read directly, and agy warns that skill bodies above 24000 bytes are truncated. Pinboard's hook therefore tells each session, and each worker or reviewer it launches, to read every Pinboard skill completely through Pinboard's paged reader. Workers and reviewers run as Antigravity subagents in the same workspace; keeping each one inside its assigned checkout relies on its instructions, because Antigravity does not confine it.
+Antigravity shows the model only each skill's name, path and description and leaves reading the skill file to the model. Interactive Antigravity sessions and subagents can read the plugin's skill and reference files directly with native `read_file` (following `ByteOffset=46080` continuation when a file exceeds 46,080 bytes), whereas headless `agy -p` without a `read_file` allow rule refuses reading outside your workspace, and `agy` warns that skill bodies above 24000 bytes are truncated. Pinboard's hook therefore tells each session, and each worker or reviewer it launches, to read every Pinboard skill and reference completely with native `read_file` first (including `ByteOffset=46080` continuation above 46,080 bytes) and to fall back to Pinboard's paged reader (`pinboard_startup_text` `file-start`) when `read_file` is unavailable or refused, while keeping `pinboard_startup_text` `artifact-start` for verified worker and reviewer launch prompts. Workers and reviewers run as Antigravity subagents in the same workspace; keeping each one inside its assigned checkout relies on its instructions, because Antigravity does not confine it.
 
 ### Upgrade or remove
 
@@ -284,7 +284,7 @@ An installed plugin keeps its private Python environment at `<launcher-root>/.pi
 
 ## Startup page size per host
 
-Agents read Pinboard skills, references and launch prompts in pages through the `pinboard_startup_text` tool. Each page is sized so the connected host shows it to the model whole rather than saving it to a file or cutting it. Pinboard recognizes the host by the client name it sends when it connects, and keeps one page size per recognized host, for every version of that host, in `~/.config/pinboard/hosts.config`:
+Agents read verified Pinboard launch prompts—and Pinboard skills and references when a host cannot load the complete file directly through its native skill loader or native `read_file`—in pages through the `pinboard_startup_text` tool. Each page is sized so the connected host shows it to the model whole rather than saving it to a file or cutting it. Pinboard recognizes the host by the client name it sends when it connects, and keeps one page size per recognized host, for every version of that host, in `~/.config/pinboard/hosts.config`:
 
 ```ini
 [host "claude-code"]

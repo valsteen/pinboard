@@ -247,6 +247,12 @@ def _required_runtime_effects(phase: RepositoryPhase) -> tuple[bool, bool, bool]
             assert_never(unreachable)
 
 
+def _phase_effect_status(needed: bool) -> str:
+    if needed:
+        return "its observed runtime permission (allowed, denied or unknown)"
+    return RuntimeEffectStatus.NOT_REQUIRED.value
+
+
 class AttemptReconciliation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     target_revision: str
     relation: IntegrationRelation
@@ -263,9 +269,25 @@ class AttemptReconciliation(msgspec.Struct, frozen=True, forbid_unknown_fields=T
         ):
             raise ValueError("runtime effects must be source-checkout, shared-work-root, and git-metadata in order")
         _validate_reconciliation_phase(self.relation, self.phase)
-        for observation, needed in zip(self.effects, _required_runtime_effects(self.phase), strict=True):
-            if needed == (observation.status == RuntimeEffectStatus.NOT_REQUIRED):
-                raise ValueError("runtime effect status does not match whether the repository phase requires it")
+        mismatched = tuple(
+            (observation, needed)
+            for observation, needed in zip(self.effects, _required_runtime_effects(self.phase), strict=True)
+            if needed == (observation.status == RuntimeEffectStatus.NOT_REQUIRED)
+        )
+        if mismatched:
+            phase = self.phase.value
+            reported = "; ".join(
+                f"{observation.effect.value} was sent as {observation.status.value} "
+                f"but phase {phase} requires {_phase_effect_status(needed)}"
+                for observation, needed in mismatched
+            )
+            corrected = ", ".join(
+                f"{observation.effect.value} as {_phase_effect_status(needed)}" for observation, needed in mismatched
+            )
+            raise ValueError(
+                f"runtime effect status does not match repository phase {phase}: {reported}. "
+                f"Resend the same reconciliation with {corrected}, and every other effect unchanged"
+            )
 
 
 class ActionContinuation(msgspec.Struct, tag="action", tag_field="kind", frozen=True, forbid_unknown_fields=True):

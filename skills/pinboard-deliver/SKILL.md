@@ -7,7 +7,7 @@ description: Deliver exactly one active pinboard attempt from its accepted brief
 
 Deliver the accepted checkpoint of one active attempt: implement its complete scope, verify it, leave a durable result, and return it accurately for review.
 
-Load this complete skill before acting on it. A native loader suffices only when it delivers the whole body, through the final section; otherwise read the resolved `SKILL.md` through `pinboard_startup_text` `file-start` with exact roots and `max_batch_bytes: "host-profile"`, following each continuation until null.
+Load this complete skill before acting on it. A native loader or `read_file` (following `ByteOffset=46080` above 46,080 bytes) suffices when it loads the whole body through the final section; otherwise read the resolved `SKILL.md` via `pinboard_startup_text` `file-start` with exact roots and `max_batch_bytes: "host-profile"` until null.
 
 Do not initialize delivery for a request that only asks to read named context, get oriented, or wait. Read only that bounded context and leave lifecycle, authority, source planning, dispatch, and review untouched until the human requests revision or implementation.
 

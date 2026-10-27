@@ -17,6 +17,7 @@ from pinboard.adapters import (
     dispatch_operations,
     review_operations,
 )
+from pinboard.adapters.files import file_io
 from pinboard.adapters.files import root as git_root
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import RootError
@@ -29,6 +30,7 @@ from pinboard.application import (
     ports,
     queries,
     query_models,
+    work_brief_models,
 )
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.ports import WorkStore
@@ -373,7 +375,7 @@ def _review_histories(
             assert_never(unreachable)
 
 
-def _dispatch_job(  # noqa: C901, PLR0912 - distinct readiness publication and worker launch outcomes
+def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and distinct readiness/worker effects
     project_root: str, work_root: str, dispatch: Mapping[str, JsonValue], token: execution.CancellationToken
 ) -> execution.OperationResult:
     token.checkpoint()
@@ -393,32 +395,94 @@ def _dispatch_job(  # noqa: C901, PLR0912 - distinct readiness publication and w
         return common._read_failure(schema, "DISPATCH_INVALID", f"Cannot decode dispatch request: {error}", None)
     choice = request.dispatch
     attempt_id = choice.receipt.action_id.subject
-    match choice:
-        case contracts.OrdinaryDispatchChoice():
-            preparation_choice = dispatch_operations.OrdinaryDispatch()
-        case contracts.ReviewedDispatchChoice():
-            preparation_choice = dispatch_operations.ReviewedDispatch(choice.brief_review, ReviewId(choice.review_id))
-        case (
-            contracts.CorrectionDispatchChoice()
-            | contracts.ReuseCorrectionDispatchChoice()
-            | contracts.LocalCorrectionDispatchChoice()
-        ):
-            preparation_choice = dispatch_operations.CorrectionDispatch(
-                choice.brief_review,
-                ReviewId(choice.review_id),
-                HistoryId(choice.correction_history_id),
+    if isinstance(
+        choice,
+        (
+            contracts.ReviewedFileDispatchChoice,
+            contracts.CorrectionFileDispatchChoice,
+            contracts.ReuseCorrectionFileDispatchChoice,
+            contracts.LocalCorrectionFileDispatchChoice,
+            contracts.CandidateCorrectionFileDispatchChoice,
+            contracts.ReplacementReadinessFileChoice,
+        ),
+    ):
+        review_bytes = file_io.read_verified_input(Path(choice.brief_review_path), choice.brief_review_sha256)
+        if isinstance(review_bytes, file_io.SelectedInputFailure):
+            return common._read_failure(schema, review_bytes.code, review_bytes.message, None)
+        try:
+            match choice:
+                case contracts.ReviewedFileDispatchChoice():
+                    reviewed_review = msgspec.json.decode(review_bytes, type=work_brief_models.WorkBriefReview)
+                    preparation_choice = dispatch_operations.ReviewedDispatch(
+                        reviewed_review, ReviewId(choice.review_id)
+                    )
+                case contracts.CorrectionFileDispatchChoice():
+                    correction_review = msgspec.json.decode(review_bytes, type=work_brief_models.CorrectionSourceReview)
+                    preparation_choice = dispatch_operations.CorrectionDispatch(
+                        correction_review, ReviewId(choice.review_id), HistoryId(choice.correction_history_id)
+                    )
+                case contracts.ReuseCorrectionFileDispatchChoice():
+                    reused_review = msgspec.json.decode(
+                        review_bytes, type=work_brief_models.ReusedCoverageCorrectionReview
+                    )
+                    preparation_choice = dispatch_operations.CorrectionDispatch(
+                        reused_review, ReviewId(choice.review_id), HistoryId(choice.correction_history_id)
+                    )
+                case contracts.LocalCorrectionFileDispatchChoice():
+                    local_review = msgspec.json.decode(review_bytes, type=work_brief_models.LocalCorrectionSourceReview)
+                    preparation_choice = dispatch_operations.CorrectionDispatch(
+                        local_review, ReviewId(choice.review_id), HistoryId(choice.correction_history_id)
+                    )
+                case contracts.CandidateCorrectionFileDispatchChoice():
+                    candidate_review = msgspec.json.decode(review_bytes, type=work_brief_models.CurrentCorrectionReview)
+                    preparation_choice = dispatch_operations.CurrentCandidateCorrectionDispatch(
+                        candidate_review.source_review,
+                        ReviewId(choice.review_id),
+                        HistoryId(choice.correction_history_id),
+                        candidate_review.current_candidate,
+                    )
+                case contracts.ReplacementReadinessFileChoice():
+                    preparation_choice = msgspec.json.decode(
+                        review_bytes, type=work_brief_models.CorrectionSourceReview
+                    )
+                case _ as unreachable:
+                    assert_never(unreachable)
+        except msgspec.DecodeError as error:
+            return common._read_failure(
+                schema,
+                "DISPATCH_INVALID",
+                f"Cannot decode selected review '{choice.brief_review_path}' with verified SHA-256 {choice.brief_review_sha256}: {error}. Correct that file to this exact dispatch leaf's review schema before retrying.",
+                None,
             )
-        case contracts.CandidateCorrectionDispatchChoice():
-            preparation_choice = dispatch_operations.CurrentCandidateCorrectionDispatch(
-                choice.brief_review.source_review,
-                ReviewId(choice.review_id),
-                HistoryId(choice.correction_history_id),
-                choice.brief_review.current_candidate,
-            )
-        case contracts.ReplacementReadinessChoice():
-            preparation_choice = None
-        case _ as unreachable:
-            assert_never(unreachable)
+    else:
+        match choice:
+            case contracts.OrdinaryDispatchChoice():
+                preparation_choice = dispatch_operations.OrdinaryDispatch()
+            case contracts.ReviewedDispatchChoice():
+                preparation_choice = dispatch_operations.ReviewedDispatch(
+                    choice.brief_review, ReviewId(choice.review_id)
+                )
+            case (
+                contracts.CorrectionDispatchChoice()
+                | contracts.ReuseCorrectionDispatchChoice()
+                | contracts.LocalCorrectionDispatchChoice()
+            ):
+                preparation_choice = dispatch_operations.CorrectionDispatch(
+                    choice.brief_review,
+                    ReviewId(choice.review_id),
+                    HistoryId(choice.correction_history_id),
+                )
+            case contracts.CandidateCorrectionDispatchChoice():
+                preparation_choice = dispatch_operations.CurrentCandidateCorrectionDispatch(
+                    choice.brief_review.source_review,
+                    ReviewId(choice.review_id),
+                    HistoryId(choice.correction_history_id),
+                    choice.brief_review.current_candidate,
+                )
+            case contracts.ReplacementReadinessChoice():
+                preparation_choice = choice.brief_review
+            case _ as unreachable:
+                assert_never(unreachable)
     store = common.compose_store(durable)
     token.checkpoint()
     selected = actions.select_current_actions(
@@ -448,20 +512,21 @@ def _dispatch_job(  # noqa: C901, PLR0912 - distinct readiness publication and w
     )
     token.checkpoint()
     # Publication has entered its commit section: finish terminal effects before honoring cancellation.
-    if isinstance(choice, contracts.ReplacementReadinessChoice):
+    if isinstance(choice, (contracts.ReplacementReadinessChoice, contracts.ReplacementReadinessFileChoice)):
+        assert isinstance(preparation_choice, work_brief_models.CorrectionSourceReview)
         publication = dispatch_operations.prepare_replacement_readiness(
             store,
             ArtifactRepository(durable),
             source_checkout,
             supplied_action,
             choice.checkpoint_id,
-            choice.brief_review,
+            preparation_choice,
             choice.current_candidate,
             ReviewId(choice.review_id),
             HistoryId(choice.correction_history_id),
         )
     else:
-        assert preparation_choice is not None
+        assert not isinstance(preparation_choice, work_brief_models.CorrectionSourceReview)
         publication = dispatch_operations.prepare_dispatch(
             store,
             ArtifactRepository(durable),
@@ -529,7 +594,7 @@ def _dispatch_job(  # noqa: C901, PLR0912 - distinct readiness publication and w
         return execution.OperationResult(
             content, "committed" if surfaces else "unchanged", str(publication.ready_review.accepted_revision)
         )
-    assert not isinstance(choice, contracts.ReplacementReadinessChoice)
+    assert not isinstance(choice, (contracts.ReplacementReadinessChoice, contracts.ReplacementReadinessFileChoice))
     content = msgspec.to_builtins(
         contracts.DispatchReady(
             "ready",

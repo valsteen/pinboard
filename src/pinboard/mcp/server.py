@@ -5,7 +5,7 @@ from __future__ import annotations
 import itertools
 import sys
 from collections.abc import Sequence
-from functools import partial
+from functools import cache, partial
 from pathlib import Path
 from typing import Any, assert_never  # noqa: TID251 - SDK middleware exposes raw protocol mappings
 
@@ -44,6 +44,7 @@ from pinboard.mcp.tool_names import (
     ATTEMPT_INSPECT_TOOL,
     BRIEF_CONTRACT_TOOL,
     BRIEF_LOOKUP_TOOL,
+    BRIEF_PUBLISH_FILE_TOOL,
     BRIEF_PUBLISH_TOOL,
     BRIEF_REVIEW_TOOL,
     BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
@@ -407,6 +408,8 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "Corrupt accepted bytes return ARTIFACT_BYTES_INVALID and do-not-retry. "
             "Status callback effects are unchanged; optional trace preflight/capture can write separately. "
             "Neither findings nor their absence grants readiness, lifecycle change or authority."
+            " publish-file keeps roots and brief_artifact_ref_id inline and replaces review with exact review_path "
+            "and raw review_sha256, decoded as the same strict negative review."
         ),
     )
     async def brief_review(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -444,7 +447,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=PR_REVIEW_TOOL,
-        description="Discover and record a human-owned PR review brief, observed heads, exact-head rounds, and human-directed closure without an implementation attempt.",
+        description="Discover and record a human-owned PR review brief, observed heads, exact-head rounds, and human-directed closure without an implementation attempt. File leaves start-file, review-brief-file and round-file retain the inline controls and replace only brief, brief_review or round with the matching <field>_path and <field>_sha256. Exact selected bytes are verified once and decoded into the same strict record before actor, independence and freshness checks.",
     )
     async def pr_review(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         arguments: dict[str, JsonValue] = {"request": request}
@@ -507,6 +510,46 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             partial(mutation_operations._brief_published, project_root, work_root, brief),
             arguments={"project_root": project_root, "work_root": work_root, "brief": brief},
             capture=capture,
+        )
+
+    @server.tool(
+        name=BRIEF_PUBLISH_FILE_TOOL,
+        description="Publish one complete work brief from the exact selected file and its raw SHA-256. Verify the bytes once, decode the strict current brief, then use canonical publication. Publication is not readiness, activation or authenticated authorship. Existing inline publication remains supported.",
+    )
+    async def brief_publish_file(
+        project_root: str, work_root: str, brief_path: str, brief_sha256: str
+    ) -> dict[str, JsonValue]:
+        arguments: dict[str, JsonValue] = {
+            "project_root": project_root,
+            "work_root": work_root,
+            "brief_path": brief_path,
+            "brief_sha256": brief_sha256,
+        }
+
+        @cache
+        def read_brief() -> work_brief_models.WorkBrief | execution.OperationResult:
+            return mutation_operations._read_brief_file(arguments)
+
+        def select_brief_item(
+            _shared_repository: Path, _work_root: str | None, _arguments: dict[str, JsonValue]
+        ) -> str | None:
+            brief = read_brief()
+            return None if isinstance(brief, execution.OperationResult) else brief.item_id
+
+        selected_capture = (
+            execution.AutomaticCapture(select_brief_item)
+            if isinstance(capture, execution.AutomaticCapture)
+            else capture
+        )
+        return await execution._run_request(
+            executor,
+            diagnostics,
+            next(request_ids),
+            BRIEF_PUBLISH_FILE_TOOL,
+            project_root,
+            partial(mutation_operations._brief_published_file, project_root, work_root, read_brief),
+            arguments=arguments,
+            capture=selected_capture,
         )
 
     @server.tool(
@@ -846,6 +889,13 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "only when the accepted brief, every reviewed source, and accepted ready review are unchanged. "
             "kind:'local-correction' takes the same correction fields with "
             "brief_review:<LocalCorrectionSourceReview> for a local checkpoint.\n"
+            "File counterparts are reviewed-file, correction-file, reuse-correction-file, local-correction-file, "
+            "candidate-correction-file and replacement-readiness-file. Replace only brief_review with "
+            "brief_review_path:<exact selected file> and brief_review_sha256:<raw SHA-256>; keep the corresponding "
+            "leaf's controls inline, including current_candidate for replacement-readiness-file. "
+            "candidate-correction-file contains the complete outer CurrentCorrectionReview, including boundary, "
+            "source_review and current_candidate, for either boundary variant. Selected bytes are verified once "
+            "before exact decoding and the same independent checks.\n"
             "review_id is a caller-chosen label, not an ID that Pinboard issues or any context read returns: one path "
             "component (nonempty; no '/', CR, LF or NUL; not '.' or '..'), for example 'correction-review-1'. It only "
             "names the preserved rejected evidence when supplied review evidence differs from evidence already accepted "
@@ -1109,6 +1159,11 @@ def _install_boundary_contracts(server: MCPServer) -> None:
         (
             BRIEF_PUBLISH_TOOL,
             contract_schemas.schema_for(contracts.BriefPublishRequest),
+            contract_schemas.union_schema_for(contracts.BRIEF_PUBLICATION_RESULT_TYPES),
+        ),
+        (
+            BRIEF_PUBLISH_FILE_TOOL,
+            contract_schemas.schema_for(contracts.BriefPublishFileRequest),
             contract_schemas.union_schema_for(contracts.BRIEF_PUBLICATION_RESULT_TYPES),
         ),
         (

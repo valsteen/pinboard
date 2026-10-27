@@ -910,7 +910,7 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
             result_type = DispatchFailedAfterPublication
         elif status == "infrastructure-failure":
             result_type = DispatchInfrastructureFailure
-        elif code == "DISPATCH_INVALID":
+        elif code in {"DISPATCH_INVALID", "INPUT_FILE_UNREADABLE", "INPUT_FILE_DIGEST_MISMATCH"}:
             result_type = DispatchInvalid
         else:
             result_type = DispatchRejected

@@ -1,10 +1,37 @@
+import hashlib
 import os
 import secrets
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from pinboard import diagnostic_codes
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedInputFailure:
+    code: diagnostic_codes.SelectedInputRejectedCode
+    message: str
+
+
+def read_verified_input(path: Path, expected_sha256: str) -> bytes | SelectedInputFailure:
+    """Read one caller-selected file and hash those same bytes before decoding."""
+    try:
+        content = path.read_bytes()
+    except OSError as error:
+        return SelectedInputFailure(
+            "INPUT_FILE_UNREADABLE",
+            f"Cannot read selected input '{path}': {error}. Expected SHA-256 {expected_sha256}; observed SHA-256 is unavailable. Make that exact file readable before retrying.",
+        )
+    observed_sha256 = hashlib.sha256(content).hexdigest()
+    if observed_sha256 != expected_sha256:
+        return SelectedInputFailure(
+            "INPUT_FILE_DIGEST_MISMATCH",
+            f"Selected input '{path}' has SHA-256 {observed_sha256}, expected {expected_sha256}. "
+            "Inspect the selected bytes and supply the intended file fingerprint before retrying.",
+        )
+    return content
 
 
 @dataclass(frozen=True, slots=True)

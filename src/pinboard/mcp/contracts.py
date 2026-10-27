@@ -86,6 +86,19 @@ class PrReviewStartRequest(msgspec.Struct, tag="start", tag_field="operation", f
     brief: pr_reviews.ReviewBrief
 
 
+class PrReviewStartFileRequest(
+    msgspec.Struct, tag="start-file", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+    expected_subject_revision: NonNegativeInt
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+    brief_path: RootPath
+    brief_sha256: Sha256
+
+
 class PrReviewObserveRequest(
     msgspec.Struct, tag="observe", tag_field="operation", frozen=True, forbid_unknown_fields=True
 ):
@@ -110,6 +123,19 @@ class PrReviewBriefReviewRequest(
     brief_review: pr_reviews.BriefReview
 
 
+class PrReviewBriefReviewFileRequest(
+    msgspec.Struct, tag="review-brief-file", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+    expected_subject_revision: NonNegativeInt
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+    brief_review_path: RootPath
+    brief_review_sha256: Sha256
+
+
 class PrReviewRoundRequest(msgspec.Struct, tag="round", tag_field="operation", frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
@@ -118,6 +144,19 @@ class PrReviewRoundRequest(msgspec.Struct, tag="round", tag_field="operation", f
     actor_task_id: RuntimeIdentity
     actor_host_id: RuntimeIdentity
     round: pr_reviews.ReviewRound
+
+
+class PrReviewRoundFileRequest(
+    msgspec.Struct, tag="round-file", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    item_id: PathComponent
+    expected_subject_revision: NonNegativeInt
+    actor_task_id: RuntimeIdentity
+    actor_host_id: RuntimeIdentity
+    round_path: RootPath
+    round_sha256: Sha256
 
 
 class PrReviewCloseRequest(msgspec.Struct, tag="close", tag_field="operation", frozen=True, forbid_unknown_fields=True):
@@ -134,9 +173,12 @@ type PrReviewRequest = (
     PrReviewStatusRequest
     | PrReviewActionsRequest
     | PrReviewStartRequest
+    | PrReviewStartFileRequest
     | PrReviewBriefReviewRequest
+    | PrReviewBriefReviewFileRequest
     | PrReviewObserveRequest
     | PrReviewRoundRequest
+    | PrReviewRoundFileRequest
     | PrReviewCloseRequest
 )
 
@@ -275,6 +317,13 @@ class BriefPublishRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     project_root: RootPath
     work_root: RootPath
     brief: work_brief_models.WorkBrief
+
+
+class BriefPublishFileRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    brief_path: RootPath
+    brief_sha256: Sha256
 
 
 class OverviewRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -701,6 +750,16 @@ class BriefReviewPublishRequest(
     review: work_brief_models.WorkBriefReviewNeedsCorrection
 
 
+class BriefReviewPublishFileRequest(
+    msgspec.Struct, tag="publish-file", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
+    project_root: RootPath
+    work_root: RootPath
+    brief_artifact_ref_id: PositiveInt
+    review_path: RootPath
+    review_sha256: Sha256
+
+
 class BriefReviewStatusRequest(
     msgspec.Struct, tag="status", tag_field="operation", frozen=True, forbid_unknown_fields=True
 ):
@@ -710,7 +769,7 @@ class BriefReviewStatusRequest(
 
 
 class BriefReviewEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    request: BriefReviewPublishRequest | BriefReviewStatusRequest
+    request: BriefReviewPublishRequest | BriefReviewPublishFileRequest | BriefReviewStatusRequest
 
 
 class ActionIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -879,6 +938,54 @@ class ReplacementReadinessChoice(
     correction_history_id: PositiveInt
 
 
+class ReviewedFileDispatchChoice(DispatchChoiceBase, tag="reviewed-file", tag_field="kind", frozen=True):
+    brief_review_path: RootPath
+    brief_review_sha256: Sha256
+    review_id: PathComponent
+
+
+class CorrectionFileDispatchChoice(DispatchChoiceBase, tag="correction-file", tag_field="kind", frozen=True):
+    brief_review_path: RootPath
+    brief_review_sha256: Sha256
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
+class ReuseCorrectionFileDispatchChoice(DispatchChoiceBase, tag="reuse-correction-file", tag_field="kind", frozen=True):
+    brief_review_path: RootPath
+    brief_review_sha256: Sha256
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
+class LocalCorrectionFileDispatchChoice(DispatchChoiceBase, tag="local-correction-file", tag_field="kind", frozen=True):
+    brief_review_path: RootPath
+    brief_review_sha256: Sha256
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
+class CandidateCorrectionFileDispatchChoice(
+    DispatchChoiceBase, tag="candidate-correction-file", tag_field="kind", frozen=True
+):
+    brief_review_path: RootPath
+    brief_review_sha256: Sha256
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
+class ReplacementReadinessFileChoice(
+    msgspec.Struct, tag="replacement-readiness-file", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    receipt: DispatchReceipt
+    checkpoint_id: PathComponent
+    brief_review_path: RootPath
+    brief_review_sha256: Sha256
+    current_candidate: NonEmptyText
+    review_id: PathComponent
+    correction_history_id: PositiveInt
+
+
 type DispatchChoice = (
     OrdinaryDispatchChoice
     | ReviewedDispatchChoice
@@ -887,6 +994,12 @@ type DispatchChoice = (
     | LocalCorrectionDispatchChoice
     | CandidateCorrectionDispatchChoice
     | ReplacementReadinessChoice
+    | ReviewedFileDispatchChoice
+    | CorrectionFileDispatchChoice
+    | ReuseCorrectionFileDispatchChoice
+    | LocalCorrectionFileDispatchChoice
+    | CandidateCorrectionFileDispatchChoice
+    | ReplacementReadinessFileChoice
 )
 
 

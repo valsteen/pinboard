@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import assert_never
@@ -15,6 +15,7 @@ from pinboard.adapters import (
     lifecycle_operations,
 )
 from pinboard.adapters.dependency_operations import resolve_dependency_brief_pins
+from pinboard.adapters.files import file_io
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewWarning
@@ -249,7 +250,55 @@ def _brief_published(
                 f"Cannot decode brief publication request: {error}",
             )
         )
-    decoded = request.brief
+    return _publish_brief(durable, request.brief, token)
+
+
+def _read_brief_file(raw: Mapping[str, JsonValue]) -> work_brief_models.WorkBrief | execution.OperationResult:
+    try:
+        request = msgspec.convert(raw, type=contracts.BriefPublishFileRequest, strict=True)
+    except msgspec.ValidationError as error:
+        return _brief_failure(
+            work_brief_models.WorkBriefFailure(work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, str(error))
+        )
+    content = file_io.read_verified_input(Path(request.brief_path), request.brief_sha256)
+    if isinstance(content, file_io.SelectedInputFailure):
+        return common._read_failure("pinboard-mcp-brief-publication-result/v1", content.code, content.message, None)
+    try:
+        return msgspec.json.decode(content, type=work_brief_models.WorkBrief)
+    except msgspec.DecodeError as error:
+        return _brief_failure(
+            work_brief_models.WorkBriefFailure(
+                work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+                f"Cannot decode selected brief '{request.brief_path}' with verified SHA-256 {request.brief_sha256}: {error}. Correct that file to the current work-brief schema before retrying.",
+            )
+        )
+
+
+def _brief_published_file(
+    project_root: str,
+    work_root: str,
+    read_brief: Callable[[], work_brief_models.WorkBrief | execution.OperationResult],
+    token: execution.CancellationToken,
+) -> execution.OperationResult:
+    token.checkpoint()
+    brief = read_brief()
+    if isinstance(brief, execution.OperationResult):
+        return brief
+    try:
+        durable = common._resolve_durable(project_root, work_root)
+    except (ValueError, OSError) as error:
+        return _brief_failure(
+            work_brief_models.WorkBriefFailure(
+                work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+                f"Cannot resolve brief publication roots: {error}. Correct the selected project_root and work_root before retrying.",
+            )
+        )
+    return _publish_brief(durable, brief, token)
+
+
+def _publish_brief(
+    durable: DurableRoots, decoded: work_brief_models.WorkBrief, token: execution.CancellationToken
+) -> execution.OperationResult:
     store = common.compose_store(durable)
     token.checkpoint()
     now = datetime.now(UTC)

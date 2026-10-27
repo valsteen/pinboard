@@ -14,8 +14,8 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters import candidate_evidence, dispatch_operations, review_operations
+from pinboard.adapters.files import file_io, root, views
 from pinboard.adapters.files import fixture_review as fixture_review_files
-from pinboard.adapters.files import root, views
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, ImmutableFilePublishedError, RootError
@@ -741,7 +741,9 @@ def _brief_review_correction(project_root: str, work_root: str, brief_artifact_r
     }
 
 
-def _brief_review(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def _brief_review(  # noqa: C901, PLR0912 - strict inline/file publication and read-only status exits
+    raw: Mapping[str, JsonValue], token: execution.CancellationToken
+) -> execution.OperationResult:
     token.checkpoint()
     schema = "pinboard-mcp-brief-review-result/v1"
     try:
@@ -816,13 +818,29 @@ def _brief_review(raw: Mapping[str, JsonValue], token: execution.CancellationTok
                 case _ as unreachable:
                     assert_never(unreachable)
             return execution.OperationResult(content, "ok", None)
-        case contracts.BriefReviewPublishRequest():
+        case contracts.BriefReviewPublishRequest() | contracts.BriefReviewPublishFileRequest():
+            if isinstance(request, contracts.BriefReviewPublishFileRequest):
+                review_bytes = file_io.read_verified_input(Path(request.review_path), request.review_sha256)
+                if isinstance(review_bytes, file_io.SelectedInputFailure):
+                    return common._read_failure(schema, review_bytes.code, review_bytes.message, None)
+                try:
+                    review = msgspec.json.decode(review_bytes, type=work_brief_models.WorkBriefReviewNeedsCorrection)
+                except msgspec.DecodeError as error:
+                    return common._read_failure(
+                        schema,
+                        "BRIEF_REVIEW_REQUEST_INVALID",
+                        f"Cannot decode selected review '{request.review_path}' with verified SHA-256 {request.review_sha256}: {error}. Correct that file to the needs-correction review schema before retrying.",
+                        None,
+                    )
+            else:
+                review = request.review
+            token.checkpoint()
             publication = work_briefs.publish_brief_review_needs_correction(
                 store,
                 repository,
                 repository,
                 ArtifactRefId(request.brief_artifact_ref_id),
-                request.review,
+                review,
                 datetime.now(UTC),
             )
             if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):

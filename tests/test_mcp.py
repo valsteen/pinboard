@@ -5048,6 +5048,7 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.ITEM_STATUS_TOOL,
                 mcp_server.PROPOSAL_CREATE_TOOL,
                 mcp_server.BRIEF_PUBLISH_TOOL,
+                mcp_server.BRIEF_PUBLISH_FILE_TOOL,
                 mcp_server.BRIEF_LOOKUP_TOOL,
                 mcp_server.OVERVIEW_TOOL,
                 mcp_server.ACTIONS_TOOL,
@@ -5117,6 +5118,7 @@ class McpTransportTest(unittest.TestCase):
                 "actor_host_id",
             },
             mcp_server.BRIEF_PUBLISH_TOOL: {"project_root", "work_root", "brief"},
+            mcp_server.BRIEF_PUBLISH_FILE_TOOL: {"project_root", "work_root", "brief_path", "brief_sha256"},
         }
         for tool_name, required in expected_required.items():
             tool = tools_by_name[tool_name]

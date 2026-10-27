@@ -222,7 +222,23 @@ type ProposalRejectedCode = Literal[
 
 type ProposalDuplicateCode = Literal["PROPOSAL_ALREADY_EXISTS"]
 
-type BriefRejectedCode = Literal["WORK_BRIEF_INVALID", "ACTION_NOT_AVAILABLE"]
+type SelectedInputRejectedCode = Annotated[
+    Literal["INPUT_FILE_UNREADABLE", "INPUT_FILE_DIGEST_MISMATCH"],
+    CodeMeanings(
+        (
+            (
+                0,
+                "The caller-selected input file could not be read; make the exact selected path readable before retrying.",
+            ),
+            (
+                1,
+                "The raw selected input bytes differ from the expected digest; inspect the file and supply its intended fingerprint.",
+            ),
+        )
+    ),
+]
+
+type BriefRejectedCode = Literal["WORK_BRIEF_INVALID", "ACTION_NOT_AVAILABLE"] | SelectedInputRejectedCode
 
 type BriefArchitectureImpactRejectedCode = Literal["WORK_BRIEF_INVALID"]
 
@@ -243,24 +259,32 @@ type PublicationInfrastructureUnchangedFailureResultCode = Literal[
     "ARTIFACT_ACCEPTANCE_FAILED", "ARTIFACT_PUBLICATION_FAILED"
 ]
 
-type BriefReviewRejectedCode = Annotated[
-    Literal[
-        "BRIEF_REVIEW_REQUEST_INVALID",
-        "ARTIFACT_BYTES_INVALID",
-        "WORK_BRIEF_INVALID",
-        "WORK_BRIEF_NOT_CANONICAL",
-        "WORK_BRIEF_REVIEW_INVALID",
-        "WORK_BRIEF_REVIEW_NOT_CANONICAL",
-        "WORK_BRIEF_REVIEW_NOT_INDEPENDENT",
-        "WORK_BRIEF_REVIEW_STALE",
-        "ACTION_NOT_AVAILABLE",
-    ],
-    CodeMeanings(((0, "The brief-review request could not be decoded or validated."),)),
-]
+type BriefReviewRejectedCode = (
+    SelectedInputRejectedCode
+    | Annotated[
+        Literal[
+            "BRIEF_REVIEW_REQUEST_INVALID",
+            "ARTIFACT_BYTES_INVALID",
+            "WORK_BRIEF_INVALID",
+            "WORK_BRIEF_NOT_CANONICAL",
+            "WORK_BRIEF_REVIEW_INVALID",
+            "WORK_BRIEF_REVIEW_NOT_CANONICAL",
+            "WORK_BRIEF_REVIEW_NOT_INDEPENDENT",
+            "WORK_BRIEF_REVIEW_STALE",
+            "ACTION_NOT_AVAILABLE",
+        ],
+        CodeMeanings(((0, "The brief-review request could not be decoded or validated."),)),
+    ]
+)
 
-type DispatchInvalidCode = Annotated[
-    Literal["DISPATCH_INVALID"], CodeMeanings(((0, "The dispatch request could not be decoded or validated."),))
-]
+
+type DispatchInvalidCode = (
+    SelectedInputRejectedCode
+    | Annotated[
+        Literal["DISPATCH_INVALID"], CodeMeanings(((0, "The dispatch request could not be decoded or validated."),))
+    ]
+)
+
 
 type ReviewJobInvalidCode = Annotated[
     Literal["REVIEW_JOB_INVALID"],

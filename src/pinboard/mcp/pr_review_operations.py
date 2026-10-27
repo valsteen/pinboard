@@ -1,12 +1,15 @@
 """Native boundary for the distinct human-owned PR review route."""
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal, assert_never
 
 import msgspec
 
+from pinboard.adapters.files import file_io
 from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.sqlite import pr_review
+from pinboard.application import pr_reviews
 from pinboard.diagnostic_codes import ProducerOnlyCode
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HistoryId, WorkItemId
@@ -75,7 +78,22 @@ def _present(
     return execution.OperationResult(content, "committed" if committed else "ok", str(state.project_revision))
 
 
-def execute(raw: dict[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def _selected_record[T](path: str, sha256: str, record_type: type[T]) -> T | execution.OperationResult:
+    content = file_io.read_verified_input(Path(path), sha256)
+    if isinstance(content, file_io.SelectedInputFailure):
+        return _rejected(content.code, content.message)
+    try:
+        return msgspec.json.decode(content, type=record_type)
+    except msgspec.DecodeError as error:
+        return _rejected(
+            ProducerOnlyCode.PR_REVIEW_INVALID.value,
+            f"Cannot decode selected PR review record '{path}' with verified SHA-256 {sha256}: {error}. Correct that file to this exact operation's record schema before retrying.",
+        )
+
+
+def execute(  # noqa: C901, PLR0912, PLR0915 - exact inline/file leaves retain actor and persistence checks
+    raw: dict[str, JsonValue], token: execution.CancellationToken
+) -> execution.OperationResult:
     token.checkpoint()
     try:
         envelope = msgspec.convert(raw, type=contracts.PrReviewEnvelope, strict=True)
@@ -94,17 +112,37 @@ def execute(raw: dict[str, JsonValue], token: execution.CancellationToken) -> ex
                     f"Review item '{request.item_id}' does not exist. Read pinboard_overview with project_root={request.project_root!r} and work_root={request.work_root!r} to discover current items; do not create a replacement without human intent.",
                 )
             return _present(state, committed=False)
-        case contracts.PrReviewStartRequest():
-            payload = request.brief
+        case contracts.PrReviewStartRequest() | contracts.PrReviewStartFileRequest():
+            if isinstance(request, contracts.PrReviewStartFileRequest):
+                selected = _selected_record(request.brief_path, request.brief_sha256, pr_reviews.ReviewBrief)
+                if isinstance(selected, execution.OperationResult):
+                    return selected
+                payload = selected
+            else:
+                payload = request.brief
             claimed_task_id = payload.prepared_by_task_id
-        case contracts.PrReviewBriefReviewRequest():
-            payload = request.brief_review
+        case contracts.PrReviewBriefReviewRequest() | contracts.PrReviewBriefReviewFileRequest():
+            if isinstance(request, contracts.PrReviewBriefReviewFileRequest):
+                selected = _selected_record(
+                    request.brief_review_path, request.brief_review_sha256, pr_reviews.BriefReview
+                )
+                if isinstance(selected, execution.OperationResult):
+                    return selected
+                payload = selected
+            else:
+                payload = request.brief_review
             claimed_task_id = payload.reviewer_task_id
         case contracts.PrReviewObserveRequest():
             payload = request.observation
             claimed_task_id = request.actor_task_id
-        case contracts.PrReviewRoundRequest():
-            payload = request.round
+        case contracts.PrReviewRoundRequest() | contracts.PrReviewRoundFileRequest():
+            if isinstance(request, contracts.PrReviewRoundFileRequest):
+                selected = _selected_record(request.round_path, request.round_sha256, pr_reviews.ReviewRound)
+                if isinstance(selected, execution.OperationResult):
+                    return selected
+                payload = selected
+            else:
+                payload = request.round
             claimed_task_id = payload.reviewer_task_id
         case contracts.PrReviewCloseRequest():
             payload = request.close
@@ -116,6 +154,7 @@ def execute(raw: dict[str, JsonValue], token: execution.CancellationToken) -> ex
             ProducerOnlyCode.PR_REVIEW_INVALID.value,
             "Review task identity must match actor_task_id. Use your own trusted runtime identity; this rejection supplies no identity or authority.",
         )
+    token.checkpoint()
     result = pr_review.write(
         durable.database_path,
         item_id,

@@ -1060,6 +1060,74 @@ class McpTransportTest(unittest.TestCase):
 
         _run_async(scenario())
 
+    def test_attempt_inspect_names_each_reconciliation_effect_the_phase_rejects(self) -> None:
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        server = mcp_server.create_server(
+            executor,
+            mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
+        )
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        common = {"project_root": str(project), "work_root": str(roots.work_root), "attempt_id": "work-a-1"}
+
+        async def rejection(
+            relation: str, phase: str, statuses: tuple[str, str, str]
+        ) -> dict[str, contracts.JsonValue]:
+            effects: list[contracts.JsonValue] = [
+                {"effect": effect, "status": status}
+                for effect, status in zip(
+                    ("source-checkout", "shared-work-root", "git-metadata"), statuses, strict=True
+                )
+            ]
+            result = await server.call_tool(
+                mcp_server.ATTEMPT_INSPECT_TOOL,
+                common
+                | {
+                    "reconciliation": {
+                        "target_revision": "target",
+                        "relation": relation,
+                        "phase": phase,
+                        "effects": effects,
+                    }
+                },
+            )
+            assert isinstance(result, CallToolResult) and isinstance(result.structured_content, dict)
+            content = result.structured_content
+            self.assertEqual("ATTEMPT_INSPECT_INVALID", content["code"])
+            self.assertEqual("unchanged", content["effect"])
+            self.assertEqual("correct-input", content["retry"])
+            self.assertFalse(content["state_changed"])
+            return content
+
+        async def scenario() -> None:
+            required_sent_unrequired = await rejection(
+                "candidate-pending-on-accepted-base", "disposition", ("allowed", "denied", "not-required")
+            )
+            message = required_sent_unrequired["message"]
+            assert isinstance(message, str)
+            diagnosis, next_step = message.split("Resend", 1)
+            self.assertIn("git-metadata", diagnosis)
+            self.assertIn("not-required", diagnosis)
+            self.assertIn("allowed, denied or unknown", diagnosis)
+            self.assertNotIn("source-checkout", message)
+            self.assertNotIn("shared-work-root", message)
+            self.assertIn("git-metadata", next_step)
+
+            unrequired_sent_allowed = await rejection(
+                "candidate-integrated", "terminal", ("allowed", "allowed", "denied")
+            )
+            message = unrequired_sent_allowed["message"]
+            assert isinstance(message, str)
+            diagnosis, next_step = message.split("Resend", 1)
+            for effect, sent in (("source-checkout", "allowed"), ("git-metadata", "denied")):
+                with self.subTest(effect=effect):
+                    self.assertIn(f"{effect} was sent as {sent}", diagnosis)
+                    self.assertIn(f"{effect} as not-required", next_step)
+            self.assertNotIn("shared-work-root", message)
+
+        _run_async(scenario())
+
     def test_advertised_schema_projection_preserves_strict_request_decoding(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)

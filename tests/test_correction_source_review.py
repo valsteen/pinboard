@@ -22,6 +22,7 @@ from pinboard.adapters.files import root
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
+from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     action_models,
@@ -46,6 +47,7 @@ from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import job_operations as mcp_jobs
 from pinboard.mcp.contracts import JsonValue
 from tests import test_dispatch
+from tests.candidate_diff_support import historical_candidate_diffs
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import native_tools
 from tests.support import SQLITE_NOW, JsonObject
@@ -53,6 +55,36 @@ from tests.work_brief_support import ready_review, work_a_brief
 
 
 class CorrectionSourceReviewTest(CheckpointPackageSupport):
+    def test_sdk_correction_dispatch_preserves_historical_diff_evidence_across_abbreviation_changes(self) -> None:
+        self.fixed_native_time()
+        for abbreviation, committed in (("7", False), ("8", False), ("7", True), ("8", True)):
+            with self.subTest(abbreviation=abbreviation, committed=committed):
+                fixture = self.correction_fixture()
+                with historical_candidate_diffs(abbreviation):
+                    history_id, choice = self.submit_and_return(fixture, "historical", committed=committed)
+                context = fixture.store.read_returned_candidate_context(AttemptId("work-a-1"), HistoryId(history_id))
+                assert context is not None and context.returned_candidate_snapshot is not None
+                reference = context.returned_candidate_snapshot.reference
+                original = (fixture.work / reference.selector).read_bytes()
+                snapshot = candidate_snapshots.decode_candidate_snapshot(original)
+                subprocess.run(["git", "config", "core.abbrev", "no"], cwd=fixture.project, check=True)
+                result = fixture.call_advertised_tool(
+                    server.DISPATCH_TOOL,
+                    {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
+                )
+                self.assertEqual("ready", result["status"], result)
+                self.assertEqual(original, (fixture.work / reference.selector).read_bytes())
+                self.assertEqual(reference.content_sha256, hashlib.sha256(original).hexdigest())
+                self.assertEqual(reference.size_bytes, len(original))
+                reloaded = dispatch_operations.read_returned_evidence(
+                    SQLiteWorkStore(fixture.work / "state.sqlite3"),
+                    ArtifactRepository(resolve_durable_roots(fixture.project)),
+                    AttemptId("work-a-1"),
+                    HistoryId(history_id),
+                )
+                assert not isinstance(reloaded, dispatch_operations.DispatchFailure)
+                self.assertEqual(snapshot, reloaded.snapshot)
+
     def native_fixture(self, fixture: CheckpointFixture) -> CheckpointFixture:
         native = self.enterContext(native_tools())
         return dataclasses.replace(

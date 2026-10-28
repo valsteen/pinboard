@@ -2,6 +2,7 @@
 
 import subprocess
 import tempfile
+from itertools import product
 from pathlib import Path
 
 from pinboard.adapters import candidate_evidence, dispatch_operations
@@ -13,6 +14,7 @@ from pinboard.application import candidate_snapshots, query_models, work_brief_m
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, HistoryId
 from pinboard.mcp import server
+from tests.candidate_diff_support import historical_candidate_diffs
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_advertised_tool
 from tests.support import JsonObject, JsonValue
@@ -48,26 +50,27 @@ class CandidateExclusionsTest(CheckpointPackageSupport):
         return call_advertised_tool(server.TRANSITION_TOOL, request)
 
     def test_native_declared_candidates_reload_qualify_and_restore_without_touching_local_files(self) -> None:
-        for committed in (False, True):
-            with self.subTest(committed=committed):
+        for abbreviation, committed in product(("7", "8", "40"), (False, True)):
+            with self.subTest(abbreviation=abbreviation, committed=committed):
                 fixture = self.active_candidate()
-                working = root.read_working_tree_candidate(fixture.project)
-                if committed:
-                    self.git(fixture.project, "add", "tracked.txt")
-                    self.git(
-                        fixture.project,
-                        "-c",
-                        "user.name=Test",
-                        "-c",
-                        "user.email=test@example.invalid",
-                        "commit",
-                        "-m",
-                        "candidate",
-                    )
-                candidate = self.git(fixture.project, "rev-parse", "HEAD") if committed else working.identity
-                local = fixture.project / ".DS_Store"
-                local.write_bytes(b"private local bytes")
-                result = self.submit_declared(fixture, candidate, [".DS_Store"])
+                with historical_candidate_diffs(abbreviation):
+                    working = root.read_working_tree_candidate(fixture.project)
+                    if committed:
+                        self.git(fixture.project, "add", "tracked.txt")
+                        self.git(
+                            fixture.project,
+                            "-c",
+                            "user.name=Test",
+                            "-c",
+                            "user.email=test@example.invalid",
+                            "commit",
+                            "-m",
+                            "candidate",
+                        )
+                    candidate = self.git(fixture.project, "rev-parse", "HEAD") if committed else working.identity
+                    local = fixture.project / ".DS_Store"
+                    local.write_bytes(b"private local bytes")
+                    result = self.submit_declared(fixture, candidate, [".DS_Store"])
                 self.assertEqual("committed", result["status"], result)
                 store = SQLiteWorkStore(fixture.work / "state.sqlite3")
                 evidence = candidate_evidence.read_candidate_evidence(
@@ -134,7 +137,11 @@ class CandidateExclusionsTest(CheckpointPackageSupport):
                 restored = candidate_evidence.restore_candidate(
                     target, fixture.work, store, AttemptId("work-a-1"), candidate
                 )
-                self.assertIsInstance(restored, root.CandidateRestoreSuccess)
+                self.assertEqual(root.CandidateRestoreSuccess(True, candidate), restored)
+                self.assertEqual(
+                    root.CandidateRestoreSuccess(False, candidate),
+                    candidate_evidence.restore_candidate(target, fixture.work, store, AttemptId("work-a-1"), candidate),
+                )
                 self.assertEqual(b"recovery local bytes", excluded.read_bytes())
                 self.assertEqual(b"private local bytes", local.read_bytes())
 
@@ -219,8 +226,8 @@ class CandidateExclusionsTest(CheckpointPackageSupport):
         self.assertEqual(b"preserve on collision", excluded.read_bytes())
 
     def test_correction_start_preserves_reloaded_current_snapshot_formats(self) -> None:
-        for committed, declared in ((False, False), (False, True), (True, False), (True, True)):
-            with self.subTest(committed=committed, declared=declared):
+        for abbreviation, committed, declared in product(("7", "8", "40"), (False, True), (False, True)):
+            with self.subTest(abbreviation=abbreviation, committed=committed, declared=declared):
                 fixture = self.active_candidate()
                 if committed:
                     self.git(fixture.project, "add", "tracked.txt")
@@ -234,19 +241,20 @@ class CandidateExclusionsTest(CheckpointPackageSupport):
                         "-m",
                         "candidate",
                     )
-                candidate = (
-                    self.git(fixture.project, "rev-parse", "HEAD")
-                    if committed
-                    else root.read_working_tree_candidate(fixture.project).identity
-                )
-                if declared or not committed:
-                    (fixture.project / "local.txt").write_bytes(b"local")
-                if declared:
-                    submitted = self.submit_declared(fixture, candidate, ["local.txt"])
-                else:
-                    lease = self.native_attempt_acquire(fixture, "candidate-only-worker")
-                    selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
-                    submitted = self.transition_result(fixture, selected, {"candidate": candidate})
+                with historical_candidate_diffs(abbreviation):
+                    candidate = (
+                        self.git(fixture.project, "rev-parse", "HEAD")
+                        if committed
+                        else root.read_working_tree_candidate(fixture.project).identity
+                    )
+                    if declared or not committed:
+                        (fixture.project / "local.txt").write_bytes(b"local")
+                    if declared:
+                        submitted = self.submit_declared(fixture, candidate, ["local.txt"])
+                    else:
+                        lease = self.native_attempt_acquire(fixture, "candidate-only-worker")
+                        selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+                        submitted = self.transition_result(fixture, selected, {"candidate": candidate})
                 self.assertEqual("committed", submitted["status"], submitted)
                 store = SQLiteWorkStore(fixture.work / "state.sqlite3")
                 evidence = candidate_evidence.read_candidate_evidence(

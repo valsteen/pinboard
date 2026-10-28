@@ -3,9 +3,12 @@
 The MCP initialize clientInfo is an accepted externally owned boundary: only its name and version are
 decoded and validated, and every other field is ignored. A recognized host is identified by name for every
 version, because Antigravity reports a constant version and the user owns each recognized host's page size in
-the per-user host settings file. Each recognized profile names the measured default seeded into that file,
-sized with margin under the host's default delivery limit, and which result representation the host passes to
-the model. Any other client or a missing clientInfo selects the unmeasured profile, which has no setting.
+the per-user host settings file. Each recognized profile names the measured default seeded into that file and
+which result representation the host passes to the model. Claude Code and Codex defaults sit with margin under
+the host's default delivery limit, so each page arrives whole. Antigravity saves any text block above about
+4 KB to a step file, so its default instead makes each page spill into one file that a single native read_file
+call reads whole, which takes fewer calls than pages small enough to stay inline. Any other client or a missing
+clientInfo selects the unmeasured profile, which has no setting.
 """
 
 from enum import Enum
@@ -57,7 +60,7 @@ def select(client_params: InitializeRequestParams | None) -> HostProfile:
 
 def measured_page_bytes(profile: HostProfile) -> int:
     """The measured default page size: the seed for a recognized host's setting, or the unmeasured budget."""
-    # Measured on Claude Code 2.1.293, Codex 0.164.0 and agy 1.4.7 (antigravity-client v1.0.0) at their defaults.
+    # Measured on Claude Code 2.1.293, Codex 0.164.0 and agy 1.4.8 (antigravity-client) at their defaults.
     match profile:
         case HostProfile.CLAUDE_CODE:
             # MAX_MCP_OUTPUT_TOKENS (default 25000) moves larger results to a file; 32 KB pages arrived whole.
@@ -66,8 +69,10 @@ def measured_page_bytes(profile: HostProfile) -> int:
             # tool_output_token_limit (default 10000 tokens) elides the middle of larger results.
             return 20000
         case HostProfile.ANTIGRAVITY:
-            # Text blocks above about 10 KB are saved to a file instead of being shown inline.
-            return 16000
+            # Text blocks above about 4 KB (4,080 bytes shown inline, 4,110 saved) go to a step file instead of
+            # being shown inline. A page carrying both representations has a text block under half its budget,
+            # so 92000 keeps every spilled page within one 46,080-byte native read_file call.
+            return 92000
         case HostProfile.UNMEASURED:
             return 8000
         case _ as unreachable:

@@ -284,7 +284,7 @@ An installed plugin keeps its private Python environment at `<launcher-root>/.pi
 
 ## Startup page size per host
 
-Agents read verified Pinboard launch prompts—and Pinboard skills and references when a host cannot load the complete file directly through its native skill loader or native `read_file`—in pages through the `pinboard_startup_text` tool. Each page is sized so the connected host shows it to the model whole rather than saving it to a file or cutting it. Pinboard recognizes the host by the client name it sends when it connects, and keeps one page size per recognized host, for every version of that host, in `~/.config/pinboard/hosts.config`:
+Agents read verified Pinboard launch prompts—and Pinboard skills and references when a host cannot load the complete file directly through its native skill loader or native `read_file`—in pages through the `pinboard_startup_text` tool. On Claude Code and Codex each page is sized so the host shows it to the model whole rather than saving it to a file or cutting it. Antigravity saves any result above about 4 KB to a file and shows only its path, so there each page is sized to spill into one file that the agent reads whole with a single `read_file` call, which takes fewer calls than many 4 KB pages; a short page still shows inline. Pinboard recognizes the host by the client name it sends when it connects, and keeps one page size per recognized host, for every version of that host, in `~/.config/pinboard/hosts.config`:
 
 ```ini
 [host "claude-code"]
@@ -292,7 +292,7 @@ Agents read verified Pinboard launch prompts—and Pinboard skills and reference
 [host "codex"]
 	startup-page-bytes = 20000
 [host "antigravity"]
-	startup-page-bytes = 16000
+	startup-page-bytes = 92000
 ```
 
 The first page read from a recognized host creates `~/.config/pinboard` (mode `0700`) and the file (mode `0600`) when they are missing, writes that host's measured default as one key, and reads it back, the same way Pinboard seeds contributor-trace settings. If `~/.config/pinboard` or `hosts.config` is a symbolic link, for example from a dotfile manager, Pinboard reads and writes the file it points to and leaves the link in place. That per-user write is the only one `pinboard_startup_text` makes; it never writes your project or board. After that the value is yours; Pinboard never rewrites it. Any other MCP client gets 8000-byte pages and no setting.
@@ -301,7 +301,7 @@ The first page read from a recognized host creates `~/.config/pinboard` (mode `0
 | --- | --- | --- | --- | --- |
 | Claude Code | `claude-code` | 32000 | Claude Code 2.1.293 | `MAX_MCP_OUTPUT_TOKENS` at its default of 25000 tokens; larger results are saved to a file |
 | Codex | `codex-mcp-client` | 20000 | Codex 0.164.0 | `tool_output_token_limit` at its default of 10000 tokens; larger results lose their middle |
-| Antigravity | `antigravity-client` | 16000 | agy 1.4.7 | Inline text results of about 10 KB, which agy offers no setting for; larger results are saved to a file |
+| Antigravity | `antigravity-client` | 92000 | agy 1.4.8 | Inline text results up to about 4 KB, which agy offers no setting for; larger results are saved to a file, and `read_file` reads 46,080 bytes per call, so each page spills into one file read in one call |
 
 If you lowered a host's output limit, lower its page size to match; if you raised the limit, you can raise the page size. Values are whole numbers of bytes from 4000 to 200000, and a change applies to the next page. For example:
 
@@ -309,7 +309,7 @@ If you lowered a host's output limit, lower its page size to match; if you raise
 git config --file ~/.config/pinboard/hosts.config host.codex.startup-page-bytes 12000
 ```
 
-Remove a key to have Pinboard write the measured default again. A malformed or out-of-range value, an unreadable file, or a failed first write stops page reads with a diagnostic that names the file and key and gives one next step; Pinboard does not fall back to another size. Antigravity sends the same client version for every agy release, so if a new agy release changes how much it shows inline, adjust the `antigravity` value yourself.
+Remove a key to have Pinboard write the measured default again. A malformed or out-of-range value, an unreadable file, or a failed first write stops page reads with a diagnostic that names the file and key and gives one next step; Pinboard does not fall back to another size. Antigravity sends the same client version for every agy release, so if a new agy release changes how much it shows inline or how much `read_file` returns per call, adjust the `antigravity` value yourself. A stored `antigravity` value between about 8400 and 92000, such as 16000, still works but makes every page spill into a smaller file, so reading a prompt or reference takes more calls; remove the key to have Pinboard write the measured default.
 
 ## Upgrade an installed plugin
 

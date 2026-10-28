@@ -1,4 +1,4 @@
-import base64
+import asyncio
 import dataclasses
 import hashlib
 import json
@@ -14,6 +14,8 @@ from typing import Literal
 from unittest.mock import patch
 
 import msgspec
+from mcp import Client
+from mcp_types import CallToolResult
 
 from pinboard.adapters import dispatch_operations
 from pinboard.adapters.files import root
@@ -757,7 +759,11 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         )
         self.assertEqual("ready", historical["status"], historical)
         recovered = self.json_object(historical["context"])
-        self.assertEqual(original, self.json_object(recovered["starting_snapshot"])["candidate"])
+        self.assertEqual(original, self.json_object(recovered["starting_snapshot_metadata"])["candidate"])
+        verified = fixture.call_advertised_tool(
+            server.ARTIFACT_VERIFY_TOOL, self.json_object(recovered["starting_candidate_verification"])
+        )
+        self.assertEqual(original_context.reference.artifact_ref_id, verified["artifact_ref_id"])
         self.assertEqual(history_id, self.json_object(recovered["return_receipt"])["history_id"])
         self.assertEqual(
             original_context.reference.content_sha256,
@@ -1491,6 +1497,132 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected.content["code"])
         self.assertEqual(before, fixture.store.validated_snapshot())
 
+    def test_large_correction_evidence_fits_complete_sdk_replies_and_dispatches(self) -> None:  # noqa: PLR0915 - one SDK evidence-to-dispatch journey
+        fixture = self.correction_fixture()
+        (fixture.project / "tests" / "test_only.py").write_text("assert True\n" * 600_000, encoding="utf-8")
+        self.commit_all(fixture.project, "large correction baseline")
+        history_id, choice = self.submit_and_return(fixture, "large-return", committed=False)
+        expected_diff = root.read_working_tree_candidate(fixture.project).diff
+        roots: JsonObject = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+        common = roots | {"attempt_id": "work-a-1"}
+        routes = (
+            (server.CORRECTION_CONTEXT_TOOL, common | {"correction_history_id": history_id}),
+            (
+                server.RETURN_CONTEXT_TOOL,
+                common | {"selection": {"kind": "historical", "return_history_id": history_id}},
+            ),
+            (
+                server.RETURN_CONTEXT_TOOL,
+                common | {"selection": {"kind": "current-candidate", "return_history_id": history_id}},
+            ),
+        )
+        with native_tools() as native:
+
+            async def read() -> list[CallToolResult]:
+                async with Client(native.server) as client:
+                    return [await client.call_tool(tool, arguments) for tool, arguments in routes]
+
+            replies = asyncio.run(read())
+            for (tool, arguments), reply in zip(routes, replies, strict=True):
+                with self.subTest(tool=tool, arguments=arguments):
+                    self.assertFalse(reply.is_error)
+                    serialized = reply.model_dump_json(by_alias=True, exclude_none=True).encode()
+                    self.assertLess(len(serialized), 16 * 1024 * 1024)
+            for index, reply in enumerate(replies):
+                content = reply.structured_content
+                assert isinstance(content, dict)
+                self.assertEqual("ready", content["status"], content)
+                companion = reply.content[0]
+                assert companion.type == "text"
+                self.assertEqual(content, json.loads(companion.text))
+                self.assertEqual(1, len(reply.content))
+                selected = content if index == 0 else self.json_object(content["context"])
+                evidence = self.json_object(selected["review_context"]) if index == 2 else selected
+                self.assertFalse("starting_snapshot" in evidence, "Bulk snapshot must stay in its accepted file.")
+                metadata = self.json_object(evidence["starting_snapshot_metadata"])
+                self.assertNotIn("diff_base64", metadata)
+                identity = self.json_object(evidence["starting_candidate"])
+                reference = self.json_object(evidence["starting_candidate_reference"])
+                verification = self.json_object(evidence["starting_candidate_verification"])
+                verified = native.call_advertised_tool(server.ARTIFACT_VERIFY_TOOL, verification)
+                self.assertTrue(verified["verified"])
+                self.assertEqual(reference["artifact_ref_id"], verified["artifact_ref_id"])
+                snapshot_bytes = (fixture.work / str(reference["selector"])).read_bytes()
+                self.assertGreaterEqual(len(snapshot_bytes), 9_256_373)
+                self.assertEqual(len(snapshot_bytes), reference["size_bytes"])
+                self.assertEqual(hashlib.sha256(snapshot_bytes).hexdigest(), reference["sha256"])
+                self.assertEqual(identity["content_sha256"], reference["sha256"])
+                snapshot = candidate_snapshots.decode_candidate_snapshot(snapshot_bytes)
+                self.assertEqual(expected_diff, snapshot.diff)
+                self.assertEqual(snapshot.candidate, metadata["candidate"])
+                self.assertEqual(len(expected_diff), metadata["diff_size_bytes"])
+                self.assertEqual(hashlib.sha256(expected_diff).hexdigest(), metadata["diff_sha256"])
+        context = replies[0].structured_content
+        assert isinstance(context, dict)
+        review = self.json_object(choice["brief_review"])
+        review["starting_candidate"] = context["starting_candidate"]
+        review["correction_input"] = {"reason": context["correction_reason"]}
+        review["contract_review"] = msgspec.json.decode(
+            ready_review(msgspec.convert(context["effective_brief"], type=work_brief_models.WorkBrief, strict=True))
+        )
+        dispatched = fixture.call_advertised_tool(server.DISPATCH_TOOL, roots | {"dispatch": choice})
+        self.assertEqual("ready", dispatched["status"], dispatched)
+
+    def test_compact_sdk_schemas_preserve_reuse_and_reject_inline_predecessors(self) -> None:
+        fixture = self.correction_fixture()
+        history_id, _choice = self.submit_and_return(fixture, "schema-review", committed=False)
+        common: JsonObject = {
+            "project_root": str(fixture.project),
+            "work_root": str(fixture.work),
+            "attempt_id": "work-a-1",
+        }
+        routes = (
+            (server.CORRECTION_CONTEXT_TOOL, common | {"correction_history_id": history_id}),
+            (
+                server.RETURN_CONTEXT_TOOL,
+                common | {"selection": {"kind": "current-candidate", "return_history_id": history_id}},
+            ),
+        )
+        with native_tools() as native:
+
+            async def scenario() -> None:
+                async with Client(native.server) as client:
+                    for tool, arguments in routes:
+                        reply = await client.call_tool(tool, arguments)
+                        assert isinstance(reply.structured_content, dict)
+                        changes: tuple[JsonObject, ...] = (
+                            {"reuse_eligible": True, "reuse_blockers": ["Cannot reuse coverage."]},
+                            {"reuse_eligible": False, "reuse_blockers": []},
+                            {"starting_snapshot": {"diff_base64": ""}},
+                        )
+                        for change in changes:
+                            invalid = deepcopy(reply.structured_content)
+                            evidence = (
+                                invalid
+                                if tool == server.CORRECTION_CONTEXT_TOOL
+                                else self.json_object(self.json_object(invalid["context"])["review_context"])
+                            )
+                            evidence.update(change)
+                            with self.subTest(tool=tool, change=change), self.assertRaises(RuntimeError):
+                                await client.session.validate_tool_result(
+                                    tool, CallToolResult(content=[], structured_content=invalid)
+                                )
+                            with self.assertRaises(msgspec.ValidationError):
+                                contract_schemas.validate_result(tool, invalid)
+                        predecessor = reply.structured_content | {
+                            "schema": "pinboard-correction-context/v1"
+                            if tool == server.CORRECTION_CONTEXT_TOOL
+                            else "pinboard-return-context/v1"
+                        }
+                        with self.assertRaises(RuntimeError):
+                            await client.session.validate_tool_result(
+                                tool, CallToolResult(content=[], structured_content=predecessor)
+                            )
+                        with self.assertRaises(msgspec.ValidationError):
+                            contract_schemas.validate_result(tool, predecessor)
+
+            asyncio.run(scenario())
+
     def test_native_correction_context_binds_fresh_review_before_dispatch(self) -> None:
         fixture = self.correction_fixture()
         (fixture.project / "architecture.md").write_text(
@@ -1517,9 +1649,10 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         snapshot_bytes = (fixture.work / str(identity["selector"])).read_bytes()
         self.assertEqual(identity["content_sha256"], hashlib.sha256(snapshot_bytes).hexdigest())
         accepted_snapshot = candidate_snapshots.decode_candidate_snapshot(snapshot_bytes)
-        snapshot = self.json_object(context["starting_snapshot"])
+        snapshot = self.json_object(context["starting_snapshot_metadata"])
         self.assertEqual(accepted_snapshot.candidate, snapshot["candidate"])
-        self.assertEqual(accepted_snapshot.diff, base64.b64decode(str(snapshot["diff_base64"]), validate=True))
+        self.assertEqual(hashlib.sha256(accepted_snapshot.diff).hexdigest(), snapshot["diff_sha256"])
+        self.assertEqual(len(accepted_snapshot.diff), snapshot["diff_size_bytes"])
         self.assertEqual(before, fixture.store.validated_snapshot())
         self.assertEqual(
             artifact_files,
@@ -1795,12 +1928,36 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         reference = self.json_object(selected["starting_candidate"])
         path = fixture.work / str(reference["selector"])
         original = path.read_bytes()
-        path.write_bytes(b"damaged selected snapshot\n")
-        result = fixture.call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
-        self.assertEqual("DISPATCH_BRIEF_REVIEW_INVALID", result["code"], result)
-        self.assertFalse(result["state_changed"])
-        path.write_bytes(original)
-        self.assertEqual(before, fixture.store.validated_snapshot())
+        common = arguments.copy()
+        del common["selection"]
+        current_arguments = common.copy()
+        current_arguments["selection"] = {"kind": "current-candidate", "return_history_id": history_id}
+        routes: tuple[tuple[str, JsonObject], ...] = (
+            (server.CORRECTION_CONTEXT_TOOL, common | {"correction_history_id": history_id}),
+            (server.RETURN_CONTEXT_TOOL, arguments),
+            (server.RETURN_CONTEXT_TOOL, current_arguments),
+        )
+        for damage in ("missing", "corrupt"):
+            with self.subTest(damage=damage):
+                if damage == "missing":
+                    path.unlink()
+                else:
+                    path.write_bytes(b"damaged selected snapshot\n")
+                try:
+                    for tool, request in routes:
+                        with self.subTest(tool=tool, request=request):
+                            result = fixture.call_advertised_tool(tool, request)
+                            self.assertEqual("DISPATCH_BRIEF_REVIEW_INVALID", result["code"], result)
+                            self.assertFalse(result["state_changed"])
+                            self.assertEqual("unchanged", result["effect"])
+                            self.assertEqual([], result["changed_surfaces"])
+                    verification = self.json_object(selected["starting_candidate_verification"])
+                    rejected = fixture.call_advertised_tool(server.ARTIFACT_VERIFY_TOOL, verification)
+                    self.assertEqual("ARTIFACT_BYTES_INVALID", rejected["code"], rejected)
+                    self.assertFalse(rejected["state_changed"])
+                finally:
+                    path.write_bytes(original)
+                self.assertEqual(before, fixture.store.validated_snapshot())
 
         for change in ({"status": "drifted"}, {"schema": "pinboard-return-context/v99"}, {"unknown": True}):
             with self.assertRaises(msgspec.ValidationError):
@@ -1873,7 +2030,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual(history_id, receipt["history_id"])
         self.assertEqual(returned["committed_revision"], receipt["project_revision"])
         self.assertEqual("Repair the test-only candidate.", selected["correction_reason"])
-        self.assertEqual(candidate, self.json_object(selected["starting_snapshot"])["candidate"])
+        self.assertEqual(candidate, self.json_object(selected["starting_snapshot_metadata"])["candidate"])
         reference = self.json_object(selected["starting_candidate"])
         self.assertEqual(
             reference["content_sha256"],
@@ -1981,6 +2138,10 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                     ):
                         selected = fixture.call_advertised_tool(server.RETURN_CONTEXT_TOOL, arguments)
                     self.assertEqual(original, selected)
+                    verification = self.json_object(
+                        self.json_object(selected["context"])["starting_candidate_verification"]
+                    )
+                    self.assertTrue(fixture.call_advertised_tool(server.ARTIFACT_VERIFY_TOOL, verification)["verified"])
                     path.write_bytes(protected_bytes)
                 selection: JsonObject = {"kind": "current-candidate", "return_history_id": history_id}
                 forbidden = fixture.call_advertised_tool(

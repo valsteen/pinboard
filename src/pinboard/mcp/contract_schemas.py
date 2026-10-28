@@ -719,12 +719,13 @@ def union_schema_for(boundary_types: tuple[type[msgspec.Struct], ...]) -> dict[s
                 (None, "unconfirmed", ("work-root",)),
             )
         ]
-    correction = definitions.get("CorrectionContextReady")
-    if isinstance(correction, dict):
-        correction["anyOf"] = [
-            {"properties": {"reuse_eligible": {"const": True}, "reuse_blockers": {"maxItems": 0}}},
-            {"properties": {"reuse_eligible": {"const": False}, "reuse_blockers": {"minItems": 1}}},
-        ]
+    for name in ("CorrectionContextReady", "CorrectionReviewEvidence"):
+        correction = definitions.get(name)
+        if isinstance(correction, dict):
+            correction["anyOf"] = [
+                {"properties": {"reuse_eligible": {"const": True}, "reuse_blockers": {"maxItems": 0}}},
+                {"properties": {"reuse_eligible": {"const": False}, "reuse_blockers": {"minItems": 1}}},
+            ]
     return {"type": "object", "anyOf": list[JsonSchemaValue](schemas), "$defs": definitions}
 
 

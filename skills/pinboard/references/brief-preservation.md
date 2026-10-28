@@ -35,6 +35,8 @@ Use one selector with several families instead of repeating or nesting the same 
 
 When an explicit durable plan is needed, call the write-capable `pinboard_brief_source_plan_output` operation `plan-to-file` with one destination, require its compact receipt, then use read-only `pinboard_brief_sources` operation `emit-file` with that saved plan path and each batch index. Plan publication writes only the selected destination and remains a write operation.
 
+On Antigravity, a coordinator or brief reviewer still plans through `plan` or `plan-to-file` for the selected digests and line spans, but reads every selected source through the [Antigravity brief-source route](runtime-antigravity.md#operations) with native `read_file` instead of `emit` or `emit-file`. That read is not verified against the plan digest; dispatch's reviewed-authority digest check still rejects a selected source that changed after planning.
+
 Preserve each selector and selected digest as its read receipt. Across corrections, reuse exact unchanged receipts and reread only changed owners plus neighboring records whose meaning depends on them. If output truncates, continue from the first unread boundary without replaying returned content.
 
 If the selected set plus working headroom cannot fit, narrow selectors, split only a semantically independent checkpoint, or move mechanical comparison into validated tooling. Do not omit an accepted requirement, prohibition, explicit uncertainty, lifecycle sibling, or consumer merely to fit context.

@@ -208,6 +208,7 @@ class ReviewedCurrentCorrectionStart:
 class ReturnedEvidence:
     receipt: stored_state.StoredTransitionReceipt
     identity: work_brief_models.PortableArtifactIdentity
+    reference: stored_state.ArtifactReference
     snapshot: candidate_snapshots.CandidateSnapshot
     reason: str
 
@@ -238,6 +239,7 @@ type CorrectionPreparation = CorrectionDispatch | CurrentCandidateCorrectionDisp
 class CorrectionContext:
     effective_brief: work_brief_models.WorkBrief
     starting_candidate: work_brief_models.PortableArtifactIdentity
+    starting_candidate_reference: stored_state.ArtifactReference
     starting_snapshot: candidate_snapshots.CandidateSnapshot
     correction_reason: str
     correction_history_id: HistoryId
@@ -958,7 +960,7 @@ def read_returned_evidence(
         )
     reference = context.reference
     identity = _starting_candidate_identity(reference)
-    return ReturnedEvidence(receipt, identity, snapshot, outcome.evidence)
+    return ReturnedEvidence(receipt, identity, reference, snapshot, outcome.evidence)
 
 
 def _read_returned_snapshot(
@@ -1320,6 +1322,7 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
     return CorrectionContext(
         effective_brief,
         identity,
+        reference,
         snapshot,
         outcome.evidence,
         correction_history_id,

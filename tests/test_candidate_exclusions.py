@@ -281,25 +281,41 @@ class CandidateExclusionsTest(CheckpointPackageSupport):
                     "Repair candidate.",
                 )
                 self.assertEqual(evidence.snapshot, result)
-                context = call_advertised_tool(
-                    server.CORRECTION_CONTEXT_TOOL,
-                    {
-                        "project_root": str(fixture.project),
-                        "work_root": str(fixture.work),
-                        "attempt_id": "work-a-1",
-                        "correction_history_id": history_id,
-                    },
-                )
-                self.assertEqual("ready", context["status"], context)
-                view = self.json_object(context["starting_snapshot"])
-                self.assertEqual(
-                    "pinboard-candidate-snapshot/v3"
-                    if declared
-                    else ("pinboard-candidate-snapshot/v1" if committed else "pinboard-candidate-snapshot/v2"),
-                    view["schema"],
-                )
-                self.assertEqual("commit" if committed else "working-tree", view["candidate_kind"])
-                self.assertEqual(["local.txt"] if declared else None, view.get("excluded_untracked_paths"))
+                arguments: JsonObject = {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "attempt_id": "work-a-1",
+                }
+                for selection in ("correction", "historical", "current-candidate"):
+                    with self.subTest(selection=selection):
+                        tool = (
+                            server.CORRECTION_CONTEXT_TOOL if selection == "correction" else server.RETURN_CONTEXT_TOOL
+                        )
+                        request = arguments.copy()
+                        if selection == "correction":
+                            request["correction_history_id"] = history_id
+                        else:
+                            request["selection"] = {"kind": selection, "return_history_id": history_id}
+                        context = call_advertised_tool(tool, request)
+                        self.assertEqual("ready", context["status"], context)
+                        selected = context if selection == "correction" else self.json_object(context["context"])
+                        evidence_view = (
+                            self.json_object(selected["review_context"])
+                            if selection == "current-candidate"
+                            else selected
+                        )
+                        view = self.json_object(evidence_view["starting_snapshot_metadata"])
+                        self.assertEqual(
+                            "pinboard-candidate-snapshot/v3"
+                            if declared
+                            else ("pinboard-candidate-snapshot/v1" if committed else "pinboard-candidate-snapshot/v2"),
+                            view["snapshot_schema"],
+                        )
+                        self.assertEqual("commit" if committed else "working-tree", view["candidate_kind"])
+                        self.assertEqual(["local.txt"] if declared else [], view["excluded_untracked_paths"])
+                        verification = self.json_object(evidence_view["starting_candidate_verification"])
+                        verified = call_advertised_tool(server.ARTIFACT_VERIFY_TOOL, verification)
+                        self.assertEqual(reference.artifact_ref_id, verified["artifact_ref_id"])
                 (fixture.project / "tracked.txt").write_text("wrong candidate\n", encoding="utf-8")
                 rejected = dispatch_operations._read_correction_snapshot(
                     store,

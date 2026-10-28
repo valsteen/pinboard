@@ -635,7 +635,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=RETURN_CONTEXT_TOOL,
-        description="Read one exact same-attempt return and verified original submission snapshot. Explicit selection kind historical returns provenance after rebind/rebase without current correction authority. Selection kind current-candidate requires the current active return and returned branch/HEAD, and supplies the effective correction context plus observed tracked candidate and omitted path names for fresh independent candidate-correction review. No publication, restoration, authority or lifecycle effects.",
+        description="Read one exact same-attempt return with compact v2 evidence: accepted snapshot artifact reference, executable pinboard_artifact_verify arguments and typed metadata, without inline diff bytes. Verify the named file's complete raw digest and size, decode it and inspect the complete original diff through bounded output before assessment; metadata or byte verification alone is not review. Explicit selection kind historical returns provenance after rebind/rebase without current correction authority. Selection kind current-candidate requires the current active return and returned branch/HEAD, and supplies the effective correction context plus observed tracked candidate and omitted path names for fresh independent candidate-correction review. No publication, restoration, authority or lifecycle effects.",
     )
     async def return_context(
         project_root: str, work_root: str, attempt_id: str, selection: dict[str, JsonValue]
@@ -659,7 +659,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=CORRECTION_CONTEXT_TOOL,
-        description="Read the exact effective correction brief, accepted starting snapshot, and advisory coverage-reuse eligibility and blockers for a current return on its exact returned checkout; dispatch rechecks every fact and this read changes no state. It returns no review_id: correction dispatch takes a caller-chosen label described by pinboard_dispatch.",
+        description="Read the exact effective correction brief and compact v2 starting evidence: accepted snapshot artifact reference, executable pinboard_artifact_verify arguments and typed metadata, without inline diff bytes. Verify the named file's complete raw digest and size, decode it and inspect the complete original diff through bounded output before assessment; metadata or byte verification alone is not review. Advisory coverage-reuse eligibility and blockers apply to a current return on its exact returned checkout; dispatch rechecks every fact and this read changes no state. It returns no review_id: correction dispatch takes a caller-chosen label described by pinboard_dispatch.",
     )
     async def correction_context(
         project_root: str,

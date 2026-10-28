@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import shlex
 from collections.abc import Mapping
@@ -323,7 +322,7 @@ def _read_correction_context(
         durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return common._read_failure(
-            "pinboard-correction-context/v1",
+            "pinboard-correction-context/v2",
             ProducerOnlyCode.CORRECTION_CONTEXT_INVALID.value,
             str(error),
             None,
@@ -339,21 +338,24 @@ def _read_correction_context(
     )
     if isinstance(context, dispatch_operations.DispatchFailure):
         return common._read_failure(
-            "pinboard-correction-context/v1",
+            "pinboard-correction-context/v2",
             context.code.value,
             context.message
             + f" Inspect attempt '{request.attempt_id}' with pinboard_attempt_inspect using the same project_root/work_root and reconciliation:null before choosing a correction round. Report invalid accepted evidence to the human; do not reconstruct it or reset the checkout.",
             context.details,
         )
-    result = _correction_context_view(context)
+    result = _correction_context_view(context, request.project_root, request.work_root)
     token.checkpoint()
     content = msgspec.to_builtins(result)
     assert isinstance(content, dict)
     return execution.OperationResult(content, "read", None)
 
 
-def _correction_snapshot_view(snapshot: candidate_snapshots.CandidateSnapshot) -> contracts.CorrectionSnapshot:
-    snapshot_fields = (
+def _correction_snapshot_metadata(
+    snapshot: candidate_snapshots.CandidateSnapshot,
+) -> contracts.CorrectionSnapshotMetadata:
+    return contracts.CorrectionSnapshotMetadata(
+        snapshot.schema,
         candidate_snapshots.candidate_kind(snapshot),
         snapshot.attempt_id,
         snapshot.item_id,
@@ -362,28 +364,31 @@ def _correction_snapshot_view(snapshot: candidate_snapshots.CandidateSnapshot) -
         snapshot.preimage_revision,
         snapshot.accepted_base_revision,
         snapshot.recorded_at,
-        base64.b64encode(snapshot.diff).decode("ascii"),
+        hashlib.sha256(snapshot.diff).hexdigest(),
+        len(snapshot.diff),
+        candidate_snapshots.excluded_untracked_paths(snapshot),
     )
-    snapshot_view: contracts.CorrectionSnapshot
-    match snapshot:
-        case (
-            candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot()
-            | candidate_snapshots.DeclaredCommitCandidateSnapshot()
-        ):
-            snapshot_view = contracts.DeclaredCorrectionSnapshot(*snapshot_fields, snapshot.excluded_untracked_paths)
-        case candidate_snapshots.WorkingTreeCandidateSnapshot():
-            snapshot_view = contracts.CorrectionSnapshotV2(*snapshot_fields)
-        case candidate_snapshots.CommitCandidateSnapshot():
-            snapshot_view = contracts.CorrectionSnapshotV1(*snapshot_fields)
-        case _ as unreachable:
-            assert_never(unreachable)
-    return snapshot_view
 
 
-def _correction_context_view(context: dispatch_operations.CorrectionContext) -> contracts.CorrectionContextReady:
-    evidence = _correction_review_evidence(context)
+def _correction_snapshot_verification(
+    reference: stored_state.ArtifactReference, project_root: str, work_root: str
+) -> contracts.ArtifactVerifyRequest:
+    return contracts.ArtifactVerifyRequest(
+        project_root,
+        work_root,
+        reference.artifact_ref_id,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+    )
+
+
+def _correction_context_view(
+    context: dispatch_operations.CorrectionContext, project_root: str, work_root: str
+) -> contracts.CorrectionContextReady:
+    evidence = _correction_review_evidence(context, project_root, work_root)
     return contracts.CorrectionContextReady(
-        schema="pinboard-correction-context/v1",
+        schema="pinboard-correction-context/v2",
         status="ready",
         attempt_id=evidence.attempt_id,
         correction_history_id=evidence.correction_history_id,
@@ -393,7 +398,9 @@ def _correction_context_view(context: dispatch_operations.CorrectionContext) -> 
         checkpoint_sha256=evidence.checkpoint_sha256,
         reviewed_authority_set_sha256=evidence.reviewed_authority_set_sha256,
         starting_candidate=evidence.starting_candidate,
-        starting_snapshot=evidence.starting_snapshot,
+        starting_candidate_reference=evidence.starting_candidate_reference,
+        starting_candidate_verification=evidence.starting_candidate_verification,
+        starting_snapshot_metadata=evidence.starting_snapshot_metadata,
         reuse_eligible=evidence.reuse_eligible,
         reuse_blockers=evidence.reuse_blockers,
         state_changed=False,
@@ -403,7 +410,9 @@ def _correction_context_view(context: dispatch_operations.CorrectionContext) -> 
     )
 
 
-def _correction_review_evidence(context: dispatch_operations.CorrectionContext) -> contracts.CorrectionReviewEvidence:
+def _correction_review_evidence(
+    context: dispatch_operations.CorrectionContext, project_root: str, work_root: str
+) -> contracts.CorrectionReviewEvidence:
     brief = context.effective_brief
     checkpoint = brief.checkpoint
     reviewed_set_sha256 = (
@@ -411,7 +420,7 @@ def _correction_review_evidence(context: dispatch_operations.CorrectionContext) 
         if isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
         else None
     )
-    snapshot_view = _correction_snapshot_view(context.starting_snapshot)
+    reference = context.starting_candidate_reference
     return contracts.CorrectionReviewEvidence(
         context.effective_brief.attempt_id,
         context.correction_history_id,
@@ -421,7 +430,11 @@ def _correction_review_evidence(context: dispatch_operations.CorrectionContext) 
         hashlib.sha256(work_briefs.canonical_checkpoint_bytes(checkpoint)).hexdigest(),
         reviewed_set_sha256,
         context.starting_candidate,
-        snapshot_view,
+        msgspec.convert(
+            common._artifact_reference_json(reference), type=contracts.ReviewEvidenceReference, strict=True
+        ),
+        _correction_snapshot_verification(reference, project_root, work_root),
+        _correction_snapshot_metadata(context.starting_snapshot),
         context.reuse_eligible,
         context.reuse_blockers,
     )
@@ -429,7 +442,7 @@ def _correction_review_evidence(context: dispatch_operations.CorrectionContext) 
 
 def _read_return_context(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     token.checkpoint()
-    schema = "pinboard-return-context/v1"
+    schema = "pinboard-return-context/v2"
     try:
         request = msgspec.convert(raw, type=contracts.ReturnContextRequest, strict=True)
         durable = common._resolve_durable(request.project_root, request.work_root)
@@ -468,7 +481,16 @@ def _read_return_context(raw: Mapping[str, JsonValue], token: execution.Cancella
     match request.selection:
         case contracts.HistoricalReturnSelection():
             selected = contracts.HistoricalReturnContext(
-                receipt_view, evidence.reason, evidence.identity, _correction_snapshot_view(evidence.snapshot)
+                receipt_view,
+                evidence.reason,
+                evidence.identity,
+                msgspec.convert(
+                    common._artifact_reference_json(evidence.reference),
+                    type=contracts.ReviewEvidenceReference,
+                    strict=True,
+                ),
+                _correction_snapshot_verification(evidence.reference, request.project_root, request.work_root),
+                _correction_snapshot_metadata(evidence.snapshot),
             )
         case contracts.CurrentCandidateReturnSelection():
             source_checkout = resolve_source_checkout_root(Path(request.project_root))
@@ -492,7 +514,7 @@ def _read_return_context(raw: Mapping[str, JsonValue], token: execution.Cancella
                     correction.details,
                 )
             selected = contracts.CurrentCandidateReturnContext(
-                receipt_view, _correction_review_evidence(correction), binding
+                receipt_view, _correction_review_evidence(correction, request.project_root, request.work_root), binding
             )
         case _ as unreachable:
             assert_never(unreachable)

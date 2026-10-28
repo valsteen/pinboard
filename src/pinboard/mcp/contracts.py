@@ -2152,7 +2152,21 @@ class NonterminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, froz
     changed_surfaces: Empty
 
 
-class _CorrectionSnapshotFields(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ReviewEvidenceReference(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    artifact_ref_id: PositiveInt
+    kind: Literal["evidence"]
+    key: NonEmptyText
+    revision: PositiveInt
+    selector: NonEmptyText
+    sha256: Sha256
+    size_bytes: PositiveInt
+    accepted_revision: PositiveInt
+
+
+class CorrectionSnapshotMetadata(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    snapshot_schema: Literal[
+        "pinboard-candidate-snapshot/v1", "pinboard-candidate-snapshot/v2", "pinboard-candidate-snapshot/v3"
+    ]
     candidate_kind: Literal["working-tree", "commit"]
     attempt_id: NonEmptyText
     item_id: NonEmptyText
@@ -2161,43 +2175,12 @@ class _CorrectionSnapshotFields(msgspec.Struct, frozen=True, forbid_unknown_fiel
     preimage_revision: NonEmptyText
     accepted_base_revision: NonEmptyText
     recorded_at: NonEmptyText
-    diff_base64: str
-
-
-class CorrectionSnapshotV1(
-    _CorrectionSnapshotFields,
-    tag="pinboard-candidate-snapshot/v1",
-    tag_field="schema",
-    frozen=True,
-    forbid_unknown_fields=True,
-):
-    pass
-
-
-class CorrectionSnapshotV2(
-    _CorrectionSnapshotFields,
-    tag="pinboard-candidate-snapshot/v2",
-    tag_field="schema",
-    frozen=True,
-    forbid_unknown_fields=True,
-):
-    pass
-
-
-class DeclaredCorrectionSnapshot(
-    _CorrectionSnapshotFields,
-    tag="pinboard-candidate-snapshot/v3",
-    tag_field="schema",
-    frozen=True,
-    forbid_unknown_fields=True,
-):
+    diff_sha256: Sha256
+    diff_size_bytes: NonNegativeInt
     excluded_untracked_paths: tuple[action_models.CanonicalRepoRelativeFile, ...]
 
     def __post_init__(self) -> None:
         action_models.require_canonical_excluded_paths(self.excluded_untracked_paths)
-
-
-type CorrectionSnapshot = CorrectionSnapshotV1 | CorrectionSnapshotV2 | DeclaredCorrectionSnapshot
 
 
 class CorrectionReviewEvidence(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2209,7 +2192,9 @@ class CorrectionReviewEvidence(msgspec.Struct, frozen=True, forbid_unknown_field
     checkpoint_sha256: Sha256
     reviewed_authority_set_sha256: Sha256 | None
     starting_candidate: work_brief_models.PortableArtifactIdentity
-    starting_snapshot: CorrectionSnapshot
+    starting_candidate_reference: ReviewEvidenceReference
+    starting_candidate_verification: ArtifactVerifyRequest
+    starting_snapshot_metadata: CorrectionSnapshotMetadata
     reuse_eligible: bool
     reuse_blockers: tuple[NonEmptyText, ...]
 
@@ -2219,7 +2204,7 @@ class CorrectionReviewEvidence(msgspec.Struct, frozen=True, forbid_unknown_field
 
 
 class CorrectionContextReady(_UnchangedResult, CorrectionReviewEvidence, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-correction-context/v1"]
+    schema: Literal["pinboard-correction-context/v2"]
     status: Literal["ready"]
     state_changed: bool
     effect: Literal["unchanged"]
@@ -2232,7 +2217,7 @@ class CorrectionContextReady(_UnchangedResult, CorrectionReviewEvidence, frozen=
 
 
 class CorrectionContextRejected(RejectedReadResult, frozen=True):
-    schema: Literal["pinboard-correction-context/v1"]
+    schema: Literal["pinboard-correction-context/v2"]
     code: NonEmptyText
     retry: Literal["correct-input", "refresh-action", "do-not-retry"]
     observed: tuple[FailureObservation, ...]
@@ -2262,7 +2247,9 @@ class HistoricalReturnContext(
     return_receipt: ReturnReceiptEvidence
     correction_reason: NonEmptyText
     starting_candidate: work_brief_models.PortableArtifactIdentity
-    starting_snapshot: CorrectionSnapshot
+    starting_candidate_reference: ReviewEvidenceReference
+    starting_candidate_verification: ArtifactVerifyRequest
+    starting_snapshot_metadata: CorrectionSnapshotMetadata
 
 
 class CurrentCandidateReturnContext(
@@ -2274,7 +2261,7 @@ class CurrentCandidateReturnContext(
 
 
 class ReturnContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-return-context/v1"]
+    schema: Literal["pinboard-return-context/v2"]
     status: Literal["ready"]
     attempt_id: PathComponent
     context: HistoricalReturnContext | CurrentCandidateReturnContext
@@ -2285,7 +2272,7 @@ class ReturnContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
 
 
 class ReturnContextRejected(RejectedReadResult, frozen=True):
-    schema: Literal["pinboard-return-context/v1"]
+    schema: Literal["pinboard-return-context/v2"]
     code: NonEmptyText
     retry: Literal["correct-input", "refresh-action", "do-not-retry"]
     observed: tuple[FailureObservation, ...]
@@ -2987,17 +2974,6 @@ class PublicationInfrastructureUnchangedFailureResult(
 
 class BriefPublicationInfrastructureUnchangedFailure(PublicationInfrastructureUnchangedFailureResult, frozen=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
-
-
-class ReviewEvidenceReference(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    artifact_ref_id: PositiveInt
-    kind: Literal["evidence"]
-    key: NonEmptyText
-    revision: PositiveInt
-    selector: NonEmptyText
-    sha256: Sha256
-    size_bytes: PositiveInt
-    accepted_revision: PositiveInt
 
 
 class CorrectedBriefPublicationTarget(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

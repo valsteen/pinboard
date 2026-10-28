@@ -5583,6 +5583,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
         attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
         assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+        original_snapshot = (fixture.work / snapshot.reference.selector).read_bytes()
         attempt_root = fixture.work / "attempts" / "work-a-1"
         review: dict[str, contracts.JsonValue] = {
             "kind": "record-ready",
@@ -5647,6 +5648,7 @@ class ResumedReviewReconciliationTest(CheckpointPackageSupport):
         ]
         (attempt_root / "review.md").write_text("review evidence changed\n", encoding="utf-8")
         self.assertEqual("review-subagent", next_operation()["kind"])
+        self.assertEqual(original_snapshot, (fixture.work / snapshot.reference.selector).read_bytes())
 
     def test_recorded_ready_review_resumes_at_git_metadata_recovery_without_launch(self) -> None:  # noqa: PLR0915 - exercises the complete resumed-review sequence
         fixture = self.native_fixture(self.checkpoint_fixture(candidate_form="current-head"))

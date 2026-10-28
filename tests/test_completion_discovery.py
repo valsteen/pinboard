@@ -394,7 +394,18 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         self.assertEqual("active", self.json_object(inspection["continuation"])["state"])
         lease = self.native_attempt_acquire(fixture, "explicit-delivery-worker")
         selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
-        candidate = fixture.candidate_revision
+        stale = self.transition_result(fixture, selected, {"candidate": fixture.candidate_revision})
+        self.assertEqual(
+            ("rejected", "TRANSITION_INPUT_INVALID", "unchanged"), (stale["status"], stale["code"], stale["effect"])
+        )
+        observed = fixture.call_advertised_tool(
+            mcp_server.CANDIDATE_OBSERVE_TOOL,
+            {"project_root": str(fixture.project), "work_root": str(fixture.work), "attempt_id": "work-a-1"},
+        )
+        candidate = observed["candidate"]
+        assert isinstance(candidate, str)
+        self.assertNotEqual(fixture.candidate_revision, candidate)
+        selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
         submitted = self.transition_result(fixture, selected, {"candidate": candidate})
         self.assertEqual("committed", submitted["status"], submitted)
         complete_action = self.project_action(fixture, "complete:work-a-1")

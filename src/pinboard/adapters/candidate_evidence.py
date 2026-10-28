@@ -23,6 +23,7 @@ from pinboard.application import (
     stored_state,
     work_brief_models,
 )
+from pinboard.application.candidate_identity import candidate_diffs_match
 from pinboard.domain import work_models
 from pinboard.domain.errors import (
     ChangedSurface,
@@ -110,12 +111,16 @@ def observe_candidate_lineage(
                 | candidate_snapshots.DeclaredWorkingTreeCandidateSnapshot()
             ):
                 current = root.read_working_tree_candidate(source_checkout)
-                if current.preimage_revision == snapshot.preimage_revision and current.diff == snapshot.diff:
+                if current.preimage_revision == snapshot.preimage_revision and candidate_diffs_match(
+                    snapshot.diff, current.diff
+                ):
                     return query_models.CandidateLineage.WORKING_TREE_CURRENT
                 committed = root.read_current_head_candidate(
                     source_checkout, head, snapshot.preimage_revision, excluded_untracked_paths=excluded
                 )
-                if isinstance(committed, root.CurrentHeadCandidate) and committed.diff == snapshot.diff:
+                if isinstance(committed, root.CurrentHeadCandidate) and candidate_diffs_match(
+                    snapshot.diff, committed.diff
+                ):
                     return query_models.CandidateLineage.COMMIT_CURRENT
                 return query_models.CandidateLineage.DRIFTED
             case candidate_snapshots.CommitCandidateSnapshot() | candidate_snapshots.DeclaredCommitCandidateSnapshot():
@@ -125,7 +130,9 @@ def observe_candidate_lineage(
                     snapshot.accepted_base_revision,
                     excluded_untracked_paths=excluded,
                 )
-                if isinstance(current, root.CurrentHeadCandidate) and current.diff == snapshot.diff:
+                if isinstance(current, root.CurrentHeadCandidate) and candidate_diffs_match(
+                    snapshot.diff, current.diff
+                ):
                     return query_models.CandidateLineage.COMMIT_CURRENT
                 return query_models.CandidateLineage.DRIFTED
             case _ as unreachable:

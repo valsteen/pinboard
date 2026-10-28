@@ -28,6 +28,7 @@ from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
+from tests.candidate_diff_support import historical_candidate_diffs
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_advertised_tool, native_tools
 from tests.support import JsonObject
@@ -328,7 +329,8 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
             )
 
     def test_protected_working_tree_candidate_is_found_after_squash_merge(self) -> None:
-        fixture, preimage, candidate = self.multiline_candidate()
+        with historical_candidate_diffs("7"):
+            fixture, preimage, candidate = self.multiline_candidate()
         target = self.target_worktree(fixture, preimage)
         at_base = self.presence(fixture, "main", "content-not-present")
         self.assertEqual(

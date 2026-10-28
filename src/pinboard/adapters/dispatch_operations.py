@@ -27,6 +27,7 @@ from pinboard.application import (
 )
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.brief_source_models import BriefSourceFailure, authority_selector
+from pinboard.application.candidate_identity import candidate_diffs_match, working_tree_identity
 from pinboard.application.dispatch import (
     find_dispatch_review,
     publish_dispatch_review,
@@ -1060,14 +1061,21 @@ def _read_correction_snapshot(
             checkout_mismatches.extend(
                 (
                     FailureMismatch("checkout_preimage", snapshot.preimage_revision, head),
-                    FailureMismatch("checkout_candidate", snapshot.candidate, current.identity),
+                    FailureMismatch(
+                        "checkout_candidate",
+                        snapshot.candidate,
+                        working_tree_identity(current.preimage_revision, snapshot.diff),
+                    ),
+                )
+            )
+            if not candidate_diffs_match(snapshot.diff, current.diff):
+                checkout_mismatches.append(
                     FailureMismatch(
                         "checkout_diff",
                         hashlib.sha256(snapshot.diff).hexdigest(),
                         hashlib.sha256(current.diff).hexdigest(),
-                    ),
+                    )
                 )
-            )
         case candidate_snapshots.CommitCandidateSnapshot() | candidate_snapshots.DeclaredCommitCandidateSnapshot():
             committed = root.read_current_head_candidate(
                 source_checkout_root,
@@ -1077,13 +1085,14 @@ def _read_correction_snapshot(
             )
             match committed:
                 case root.CurrentHeadCandidate():
-                    checkout_mismatches.append(
-                        FailureMismatch(
-                            "checkout_diff",
-                            hashlib.sha256(snapshot.diff).hexdigest(),
-                            hashlib.sha256(committed.diff).hexdigest(),
+                    if not candidate_diffs_match(snapshot.diff, committed.diff):
+                        checkout_mismatches.append(
+                            FailureMismatch(
+                                "checkout_diff",
+                                hashlib.sha256(snapshot.diff).hexdigest(),
+                                hashlib.sha256(committed.diff).hexdigest(),
+                            )
                         )
-                    )
                 case root.DifferentHeadCandidate():
                     checkout_mismatches.append(
                         FailureMismatch("checkout_head", snapshot.candidate, committed.current_head)

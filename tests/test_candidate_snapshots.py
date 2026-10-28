@@ -55,11 +55,34 @@ from pinboard.domain.errors import (
     RetryDisposition,
 )
 from pinboard.domain.identifiers import ActionId, AttemptId, CandidateId
+from tests.candidate_diff_support import historical_candidate_diffs
 from tests.domain_support import action
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 
 
 class CandidateSnapshotTest(unittest.TestCase):
+    def test_new_candidate_diffs_use_full_ids_under_all_abbreviation_settings(self) -> None:
+        source, base = self.repository()
+        (source / "tracked.txt").write_text("candidate\n", encoding="utf-8")
+        expected = read_working_tree_candidate(source)
+        index = next(line for line in expected.diff.splitlines() if line.startswith(b"index "))
+        before, after = index.split()[1].split(b"..")
+        self.assertEqual((40, 40), (len(before), len(after)))
+        for abbreviation in ("7", "8", "auto", "no"):
+            with self.subTest(abbreviation=abbreviation):
+                self.git(source, "config", "core.abbrev", abbreviation)
+                self.assertEqual(expected, read_working_tree_candidate(source))
+        self.git(source, "add", "tracked.txt")
+        self.git(source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "candidate")
+        head = self.git(source, "rev-parse", "HEAD")
+        for abbreviation in ("7", "8", "auto", "no"):
+            with self.subTest(abbreviation=abbreviation, committed=True):
+                self.git(source, "config", "core.abbrev", abbreviation)
+                self.assertEqual(
+                    CurrentHeadCandidate(head, expected.diff),
+                    read_current_head_candidate(source, head, base, excluded_untracked_paths=()),
+                )
+
     def test_candidate_patches_ignore_external_and_presentation_config_and_restore_exact_bytes(self) -> None:
         source, base = self.repository()
         (source / "binary.dat").write_bytes(b"\0base")
@@ -566,7 +589,8 @@ class CandidateSnapshotTest(unittest.TestCase):
     def test_working_tree_snapshot_is_canonical_and_restores_with_index(self) -> None:
         source, base = self.repository()
         (source / "tracked.txt").write_text("candidate\n", encoding="utf-8")
-        observed = read_working_tree_candidate(source)
+        with historical_candidate_diffs("7"):
+            observed = read_working_tree_candidate(source)
         snapshot = WorkingTreeCandidateSnapshot(
             "pinboard-candidate-snapshot/v2",
             "attempt-1",
@@ -593,6 +617,20 @@ class CandidateSnapshotTest(unittest.TestCase):
             excluded_untracked_paths=(),
         )
         self.assertEqual(CandidateRestoreSuccess(True, snapshot.candidate), restored)
+        self.assertNotEqual(snapshot.candidate, read_working_tree_candidate(target).identity)
+        self.assertEqual(
+            "dirty-working-tree",
+            self.rejection(
+                restore_working_tree_candidate(
+                    target,
+                    expected_branch="main",
+                    preimage_revision=base,
+                    candidate="working-tree-state-sha256:" + "0" * 64,
+                    diff=snapshot.diff,
+                    excluded_untracked_paths=(),
+                )
+            ).reason,
+        )
         self.assertIn("M  tracked.txt", self.git(target, "status", "--short"))
         (target / "untracked.txt").write_text("dirty\n", encoding="utf-8")
         self.assertEqual(

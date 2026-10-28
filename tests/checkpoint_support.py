@@ -304,7 +304,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         tracked = fixture.project / "tracked.txt"
         tracked.write_text(f"{label}\n", encoding="utf-8")
         candidate_diff = subprocess.run(
-            ["git", "diff", "--binary", "HEAD", "--"],
+            ["git", "diff", "--binary", "--full-index", "HEAD", "--"],
             cwd=fixture.project,
             check=True,
             capture_output=True,

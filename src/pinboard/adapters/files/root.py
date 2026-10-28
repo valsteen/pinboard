@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
-from pinboard.application.candidate_identity import working_tree_identity
+from pinboard.application.candidate_identity import candidate_diffs_match, working_tree_identity
 from pinboard.domain import work_models
 
 _READ_CHUNK_BYTES = 64 * 1024
@@ -233,6 +233,7 @@ def _read_candidate_diff(cwd: Path, *revisions: str, unavailable_message: str) -
         "diff.autoRefreshIndex=false",
         "diff",
         "--binary",
+        "--full-index",
         "--no-ext-diff",
         "--no-textconv",
         "--no-color",
@@ -414,7 +415,9 @@ def restore_working_tree_candidate(
     if head != preimage_revision:
         return CandidateRestoreRejection("wrong-head", branch, head)
     current = read_working_tree_candidate(cwd)
-    if current.identity == candidate and current.diff == diff:
+    if working_tree_identity(current.preimage_revision, diff) == candidate and candidate_diffs_match(
+        diff, current.diff
+    ):
         if set(read_untracked_paths(cwd)) - set(excluded_untracked_paths):
             return CandidateRestoreRejection("dirty-working-tree", branch, head)
         return CandidateRestoreSuccess(False, candidate)
@@ -436,7 +439,9 @@ def restore_working_tree_candidate(
             error.code,
             "Candidate restoration changed the checkout before exact snapshot verification failed.",
         ) from error
-    if restored.identity != candidate or restored.diff != diff:
+    if working_tree_identity(restored.preimage_revision, diff) != candidate or not candidate_diffs_match(
+        diff, restored.diff
+    ):
         raise CandidateRestoreAfterMutationError(
             RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
             "Candidate restoration changed the checkout but did not produce the exact snapshot.",
@@ -474,7 +479,7 @@ def restore_commit_candidate(
         candidate,
         unavailable_message=f"Cannot compare accepted base '{accepted_base_revision}' with '{candidate}'.",
     )
-    if observed != diff:
+    if not candidate_diffs_match(diff, observed):
         return CandidateRestoreRejection("candidate-diff-mismatch", branch, head)
     if head == candidate:
         return CandidateRestoreSuccess(False, candidate)

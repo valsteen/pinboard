@@ -1205,8 +1205,36 @@ def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest
 
     inner = raw.get("request")
     receipt = inner.get("receipt") if isinstance(inner, dict) else None
+    if isinstance(inner, dict) and not isinstance(receipt, dict):
+        if "action" in inner:
+            raise ValueError(
+                "Transition request supplied 'request.action' instead of 'request.receipt'; no action identity was "
+                "decoded (placeholder action_id 'inspect'/'invalid'). Pass request.receipt: "
+                "{'action_id': {'kind': '<action>', 'subject': '<id>'}, 'subject_revision': '<revision>'} "
+                "containing only action_id and subject_revision from pinboard_actions, not the whole action."
+            )
+        if "action_id" in inner or "subject_revision" in inner:
+            misplaced = ", ".join(f"request.{key}" for key in ("action_id", "subject_revision") if key in inner)
+            raise ValueError(
+                f"Transition request placed receipt fields at the top of request ({misplaced}) instead of inside "
+                "'request.receipt'; no action identity was decoded (placeholder action_id 'inspect'/'invalid'). "
+                "Pass request.receipt: {'action_id': {'kind': '<action>', 'subject': '<id>'}, "
+                "'subject_revision': '<revision>'} containing only action_id and subject_revision from pinboard_actions."
+            )
+        raise ValueError(
+            "Transition request is missing 'request.receipt'; no action identity was decoded (placeholder action_id "
+            "'inspect'/'invalid'). Pass request.receipt: {'action_id': {'kind': '<action>', 'subject': '<id>'}, "
+            "'subject_revision': '<revision>'} containing only action_id and subject_revision from pinboard_actions."
+        )
     action_id = receipt.get("action_id") if isinstance(receipt, dict) else None
     kind = action_id.get("kind") if isinstance(action_id, dict) else None
+    if isinstance(receipt, dict) and (not isinstance(action_id, dict) or not isinstance(kind, str)):
+        raise ValueError(
+            "Transition request 'request.receipt' is missing a valid 'action_id'; no action identity was decoded "
+            "(placeholder action_id 'inspect'/'invalid'). Pass request.receipt: {'action_id': {'kind': '<action>', "
+            "'subject': '<id>'}, 'subject_revision': '<revision>'} containing only action_id and subject_revision "
+            "from pinboard_actions."
+        )
     request: TransitionRequest
     match kind:
         case "accept-checkpoint":

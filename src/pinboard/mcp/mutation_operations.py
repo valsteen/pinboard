@@ -41,6 +41,7 @@ from pinboard.domain.errors import (
     EffectDisposition,
     FailureDetails,
     FailureFact,
+    FailureMismatch,
     RetryDisposition,
 )
 from pinboard.domain.identifiers import (
@@ -519,6 +520,42 @@ def _with_completion_reinspection(
     )
 
 
+_REQUIRED_TRANSITION_RECEIPT_SHAPE = (
+    '{"action_id":{"kind":"<action>","subject":"<id>"},"subject_revision":"<revision>"}'
+)
+
+
+def _transition_decode_details(inner: JsonValue, *, identity_decoded: bool) -> FailureDetails | None:
+    if not isinstance(inner, dict):
+        return None
+    receipt = inner.get("receipt")
+    if isinstance(receipt, dict) and identity_decoded:
+        return None
+    if not isinstance(receipt, dict):
+        if "action" in inner:
+            misplaced_key = "request.action"
+        elif "action_id" in inner or "subject_revision" in inner:
+            misplaced_key = ", ".join(f"request.{key}" for key in ("action_id", "subject_revision") if key in inner)
+        else:
+            misplaced_key = "request.receipt"
+    else:
+        misplaced_key = "request.receipt.action_id"
+    return FailureDetails(
+        observed=(
+            FailureFact("decoded_action_id", None),
+            FailureFact("misplaced_key", misplaced_key),
+            FailureFact("required_receipt_field", "request.receipt"),
+            FailureFact("required_receipt_keys", "action_id, subject_revision"),
+            FailureFact("required_receipt_shape", _REQUIRED_TRANSITION_RECEIPT_SHAPE),
+        ),
+        mismatches=(FailureMismatch("request.receipt", _REQUIRED_TRANSITION_RECEIPT_SHAPE, misplaced_key),),
+        retry=RetryDisposition.CORRECT_INPUT,
+        effect=EffectDisposition.UNCHANGED,
+        changed_surfaces=(),
+        alternatives=(),
+    )
+
+
 def _transition(
     raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
@@ -536,9 +573,11 @@ def _transition(
         raw_identity = receipt.get("action_id") if isinstance(receipt, dict) else None
         try:
             identity = msgspec.convert(raw_identity, type=contracts.ActionIdentity, strict=True)
+            identity_decoded = True
         except msgspec.ValidationError:
             # An undecodable identity names no action, so it must never select the close route.
             identity = contracts.ActionIdentity(decision_models.ActionKind.INSPECT, "invalid")
+            identity_decoded = False
         if identity.kind == decision_models.ActionKind.CLOSE:
             return _close_route_rejected(
                 identity,
@@ -554,7 +593,7 @@ def _transition(
             DecisionFailure(
                 DecisionFailureCode.TRANSITION_INPUT_INVALID,
                 f"Cannot decode transition request: {error}",
-                None,
+                _transition_decode_details(inner, identity_decoded=identity_decoded),
             ),
         )
     match request:

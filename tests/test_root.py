@@ -12,6 +12,7 @@ from threading import Barrier
 from unittest.mock import patch
 
 from pinboard.adapters.files.errors import RootError
+from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
     classify_checkout,
@@ -23,6 +24,7 @@ from pinboard.adapters.files.root import (
 )
 from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
+from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server
 from tests.native_support import call_native_tool
 
@@ -224,6 +226,82 @@ class RootResolutionTest(unittest.TestCase):
         )
         self.assertEqual("pinboard-brief-source-plan/v1", source_result["schema"])
         self.assertFalse(unused_work_root.exists())
+
+    def test_symlinked_checkout_and_work_roots_resolve_canonically_and_broken_links_name_target_and_repair(
+        self,
+    ) -> None:
+        base = Path(tempfile.mkdtemp()).resolve()
+        repository = base / "repository"
+        repository.mkdir()
+        self.run_git(repository, "init", "-b", "main")
+        (repository / "tracked.txt").write_text("initial\n", encoding="utf-8")
+        self.run_git(repository, "add", "tracked.txt")
+        self.run_git(
+            repository,
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "initial",
+        )
+
+        relocated_board = base / "boards" / "project-board"
+        relocated_board.mkdir(parents=True)
+        (repository / ".pinboard").symlink_to(relocated_board, target_is_directory=True)
+        repo_link = base / "repository-link"
+        repo_link.symlink_to(repository, target_is_directory=True)
+        board_link = base / "board-link"
+        board_link.symlink_to(relocated_board, target_is_directory=True)
+
+        self.assertEqual(0, main(("--project-root", str(repo_link), "init")))
+        self.assertEqual(repository, resolve_source_checkout_root(repo_link))
+        self.assertEqual(repository, resolve_shared_repository_root(repo_link))
+
+        for resolved in (
+            resolve_durable_roots(repository),
+            resolve_durable_roots(repository, repository / ".pinboard"),
+            resolve_durable_roots(repo_link),
+            resolve_durable_roots(repo_link, board_link),
+            mcp_common.resolve_mcp_roots(str(repo_link), str(board_link))[1],
+            mcp_common.resolve_mcp_roots(str(repository), str(repository / ".pinboard"))[1],
+        ):
+            self.assertEqual(relocated_board, resolved.work_root)
+
+        missing_target = base / "missing-checkout"
+        dangling_link = base / "dangling-checkout"
+        dangling_link.symlink_to(missing_target, target_is_directory=True)
+        regular_file = base / "not-a-directory.txt"
+        regular_file.write_text("file\n", encoding="utf-8")
+        file_link = base / "file-checkout"
+        file_link.symlink_to(regular_file)
+        loop_link = base / "loop-checkout"
+        loop_link.symlink_to(loop_link, target_is_directory=True)
+
+        for broken_link, expected_target, expected_repair in (
+            (
+                dangling_link,
+                missing_target,
+                f"Create {missing_target}, or fix or remove the link {dangling_link}, then retry.",
+            ),
+            (
+                file_link,
+                regular_file,
+                f"Fix or remove the link {file_link}, then retry.",
+            ),
+            (
+                loop_link,
+                loop_link,
+                f"Fix or remove the link {loop_link}, then retry.",
+            ),
+        ):
+            with self.subTest(broken_link=broken_link.name):
+                with self.assertRaises(RootError) as error:
+                    resolve_source_checkout_root(broken_link)
+                self.assertIn(str(broken_link), str(error.exception))
+                self.assertIn(str(expected_target), str(error.exception))
+                self.assertIn(expected_repair, str(error.exception))
 
 
 if __name__ == "__main__":

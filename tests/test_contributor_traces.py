@@ -175,8 +175,16 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertIn("before Pinboard ran", error.getvalue())
             settings.unlink()
             settings.symlink_to(project / ".pinboard" / contributor_traces.SETTINGS_NAME)
-            with self.assertRaisesRegex(ValueError, "regular file"):
+            linked_state = contributor_traces.read_project_trace_settings(primary, None)
+            self.assertIsNotNone(linked_state)
+            assert linked_state is not None
+            self.assertEqual("on", linked_state[1].value.unsafe_persist_exact_pinboard_traces)
+            settings.unlink()
+            settings.symlink_to(project / ".pinboard", target_is_directory=True)
+            with self.assertRaises(SettingResolutionError) as non_regular_link:
                 contributor_traces.read_project_trace_settings(primary, None)
+            self.assertEqual(settings.parent.resolve() / settings.name, non_regular_link.exception.resource)
+            self.assertIsInstance(non_regular_link.exception.cause, setting_resolution.UnusableLinkTarget)
 
     def test_ignored_setting_alone_cannot_enable_git_visible_traces(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1149,19 +1157,54 @@ class ContributorTraceTest(unittest.TestCase):
             self.assertEqual(str(setting.resolve()), malformed["resource"])
             self.assertEqual("unchanged", malformed["effect"])
             self.assertEqual(False, malformed["target_ran"])
-            link = Path(temporary) / "linked-work-root"
+
+            setting.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = on\n', encoding="utf-8")
+            real_traces = Path(temporary).resolve() / "real-invocation-traces"
+            real_traces.mkdir(mode=0o700)
+            (work_root / contributor_traces.TRACE_DIRECTORY).symlink_to(real_traces, target_is_directory=True)
+            link = Path(temporary).resolve() / "linked-work-root"
             link.symlink_to(work_root, target_is_directory=True)
-            rejected = self.preflight_result(worktree, link)
-            self.assertEqual(str(link), rejected["resource"])
-            self.assertEqual("unchanged", rejected["effect"])
-            self.assertEqual(False, rejected["target_ran"])
-            self.assertIn(str(work_root.resolve()), str(rejected["repair"]))
-            self.assertIn("work_root", str(rejected["repair"]))
-            loop = Path(temporary) / "looped-work-root"
+            resolved_state = contributor_traces.read_project_trace_settings(worktree, link)
+            self.assertIsNotNone(resolved_state)
+            assert resolved_state is not None
+            self.assertEqual(work_root.resolve(), resolved_state[0])
+            self.assertEqual(
+                real_traces,
+                contributor_traces.automatic_trace_directory(resolved_state[0], resolved_state[1].value, None),
+            )
+
+            missing_target = Path(temporary).resolve() / "missing-work-root"
+            dangling = Path(temporary).resolve() / "dangling-work-root"
+            dangling.symlink_to(missing_target, target_is_directory=True)
+            dangling_result = self.preflight_result(worktree, dangling)
+            self.assertEqual("TRACE_PREFLIGHT_FAILED", dangling_result["code"])
+            self.assertEqual(str(dangling), dangling_result["resource"])
+            self.assertEqual("unchanged", dangling_result["effect"])
+            self.assertEqual(False, dangling_result["target_ran"])
+            self.assertIn(str(dangling), str(dangling_result["message"]))
+            self.assertIn(str(missing_target), str(dangling_result["message"]))
+            self.assertEqual(
+                f"Create {missing_target}, or fix or remove the link {dangling}, then retry.",
+                dangling_result["repair"],
+            )
+
+            file_target = Path(temporary).resolve() / "not-a-directory.txt"
+            file_target.write_text("file\n", encoding="utf-8")
+            file_link = Path(temporary).resolve() / "file-work-root"
+            file_link.symlink_to(file_target)
+            file_link_result = self.preflight_result(worktree, file_link)
+            self.assertEqual("TRACE_PREFLIGHT_FAILED", file_link_result["code"])
+            self.assertEqual(str(file_link), file_link_result["resource"])
+            self.assertIn(str(file_link), str(file_link_result["message"]))
+            self.assertIn(str(file_target), str(file_link_result["message"]))
+            self.assertEqual(f"Fix or remove the link {file_link}, then retry.", file_link_result["repair"])
+
+            loop = Path(temporary).resolve() / "looped-work-root"
             loop.symlink_to(loop, target_is_directory=True)
             looped = self.preflight_result(worktree, loop)
             self.assertEqual("TRACE_PREFLIGHT_FAILED", looped["code"])
-            self.assertIn("existing real directory", str(looped["repair"]))
+            self.assertEqual(str(loop), looped["resource"])
+            self.assertEqual(f"Fix or remove the link {loop}, then retry.", looped["repair"])
 
     def test_preflight_repairs_unverifiable_git_status(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

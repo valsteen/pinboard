@@ -1,9 +1,12 @@
+import errno
 import hashlib
 import os
 import secrets
+import stat
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import assert_never
 
 from pinboard import diagnostic_codes
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
@@ -52,9 +55,84 @@ class DurableRoots:
         return self.work_root / "state.sqlite3"
 
 
+@dataclass(frozen=True, slots=True)
+class DanglingSymlink:
+    link: Path
+    target: Path
+
+
+@dataclass(frozen=True, slots=True)
+class SymlinkLoop:
+    link: Path
+    target: Path
+
+
+@dataclass(frozen=True, slots=True)
+class NonDirectorySymlink:
+    link: Path
+    target: Path
+
+
+type DirectoryLinkProblem = DanglingSymlink | SymlinkLoop | NonDirectorySymlink
+
+
+def loop_target(link: Path) -> Path:
+    try:
+        raw_target = link.readlink()
+    except OSError:
+        return link.resolve(strict=False)
+    return (link.parent / raw_target).absolute()
+
+
+def first_directory_link_problem(path: Path) -> DirectoryLinkProblem | None:
+    """Return the first broken or non-directory symbolic link at or above `path`."""
+    for candidate in (*reversed(path.parents), path):
+        if not candidate.is_symlink():
+            continue
+        target = candidate.resolve(strict=False)
+        try:
+            mode = candidate.stat().st_mode
+        except FileNotFoundError:
+            return DanglingSymlink(candidate, target)
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                return SymlinkLoop(candidate, loop_target(candidate))
+            if isinstance(error, NotADirectoryError):
+                return NonDirectorySymlink(candidate, target)
+            continue
+        if not stat.S_ISDIR(mode):
+            return NonDirectorySymlink(candidate, target)
+    return None
+
+
+def _verify_directory_links(path: Path, *, label: str) -> None:
+    match first_directory_link_problem(path):
+        case None:
+            return
+        case DanglingSymlink(link=link, target=target):
+            raise FileIOError(
+                FileIOErrorCode.DIRECTORY_VERIFY_FAILED,
+                f"{label} could not be verified: {link} is a symbolic link to {target}, which does not exist. "
+                f"Create {target}, or fix or remove the link {link}, then retry.",
+            )
+        case SymlinkLoop(link=link, target=target):
+            raise FileIOError(
+                FileIOErrorCode.DIRECTORY_VERIFY_FAILED,
+                f"{label} could not be verified: {link} is a symbolic link loop to {target}. "
+                f"Fix or remove the link {link}, then retry.",
+            )
+        case NonDirectorySymlink(link=link, target=target):
+            raise FileIOError(
+                FileIOErrorCode.DIRECTORY_VERIFY_FAILED,
+                f"{label} could not be verified: {link} is a symbolic link to {target}, which is not a directory. "
+                f"Fix or remove the link {link}, then retry.",
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _verified_directory(path: Path, *, label: str) -> Path:
-    if path.is_symlink():
-        raise FileIOError(FileIOErrorCode.DIRECTORY_INVALID, f"{label} is a symbolic link: {path}")
+    _verify_directory_links(path, label=label)
     try:
         resolved = path.resolve(strict=True)
     except OSError as error:
@@ -64,34 +142,39 @@ def _verified_directory(path: Path, *, label: str) -> Path:
     return resolved
 
 
-def _reject_symlinked_descendant(base: Path, descendant: Path, *, label: str) -> None:
-    try:
-        components = descendant.relative_to(base).parts
-    except ValueError:
-        return
-    current = base
-    for component in components:
-        current /= component
-        if current.is_symlink():
-            raise FileIOError(FileIOErrorCode.DIRECTORY_INVALID, f"{label} contains a symbolic link: {current}")
-
-
 def _validate_component(component: str) -> None:
     if component in {"", ".", ".."} or "/" in component or os.sep in component:
         raise FileIOError(FileIOErrorCode.DIRECTORY_INVALID, f"Invalid durable-root component: {component!r}")
 
 
 def resolve_durable_roots(shared_repository_root: Path, external_work_root: Path | None = None) -> DurableRoots:
+    shared_anchor = _verified_directory(shared_repository_root, label="Shared repository root")
     shared_root = shared_repository_root.absolute()
-    local_work_root = shared_root / ".pinboard"
-    if external_work_root is None or external_work_root.absolute() == local_work_root:
-        anchor = _verified_directory(shared_repository_root, label="Shared repository root")
-        return DurableRoots(anchor, (".pinboard",))
+    if external_work_root is None or external_work_root.absolute() in {
+        shared_root / ".pinboard",
+        shared_anchor / ".pinboard",
+    }:
+        local_work_spelling = (
+            external_work_root.absolute() if external_work_root is not None else shared_anchor / ".pinboard"
+        )
+        _verify_directory_links(local_work_spelling, label="Work root")
+        local_work_root = shared_anchor / ".pinboard"
+        if local_work_root.is_symlink():
+            resolved_work_root = _verified_directory(local_work_root, label="Work root")
+            _validate_component(resolved_work_root.name)
+            return DurableRoots(resolved_work_root.parent, (resolved_work_root.name,))
+        return DurableRoots(shared_anchor, (".pinboard",))
 
     external = external_work_root.absolute()
     _validate_component(external.name)
-    _reject_symlinked_descendant(shared_root, external.parent, label="External work-root parent")
     anchor = _verified_directory(external.parent, label="External work-root parent")
+    _verify_directory_links(external, label="Work root")
+    candidate = anchor / external.name
+    _verify_directory_links(candidate, label="Work root")
+    if candidate.is_symlink():
+        resolved_work_root = _verified_directory(candidate, label="Work root")
+        _validate_component(resolved_work_root.name)
+        return DurableRoots(resolved_work_root.parent, (resolved_work_root.name,))
     return DurableRoots(anchor, (external.name,))
 
 
@@ -113,10 +196,11 @@ def _sync_directory(path: Path) -> None:
 
 
 def ensure_directory_chain(roots: DurableRoots) -> None:
-    current_directory = roots.anchor
+    current_directory = _verified_directory(roots.anchor, label="Durable-root anchor")
     for component in (*roots.work_components, "artifacts"):
         _validate_component(component)
         child = current_directory / component
+        _verify_directory_links(child, label="Durable-root component")
         try:
             child.mkdir()
         except FileExistsError:
@@ -126,21 +210,22 @@ def ensure_directory_chain(roots: DurableRoots) -> None:
                 FileIOErrorCode.DIRECTORY_CREATE_FAILED,
                 f"Durable-root component could not be created: {child}",
             ) from error
-        if child.is_symlink() or not child.is_dir():
+        if not child.is_dir():
             raise FileIOError(
                 FileIOErrorCode.DIRECTORY_INVALID,
-                f"Durable-root component is not a real directory: {child}",
+                f"Durable-root component is not a directory: {child}",
             )
         _sync_directory(current_directory)
-        current_directory = child
+        current_directory = child.resolve()
 
 
 def ensure_child_directory(parent: Path, component: str) -> Path:
-    """Create or re-observe one real child directory and durably record its entry."""
+    """Create or re-observe one child directory and durably record its entry."""
 
     _validate_component(component)
     verified_parent = _verified_directory(parent, label="Durable parent")
     child = verified_parent / component
+    _verify_directory_links(child, label="Durable directory")
     try:
         child.mkdir()
     except FileExistsError:
@@ -149,10 +234,10 @@ def ensure_child_directory(parent: Path, component: str) -> Path:
         raise FileIOError(
             FileIOErrorCode.DIRECTORY_CREATE_FAILED, f"Durable directory could not be created: {child}"
         ) from error
-    if child.is_symlink() or not child.is_dir():
-        raise FileIOError(FileIOErrorCode.DIRECTORY_INVALID, f"Durable directory is not a real directory: {child}")
+    if not child.is_dir():
+        raise FileIOError(FileIOErrorCode.DIRECTORY_INVALID, f"Durable directory is not a directory: {child}")
     _sync_directory(verified_parent)
-    return child
+    return child.resolve()
 
 
 def _write_and_sync(path: Path, content: bytes) -> None:
@@ -184,7 +269,7 @@ def create_immutable(path: Path, content: bytes) -> bool:
             os.link(staging, path, follow_symlinks=False)
         except FileExistsError as error:
             try:
-                if path.is_file(follow_symlinks=False) and path.read_bytes() == content:
+                if path.is_file() and path.read_bytes() == content:
                     return False
             except OSError as verification_error:
                 raise FileIOError(
@@ -208,7 +293,7 @@ def create_immutable(path: Path, content: bytes) -> bool:
 def atomic_replace(path: Path, content: bytes) -> None:
     parent = _verified_directory(path.parent, label="Replacement-file parent")
     try:
-        if path.is_file(follow_symlinks=False) and path.read_bytes() == content:
+        if path.is_file() and path.read_bytes() == content:
             return
     except OSError as error:
         raise FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, f"Replacement file could not be read: {path}") from error

@@ -162,7 +162,7 @@ def _host_setting_failure(
         key, correction = _correction(error.path, key, error.cause)
         resource, recovery, retry = execution.settings_recovery(error, "Host page-size settings", correction)
         if isinstance(error.cause, NotRegularFile):
-            subject = f"Host page-size settings file {error.cause.path} is unusable"
+            subject = f"Host page-size settings file {error.path} is unusable"
         elif isinstance(error.cause, InvalidEntry):
             subject = f"Host page-size setting {key} is invalid"
         else:

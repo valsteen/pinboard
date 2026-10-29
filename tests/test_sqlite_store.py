@@ -674,7 +674,7 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual(b"published bytes", publication.read_bytes())
         self.assertFalse(create_immutable(publication, b"published bytes"))
 
-    def test_immutable_publication_rejects_non_regular_destinations(self) -> None:
+    def test_immutable_publication_rejects_non_regular_destinations_and_reuses_linked_files(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()
         roots = resolve_durable_roots(project)
         ensure_directory_chain(roots)
@@ -684,11 +684,125 @@ class SQLiteStoreTest(unittest.TestCase):
         immutable_target.write_bytes(b"accepted evidence")
         immutable_symlink = roots.artifacts_root / "immutable-symlink"
         immutable_symlink.symlink_to(immutable_target)
+        dangling_symlink = roots.artifacts_root / "immutable-dangling"
+        dangling_symlink.symlink_to(roots.artifacts_root / "missing-target")
 
-        for non_regular in (immutable_directory, immutable_symlink):
-            with self.subTest(non_regular=non_regular), self.assertRaises(FileIOError) as collision:
-                create_immutable(non_regular, b"accepted evidence")
+        self.assertFalse(create_immutable(immutable_symlink, b"accepted evidence"))
+        for collision_path, payload in (
+            (immutable_directory, b"accepted evidence"),
+            (immutable_symlink, b"different evidence"),
+            (dangling_symlink, b"accepted evidence"),
+        ):
+            with self.subTest(collision_path=collision_path), self.assertRaises(FileIOError) as collision:
+                create_immutable(collision_path, payload)
             self.assertEqual(FileIOErrorCode.FILE_ALREADY_EXISTS, collision.exception.code)
+
+    def test_symlinked_durable_directories_resolve_canonically_and_publish(self) -> None:
+        base = Path(tempfile.mkdtemp()).resolve()
+        real_repo = base / "real-repo"
+        real_repo.mkdir()
+        repo_link = base / "repo-link"
+        repo_link.symlink_to(real_repo, target_is_directory=True)
+
+        relocated_board = base / "boards" / "project-board"
+        relocated_board.mkdir(parents=True)
+        (real_repo / ".pinboard").symlink_to(relocated_board, target_is_directory=True)
+
+        relocated_artifacts = base / "artifact-store"
+        relocated_artifacts.mkdir()
+        (relocated_board / "artifacts").symlink_to(relocated_artifacts, target_is_directory=True)
+
+        external_parent_link = base / "boards-link"
+        external_parent_link.symlink_to(relocated_board.parent, target_is_directory=True)
+        external_board_link = base / "board-alias"
+        external_board_link.symlink_to(relocated_board, target_is_directory=True)
+
+        via_default = resolve_durable_roots(real_repo)
+        for candidate in (
+            via_default,
+            resolve_durable_roots(real_repo, real_repo / ".pinboard"),
+            resolve_durable_roots(repo_link),
+            resolve_durable_roots(real_repo, external_parent_link / "project-board"),
+            resolve_durable_roots(real_repo, external_board_link),
+        ):
+            self.assertEqual(relocated_board, candidate.work_root)
+
+        ensure_directory_chain(via_default)
+        child_target = base / "real-child"
+        child_target.mkdir()
+        (relocated_artifacts / "linked-child").symlink_to(child_target, target_is_directory=True)
+        resolved_child = ensure_child_directory(via_default.artifacts_root, "linked-child")
+        self.assertEqual(child_target, resolved_child)
+
+        published = via_default.artifacts_root / "linked-child" / "published.txt"
+        self.assertTrue(create_immutable(published, b"symlinked bytes"))
+        self.assertEqual(b"symlinked bytes", (child_target / "published.txt").read_bytes())
+        replaced = via_default.artifacts_root / "linked-child" / "view.txt"
+        atomic_replace(replaced, b"view v1")
+        atomic_replace(replaced, b"view v1")
+        atomic_replace(replaced, b"view v2")
+        self.assertEqual(b"view v2", (child_target / "view.txt").read_bytes())
+
+    def test_broken_durable_directory_links_name_target_and_repair(self) -> None:
+        base = Path(tempfile.mkdtemp()).resolve()
+        real_repo = base / "real-repo"
+        real_repo.mkdir()
+        roots = resolve_durable_roots(real_repo)
+        ensure_directory_chain(roots)
+
+        missing_target = base / "missing-directory"
+        dangling_link = base / "dangling-link"
+        dangling_link.symlink_to(missing_target, target_is_directory=True)
+        regular_file = base / "regular.txt"
+        regular_file.write_bytes(b"not a directory")
+        file_link = base / "file-link"
+        file_link.symlink_to(regular_file)
+        loop_link = base / "loop-link"
+        loop_link.symlink_to(loop_link, target_is_directory=True)
+
+        for broken_link, expected_target, expected_repair in (
+            (
+                dangling_link,
+                missing_target,
+                f"Create {missing_target}, or fix or remove the link {dangling_link}, then retry.",
+            ),
+            (
+                file_link,
+                regular_file,
+                f"Fix or remove the link {file_link}, then retry.",
+            ),
+            (
+                loop_link,
+                loop_link,
+                f"Fix or remove the link {loop_link}, then retry.",
+            ),
+        ):
+            with self.subTest(broken_link=broken_link.name):
+                with self.assertRaises(FileIOError) as repo_error:
+                    resolve_durable_roots(broken_link)
+                self.assertEqual(FileIOErrorCode.DIRECTORY_VERIFY_FAILED, repo_error.exception.code)
+                self.assertIn(str(broken_link), str(repo_error.exception))
+                self.assertIn(str(expected_target), str(repo_error.exception))
+                self.assertIn(expected_repair, str(repo_error.exception))
+
+                with self.assertRaises(FileIOError) as work_error:
+                    resolve_durable_roots(real_repo, broken_link)
+                self.assertEqual(FileIOErrorCode.DIRECTORY_VERIFY_FAILED, work_error.exception.code)
+                self.assertIn(str(broken_link), str(work_error.exception))
+                self.assertIn(str(expected_target), str(work_error.exception))
+                self.assertIn(expected_repair, str(work_error.exception))
+
+        dangling_child = roots.artifacts_root / "dangling-child"
+        dangling_child.symlink_to(missing_target, target_is_directory=True)
+        with self.assertRaises(FileIOError) as child_error:
+            ensure_child_directory(roots.artifacts_root, "dangling-child")
+        self.assertEqual(FileIOErrorCode.DIRECTORY_VERIFY_FAILED, child_error.exception.code)
+        self.assertIn(str(dangling_child), str(child_error.exception))
+        self.assertIn(str(missing_target), str(child_error.exception))
+        self.assertIn(
+            f"Create {missing_target}, or fix or remove the link {dangling_child}, then retry.",
+            str(child_error.exception),
+        )
 
     def test_complete_stored_state_and_relational_contract_matrix(self) -> None:
         _path, store = self._store()

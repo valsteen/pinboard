@@ -235,6 +235,37 @@ class HostSettingsTest(unittest.TestCase):
                 link.unlink()
                 (missing / "hosts.config").unlink()
 
+    def test_a_settings_link_to_a_directory_or_parent_link_to_a_file_names_the_link_and_target(self) -> None:
+        self.settings.parent.mkdir(parents=True)
+        target_directory = self.root / "dotfiles" / "directory-target"
+        target_directory.mkdir(parents=True)
+        self.settings.symlink_to(target_directory, target_is_directory=True)
+
+        page = self.assert_failure(self.read(), "correct-input", "unchanged")
+        self.assertEqual(str(self.settings), page["resource"])
+        self.assertIn(str(self.settings), str(page["message"]))
+        self.assertIn(str(target_directory), str(page["message"]))
+        self.assertEqual(f"Fix or remove the link {self.settings}, then retry.", page["recovery"])
+        self.assertNotIn("Replace", str(page["recovery"]))
+        self.assertTrue(target_directory.is_dir())
+        self.settings.unlink()
+        self.assertEqual(32000, self.read()["max_batch_bytes"])
+
+        self.settings.unlink()
+        self.settings.parent.rmdir()
+        blocking_file = self.root / "dotfiles" / "not-a-directory.txt"
+        blocking_file.write_text("file\n", encoding="utf-8")
+        self.settings.parent.symlink_to(blocking_file)
+
+        parent_page = self.assert_failure(self.read(), "correct-input", "unchanged")
+        self.assertEqual(str(self.settings.parent), parent_page["resource"])
+        self.assertIn(str(self.settings.parent), str(parent_page["message"]))
+        self.assertIn(str(blocking_file), str(parent_page["message"]))
+        self.assertEqual(f"Fix or remove the link {self.settings.parent}, then retry.", parent_page["recovery"])
+        self.assertNotIn("Replace", str(parent_page["recovery"]))
+        self.settings.parent.unlink()
+        self.assertEqual(32000, self.read()["max_batch_bytes"])
+
     def test_a_failed_file_creation_carries_the_filesystem_cause(self) -> None:
         self.settings.parent.mkdir(parents=True)
         for code in (errno.EROFS, errno.ENOSPC):

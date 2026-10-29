@@ -11,7 +11,7 @@ from pinboard.adapters.files import contributor_traces
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
-from pinboard.adapters.files.setting_resolution import SettingResolutionError
+from pinboard.adapters.files.setting_resolution import DanglingLink, SettingResolutionError, UnusableLinkTarget
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import ports, stored_state, work_brief_models
@@ -35,6 +35,26 @@ from pinboard.cli.work_state_models import (
 from pinboard.domain.identifiers import AttemptId
 
 
+def _settings_error_repair(error: SettingResolutionError) -> str:
+    if isinstance(error.cause, FileExistsError):
+        return (
+            f"Wait for the settings edit at {error.resource} to finish; report a stale lock to the human "
+            "rather than deleting an active edit."
+        )
+    if isinstance(error.cause, PermissionError):
+        target = error.resource if error.operation == "read" else error.resource.parent
+        access = "read" if error.operation == "read" else "write"
+        return f"Request {access} access to {target} for the settings operation, then retry the original request."
+    if isinstance(error.cause, DanglingLink):
+        return f"Create {error.cause.target}, or fix or remove the link {error.cause.link}, then retry."
+    if isinstance(error.cause, UnusableLinkTarget):
+        return f"Fix or remove the link {error.cause.link}, then retry."
+    return (
+        "Report the named settings condition to the human and resolve it before retrying the original request; "
+        "preserve any acknowledged settings writes."
+    )
+
+
 def contributor_capture_control(arguments: Sequence[str]) -> int:
     try:
         if arguments[0] == "--contributor-capture-select":
@@ -54,21 +74,7 @@ def contributor_capture_control(arguments: Sequence[str]) -> int:
                     f"Settings resource={error.resource}; operation={error.operation}; settings_parent_creation={error.effects.parent_creation}; settings_file_creation={error.effects.file_creation}; settings_mode_write={error.effects.key_write}. Inspect stored settings at {error.path} before retrying; the target did not run.",
                     file=sys.stderr,
                 )
-                if isinstance(error.cause, FileExistsError):
-                    print(
-                        f"Wait for the settings edit at {error.resource} to finish; report a stale lock to the human rather than deleting an active edit.",
-                        file=sys.stderr,
-                    )
-                elif isinstance(error.cause, PermissionError):
-                    print(
-                        f"Request {'read' if error.operation == 'read' else 'write'} access to {error.resource if error.operation == 'read' else error.resource.parent} for the settings operation, then retry the original request.",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(
-                        "Report the named settings condition to the human and resolve it before retrying the original request; preserve any acknowledged settings writes.",
-                        file=sys.stderr,
-                    )
+                print(_settings_error_repair(error), file=sys.stderr)
         else:
             print(
                 f"Contributor trace retention cleanup failed after Pinboard ran: {error}. Inspect the selected trace destination and restore its directory access for cleanup only; do not repeat the target command.",
@@ -85,7 +91,11 @@ def resolve_roots(selection: cli_commands.RootSelection) -> cli_commands.Resolve
         source_checkout = resolve_source_checkout_root(selected_checkout)
         shared_repository = resolve_shared_repository_root(source_checkout)
     except RootError as error:
-        if project_argument is None or error.code != RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE:
+        if (
+            project_argument is None
+            or error.code != RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE
+            or not project_argument.is_dir()
+        ):
             raise
         source_checkout = project_argument.resolve()
         shared_repository = source_checkout
@@ -180,12 +190,12 @@ def read_validation_report(
 
 
 def validate_state(
-    roots: cli_commands.ResolvedRoots,
+    _roots: cli_commands.ResolvedRoots,
     durable: DurableRoots,
     store: ports.ValidatedStateReader,
     command: cli_commands.ValidateCommand,
 ) -> int:
-    validation_report, _ = read_validation_report(roots.work, durable, store, now=datetime.now(UTC))
+    validation_report, _ = read_validation_report(durable.work_root, durable, store, now=datetime.now(UTC))
     if command.json:
         write_json(_project_validation(validation_report))
     else:

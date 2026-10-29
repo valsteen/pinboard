@@ -12,7 +12,6 @@ from pathlib import Path
 
 from pinboard.adapters.files import git_config
 from pinboard.adapters.files.setting_resolution import (
-    DanglingLink,
     EntryProblem,
     InvalidEntry,
     NotDirectory,
@@ -21,6 +20,7 @@ from pinboard.adapters.files.setting_resolution import (
     SettingResolution,
     SettingResolutionError,
     resolve_seeded_key,
+    verify_settings_file_links,
 )
 
 MIN_PAGE_BYTES = 4000
@@ -42,27 +42,9 @@ def real_location(path: Path) -> Path:
     """Where the settings file really lives, so a linked file or directory is read and seeded through its link.
 
     Every later read, creation and seeding step uses this location, so a dotfile manager's link stays in place.
-    A link whose target does not exist is reported rather than followed into creating that target.
+    A link whose target does not exist or has the wrong type is reported rather than followed into creating or replacing that target.
     """
-    for candidate in (path, *path.parents):
-        if not candidate.is_symlink():
-            continue
-        target = candidate.resolve(strict=False)
-        try:
-            target.stat()
-        except FileNotFoundError:
-            raise SettingResolutionError(
-                f"{candidate} is a symbolic link to {target}, which does not exist.",
-                path,
-                SettingEffects("none", "none", "none"),
-                DanglingLink(candidate, target),
-                "read",
-                candidate,
-            ) from None
-        except OSError:
-            # Later steps report access failures at the location they touch.
-            continue
-    return path.resolve(strict=False)
+    return verify_settings_file_links(path)
 
 
 def _blocking_path(directory: Path) -> Path | None:

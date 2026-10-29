@@ -120,13 +120,16 @@ def _read_failure(
 
 
 def _resolve_durable(project_root: str, work_root: str) -> DurableRoots:
-    return _resolve_source_and_durable(project_root, work_root)[1]
+    return resolve_mcp_roots(project_root, work_root)[1]
 
 
-def _resolve_source_and_durable(project_root: str, work_root: str) -> tuple[Path, DurableRoots]:
+def resolve_mcp_roots(project_root: str, work_root: str) -> tuple[Path, DurableRoots]:
     source_checkout = resolve_source_checkout_root(Path(project_root))
     shared_repository = resolve_shared_repository_root(source_checkout)
     return source_checkout, _require_initialized_durable(shared_repository, Path(work_root))
+
+
+_resolve_source_and_durable = resolve_mcp_roots
 
 
 def compose_store(durable: DurableRoots) -> SQLiteWorkStore:
@@ -320,9 +323,9 @@ def _committed_authority_fields(effect: CommittedEffect, warning: ViewWarning | 
 
 
 def _require_initialized_durable(shared_repository: Path, work_root: Path) -> DurableRoots:
-    default_work_root = shared_repository / ".pinboard"
     durable = resolve_durable_roots(shared_repository, work_root)
     if not durable.database_path.is_file():
+        default_work_root = resolve_durable_roots(shared_repository).work_root
         raise ValueError(
             f"Pinboard work state is unavailable at {durable.work_root}; use the exact initialized work root. "
             f"The default for this repository is {default_work_root}."

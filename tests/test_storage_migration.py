@@ -10,8 +10,6 @@ from unittest.mock import patch
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import (
-    ArtifactError,
-    ArtifactErrorCode,
     FileIOError,
     FileIOErrorCode,
     ImmutableFilePublishedError,
@@ -466,7 +464,7 @@ class StorageMigrationTests(unittest.TestCase):
                     self.assertEqual(0, self.run_cli(project, *args, "status")[0])
             self.assertFalse((project / ".pinboard").exists())
 
-    def test_generic_alias_reads_exact_bytes_and_computed_publication_requires_real_directory(self) -> None:
+    def test_symlinked_work_roots_and_parents_resolve_canonically_and_publish_and_report_broken_links(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory).resolve()
             subprocess.run(["git", "init", "-b", "main", str(project)], check=True, capture_output=True)
@@ -486,20 +484,34 @@ class StorageMigrationTests(unittest.TestCase):
             alias.parent.mkdir()
             alias.symlink_to("../.pinboard", target_is_directory=True)
             selected = resolve_durable_roots(project, alias)
-            self.assertEqual(alias, selected.work_root)
+            self.assertEqual(current.work_root, selected.work_root)
             self.assertEqual(0, self.run_cli(project, "--work-root", str(alias), "status")[0])
+            self.assertEqual(0, self.run_cli(project, "--work-root", str(alias), "validate")[0])
             self.assertEqual(b"immutable", ArtifactRepository(selected).read(reference))
-            with self.assertRaises(ArtifactError) as raised:
-                ArtifactRepository(selected).publish(
-                    NewArtifact(work_models.ArtifactKind.EVIDENCE, "new", 1, ".txt", b"new")
-                )
-            self.assertEqual(ArtifactErrorCode.STORAGE_IO_ERROR, raised.exception.code)
-            self.assertEqual(b"immutable", ArtifactRepository(current).read(reference))
-            self.assertFalse((current.artifacts_root / "evidence" / "new").exists())
+            second = ArtifactRepository(selected).publish(
+                NewArtifact(work_models.ArtifactKind.EVIDENCE, "new", 1, ".txt", b"new")
+            )
+            assert isinstance(second, ArtifactPublication)
+            self.assertTrue((current.work_root / second.reference.selector).is_file())
+
             linked_parent = project / "linked-parent"
             linked_parent.symlink_to(alias.parent, target_is_directory=True)
-            with self.assertRaises(FileIOError):
-                resolve_durable_roots(project, linked_parent / "work")
+            linked_roots = resolve_durable_roots(project, linked_parent / "work")
+            self.assertEqual(alias.parent / "work", linked_roots.work_root)
+            self.assertEqual(0, self.run_cli(project, "--work-root", str(linked_parent / "work"), "init")[0])
+
+            missing_target = project / "missing-board"
+            dangling_alias = project / "dangling-board"
+            dangling_alias.symlink_to(missing_target, target_is_directory=True)
+            with self.assertRaises(FileIOError) as broken:
+                resolve_durable_roots(project, dangling_alias)
+            self.assertEqual(FileIOErrorCode.DIRECTORY_VERIFY_FAILED, broken.exception.code)
+            self.assertIn(str(dangling_alias), str(broken.exception))
+            self.assertIn(str(missing_target), str(broken.exception))
+            self.assertIn(
+                f"Create {missing_target}, or fix or remove the link {dangling_alias}, then retry.",
+                str(broken.exception),
+            )
 
     def test_retired_root_migration_rejects_all_forms_without_effects(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

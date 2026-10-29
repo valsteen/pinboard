@@ -21,6 +21,8 @@ from pinboard.adapters.files.setting_resolution import (
     SettingResolution,
     SettingResolutionError,
     resolve_seeded_key,
+    verify_directory_links,
+    verify_settings_file_links,
 )
 
 SETTINGS_NAME = "contributor-traces.config"
@@ -40,14 +42,12 @@ def _project_data_root(project_root: Path, work_root: Path | None) -> Path | Non
     except RootError:
         return None
     data_root = work_root.absolute() if work_root is not None else shared_repository / ".pinboard"
-    if data_root.is_symlink():
-        raise ValueError(
-            f"Contributor trace work root must be a real directory: {data_root}. Pass its intended real directory as work_root."
-        )
+    verify_directory_links(data_root, data_root / SETTINGS_NAME)
     if not data_root.is_dir():
         return None
     data_root = data_root.resolve()
     if not _ignored_or_external(data_root, SETTINGS_NAME):
+        verify_settings_file_links(data_root / SETTINGS_NAME)
         if (data_root / SETTINGS_NAME).exists(follow_symlinks=False):
             raise ValueError(
                 f"Contributor trace settings {data_root / SETTINGS_NAME} must be Git-ignored before Pinboard can use them; restore that local exclusion before retrying."
@@ -73,7 +73,7 @@ def _ignored_or_external(data_root: Path, name: str) -> bool:
 
 
 def _decode_settings(path: Path) -> ContributorTraceSettings | git_config.ReadFailed | None:
-    if not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
+    if not stat.S_ISREG(path.stat().st_mode):
         raise ValueError("Contributor trace settings must be a regular file.")
     listed = git_config.list_entries(path)
     if isinstance(listed, git_config.ReadFailed):
@@ -103,8 +103,9 @@ def _decode_settings(path: Path) -> ContributorTraceSettings | git_config.ReadFa
 
 
 def _settings(data_root: Path) -> SettingResolution[ContributorTraceSettings]:
+    path = verify_settings_file_links(data_root / SETTINGS_NAME)
     return resolve_seeded_key(
-        data_root / SETTINGS_NAME,
+        path,
         _read_settings,
         "pinboard.unsafe_persist_exact_pinboard_traces.mode",
         "off",
@@ -131,17 +132,18 @@ def _read_settings(path: Path, effects: SettingEffects) -> ContributorTraceSetti
 
 def _trace_directory(data_root: Path) -> Path:
     path = data_root / TRACE_DIRECTORY
-    if not _ignored_or_external(data_root, f"{TRACE_DIRECTORY}/"):
+    verify_directory_links(path, path)
+    if not _ignored_or_external(data_root, TRACE_DIRECTORY if path.is_symlink() else f"{TRACE_DIRECTORY}/"):
         raise ValueError(
             f"Contributor trace directory {path} must be Git-ignored before Pinboard can use it; restore that local exclusion before retrying."
         )
     with suppress(FileExistsError):
         path.mkdir(mode=0o700)
-    if path.is_symlink() or not path.is_dir() or stat.S_IMODE(path.stat().st_mode) != 0o700:
+    if not path.is_dir() or stat.S_IMODE(path.stat().st_mode) != 0o700:
         raise ValueError(
-            f"Contributor trace directory {path} must be a real private directory (0700); restore the selected directory's type, mode and access before retrying."
+            f"Contributor trace directory {path} must be a private directory (0700); restore the selected directory's type, mode and access before retrying."
         )
-    return path
+    return path.resolve()
 
 
 def prune_traces(directory: Path) -> None:
@@ -164,7 +166,7 @@ def read_project_trace_settings(
 
 
 def read_configured_project_trace_mode(work_root: Path) -> Literal["off", "on"]:
-    path = work_root / SETTINGS_NAME
+    path = verify_settings_file_links(work_root / SETTINGS_NAME)
     try:
         settings = _decode_settings(path)
     except FileNotFoundError as error:

@@ -4,9 +4,15 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, assert_never
 
 from pinboard.adapters.files.errors import RootError, RootErrorCode
+from pinboard.adapters.files.file_io import (
+    DanglingSymlink,
+    NonDirectorySymlink,
+    SymlinkLoop,
+    first_directory_link_problem,
+)
 from pinboard.application.candidate_identity import candidate_diffs_match, working_tree_identity
 from pinboard.domain import work_models
 
@@ -84,7 +90,34 @@ class ReviewedDiffAbsent:
 type TargetContentObservation = ReviewedDiffPresent | ReviewedDiffAbsent | TargetUnresolved
 
 
-def _resolve_git_path(cwd: Path, selector: str, unavailable_message: str) -> Path:
+def _verify_checkout_directory_links(cwd: Path, code: RootErrorCode) -> None:
+    match first_directory_link_problem(cwd):
+        case None:
+            return
+        case DanglingSymlink(link=link, target=target):
+            raise RootError(
+                code,
+                f"Checkout path '{cwd}' could not be verified: {link} is a symbolic link to {target}, "
+                f"which does not exist. Create {target}, or fix or remove the link {link}, then retry.",
+            )
+        case SymlinkLoop(link=link, target=target):
+            raise RootError(
+                code,
+                f"Checkout path '{cwd}' could not be verified: {link} is a symbolic link loop to {target}. "
+                f"Fix or remove the link {link}, then retry.",
+            )
+        case NonDirectorySymlink(link=link, target=target):
+            raise RootError(
+                code,
+                f"Checkout path '{cwd}' could not be verified: {link} is a symbolic link to {target}, "
+                f"which is not a directory. Fix or remove the link {link}, then retry.",
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _run_git_path_query(cwd: Path, selector: str, unavailable_message: str) -> Path:
+    _verify_checkout_directory_links(cwd, RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE)
     result = subprocess.run(
         ["git", "rev-parse", "--path-format=absolute", selector],
         cwd=cwd,
@@ -101,7 +134,7 @@ def _resolve_git_path(cwd: Path, selector: str, unavailable_message: str) -> Pat
 
 
 def _resolve_git_common_directory(cwd: Path) -> Path:
-    common_directory = _resolve_git_path(
+    common_directory = _run_git_path_query(
         cwd,
         "--git-common-dir",
         f"'{cwd}' is not inside a Git repository.",
@@ -115,7 +148,7 @@ def _resolve_git_common_directory(cwd: Path) -> Path:
 
 
 def resolve_source_checkout_root(cwd: Path) -> Path:
-    return _resolve_git_path(
+    return _run_git_path_query(
         cwd,
         "--show-toplevel",
         f"'{cwd}' is not inside a Git checkout.",
@@ -127,7 +160,7 @@ def classify_checkout(cwd: Path) -> work_models.CheckoutSelection:
 
     source_root = resolve_source_checkout_root(cwd)
     common_directory = _resolve_git_common_directory(cwd)
-    git_directory = _resolve_git_path(cwd, "--git-dir", f"Cannot resolve the Git directory for '{cwd}'.")
+    git_directory = _run_git_path_query(cwd, "--git-dir", f"Cannot resolve the Git directory for '{cwd}'.")
     primary_root = common_directory.parent.resolve()
     if source_root == primary_root and git_directory == common_directory:
         return work_models.CheckoutSelection.MAIN
@@ -153,6 +186,7 @@ def classify_checkout(cwd: Path) -> work_models.CheckoutSelection:
 
 
 def _git_text(cwd: Path, *arguments: str) -> str:
+    _verify_checkout_directory_links(cwd, RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE)
     result = subprocess.run(
         ["git", *arguments],
         cwd=cwd,
@@ -170,6 +204,7 @@ def _git_text(cwd: Path, *arguments: str) -> str:
 
 
 def _git_bytes(cwd: Path, *arguments: str, unavailable_message: str) -> bytes:
+    _verify_checkout_directory_links(cwd, RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE)
     result = subprocess.run(
         ["git", *arguments],
         cwd=cwd,
@@ -277,6 +312,7 @@ def read_untracked_paths(cwd: Path) -> tuple[str, ...]:
 def resolve_target_commit(cwd: Path, target: str) -> str | TargetUnresolved:
     """Resolve one caller-named revision to a full local commit without fetching."""
 
+    _verify_checkout_directory_links(cwd, RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE)
     result = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"],
         cwd=cwd,
@@ -550,7 +586,7 @@ def ensure_git_exclude(shared_repository_root: Path) -> Path | None:
     try:
         common_directory = _resolve_git_common_directory(shared_repository_root)
     except RootError as error:
-        if error.code == RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE:
+        if error.code == RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE and shared_repository_root.is_dir():
             return None
         raise
     exclude = common_directory / "info" / "exclude"

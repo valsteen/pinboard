@@ -32,6 +32,7 @@ from pinboard.adapters.files.setting_resolution import (
     SeedNotReadBack,
     SettingEffects,
     SettingResolutionError,
+    UnusableLinkTarget,
 )
 from pinboard.adapters.sqlite.errors import SQLiteSchemaError, StorageError
 from pinboard.diagnostic_codes import TraceEvent
@@ -253,6 +254,8 @@ def settings_recovery(  # noqa: C901, PLR0912, PLR0915 - one boundary distinguis
                 repair = f"Replace {path} with a directory, or remove it so Pinboard creates it, then retry."
             case DanglingLink(link=link, target=target):
                 repair = f"Create {target}, or fix or remove the link {link}, then retry."
+            case UnusableLinkTarget(link=link):
+                repair = f"Fix or remove the link {link}, then retry."
             case SeedNotReadBack(key=key):
                 repair = (
                     f"Another process may have changed {error.path} after this request wrote {key}; "
@@ -395,16 +398,6 @@ class AutomaticCapture:
                 resource_text = str(error.database_path)
             elif isinstance(error, StorageError):
                 repair = f"Inspect Pinboard state under {resource} and resolve this read error before retrying."
-            elif "work root must be a real directory" in str(error):
-                try:
-                    real_root = Path(work_root).resolve()
-                except OSError, RuntimeError:
-                    real_root = None
-                repair = (
-                    f"Pass the real directory {real_root} as work_root, then retry."
-                    if real_root is not None and real_root.is_dir()
-                    else f"Pass an existing real directory instead of the symlink {work_root} as work_root, then retry."
-                )
             elif "Git status could not be verified" in str(error):
                 root = Path(work_root)
                 metadata = next(
@@ -427,7 +420,7 @@ class AutomaticCapture:
                     else f"Correct {resource} and retry."
                 )
             elif "private directory" in str(error):
-                repair = f"Make {resource} a real private directory with mode 0700, then retry."
+                repair = f"Make {resource} a private directory with mode 0700, then retry."
             elif isinstance(error, PermissionError) or "writable" in str(error).lower():
                 repair = f"Grant write access to {resource}, then retry."
             else:

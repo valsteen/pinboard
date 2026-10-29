@@ -5,17 +5,25 @@ created privately, a missing key is written through Git config on an exclusive l
 the pre-runtime launcher also honor, and the stored value is read back before use.
 """
 
+import errno
 import os
 import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Literal
+from typing import Literal, assert_never
 
 from pinboard.adapters.files import git_config
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
-from pinboard.adapters.files.file_io import create_immutable
+from pinboard.adapters.files.file_io import (
+    DanglingSymlink,
+    NonDirectorySymlink,
+    SymlinkLoop,
+    create_immutable,
+    first_directory_link_problem,
+    loop_target,
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +66,14 @@ class DanglingLink:
 
 
 @dataclass(frozen=True)
+class UnusableLinkTarget:
+    """A symbolic link on the settings path cannot be resolved to the required file or directory."""
+
+    link: Path
+    target: Path
+
+
+@dataclass(frozen=True)
 class NotDirectory:
     """A path where the settings directory belongs exists but is not a directory, so no file can be created."""
 
@@ -78,6 +94,7 @@ type SettingFailureCause = (
     | NotRegularFile
     | NotDirectory
     | DanglingLink
+    | UnusableLinkTarget
     | SeedNotReadBack
     | ValueError
     | OSError
@@ -120,6 +137,93 @@ def _with_filesystem_cause(error: FileIOError) -> tuple[str, OSError | None]:
     if cause is None:
         return str(error), None
     return f"{error}: {cause.strerror or cause}", cause
+
+
+def verify_directory_links(path: Path, settings_path: Path) -> Path:
+    """Verify that every symbolic link at or above `path` resolves to an existing directory."""
+    unchanged = SettingEffects("none", "none", "none")
+    match first_directory_link_problem(path):
+        case None:
+            return path.resolve(strict=False)
+        case DanglingSymlink(link=link, target=target):
+            raise SettingResolutionError(
+                f"{link} is a symbolic link to {target}, which does not exist.",
+                settings_path,
+                unchanged,
+                DanglingLink(link, target),
+                "read",
+                link,
+            )
+        case SymlinkLoop(link=link, target=target):
+            raise SettingResolutionError(
+                f"{link} is a symbolic link loop to {target}.",
+                settings_path,
+                unchanged,
+                UnusableLinkTarget(link, target),
+                "read",
+                link,
+            )
+        case NonDirectorySymlink(link=link, target=target):
+            raise SettingResolutionError(
+                f"{link} is a symbolic link to {target}, which is not a directory.",
+                settings_path,
+                unchanged,
+                UnusableLinkTarget(link, target),
+                "read",
+                link,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def verify_settings_file_links(path: Path) -> Path:
+    """Verify symbolic links along `path` and its parent directories, returning the resolved settings path."""
+    verify_directory_links(path.parent, path)
+    if path.is_symlink():
+        unchanged = SettingEffects("none", "none", "none")
+        target = path.resolve(strict=False)
+        try:
+            mode = path.stat().st_mode
+        except FileNotFoundError:
+            raise SettingResolutionError(
+                f"{path} is a symbolic link to {target}, which does not exist.",
+                path,
+                unchanged,
+                DanglingLink(path, target),
+                "read",
+                path,
+            ) from None
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                resolved_loop_target = loop_target(path)
+                raise SettingResolutionError(
+                    f"{path} is a symbolic link loop to {resolved_loop_target}.",
+                    path,
+                    unchanged,
+                    UnusableLinkTarget(path, resolved_loop_target),
+                    "read",
+                    path,
+                ) from error
+            if isinstance(error, NotADirectoryError):
+                raise SettingResolutionError(
+                    f"{path} is a symbolic link to {target}, which is not a regular file.",
+                    path,
+                    unchanged,
+                    UnusableLinkTarget(path, target),
+                    "read",
+                    path,
+                ) from error
+        else:
+            if not stat.S_ISREG(mode):
+                raise SettingResolutionError(
+                    f"{path} is a symbolic link to {target}, which is not a regular file.",
+                    path,
+                    unchanged,
+                    UnusableLinkTarget(path, target),
+                    "read",
+                    path,
+                )
+    return path.resolve(strict=False)
 
 
 def observe_or_create_settings_file(path: Path) -> SettingEffects:

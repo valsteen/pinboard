@@ -1,14 +1,14 @@
 # Pinboard
 
-## Keep your coding agent building the product you meant
+## Keep your product on target while coding agents build it
 
 <img align="right" width="430" src="assets/pinboard-investigation-office.png" alt="A 1970s office worker explaining a wall-sized investigation board covered with a map, notes, portraits, diagrams, colored markers, and connecting thread">
 
-Working with a coding agent can stay fluid: follow an idea, ask for the change, and keep moving. But the backlog grows. Ideas lose their context, priorities become unclear, and unfinished work gets harder to pick up.
+Building a product with a coding agent over weeks means juggling product ideas, research, implementation, and the detours that keep appearing: a module that needs re-architecting, a refactoring that would make the next feature easier, a bug spotted halfway through something else. Pinboard keeps that work in order so the product you meant is the one that gets built. A detour is parked as saved work instead of taking over the current feature, and it still gets done later.
 
-Pinboard saves work through the conversation you already have with your coding agent. It keeps the goal, your decisions, and progress available when you return later, helping you pick up after an interruption or in a new session.
+The rule is simple: saved work is never lost. Ideas, decisions, and changes in progress are recorded in your repository, so you can stop at any point and pick up days later, in a new session, from where the work was left.
 
-It works in local Git-backed repositories. When you start saved work, the agent implements the agreed goal and brings material choices back to you. A separate coding agent reviews the proposed change, and you choose what happens to it in the repository.
+Pinboard also covers the agent workflows you may be looking for: long-running work that survives pauses and new sessions, several tasks running in parallel in separate worktrees, and review of each implemented change by a separate coding agent against the brief you agreed. You decide what reaches your repository.
 
 <br clear="right">
 <br>
@@ -21,42 +21,42 @@ It works in local Git-backed repositories. When you start saved work, the agent 
 
 ## Use it in conversation
 
-Use `$pinboard` in Codex or `/pinboard:pinboard` in Claude Code, or ask for the `pinboard` skill in Antigravity, then ask naturally:
+Use `$pinboard` in Codex or `/pinboard:pinboard` in Claude Code, or ask for the `pinboard` skill in Antigravity, then talk normally:
 
-> I found a database issue. Save it for later and keep working on this.
+> While we finish the export feature: the storage layer really needs a re-architecture. Save that with what we found, and keep going.
 
-The idea stays on the board without starting it or interrupting your current work.
+The detour goes on the board with its evidence, unstarted, and the export feature carries on.
 
-> What should we work on next?
+> Let's do the storage re-architecture now.
 
-The agent compares saved goals, priorities, and dependencies. You can choose what to start or change the order.
+The agent settles open questions with you, writes a brief, implements it, and has a separate agent review the change. You choose what happens to the reviewed change.
 
-> Let's work on the API cleanup next.
+> Where did we leave off?
 
-The agent carries the agreed goal through implementation and review. Later, you can ask where it left off and pick up from the saved change and evidence.
+The agent reads the saved goal, change, and review, then names the next step.
 
-[Using Pinboard in conversation](GUIDE.md) has examples of reviewing changes, resuming work, trying experiments, and working on several tasks.
+[Using Pinboard in conversation](GUIDE.md) has more examples: correcting a reviewed change, trying an experiment, and working on several tasks at once.
 
-## Explore your backlog
+## Plan what comes next
 
-You can ask the agent to compare the size and uncertainty of saved work before deciding what to start. Here it compares four queued Pinboard improvements:
+Pinboard keeps your saved priority order, the dependencies between items, and which work is ready to start. Ask what to do next and the agent explains which items are ready, which are waiting on another change, and what it would pick. Ask what can run at the same time and it shows the safe set and why the rest must wait. Initiatives group items under a goal and a success signal, with a roadmap that orders their remaining work by dependency.
+
+You can also ask for a comparison. Here the agent weighs four queued Pinboard improvements by size and uncertainty:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/pinboard-work-selection-dark.png">
   <img src="assets/pinboard-work-selection.png" alt="A native Codex conversation comparing four queued Pinboard improvements by relative size and explaining uncertainty">
 </picture>
 
-The answer links to the saved tasks. Its size judgments are qualitative; comparing work does not start implementation or change your priority order.
+The answer links to each saved item and notes that the smallest task is not the top priority. Planning never starts or reorders work; the order changes only when you say so.
 
 ## When Pinboard is worth it
 
-Pinboard is most useful when a decision needs to survive another revision, interruption, reviewer, or task. It helps you and the agent return to why a change belongs, instead of letting forgotten choices or plausible guesses become the product's direction.
-
-**The tradeoff:** recording goals, scope, and evidence makes the first delivery slower. That cost pays back when you revisit the work. For small or disposable changes, using the coding agent directly is often the better choice.
+Pinboard pays off when a decision has to survive another session, an interruption, a reviewer, or a detour. Recording goals, scope, and evidence makes the first delivery slower, and that cost returns when you revisit the work. For a small or disposable change, using the coding agent directly is often the better choice.
 
 ## Install from GitHub
 
-Pinboard supports macOS and Linux. Codex is the primary, stress-tested integration; Claude Code and Antigravity CLI (`agy`) are also supported. Have [uv](https://docs.astral.sh/uv/) available for the plugin's first runtime setup.
+Pinboard works in local Git repositories on macOS and Linux and needs [uv](https://docs.astral.sh/uv/) for first-time setup. Codex is the primary, stress-tested integration; Claude Code and Antigravity CLI (`agy`) are also supported.
 
 ### Codex
 
@@ -72,7 +72,7 @@ claude plugin marketplace add valsteen/pinboard
 claude plugin install pinboard@pinboard
 ```
 
-On Claude Code's first session, MCP startup or the SessionStart hook can prepare the runtime automatically. If Pinboard remains unavailable after preparation, reconnect the `pinboard` server with `/mcp` or restart. See [Claude Code setup](INSTALL.md#claude-code) for preparation and context settings.
+[Claude Code setup](INSTALL.md#claude-code) covers first-session preparation and context settings.
 
 ### Antigravity
 
@@ -81,25 +81,25 @@ git clone https://github.com/valsteen/pinboard.git
 agy plugin install /path/to/pinboard
 ```
 
-Antigravity runs Pinboard's tools only after you add `mcp(pinboard_pinboard/*)` to `permissions.allow` in `~/.gemini/antigravity-cli/settings.json`. Even then it asks you before closing a saved item, so a close cannot run in a headless `agy -p` session. See [Antigravity setup](INSTALL.md#antigravity) for the settings file, first session and upgrades.
+Antigravity needs one permission rule before Pinboard's tools run; [Antigravity setup](INSTALL.md#antigravity) shows it.
 
-Start a task in your project and ask:
+Then start a task in your project and ask:
 
 > Set up Pinboard here and explain how I can use it from one task or several tasks.
 
-The [installation guide](INSTALL.md) covers permissions, linked worktrees, trying one Claude Code session without installing, Antigravity setup, and troubleshooting.
+The [installation guide](INSTALL.md) covers permissions, linked worktrees, trying Claude Code for one session without installing, and troubleshooting.
 
 ## More skills
 
-Pinboard can use specialized skills when the work calls for them. You can also invoke them directly:
+Pinboard brings specialized skills into the work when it calls for them. Invoke one directly as `$<skill>` in Codex or `/pinboard:<skill>` in Claude Code, or ask for it by name in Antigravity.
 
-| Skill | Use it to | Codex | Claude Code | Antigravity |
-| --- | --- | --- | --- | --- |
-| Investigation Focus | Investigate a question and produce an evidence-based result. | `$investigation-focus` | `/pinboard:investigation-focus` | Ask for `investigation-focus` |
-| Technical Writing | Shape substantial technical documents. | `$technical-writing` | `/pinboard:technical-writing` | Ask for `technical-writing` |
-| Repository Readiness | Understand an unfamiliar repository before changing it. | `$repository-readiness` | `/pinboard:repository-readiness` | Ask for `repository-readiness` |
-| Slop Cleanup | Remove abandoned code and its residue. | `$slop-cleanup` | `/pinboard:slop-cleanup` | Ask for `slop-cleanup` |
-| Maintaining Agent Guidance | Keep durable instructions at the right owner. | `$maintaining-agent-guidance` | `/pinboard:maintaining-agent-guidance` | Ask for `maintaining-agent-guidance` |
+| Skill | Use it to |
+| --- | --- |
+| `investigation-focus` | Investigate a question and produce an evidence-based result. |
+| `technical-writing` | Shape substantial technical documents. |
+| `repository-readiness` | Understand an unfamiliar repository before changing it. |
+| `slop-cleanup` | Remove abandoned code and its residue. |
+| `maintaining-agent-guidance` | Keep durable instructions at the right owner. |
 
 For investigation setup and continuity across sessions, see [Use Investigation Focus](INSTALL.md#use-investigation-focus).
 
@@ -107,10 +107,8 @@ For investigation setup and continuity across sessions, see [Use Investigation F
 
 Project decisions and evidence stay in the repository's ignored `.pinboard` directory, shared by primary and linked worktrees. Pinboard's runtime is separate from your project's Python environment. See [Local data](INSTALL.md#local-data) for locations and migration.
 
-Exact invocation capture is off by default. Its opt-in and handling of potentially sensitive values are described in [contributor diagnostics](CONTRIBUTING.md#diagnose-pinboard-invocations-during-contributor-work).
-
 ## Learn more
 
-- [How Pinboard works](HOW_IT_WORKS.md) follows an idea through a reviewed change, your repository decision, and recorded completion.
+- [How Pinboard works](HOW_IT_WORKS.md) explains how saved work stays on target and how Pinboard is built.
 - [Contributing](CONTRIBUTING.md) covers development, checks, and packaging.
 - [Architecture](ARCHITECTURE.md) describes system ownership, boundaries, and limitations.

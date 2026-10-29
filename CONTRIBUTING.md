@@ -4,7 +4,7 @@ This guide covers the supported development environment, repository checks, test
 
 ## Prepare the Pinboard source-development environment
 
-The repository pins Python 3.14.7 and uv 0.12.10. Every uv command in this guide is a Pinboard source-development operation run from `<pinboard-source>`. `uv sync` and `uv run` create or use `<pinboard-source>/.venv`; `uv build` may use uv's isolated build environment. None of these commands prepares Pinboard's installed private runtime at `<launcher-root>/.pinboard-runtime/environment` or uses an environment or dependency file from a `<managed-project>` repository. msgspec provides immutable records and strict JSON decoding at repository boundaries.
+The repository pins Python 3.14.10 and uv 0.13.6. Every uv command in this guide is a Pinboard source-development operation run from `<pinboard-source>`. `uv sync` and `uv run` create or use `<pinboard-source>/.venv`; `uv build` may use uv's isolated build environment. None of these commands prepares Pinboard's installed private runtime at `<launcher-root>/.pinboard-runtime/environment` or uses an environment or dependency file from a `<managed-project>` repository. msgspec provides immutable records and strict JSON decoding at repository boundaries.
 
 After cloning the repository or creating a new implementation worktree, prepare both locked development environments:
 

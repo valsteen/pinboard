@@ -35,7 +35,7 @@ The agent settles open questions with you, writes a brief, implements it, and ha
 
 The agent reads the saved goal, change, and review, then names the next step.
 
-[Using Pinboard in conversation](GUIDE.md) has more examples: seeing an item through to `main`, checking that work is really done, handing it to another session, parking a rabbit hole, and running tasks in parallel.
+[Using Pinboard in conversation](GUIDE.md) has more examples: seeing items through, checking they're really done, handing work over, parking rabbit holes, and parallel work.
 
 ## Plan what comes next
 

@@ -69,13 +69,21 @@ def _guide() -> str:
 
 # How Pinboard works
 
-Picture a product you are building with a coding agent. On Monday you start an export feature. By Wednesday the agent has noticed that the storage layer fights every new format, two product ideas came up during a review, and a refactoring would make next month's work easier. Each of these is worth doing, and none of them is the export feature. A few weeks of this and the chat history is the only record of why anything was decided, while the product drifts toward whatever came up last.
+Picture a product you are building with a coding agent. On Monday you start an export feature. By Wednesday the storage layer is fighting every new format, two product ideas have come up in a review, and a refactoring would make next month easier.
 
-Pinboard keeps the product on target through those weeks. It gives detours somewhere to go, keeps the reasons and decisions next to the work, and makes sure that whatever is saved survives interruptions, new sessions and replacement agents. The golden rule is to never lose work and keep going.
+Each of these is worth doing, and none of them is the export feature. A few weeks of this and the chat history is the only record of why anything was decided, while the product drifts toward whatever came up last.
 
-This article follows one piece of work from the moment it is saved to the moment you decide its fate. Then it looks under the hood: how every answer Pinboard gives an agent leaves it a next step, how the code is organized as a functional core with ports and adapters, and how strict static checks keep a large Python codebase in shape.
+## From handover notes to Pinboard
 
-Pinboard works with local Git-backed repositories, and the structure has a cost: recording goals and evidence makes the first delivery slower. For a short, disposable change, working with a coding agent directly is usually enough.
+Pinboard grew out of that problem: its author carried context between coding-agent chats by pasting a handover document into each new one, and whatever a handover dropped was gone. The wish was that asking "what's next" would bring those ideas back. It became a coordinator skill, then a plugin first named Charlie, after the conspiracy-board meme, and soon renamed Pinboard.
+
+Today Pinboard keeps a product on target through weeks like those. It gives detours somewhere to go, keeps reasons and decisions next to the work, and makes sure whatever is saved survives interruptions, new sessions and replacement agents.
+
+The golden rule is to never lose work and keep going.
+
+The rest of this article follows one piece of work from saved idea to your final decision. Then it looks under the hood: how every answer leaves an agent a next step, why the code is a functional core with ports and adapters, and how strict static checks keep a large Python codebase in shape.
+
+Pinboard works with local Git-backed repositories. The structure has a cost: recording goals and evidence makes the first delivery slower, and for a short, disposable change, working with a coding agent directly is usually enough.
 
 ## Saved work and the runs that carry it out
 

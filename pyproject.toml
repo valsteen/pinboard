@@ -1,5 +1,5 @@
 [build-system]
-requires = ["uv_build>=0.12,<0.13"]
+requires = ["uv_build>=0.13,<0.14"]
 build-backend = "uv_build"
 
 [project]
@@ -26,7 +26,7 @@ pinboard-antigravity-session-start = "pinboard.antigravity_hook:session_start_ma
 pinboard-antigravity-pre-tool-use = "pinboard.antigravity_hook:pre_tool_use_main"
 
 [tool.uv]
-required-version = "==0.12.10"
+required-version = "==0.13.6"
 
 [tool.uv.build-backend]
 module-name = "pinboard"

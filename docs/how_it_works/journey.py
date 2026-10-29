@@ -32,20 +32,21 @@ def validate() -> None:
 
 DIAGRAM = Diagram(
     slug="journey",
-    title="One preparation claim carries the workflow through code",
+    title="A functional core with ports and adapters, traced through one preparation claim",
     description=(
-        "An ordinary preparation start becomes an exact command, samples its operation time, and reaches application "
-        "orchestration. A pure domain decision selects initial acquisition or inactive transfer against locked facts. "
-        "Adapters then commit the targeted mutation and refresh repairable views before the interface presents a "
-        "typed result."
+        "The MCP adapter decodes an ordinary preparation start into an exact command and samples its operation time. "
+        "The application use case opens a transaction through its storage port and rereads locked facts. The pure "
+        "domain decision, the functional core, accepts or rejects initial acquisition or inactive transfer. The SQLite "
+        "adapter commits the targeted mutation, the filesystem adapter refreshes repairable views, and the MCP adapter "
+        "presents a typed result."
     ),
     width=1400,
     height=820,
     sections=(
-        Section("Interface", "decode exact input\npresent typed result", 28, 118),
-        Section("Application", "orchestrate / lock / project", 28, 298),
-        Section("Domain", "decide legality / preserve facts", 28, 478),
-        Section("Adapters", "commit SQLite / refresh views", 28, 658),
+        Section("Interface", "MCP adapter\ndecode · present", 28, 118),
+        Section("Application", "use case + ports\norchestrate · lock", 28, 298),
+        Section("Domain", "functional core\npure decisions", 28, 478),
+        Section("Adapters", "implement ports\nSQLite · files", 28, 658),
     ),
     guides=(
         Guide((150, 48), (150, 764)),

@@ -13,10 +13,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
+from typing import assert_never
 
 import msgspec
 
 from evals.behavioral import (
+    agy_driver,
     codex_driver,
     decision,
     export,
@@ -33,6 +35,7 @@ from evals.behavioral import (
 from evals.behavioral.credentials import default_source
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
+    AgyEffort,
     Assessed,
     AssessmentFailure,
     ClaudeEffort,
@@ -81,6 +84,21 @@ class RunCodex:
     out: Path
     worlds: Path
     cap_usd: float
+
+
+@dataclass(frozen=True)
+class RunAgy:
+    export: Path
+    scenario_set: Path
+    variant: str
+    runs: int
+    first_index: int
+    model: str
+    reasoning_effort: AgyEffort
+    out: Path
+    worlds: Path
+    cap_usd: float
+    jobs: int
 
 
 @dataclass(frozen=True)
@@ -225,6 +243,7 @@ type Command = (
     Export
     | RunClaude
     | RunCodex
+    | RunAgy
     | ProbeCodex
     | Score
     | Assess
@@ -254,7 +273,7 @@ def parser() -> argparse.ArgumentParser:  # noqa: PLR0915
     running = commands.add_parser("run", help="run a scenario set against one runtime").add_subparsers(
         dest="runtime", required=True
     )
-    for runtime in ("claude", "codex"):
+    for runtime in ("claude", "codex", "agy"):
         leaf = running.add_parser(runtime)
         leaf.add_argument("--export", type=Path, required=True)
         leaf.add_argument("--scenario-set", type=Path, required=True)
@@ -265,11 +284,17 @@ def parser() -> argparse.ArgumentParser:  # noqa: PLR0915
         leaf.add_argument("--out", type=Path, required=True)
         leaf.add_argument("--worlds", type=Path, required=True)
         leaf.add_argument("--cap-usd", type=float, required=True)
-        if runtime == "claude":
-            leaf.add_argument("--jobs", type=positive, default=1)
-            leaf.add_argument("--reasoning-effort", type=claude_effort, default=None)
-        else:
-            leaf.add_argument("--reasoning-effort", required=True)
+        match runtime:
+            case "claude":
+                leaf.add_argument("--jobs", type=positive, default=1)
+                leaf.add_argument("--reasoning-effort", type=claude_effort, default=None)
+            case "codex":
+                leaf.add_argument("--reasoning-effort", required=True)
+            case "agy":
+                leaf.add_argument("--jobs", type=positive, default=1)
+                leaf.add_argument("--reasoning-effort", type=agy_effort, required=True)
+            case _ as unreachable:
+                assert_never(unreachable)
 
     probing = commands.add_parser("probe", help="prove runtime isolation cheaply").add_subparsers(
         dest="runtime", required=True
@@ -387,6 +412,14 @@ def claude_effort(value: str) -> ClaudeEffort:
         raise argparse.ArgumentTypeError(f"must be one of {allowed}") from None
 
 
+def agy_effort(value: str) -> AgyEffort:
+    try:
+        return AgyEffort(value)
+    except ValueError:
+        allowed = ", ".join(level.value for level in AgyEffort)
+        raise argparse.ArgumentTypeError(f"must be one of {allowed}") from None
+
+
 def positive(value: str) -> int:
     number = int(value)
     if number < 1:
@@ -501,7 +534,7 @@ def decode(arguments: Sequence[str]) -> Command:  # noqa: C901, PLR0912
             raise AssertionError(command)
 
 
-def decode_run(options: argparse.Namespace) -> RunClaude | RunCodex:
+def decode_run(options: argparse.Namespace) -> RunClaude | RunCodex | RunAgy:
     runtime: str = options.runtime
     match runtime:
         case "claude":
@@ -530,6 +563,20 @@ def decode_run(options: argparse.Namespace) -> RunClaude | RunCodex:
                 options.out,
                 options.worlds,
                 options.cap_usd,
+            )
+        case "agy":
+            return RunAgy(
+                options.export,
+                options.scenario_set,
+                options.variant,
+                options.runs,
+                options.first_index,
+                options.model,
+                options.reasoning_effort,
+                options.out,
+                options.worlds,
+                options.cap_usd,
+                options.jobs,
             )
         case _:
             raise AssertionError(runtime)
@@ -585,6 +632,8 @@ def dispatch(command: Command) -> int:  # noqa: C901, PLR0912
             return run_claude(c)
         case RunCodex() as c:
             return run_codex(c)
+        case RunAgy() as c:
+            return run_agy(c)
         case ProbeCodex() as c:
             return probe_codex(c)
         case Score() as c:
@@ -769,6 +818,25 @@ def run_codex(command: RunCodex) -> int:
         )
     except (runner.CredentialConflictError, runner.IsolationBreachError, codex_driver.CodexUnavailableError) as stop:
         print(f"Codex runs stopped: {stop}")
+        return 2
+    return 0
+
+
+def run_agy(command: RunAgy) -> int:
+    c = command
+    plan = run_plan(
+        c.export, c.scenario_set, c.variant, c.runs, c.first_index, c.model, c.out, c.worlds, processes.Window(None)
+    )
+    try:
+        report_skipped(
+            runner.run_agy(
+                runner.AgyPlan(plan, c.reasoning_effort),
+                spend.Budget(Layout(c.out), c.cap_usd, processes.Window(None), False),
+                c.jobs,
+            )
+        )
+    except (runner.IsolationBreachError, agy_driver.AgyUnavailableError) as stop:
+        print(f"Antigravity runs stopped: {stop}")
         return 2
     return 0
 

@@ -1,4 +1,4 @@
-"""The harness's only subprocess owner: the claude, codex and git CLIs and the evaluated revision's launcher.
+"""The harness's only subprocess owner: the agy, claude, codex and git CLIs and the evaluated revision's launcher.
 
 Executables other than the launcher resolve through PATH. The launcher is always the exported revision's own
 ``scripts/pinboard``; it runs only for ``--prepare-runtime``, board ``init`` and ``--mcp`` (the last through the
@@ -15,9 +15,11 @@ from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import assert_never
 
 
 class Tool(Enum):
+    AGY = "agy"
     CLAUDE = "claude"
     CODEX = "codex"
     GIT = "git"
@@ -56,10 +58,10 @@ class ToolUnavailableError(Exception):
 
 def executable(tool: Tool) -> str:
     match tool:
-        case Tool.CLAUDE | Tool.CODEX | Tool.GIT:
+        case Tool.AGY | Tool.CLAUDE | Tool.CODEX | Tool.GIT:
             found = shutil.which(tool.value)
         case _ as unreachable:
-            raise AssertionError(unreachable)
+            assert_never(unreachable)
     if found is None:
         raise ToolUnavailableError(f"{tool.value} is not on PATH")
     return found
@@ -199,6 +201,12 @@ def claude_environment() -> dict[str, str]:
     """
     names = ("HOME", "PATH", "TMPDIR", "USER", "LOGNAME", "SHELL", "LANG", "ANTHROPIC_API_KEY")
     return {name: os.environ[name] for name in names if name in os.environ} | {"ENABLE_CLAUDEAI_MCP_SERVERS": "false"}
+
+
+def agy_environment(home: Path) -> dict[str, str]:
+    """Disposable HOME isolates ~/.gemini while preserving OS/login identity for macOS Keychain access."""
+    names = ("PATH", "TMPDIR", "USER", "LOGNAME", "SHELL", "LANG")
+    return {name: os.environ[name] for name in names if name in os.environ} | {"HOME": str(home)}
 
 
 def run_tool(

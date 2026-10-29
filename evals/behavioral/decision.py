@@ -14,12 +14,15 @@ from collections import defaultdict
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
+from typing import assert_never
 
 import msgspec
 
 from evals.behavioral import scoring, spend
 from evals.behavioral.layout import SCORER_INPUT, Layout
 from evals.behavioral.records import (
+    AgyEffort,
+    AntigravityRunDetails,
     ChecklistItem,
     ClaudeEffort,
     ClaudeRunDetails,
@@ -293,7 +296,7 @@ def compare(
     return "\n".join(lines) + "\n"
 
 
-def conditions(record: RunRecord) -> tuple[str | ClaudeEffort | None, ...]:
+def conditions(record: RunRecord) -> tuple[str | ClaudeEffort | AgyEffort | None, ...]:
     """Declared consequential settings; per-run paths and settlement effects are not execution settings.
 
     A Claude run's effort is ``None`` when none was sent, so absent and present effort never match.
@@ -311,8 +314,16 @@ def conditions(record: RunRecord) -> tuple[str | ClaudeEffort | None, ...]:
                 details.approval_policy,
                 details.price_source,
             )
+        case AntigravityRunDetails() as details:
+            return (
+                *common,
+                details.reasoning_effort,
+                details.observed_model,
+                *details.permissions_allow,
+                details.price_source,
+            )
         case _ as unreachable:
-            raise AssertionError(unreachable)
+            assert_never(unreachable)
 
 
 def qualification(
@@ -334,7 +345,7 @@ def qualification(
         ):
             reasons.append(evidence.reason)
     exports: dict[str, set[tuple[str, str]]] = {variant: set() for variant in selected_variants}
-    settings: set[tuple[str | ClaudeEffort | None, ...]] = set()
+    settings: set[tuple[str | ClaudeEffort | AgyEffort | None, ...]] = set()
     for selected in selected_runs:
         key = selected.run
         if selected.scores != 1:

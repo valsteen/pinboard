@@ -12,7 +12,7 @@ import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
-from typing import override
+from typing import assert_never, override
 
 from evals.behavioral.layout import Layout
 from evals.behavioral.processes import Window
@@ -22,6 +22,7 @@ from evals.behavioral.records import ClaudeInvestigationRunRecord, Runtime
 class Category(Enum):
     CLAUDE_AGENT_RUN = "agent runs (claude-code)"
     CODEX_AGENT_RUN = "agent runs (codex)"
+    ANTIGRAVITY_AGENT_RUN = "agent runs (antigravity)"
     SCORER = "scorer sessions"
     SUBSTANCE_ASSESSMENT = "substance assessments"
     PROBE = "probes"
@@ -30,6 +31,7 @@ class Category(Enum):
 DEFAULT_PROJECTION_USD = {
     Category.CLAUDE_AGENT_RUN: 2.50,
     Category.CODEX_AGENT_RUN: 5.00,
+    Category.ANTIGRAVITY_AGENT_RUN: 2.50,
     Category.SCORER: 0.50,
     Category.SUBSTANCE_ASSESSMENT: 0.40,
     Category.PROBE: 1.00,
@@ -51,8 +53,10 @@ def agent_category(runtime: Runtime) -> Category:
             return Category.CLAUDE_AGENT_RUN
         case Runtime.CODEX:
             return Category.CODEX_AGENT_RUN
+        case Runtime.ANTIGRAVITY:
+            return Category.ANTIGRAVITY_AGENT_RUN
         case _ as unreachable:
-            raise AssertionError(unreachable)
+            assert_never(unreachable)
 
 
 def items(layout: Layout) -> list[Item]:

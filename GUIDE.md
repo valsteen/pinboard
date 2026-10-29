@@ -1,89 +1,109 @@
 # Using Pinboard in conversation
 
-Pinboard helps you keep development work and its decisions available across conversations. You can ask your coding agent in ordinary language; it records the work, explains what can happen next, and brings product choices back to you. It works with local Git-backed repositories. The examples below describe requests you can adapt, not commands you must memorize.
+You talk to your coding agent the way you already do. Pinboard sits underneath and keeps a record in your repository: what you want built, what was decided, what is in progress, and what is still waiting on you. The situations below are the ones that come up most in day-to-day use, roughly in order of how often. The requests are examples, so phrase them however you like.
 
-Saving a **work item** records a goal for later. Starting it creates an **attempt** with an agreed brief. A separate coding agent reviews an implementation candidate before Pinboard records completion. You remain responsible for product decisions and what happens to reviewed repository changes. For the underlying model, see [How Pinboard works](HOW_IT_WORKS.md).
+One habit shows up everywhere. Replies lead with whatever needs you, and when something could slip, such as an unmerged branch or a question you haven't answered, the reply ends with a short "Still open:" line. For the model underneath, see [How Pinboard works](HOW_IT_WORKS.md).
 
-Replies are written for someone who may come back hours later. Before work starts, the agent says what it will produce and where it will land. Replies lead with what needs you. When something you might forget is still open, such as a decision, an unmerged change, or a review, a reply ends with a short “Still open” line. Words like done, saved, reviewed, and merged say what they cover, including whether a change is in `main`.
+## Start an item and see it through
 
-## Save an idea, or start it now
+> Start working on the export bug in a worktree.
 
-> I'm worried about invalid database records. Save that issue for later, and keep going with what we're doing.
+Before touching code, the agent says in one sentence what it will produce and where it will land: "This goes on its own branch in a separate worktree; nothing reaches `main` unless you choose." If something would change the result, it asks that one question with its recommendation. Then it writes down what you agreed, builds against it, and hands the finished change to a separate agent that did not write it. That reviewer checks the exact change against the same agreement. A defect goes back for a fix and another review. Anything that would change the goal comes back to you.
 
-The agent records a ready work item with the concern, evidence, and relationship to any current work. It gives you a link to the saved item when its readable view is available, then returns to the current task. Saving does not begin implementation or raise its priority automatically. If it is already recorded with the same consequence, the agent points you to that item.
+If you want a pull request, the agent pushes the branch and opens it as a draft, and keeps it a draft until review and checks are done. You merge it, then come back:
 
-A typical reply is: “Saved for later: the database issue is on the board, not started. I'll keep working on this change.” Saved means recorded; it does not mean scheduled or in a release.
+> Ok it's merged, you can close it and clean up.
 
-> Let's fix the database issue now.
+The agent checks that the reviewed change really is in `main`, even after a squash or rebase, removes the worktree and branch, and closes the item: "Closed on the board, and the fix is in `main`." With an agent alone, a week later you'd be reading `git log` to work out what actually landed. Here the board tells you.
 
-Here, saving is only the first step. The agent checks the goal you agreed on, dependencies, checkout, and any choice that could change the result. It prepares a brief and starts the work when those conditions are settled. You decide material changes to scope or behavior; routine implementation choices stay with the agent.
+## Write it down and keep going
 
-If the intended fix is unclear, it asks only what would change the result, each question with its recommendation: “Should this change prevent new invalid records, repair existing records, or both? I'd start with preventing new ones.” It also says where the work will land: “It will be done on its own branch and reviewed; nothing reaches `main` unless you choose.” Your answer shapes the goal before implementation.
+Ideas arrive at the worst moment. Halfway through the export bug you notice the sign-up flow is clumsy:
 
-## Decide what to do next
+> The sign-up flow is awkward. Don't get distracted, just save it.
 
-> What should we work on next, and why?
+The agent saves it with what it noticed and goes straight back: "Saved for later: the sign-up flow is on the board, not started. Back to the export." If the same concern is already saved, it points you to that item instead of making a second one. A flaky CI test that keeps failing your build works the same way: say it's flaky, save it, and it becomes its own item rather than a detour.
 
-The agent shows current work and the saved priority order, then explains which unstarted items are ready or blocked by dependencies. It can recommend the next item using the recorded goal and evidence. A recommendation does not reorder the backlog or start anything.
+Sometimes the thought belongs to the current work:
 
-For example: “API cleanup is first on your list and isn't waiting on anything. Logging still depends on another change. I'd start with API cleanup.” You can ask the agent to start it, choose another ready item, or change the order explicitly.
+> Also, the export should keep the column order. Add that to what we're doing.
 
-> Move the API cleanup ahead of the logging improvement.
+The agent updates what you agreed before carrying on, so the review checks the change against what you want now, not what you wanted this morning. And if an idea can't wait, "save that and start working on it" does both in one go.
 
-The agent checks the current order and records the priority change you chose. Priority does not remove a dependency or interrupt an attempt already underway. You can also ask, “Do these two ideas belong together?” The agent presents the proposed coverage and effects on dependencies and order first; you decide whether it applies any change.
+Without a board, these end up in a notes file, a handover document, or a follow-up list that keeps growing until nobody reads it. Here each idea is a saved item you can find, reorder, or drop later.
 
-## Review a change and correct it
+## Make sure it's really done
 
-> Let's tackle the API cleanup next. Let me know what the review finds.
+A merged branch feels finished, and with an agent alone that is usually where the conversation ends. Often the work isn't done. Before merging, ask:
 
-The agent works from the agreed brief, verifies the change, and saves the exact version it wants reviewed with its results. A separate coding agent reviews that version against the brief. The owning agent reports the review outcome and any material concern. A published pull request alone does not count as this review.
+> Do all the concerns mentioned here have an owner?
 
-A review update could say: “The reviewer found a case the cleanup misses. I'll fix it and have the change reviewed again.”
+The agent goes through every concern raised during the work and says where each one lives: fixed in this change, saved as its own item, or waiting on you. A broadly similar item doesn't count; it names the exact one. "Two are fixed here. The retry limit is saved as its own item. The naming question is yours; I'd keep the current names."
 
-If the reviewer finds an implementation defect, the agent can correct the same work and send the revised change for another review. If the finding would change the agreed product goal, architecture, or compatibility, the agent asks you to settle that decision before affected work continues. You choose what happens to a favorably reviewed change in the repository; Pinboard records completion only after its required review and authorized repository steps are satisfied.
+The same care applies when you look back. A plain "where do we stand?" can turn up something you'd forgotten: "The cache change is in `main`, but no review covered it. I'd have a separate reviewer check it as it landed."
 
-## Pick up interrupted work
+When a review already covered the change, the agent reuses it rather than auditing everything again. A squash merge changes the commit, not the reviewed content, so it doesn't trigger a new review by itself.
 
-> Where did we leave off with the API cleanup? Please pick it up if the plan still fits.
+## Stop, restart, or hand over
 
-The agent reads the saved goal, brief, current work, and review evidence, then explains the next supported step. It can continue active work, resume paused work, or restore the saved change into a suitable clean checkout when that recovery applies. If the agreed scope or Git history changed, it updates the brief through the supported path before continuing. A pause preserves the work; it is not proof of completion. The agent asks you only when a material choice or missing authority blocks the next step.
+> I need to restart my session.
 
-For example: “The change is ready, but it hasn't been reviewed yet. I can send the saved version for review.” A pause keeps its reason on the board, so a later conversation can still see what the work waits on. When paused work waits on your choice, the agent names the choice and its recommended default, then says what it will do once you answer.
+Go ahead. Saved, in-progress and in-review work is already on disk, so there's nothing to pause. In the new session:
 
-## Try something without committing to it
+> Where were we?
 
-> On a throwaway branch, make the parser skip comment lines. I'm not committing to merging it; I just want to see whether it's worth it.
+The agent reads the saved goal, the change and its review, then names the next step: "The export fix is ready but hasn't been reviewed yet. I can send it for review."
 
-The agent can track an experiment like any other work, including on a scratch board you name, and have it reviewed. Before it starts, it says where the result will stay: on its own branch, not in `main`. When you close the experiment, it says what closed and what did not reach `main`.
+The same goes for switching tools. If you run out of usage in Claude Code, open Codex in the same repository and ask it to pick up the export bug. The new session continues from the record, not from a pasted summary. Only one agent works on an item at a time, so if the old session or one of its helpers might still hold the work, the new one waits for that to lapse or asks you before taking over.
 
-If you later ask to include the useful part, the agent says whether it is in `main` and where it lives, and prefers the already reviewed commit over redoing the work. When you keep an experiment's changes, the agent records where its scratch board is on the owning item, so a later question about that branch leads back to the board and its review. If it cannot find the earlier review, for example because the board was never recorded or no longer exists, it says so rather than assuming one. After you merge something yourself, it says whether the earlier review covered exactly what you merged: “The review covered exactly the commit you merged. Your merge commit itself wasn't reviewed, but it adds nothing else. I haven't seen CI results.”
+A real pause happens when the work needs your answer before it can go on. The agent records the question and its recommendation on the board, so a later session can see what the work is waiting for. It also warns you before a pause would throw away a finished review.
 
-## Explore parallel work
+## Park the rabbit hole
 
-> What can we work on at the same time?
+Halfway through a feature, the agent finds the parser can't support it without a redesign. Instead of quietly redesigning the parser inside your feature, it stops the affected work and tells you. You decide:
 
-The agent shows what is ready together and why other items are excluded. This preview is read-only: it does not launch tasks or certify that each brief is ready.
+> Pause this. Save the parser redesign, do that first, then come back.
 
-A preview might say: “We can work on API cleanup and documentation at the same time. Logging needs the API change first.” You choose an exact subset or ask to launch all of the safe set.
+The feature is paused with that reason, the redesign becomes its own item with its own review, and when it lands the agent checks that the original plan still fits before resuming. Nothing about the feature is lost while you're away.
 
-> Please start both of those at the same time.
+A tempting refactoring works the same way: save it, finish what you started, and pick it up when you're ready. Not every detour is a rabbit hole, though. If the agent left some mess in the change it's working on, it cleans that up as part of the same job. And before work starts, if something you agreed would block a clearly better result, the agent says so once, with the gain and cost, and keeps to the agreement unless you change it.
 
-That request authorizes the displayed safe batch. The agent checks it again before each launch and reports which outcomes actually started. Bounded work belonging to one outcome can return through a subagent; genuinely separate outcomes can use separate conversations that you follow individually. If the safe set changes, the agent stops the remaining launches and brings the changed choice back to you. Separate checkouts reduce competing writes, but integration can still need review.
+## Decide what comes next
 
-## Account for work that already happened
+> What should I work on next?
 
-> I think this change was merged. Can you check whether anything is left to do?
+The agent reads your saved order and the dependencies: "API cleanup is first and isn't waiting on anything. Logging needs the API change first. I'd start with API cleanup." The order changes only when you change it: "Move the API cleanup ahead of logging."
 
-The agent compares the repository result with the goal you agreed on, the saved change, and its review. It checks whether review, your repository decision, or cleanup is still missing and continues the same work where possible. It can confirm that the reviewed change's content is in a named branch even after a rebase or squash merge; Pinboard reads that branch as stored locally, so the agent fetches first when the remote copy matters. A merge or closed pull request alone does not prove the work is complete. If work was saved but never started, you can instead decide to close it as completed or dropped; the agent records that choice in your own words without inventing an implementation review, and Claude Code v2.1.199 or later asks you to confirm the close, while Codex and earlier Claude Code versions may not ask. Antigravity always asks you to confirm a close through Pinboard's hook, so a close cannot run in a headless `agy -p` session; if that hook does not run, Antigravity's own approval settings decide. An agent that fixed something itself reports the change and asks before closing anything.
+You can bring a whole roadmap over ("put these on the board") and group items under a shared goal with a way to tell whether it was met. Pinboard then orders the remaining work by what has to land first.
 
-An honest reply might be: “The change is in `main`, but no review covered it. I'd have a separate reviewer check the commit as it landed before the work is closed.” If the work was never started, your decision to mark it completed or dropped takes the shorter close route.
+Big, open-ended items are where work gets lost or never starts. Split them:
 
-## Review a pull request owned by a person
+> This one is too vague. Make it one narrow fix, and save the research as a separate item for later.
 
-> Can you review my pull request? I wrote the code; please tell me what you find as it changes.
+The narrow fix can ship this week, and the research waits on the board instead of in your head. If two saved ideas look like the same thing, ask whether they belong together. The agent shows what combining them would change and waits for your yes.
 
-This route is for a ready item whose PR author is a person rather than a Pinboard worker. When the review should be recorded on the board, the agent records a brief linking the PR to current requirements, expected behavior, consumers, owners, and repository criteria, and a separate reviewer checks that brief before the first recorded round. Each round records the full commit the reviewing agent observed, where it observed it, findings, verification limits, and what happened to earlier findings. The agent reports the findings to you in conversation; when it reviews only in conversation, it says that no review round is recorded on the board.
+## Run things in parallel
 
-For example: “I found one concern in the commit I reviewed. I've since seen a newer commit. Would you like me to review that too, or finish with the review I've completed?” Your choice controls the next round or close; it does not turn an unreviewed commit into reviewed evidence.
+> Check which task would be safe to work on in parallel with this.
 
-If the agent observes a newer commit, you can request another round or direct it to stop at the last reviewed commit. Closing the review requires your direction, even if no round was completed. The final record retains remaining concerns and any newer observed but unreviewed commit. This route creates no implementation attempt or candidate, and the PR author does not become a Pinboard worker. Pinboard records what the reviewing agent observed; it does not verify the current remote head, hosted checks, or publication.
+The agent shows which saved items can run together and why the others have to wait, for example because they need a change that hasn't landed. Looking changes nothing. When you say "start those two", it checks again right before each launch, runs each in its own worktree, and tells you what actually started. Work that belongs to what you're doing now comes back to this conversation. Separate work you want to follow on its own gets its own conversation. Separate worktrees keep agents from overwriting each other, but bringing the results together can still need review.
+
+## Investigate or experiment without shipping
+
+Some work is about finding out:
+
+> Investigate why exports get slow on big projects. Keep notes; this will take a few sessions.
+
+The agent keeps an investigation note in a place you pick outside the repository, with sources, dead ends and the next useful question, so a later session picks up where this one stopped, even after a big rebase. Findings don't turn into code changes until you decide they should.
+
+Experiments get the same honesty about where things land:
+
+> On a throwaway branch, make the parser skip comment lines. I'm not committing to merging it.
+
+It stays on its branch. When you close the experiment, the agent tells you what didn't reach `main`. If you later want the useful part, it points to the already reviewed commit instead of redoing the work.
+
+## Retire what no longer matters
+
+> Cancel the old import item; the new one replaces it.
+
+The agent shows the exact item and what cancelling means: it's marked dropped, its code and history stay, and anything that depended on it is named. If the replacement doesn't cover everything the old item promised, it tells you what would be left uncovered. Then it waits for you to confirm that specific item. An item that was never started can simply be closed, in your own words.

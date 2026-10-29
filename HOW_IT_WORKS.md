@@ -31,7 +31,7 @@ The brief is the single agreement both sides work from. The implementing agent b
 
 When the reviewer finds an implementation defect, the work returns to the same attempt for correction and another review. When either agent discovers something that would change the product scope, the architecture or compatibility, it stops and brings that decision to you. If you change the agreement, Pinboard replaces the definition and brief before the affected work continues, so review always compares the change with what you actually asked for.
 
-A favorably reviewed change does not land by itself. You decide whether to merge it, keep it on its branch as an experiment, or drop it. A merged pull request is not proof of review either: if a change was published first, the agent can still send the saved version for review and tell you which commits that review covered. [Using Pinboard in conversation](GUIDE.md) walks through these cases, including the review of a pull request written by a person.
+A favorably reviewed change does not land by itself. You decide whether to merge it, keep it on its branch as an experiment, or drop it. A merged pull request is not proof of review either: if a change was published first, the agent can still send the saved version for review and tell you which commits that review covered. [Using Pinboard in conversation](GUIDE.md) walks through these cases.
 
 The brief itself is a strict structured record rather than free prose.
 

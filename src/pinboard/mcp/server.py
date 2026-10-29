@@ -204,7 +204,8 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "name with the advertised inventory before declaring the tool unavailable.\n\n"
             "Inspect the selected tool's negotiated strict schema and invoke that native callable with exact "
             "project_root and work_root. When its sole top-level property is request, keep the selected leaf inside "
-            "that request object instead of flattening it. These instructions grant no identity, authority or permissions. "
+            "that request object instead of flattening it; when its schema lists top-level fields without request, pass "
+            "those arguments directly at the top level without a request wrapper. These instructions grant no identity, authority or permissions. "
             "A missing required MCP tool stops its operation; retired agent-workflow CLI commands are not "
             "substitutes. Automatic trace preflight may return TRACE_PREFLIGHT_FAILED before the target callback; "
             "read its exact resource, repair, target_ran and auxiliary-effect fields before retrying."
@@ -215,7 +216,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
     # Async SDK callbacks let cancellation reach _run_request and its queued or running executor checkpoints.
     @server.tool(
         name=ORDER_TOOL,
-        description="Save an explicitly human-authorized complete priority permutation against the current live order; fresh overview reconciles state, not caller commitment. Never grants launch authority.",
+        description="Save an explicitly human-authorized complete priority permutation against the current live order; fresh overview reconciles state, not caller commitment. Put all fields inside request. Never grants launch authority.",
     )
     async def order(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return await execution._run_request(
@@ -231,7 +232,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=PARALLEL_PREVIEW_TOOL,
-        description="Read exact selected or current-only all-safe structural parallel constraints. Does not certify readiness, acquire authority or launch native tasks.",
+        description="Read exact selected or current-only all-safe structural parallel constraints. Put all fields inside request. Does not certify readiness, acquire authority or launch native tasks.",
     )
     async def parallel_preview(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return await execution._run_request(
@@ -247,7 +248,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=BRIEF_CONTRACT_TOOL,
-        description="Construct the strict work-brief contract or unresolved local/cross-boundary starter; no project facts or authority. Structural construction is not readiness review or activation. Follow the Pinboard coordination Skill for preparation.",
+        description="Construct the strict work-brief contract or unresolved local/cross-boundary starter; no project facts or authority. Put all fields inside request. Structural construction is not readiness review or activation. Follow the Pinboard coordination Skill for preparation.",
     )
     async def brief_contract(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return await execution._run_request(
@@ -263,7 +264,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=OBLIGATION_COVERAGE_TOOL,
-        description="Read exact current obligation coverage for a named pair (source_item, replacement_item) or an item's planned-replacement. Lists every source obligation and all exact carrying obligations or uncovered. Does not infer equivalence or authorize ending work.",
+        description="Read exact current obligation coverage for a named pair (source_item, replacement_item) or an item's planned-replacement. Lists every source obligation and all exact carrying obligations or uncovered. Put all fields inside request. Does not infer equivalence or authorize ending work.",
         annotations=READ_ONLY_ANNOTATIONS,
     )
     async def obligation_coverage(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -281,7 +282,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=BRIEF_SOURCES_TOOL,
-        description="Read a selected-checkout source plan or one complete bounded verified inline/saved-plan batch; never writes output or work state.",
+        description="Read a selected-checkout source plan or one complete bounded verified inline/saved-plan batch; never writes output or work state. Put all fields inside request.",
         annotations=READ_ONLY_ANNOTATIONS,
     )
     async def source_preparation(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -300,7 +301,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         name=STARTUP_TEXT_TOOL,
         description=(
             "Read one exact accepted startup artifact or caller-selected absolute skill/reference path in verified UTF-8 pages. "
-            "Use artifact-start with the producing response's exact artifact tuple, or file-start with the resolved path. "
+            "Put all fields inside request. Use artifact-start with the producing response's exact artifact tuple, or file-start with the resolved path. "
             "Each success binds complete source SHA-256/byte size and a character range. Follow continuation verbatim "
             "under request until null; concatenate text in order. EOF establishes delivery only, never understanding, "
             "readiness or authority. Every page rereads and verifies the complete selected input. max_batch_bytes "
@@ -337,7 +338,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         name=FIXTURE_REVIEW_TOOL,
         description=(
             "Read two exact SHA-256-bound JSON-string fixture envelopes as a decoded field-change view. "
-            "Relative paths select from project_root; returned source identities and continuations use absolute paths. "
+            "Put all fields inside request. Relative paths select from project_root; returned source identities and continuations use absolute paths. "
             "Supply one repeat_text/repeat_count recipe; compact only its uniquely corresponding identical body, "
             "retaining changed frames and surrounding text. Literal source data cannot act as a marker. "
             "Pages (including exact continuation) and resource rejections fit usable max_batch_bytes (up to 16000). "
@@ -364,7 +365,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=BRIEF_SOURCE_PLAN_OUTPUT_TOOL,
-        description="Publish one immutable source plan to an explicit destination; writes only that destination.",
+        description="Publish one immutable source plan to an explicit destination; writes only that destination. Put all fields inside request.",
         annotations=LOCAL_AUTHORITY_ANNOTATIONS,
     )
     async def source_plan_output(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -381,7 +382,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=ITEM_DEFINITION_TOOL,
-        description="Read one full accepted Pinboard item definition or bounded descending definition history.",
+        description="Read one full accepted Pinboard item definition or bounded descending definition history. Put all fields inside request.",
     )
     async def item_definition(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return await execution._run_request(
@@ -399,7 +400,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         name=BRIEF_REVIEW_TOOL,
         description=(
             "Publish independent needs-correction evidence, or read the verified accepted brief and latest findings. "
-            "Status takes request:{operation:'status',project_root,work_root,brief_artifact_ref_id}. "
+            "Put all fields inside request. Status takes request:{operation:'status',project_root,work_root,brief_artifact_ref_id}. "
             "Both successful status variants supply accepted_brief_sha256, checkpoint_sha256 and "
             "reviewed_authority_set_sha256 from verified accepted bytes; copy these exact initial-review bindings. "
             "Supply independent reviewer identity and judgments separately. Local checkpoints do not use brief review. "
@@ -429,7 +430,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         description=(
             "Read one current Pinboard item status, map an exact branch to the items and attempts that own it, "
             "or check whether an item's reviewed change is present by content in a named local Git target. "
-            "Use operation item and its review_verdict for current-attempt review claims; terminal none and overview "
+            "Put all fields inside request. Use operation item and its review_verdict for current-attempt review claims; terminal none and overview "
             "omission do not deny historical exact coverage. Qualify unavailable or conflicting historical evidence."
         ),
     )
@@ -447,7 +448,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=PR_REVIEW_TOOL,
-        description="Discover and record a human-owned PR review brief, observed heads, exact-head rounds, and human-directed closure without an implementation attempt. File leaves start-file, review-brief-file and round-file retain the inline controls and replace only brief, brief_review or round with the matching <field>_path and <field>_sha256. Exact selected bytes are verified once and decoded into the same strict record before actor, independence and freshness checks.",
+        description="Discover and record a human-owned PR review brief, observed heads, exact-head rounds, and human-directed closure without an implementation attempt. Put all fields inside request. File leaves start-file, review-brief-file and round-file retain the inline controls and replace only brief, brief_review or round with the matching <field>_path and <field>_sha256. Exact selected bytes are verified once and decoded into the same strict record before actor, independence and freshness checks.",
     )
     async def pr_review(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         arguments: dict[str, JsonValue] = {"request": request}
@@ -464,7 +465,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=PROPOSAL_CREATE_TOOL,
-        description="Create one durable Pinboard proposal from its canonical structured input.",
+        description="Create one durable Pinboard proposal from its canonical structured input. Arguments are top-level project_root, work_root, proposal, actor_task_id and actor_host_id (no request wrapper).",
     )
     async def proposal_create(
         project_root: str,
@@ -494,7 +495,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=BRIEF_PUBLISH_TOOL,
-        description="Publish one canonical Pinboard work brief and accept its artifact reference. Publication is not readiness review or activation. Follow the Pinboard coordination Skill for preparation.",
+        description="Publish one canonical Pinboard work brief and accept its artifact reference. Arguments are top-level project_root, work_root and brief (no request wrapper). Publication is not readiness review or activation. Follow the Pinboard coordination Skill for preparation.",
     )
     async def brief_publish(
         project_root: str,
@@ -514,7 +515,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=BRIEF_PUBLISH_FILE_TOOL,
-        description="Publish one complete work brief from the exact selected file and its raw SHA-256. Verify the bytes once, decode the strict current brief, then use canonical publication. Publication is not readiness, activation or authenticated authorship. Existing inline publication remains supported.",
+        description="Publish one complete work brief from the exact selected file and its raw SHA-256. Arguments are top-level project_root, work_root, brief_path and brief_sha256 (no request wrapper). Verify the bytes once, decode the strict current brief, then use canonical publication. Publication is not readiness, activation or authenticated authorship. Existing inline publication remains supported.",
     )
     async def brief_publish_file(
         project_root: str, work_root: str, brief_path: str, brief_sha256: str
@@ -556,6 +557,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         name=OVERVIEW_TOOL,
         description=(
             "Read the current authoritative Pinboard work overview without changing durable state. "
+            "Arguments are top-level project_root and work_root (no request wrapper). "
             "Call it before answering or acting on this project's saved work: status, what to do next, "
             "priority, paused, merged or done work, or starting, continuing or closing a saved item. "
             "work_root is <project_root>/.pinboard unless the user named another board. "
@@ -587,7 +589,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=ACTIONS_TOOL,
-        description="Discover exact current legal Pinboard actions and their strict payload contracts.",
+        description="Discover exact current legal Pinboard actions and their strict payload contracts. Put all fields inside request.",
     )
     async def action_discovery(
         request: dict[str, JsonValue],
@@ -607,6 +609,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         name=ATTEMPT_INSPECT_TOOL,
         description=(
             "Inspect one exact Pinboard attempt, its accepted brief, evidence references, and continuation. "
+            "Arguments are top-level project_root, work_root, attempt_id and reconciliation (no request wrapper). "
             "Supply reconciliation:null for ordinary inspection or exact outer-owned repository observations "
             "for one resumed reviewed-work continuation."
         ),
@@ -635,7 +638,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=RETURN_CONTEXT_TOOL,
-        description="Read one exact same-attempt return with compact v2 evidence: accepted snapshot artifact reference, executable pinboard_artifact_verify arguments and typed metadata, without inline diff bytes. Verify the named file's complete raw digest and size, decode it and inspect the complete original diff through bounded output before assessment; metadata or byte verification alone is not review. Explicit selection kind historical returns provenance after rebind/rebase without current correction authority. Selection kind current-candidate requires the current active return and returned branch/HEAD, and supplies the effective correction context plus observed tracked candidate and omitted path names for fresh independent candidate-correction review. No publication, restoration, authority or lifecycle effects.",
+        description="Read one exact same-attempt return with compact v2 evidence: accepted snapshot artifact reference, executable pinboard_artifact_verify arguments and typed metadata, without inline diff bytes. Arguments are top-level project_root, work_root, attempt_id and selection (no request wrapper). Verify the named file's complete raw digest and size, decode it and inspect the complete original diff through bounded output before assessment; metadata or byte verification alone is not review. Explicit selection kind historical returns provenance after rebind/rebase without current correction authority. Selection kind current-candidate requires the current active return and returned branch/HEAD, and supplies the effective correction context plus observed tracked candidate and omitted path names for fresh independent candidate-correction review. No publication, restoration, authority or lifecycle effects.",
     )
     async def return_context(
         project_root: str, work_root: str, attempt_id: str, selection: dict[str, JsonValue]
@@ -659,7 +662,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=CORRECTION_CONTEXT_TOOL,
-        description="Read the exact effective correction brief and compact v2 starting evidence: accepted snapshot artifact reference, executable pinboard_artifact_verify arguments and typed metadata, without inline diff bytes. Verify the named file's complete raw digest and size, decode it and inspect the complete original diff through bounded output before assessment; metadata or byte verification alone is not review. Advisory coverage-reuse eligibility and blockers apply to a current return on its exact returned checkout; dispatch rechecks every fact and this read changes no state. It returns no review_id: correction dispatch takes a caller-chosen label described by pinboard_dispatch.",
+        description="Read the exact effective correction brief and compact v2 starting evidence: accepted snapshot artifact reference, executable pinboard_artifact_verify arguments and typed metadata, without inline diff bytes. Arguments are top-level project_root, work_root, attempt_id and correction_history_id (no request wrapper). Verify the named file's complete raw digest and size, decode it and inspect the complete original diff through bounded output before assessment; metadata or byte verification alone is not review. Advisory coverage-reuse eligibility and blockers apply to a current return on its exact returned checkout; dispatch rechecks every fact and this read changes no state. It returns no review_id: correction dispatch takes a caller-chosen label described by pinboard_dispatch.",
     )
     async def correction_context(
         project_root: str,
@@ -693,6 +696,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         name=BRIEF_LOOKUP_TOOL,
         description=(
             "Recover the verified accepted brief receipt for the original exact attempt_id and artifact_revision. "
+            "Arguments are top-level project_root, work_root, attempt_id and artifact_revision (no request wrapper). "
             "Read-only, including when optional tracing is enabled; does not publish, bind or certify readiness."
         ),
         annotations=READ_ONLY_ANNOTATIONS,
@@ -721,7 +725,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=ARTIFACT_VERIFY_TOOL,
-        description="Verify an exact accepted Pinboard artifact reference and its immutable bytes.",
+        description="Verify an exact accepted Pinboard artifact reference and its immutable bytes. Arguments are top-level project_root, work_root, artifact_ref_id, selector, sha256 and size_bytes (no request wrapper).",
     )
     async def artifact_verify(
         project_root: str,
@@ -759,7 +763,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=PREPARATION_AUTHORITY_TOOL,
-        description="Read or change one exact Pinboard preparation authority.",
+        description="Read or change one exact Pinboard preparation authority. Put all fields inside request.",
         annotations=LOCAL_AUTHORITY_ANNOTATIONS,
     )
     async def preparation_authority(
@@ -778,7 +782,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=ATTEMPT_AUTHORITY_TOOL,
-        description="Read or change one exact Pinboard attempt authority. Use operation status before worker claims; overview preparation release or revocation says nothing about this worker authority.",
+        description="Read or change one exact Pinboard attempt authority. Put all fields inside request. Use operation status before worker claims; overview preparation release or revocation says nothing about this worker authority.",
         annotations=LOCAL_AUTHORITY_ANNOTATIONS,
     )
     async def attempt_authority(
@@ -822,7 +826,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "to confirm every call; Codex and earlier Claude Code versions may not ask. Antigravity asks through "
             "Pinboard's PreToolUse force_ask decision, so this tool is unavailable in headless agy runs; when that "
             "hook does not run, Antigravity's own approval settings decide. "
-            "Arguments are project_root, work_root, receipt, payload, actor_task_id "
+            "Arguments are top-level project_root, work_root, receipt, payload, actor_task_id "
             "and actor_host_id (no request wrapper, no role). receipt contains ONLY action_id:{kind:'close',"
             "subject:<item_id>} and subject_revision from the close action pinboard_actions returned. payload is "
             "{outcome:'done', reason:<one line>, human_decision:<the human's explicit close decision in "
@@ -868,7 +872,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "do not guess unspecified inputs or infer missing capability or a regression from that display. "
             "Action discovery omits payload_schema for dispatch because it has no lifecycle-transition payload. "
             "Construct its separate launch request from the fields below.\n"
-            "Arguments are project_root, work_root and dispatch (no request wrapper). Unknown fields reject.\n"
+            "Arguments are top-level project_root, work_root and dispatch (no request wrapper). Unknown fields reject.\n"
             "The six worker-launch leaves require kind, receipt, checkpoint_id, environment and prompt; replacement-readiness has its distinct fields below. "
             "receipt contains ONLY action_id:{kind:'dispatch',subject:<attempt_id>} and subject_revision "
             "copied from the fresh project dispatch action returned by pinboard_actions, not the whole action. "
@@ -963,7 +967,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=CANDIDATE_OBSERVE_TOOL,
-        description="Read one attempt's actual tracked working-tree candidate identity and omitted Git-visible nonignored untracked paths. Changes nothing; does not prepare files, freeze evidence, acquire authority, submit or decide acceptance. Prepare only intended files under separate authority, then reobserve before existing leased submission.",
+        description="Read one attempt's actual tracked working-tree candidate identity and omitted Git-visible nonignored untracked paths. Arguments are top-level project_root, work_root and attempt_id (no request wrapper). Changes nothing; does not prepare files, freeze evidence, acquire authority, submit or decide acceptance. Prepare only intended files under separate authority, then reobserve before existing leased submission.",
     )
     async def candidate_observe(project_root: str, work_root: str, attempt_id: str) -> dict[str, JsonValue]:
         return await execution._run_request(
@@ -979,7 +983,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=CANDIDATE_RESTORE_TOOL,
-        description="Restore exact verified accepted candidate bytes into a caller-selected exact clean checkout. Changes only source checkout; no lifecycle, authority or automatic launch.",
+        description="Restore exact verified accepted candidate bytes into a caller-selected exact clean checkout. Arguments are top-level project_root, work_root, attempt_id and candidate (no request wrapper). Changes only source checkout; no lifecycle, authority or automatic launch.",
     )
     async def candidate_restore(
         project_root: str, work_root: str, attempt_id: str, candidate: str
@@ -1004,7 +1008,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         name=REVIEW_JOB_TOOL,
         description=(
             "Publish one candidate-bound reviewer launch with exact caller-selected historical evidence, or record "
-            "one exact favorable candidate review with kind:'record-ready'. Launch leaves require runtime:'codex', "
+            "one exact favorable candidate review with kind:'record-ready'. Arguments are top-level project_root, work_root and review (no request wrapper). Launch leaves require runtime:'codex', "
             "'claude-code' or 'antigravity' and background:<boolean>; record-ready takes neither and returns no native launch. "
             "record-ready requires reviewer_prompt_sha256: the prompt_reference.sha256 that the launch for this exact "
             "candidate and result returned, with the reviewer_task_id of the reviewer launched from it. Completion "
@@ -1028,7 +1032,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=CANCEL_TOOL,
-        description="Preview one live item's cancellation without effects, then confirm only after a separate explicit human confirmation for the exact shown item and consequences. Never initiate cancellation or infer it from cleanup, completion, ambiguity or silence. Every sharing client must use a cancellation-aware build before first cancellation.",
+        description="Preview one live item's cancellation without effects, then confirm only after a separate explicit human confirmation for the exact shown item and consequences. Put all fields inside request. Never initiate cancellation or infer it from cleanup, completion, ambiguity or silence. Every sharing client must use a cancellation-aware build before first cancellation.",
     )
     async def cancel(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         arguments: dict[str, JsonValue] = {"request": request}
@@ -1045,7 +1049,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=INITIATIVE_TOOL,
-        description="Read or revise ledger-owned initiatives, dated membership episodes, human decisions and goal assessments; read the global offline roadmap. Initiative membership and dependency waves grant no execution authority.",
+        description="Read or revise ledger-owned initiatives, dated membership episodes, human decisions and goal assessments; read the global offline roadmap. Put all fields inside request. Initiative membership and dependency waves grant no execution authority.",
     )
     async def initiative(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         arguments: dict[str, JsonValue] = {"request": request}

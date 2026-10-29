@@ -1,9 +1,17 @@
+import asyncio
 import json
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import msgspec
+from mcp.client.client import Client
 
+from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.sqlite.database import initialize_database
+from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.adapters.transition_input import (
     ParsedTransitionInput,
     TransitionInputFailure,
@@ -14,8 +22,10 @@ from pinboard.application.actions import encoded_action_input_schema
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, ProposalId, WorkItemId
+from pinboard.mcp import server as mcp_server
 from tests.domain_support import action
-from tests.support import JsonObject, JsonValue
+from tests.native_support import native_tools
+from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 
 
 def expect_transition_command(
@@ -576,3 +586,179 @@ class RecordTextInputTest(unittest.TestCase):
                 rejected = parse_transition_input(selected_action, json.dumps(payload))
                 assert isinstance(rejected, TransitionInputFailure)
                 self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected.code)
+
+    def test_advertised_tool_descriptions_state_request_wrapper_convention(self) -> None:
+        with native_tools() as native:
+
+            async def list_advertised_tools() -> list[tuple[str, str, dict[str, JsonValue]]]:
+                async with Client(native.server) as client:
+                    tools_result = await client.list_tools()
+                    return [(tool.name, tool.description or "", tool.input_schema) for tool in tools_result.tools]
+
+            advertised = asyncio.run(list_advertised_tools())
+            self.assertTrue(advertised)
+            for name, description, schema in advertised:
+                properties = schema.get("properties")
+                assert isinstance(properties, dict)
+                with self.subTest(tool=name):
+                    if set(properties) == {"request"}:
+                        self.assertIn("inside request", description)
+                    else:
+                        self.assertNotIn("request", properties)
+                        self.assertIn("top-level", description)
+                        self.assertIn("no request wrapper", description)
+
+    def test_advertised_transition_receipt_shape_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, native_tools() as native:
+            project = Path(directory).resolve()
+            subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+            roots = resolve_durable_roots(project)
+            initialize_database(roots, SQLITE_NOW)
+            store = SQLiteWorkStore(roots.database_path)
+            initialize_store(store, complete_sqlite_state())
+
+            discovered = native.call_advertised_tool(
+                mcp_server.ACTIONS_TOOL,
+                {
+                    "request": {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "role": "project",
+                        "action_id": {"kind": "pause", "subject": "work-a-1"},
+                    }
+                },
+            )
+            self.assertEqual("ok", discovered["status"], discovered)
+            actions_list = discovered["actions"]
+            assert isinstance(actions_list, list) and len(actions_list) == 1
+            pause_action = actions_list[0]
+            assert isinstance(pause_action, dict)
+
+            before = store.validated_snapshot()
+            expected_shape = '{"action_id":{"kind":"<action>","subject":"<id>"},"subject_revision":"<revision>"}'
+            misplaced_cases: tuple[tuple[str, JsonObject, str], ...] = (
+                (
+                    "whole-action",
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "role": "project",
+                        "action": pause_action,
+                        "payload": {"reason": "Wait for human input."},
+                        "actor_task_id": "coordinator-task",
+                        "actor_host_id": "local",
+                    },
+                    "request.action",
+                ),
+                (
+                    "flat-receipt-fields",
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "role": "project",
+                        "action_id": pause_action["action_id"],
+                        "subject_revision": pause_action["subject_revision"],
+                        "payload": {"reason": "Wait for human input."},
+                        "actor_task_id": "coordinator-task",
+                        "actor_host_id": "local",
+                    },
+                    "request.action_id, request.subject_revision",
+                ),
+                (
+                    "missing-receipt",
+                    {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "role": "project",
+                        "payload": {"reason": "Wait for human input."},
+                        "actor_task_id": "coordinator-task",
+                        "actor_host_id": "local",
+                    },
+                    "request.receipt",
+                ),
+            )
+            for label, request_body, misplaced_key in misplaced_cases:
+                with self.subTest(case=label):
+                    rejected = native.call_advertised_tool(
+                        mcp_server.TRANSITION_TOOL,
+                        {"request": request_body},
+                    )
+                    self.assertEqual("rejected", rejected["status"], rejected)
+                    self.assertEqual("TRANSITION_INPUT_INVALID", rejected["code"], rejected)
+                    self.assertEqual("unchanged", rejected["effect"], rejected)
+                    self.assertEqual("correct-input", rejected["retry"], rejected)
+                    self.assertFalse(rejected["state_changed"], rejected)
+                    self.assertEqual({"kind": "inspect", "subject": "invalid"}, rejected["action_id"], rejected)
+                    observed = rejected["observed"]
+                    assert isinstance(observed, list)
+                    observed_by_field = {fact["field"]: fact["value"] for fact in observed if isinstance(fact, dict)}
+                    self.assertIsNone(observed_by_field["decoded_action_id"])
+                    self.assertEqual(misplaced_key, observed_by_field["misplaced_key"])
+                    self.assertEqual("request.receipt", observed_by_field["required_receipt_field"])
+                    self.assertEqual("action_id, subject_revision", observed_by_field["required_receipt_keys"])
+                    self.assertEqual(expected_shape, observed_by_field["required_receipt_shape"])
+                    self.assertEqual(
+                        [
+                            {
+                                "field": "request.receipt",
+                                "expected": expected_shape,
+                                "observed": misplaced_key,
+                            }
+                        ],
+                        rejected["mismatches"],
+                    )
+                    message = str(rejected["message"])
+                    self.assertIn(misplaced_key, message)
+                    self.assertIn("request.receipt", message)
+                    self.assertIn("action_id", message)
+                    self.assertIn("subject_revision", message)
+                    self.assertIn("no action identity was decoded", message)
+                    self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+
+            close_rejected = native.call_advertised_tool(
+                mcp_server.TRANSITION_TOOL,
+                {
+                    "request": {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "role": "project",
+                        "receipt": {
+                            "action_id": {"kind": "close", "subject": "work-b"},
+                            "subject_revision": "1",
+                        },
+                        "payload": {
+                            "outcome": "done",
+                            "reason": "Done.",
+                            "human_decision": "Close work-b as done.",
+                        },
+                        "actor_task_id": "coordinator-task",
+                        "actor_host_id": "local",
+                    }
+                },
+            )
+            self.assertEqual("TRANSITION_INPUT_INVALID", close_rejected["code"], close_rejected)
+            self.assertEqual({"kind": "close", "subject": "work-b"}, close_rejected["action_id"])
+            self.assertEqual([{"field": "close_tool", "value": "pinboard_close"}], close_rejected["observed"])
+            self.assertEqual([], close_rejected["mismatches"])
+            self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+
+            committed = native.call_advertised_tool(
+                mcp_server.TRANSITION_TOOL,
+                {
+                    "request": {
+                        "project_root": str(project),
+                        "work_root": str(roots.work_root),
+                        "role": "project",
+                        "receipt": {
+                            "action_id": pause_action["action_id"],
+                            "subject_revision": pause_action["subject_revision"],
+                        },
+                        "payload": {"reason": "Wait for human input."},
+                        "actor_task_id": "coordinator-task",
+                        "actor_host_id": "local",
+                    }
+                },
+            )
+            self.assertIn(committed["status"], ("committed", "committed-with-warning"), committed)
+            self.assertEqual("committed", committed["effect"], committed)
+            self.assertTrue(committed["state_changed"], committed)

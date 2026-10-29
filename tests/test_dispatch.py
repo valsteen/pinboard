@@ -53,7 +53,7 @@ from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
-from tests.native_support import call_native_tool
+from tests.native_support import call_advertised_tool, call_native_tool
 from tests.support import SQLITE_DIGEST, SQLITE_NOW, JsonObject, complete_sqlite_state, initialize_store
 from tests.work_brief_support import CHECKPOINT_ID, needs_correction_review, ready_review, work_a_brief
 
@@ -1694,6 +1694,67 @@ class DispatchTest(unittest.TestCase):
                 self.assertEqual("unchanged", rejected["effect"])
                 self.assertEqual([], rejected["changed_surfaces"])
             self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+
+    def test_advertised_reviewed_dispatch_binding_mismatch_reports_exact_mismatches_and_status_source(self) -> None:
+        project, roots, store, value, action, environment = self.initialized()
+        before = store.validated_snapshot()
+        status_result = call_advertised_tool(
+            mcp_server.BRIEF_REVIEW_TOOL,
+            {
+                "request": {
+                    "operation": "status",
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                    "brief_artifact_ref_id": 1,
+                }
+            },
+        )
+        self.assertIn(
+            status_result["status"],
+            ("no-needs-correction-evidence", "needs-correction"),
+            status_result,
+        )
+        choice = self.dispatch_choice(action(), environment, ready_review(value), "binding-mismatch-review", None)
+        stale_choice = dict(choice)
+        raw_review = choice["brief_review"]
+        assert isinstance(raw_review, dict)
+        review_json = dict(raw_review)
+        review_json["checkpoint_sha256"] = "f" * 64
+        stale_choice["brief_review"] = review_json
+
+        rejected = call_advertised_tool(
+            mcp_server.DISPATCH_TOOL,
+            {"project_root": str(project), "work_root": str(roots.work_root), "dispatch": stale_choice},
+        )
+        self.assertEqual("rejected", rejected["status"], rejected)
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected["code"], rejected)
+        self.assertEqual("unchanged", rejected["effect"], rejected)
+        self.assertEqual("correct-input", rejected["retry"], rejected)
+        self.assertFalse(rejected["state_changed"], rejected)
+        self.assertEqual(
+            [
+                {
+                    "field": "checkpoint_sha256",
+                    "expected": status_result["checkpoint_sha256"],
+                    "observed": "f" * 64,
+                }
+            ],
+            rejected["mismatches"],
+        )
+        observed = rejected["observed"]
+        assert isinstance(observed, list)
+        observed_by_field = {fact["field"]: fact["value"] for fact in observed if isinstance(fact, dict)}
+        self.assertEqual("pinboard_brief_review", observed_by_field["binding_source_tool"])
+        self.assertEqual("status", observed_by_field["binding_source_operation"])
+        self.assertEqual(status_result["checkpoint_sha256"], observed_by_field["current_checkpoint_sha256"])
+        self.assertIn("pinboard_brief_review", str(rejected["message"]))
+        self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+
+        dispatched = call_advertised_tool(
+            mcp_server.DISPATCH_TOOL,
+            {"project_root": str(project), "work_root": str(roots.work_root), "dispatch": choice},
+        )
+        self.assertEqual("ready", dispatched["status"], dispatched)
 
 
 if __name__ == "__main__":

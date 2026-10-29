@@ -8,6 +8,7 @@ import hashlib
 from dataclasses import dataclass
 from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime
+from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Literal, assert_never, override
@@ -343,22 +344,55 @@ def _fresh_review_details(
     )
 
 
+class _ReviewBindingSource(Enum):
+    BRIEF_REVIEW_STATUS = "brief-review-status"
+    CORRECTION_CONTEXT = "correction-context"
+
+
 def _stale_review_failure(
-    review: work_brief_models.WorkBriefReview,
+    review: (
+        work_brief_models.WorkBriefReview
+        | work_brief_models.ReusedCoverageCorrectionReview
+        | work_brief_models.LocalCorrectionSourceReview
+    ),
     brief: work_brief_models.WorkBrief,
+    binding_source: _ReviewBindingSource,
 ) -> DispatchFailure:
-    checkpoint = brief.checkpoint
-    assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
-    current_checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
     current_accepted_brief_sha256 = hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
-    current_authority_set_sha256 = hashlib.sha256(
-        canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)
-    ).hexdigest()
-    return DispatchFailure(
-        DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
-        "Brief review is not bound to the current accepted brief, checkpoint, and reviewed authorities.",
-        _fresh_review_details(
-            (
+    match binding_source:
+        case _ReviewBindingSource.BRIEF_REVIEW_STATUS:
+            source_facts = (
+                FailureFact("binding_source_tool", "pinboard_brief_review"),
+                FailureFact("binding_source_operation", "status"),
+            )
+            source_hint = (
+                "Read pinboard_brief_review with operation 'status' for the current accepted brief and copy its "
+                "digest bindings before retrying."
+            )
+        case _ReviewBindingSource.CORRECTION_CONTEXT:
+            source_facts = (
+                FailureFact("binding_source_tool", "pinboard_correction_context"),
+                FailureFact("alternate_binding_source_tool", "pinboard_return_context"),
+                FailureFact("alternate_binding_source_selection", "current-candidate"),
+                FailureFact("effective_brief_digest_field", "effective_brief_sha256"),
+            )
+            source_hint = (
+                "Read pinboard_correction_context or pinboard_return_context (selection kind 'current-candidate') "
+                "for this attempt and return round and copy its effective brief digest bindings "
+                "(effective_brief_sha256 as accepted_brief_sha256, plus checkpoint_sha256 and "
+                "reviewed_authority_set_sha256 when applicable) before retrying."
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    match review:
+        case work_brief_models.WorkBriefReview():
+            checkpoint = brief.checkpoint
+            assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+            current_checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
+            current_authority_set_sha256 = hashlib.sha256(
+                canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)
+            ).hexdigest()
+            observed = (
                 FailureFact("provided_accepted_brief_sha256", review.accepted_brief_sha256),
                 FailureFact("current_accepted_brief_sha256", current_accepted_brief_sha256),
                 FailureFact("provided_checkpoint_sha256", review.checkpoint_sha256),
@@ -368,8 +402,9 @@ def _stale_review_failure(
                     review.reviewed_authority_set_sha256,
                 ),
                 FailureFact("current_reviewed_authority_set_sha256", current_authority_set_sha256),
-            ),
-            (
+                *source_facts,
+            )
+            mismatches = (
                 *(
                     (
                         FailureMismatch(
@@ -397,8 +432,35 @@ def _stale_review_failure(
                     if review.reviewed_authority_set_sha256 != current_authority_set_sha256
                     else ()
                 ),
-            ),
-        ),
+            )
+            message = (
+                "Brief review is not bound to the current accepted brief, checkpoint, and reviewed authorities. "
+                f"{source_hint}"
+            )
+        case work_brief_models.ReusedCoverageCorrectionReview() | work_brief_models.LocalCorrectionSourceReview():
+            observed = (
+                FailureFact("provided_accepted_brief_sha256", review.accepted_brief_sha256),
+                FailureFact("current_accepted_brief_sha256", current_accepted_brief_sha256),
+                *source_facts,
+            )
+            mismatches = (
+                (
+                    FailureMismatch(
+                        "accepted_brief_sha256",
+                        current_accepted_brief_sha256,
+                        review.accepted_brief_sha256,
+                    ),
+                )
+                if review.accepted_brief_sha256 != current_accepted_brief_sha256
+                else ()
+            )
+            message = f"Brief review is not bound to the current accepted brief. {source_hint}"
+        case _ as unreachable:
+            assert_never(unreachable)
+    return DispatchFailure(
+        DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+        message,
+        _fresh_review_details(observed, mismatches),
     )
 
 
@@ -443,6 +505,21 @@ def review_failure(error: work_brief_models.WorkBriefFailure) -> DispatchFailure
         case _ as unreachable:
             assert_never(unreachable)
     return DispatchFailure(code, error.message, None)
+
+
+def _review_validation_failure(
+    failure: work_brief_models.WorkBriefFailure,
+    review: (
+        work_brief_models.WorkBriefReview
+        | work_brief_models.ReusedCoverageCorrectionReview
+        | work_brief_models.LocalCorrectionSourceReview
+    ),
+    brief: work_brief_models.WorkBrief,
+    binding_source: _ReviewBindingSource,
+) -> DispatchFailure:
+    if failure.code == work_brief_models.WorkBriefErrorCode.REVIEW_STALE:
+        return _stale_review_failure(review, brief, binding_source)
+    return review_failure(failure)
 
 
 def _dispatch_failure(failure: ApplicationDispatchFailure) -> DispatchFailure:
@@ -740,7 +817,9 @@ def _replacement_readiness_context(
             _fresh_review_details((), ()),
         )
     if (failure := validate_work_brief_review(review.contract_review, brief)) is not None:
-        return review_failure(failure)
+        return _review_validation_failure(
+            failure, review.contract_review, brief, _ReviewBindingSource.BRIEF_REVIEW_STATUS
+        )
     snapshot = _read_returned_snapshot(
         store, artifacts, brief, history_id, review.starting_candidate, review.correction_input.reason
     )
@@ -982,6 +1061,24 @@ def _read_returned_snapshot(
             _fresh_review_details((), ()),
         )
     if reason != evidence.reason:
+        if reason.replace(r"\r", "\r").replace(r"\n", "\n") == evidence.reason.replace(r"\r", "\r").replace(
+            r"\n", "\n"
+        ):
+            return DispatchFailure(
+                DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+                "Source review does not identify the canonical return reason: the supplied correction_input.reason "
+                "and the canonical return reason differ only by literal '\\n' or '\\r' escape sequences versus "
+                "actual line breaks. Copy correction_reason verbatim from pinboard_correction_context or "
+                "pinboard_return_context.",
+                _fresh_review_details(
+                    (
+                        FailureFact("correction_reason_difference", "escaped-versus-actual-line-breaks"),
+                        FailureFact("canonical_reason_source_tool", "pinboard_correction_context"),
+                        FailureFact("alternate_canonical_reason_source_tool", "pinboard_return_context"),
+                    ),
+                    (FailureMismatch("correction_reason", evidence.reason, reason),),
+                ),
+            )
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
             "Source review does not identify the canonical return reason.",
@@ -1436,7 +1533,9 @@ def _read_reusable_ready_review(
             f"Accepted ready coverage is unreadable: {error}. Use the full cross-boundary correction review.",
             _fresh_review_details((), ()),
         )
-    if (failure := _validate_accepted_review(effective_brief, ready_bytes)) is not None:
+    if (
+        failure := _validate_accepted_review(effective_brief, ready_bytes, _ReviewBindingSource.CORRECTION_CONTEXT)
+    ) is not None:
         return DispatchFailure(
             failure.code,
             f"Accepted ready coverage is invalid: {failure.message} Use the full cross-boundary correction review.",
@@ -1461,7 +1560,9 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
                     )
                 ):
                     if (failure := validate_local_correction_source_review(review, brief)) is not None:
-                        return review_failure(failure)
+                        return _review_validation_failure(
+                            failure, review, brief, _ReviewBindingSource.CORRECTION_CONTEXT
+                        )
                     return PublishSuppliedDispatchReview(
                         ready_review_key_sha256(brief),
                         canonical_correction_source_review_bytes(review),
@@ -1483,7 +1584,9 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
                     review = choice.review
                 case CorrectionDispatch(review=work_brief_models.ReusedCoverageCorrectionReview() as reused):
                     if (failure := validate_reused_coverage_correction_review(reused, brief)) is not None:
-                        return review_failure(failure)
+                        return _review_validation_failure(
+                            failure, reused, brief, _ReviewBindingSource.CORRECTION_CONTEXT
+                        )
                     return PublishSuppliedDispatchReview(
                         ready_review_key_sha256(brief),
                         canonical_correction_source_review_bytes(reused),
@@ -1499,10 +1602,13 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
                     review = choice.review.contract_review
                 case _ as unreachable:
                     assert_never(unreachable)
+            binding_source = (
+                _ReviewBindingSource.CORRECTION_CONTEXT
+                if isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch))
+                else _ReviewBindingSource.BRIEF_REVIEW_STATUS
+            )
             if (failure := validate_work_brief_review(review, brief)) is not None:
-                if failure.code == work_brief_models.WorkBriefErrorCode.REVIEW_STALE:
-                    return _stale_review_failure(review, brief)
-                return review_failure(failure)
+                return _review_validation_failure(failure, review, brief, binding_source)
             candidate = (
                 canonical_correction_source_review_bytes(choice.review)
                 if isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch))
@@ -1514,7 +1620,9 @@ def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispa
 
 
 def _validate_accepted_review(
-    brief: work_brief_models.WorkBrief, accepted_review: bytes | None
+    brief: work_brief_models.WorkBrief,
+    accepted_review: bytes | None,
+    binding_source: _ReviewBindingSource,
 ) -> DispatchFailure | None:
     match brief.checkpoint:
         case work_brief_models.LocalCheckpoint():
@@ -1535,9 +1643,7 @@ def _validate_accepted_review(
             if isinstance(review, work_brief_models.WorkBriefFailure):
                 return review_failure(review)
             if (failure := validate_work_brief_review(review, brief)) is not None:
-                if failure.code == work_brief_models.WorkBriefErrorCode.REVIEW_STALE:
-                    return _stale_review_failure(review, brief)
-                return review_failure(failure)
+                return _review_validation_failure(failure, review, brief, binding_source)
         case _ as unreachable:
             assert_never(unreachable)
     return None
@@ -1554,7 +1660,12 @@ def _render_dispatch_prompt(
     supplied_prompt: bytes | None,
     choice: DispatchPreparationChoice,
 ) -> DispatchResult[str]:
-    if (failure := _validate_accepted_review(brief, accepted_review)) is not None:
+    binding_source = (
+        _ReviewBindingSource.CORRECTION_CONTEXT
+        if isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch))
+        else _ReviewBindingSource.BRIEF_REVIEW_STATUS
+    )
+    if (failure := _validate_accepted_review(brief, accepted_review, binding_source)) is not None:
         return failure
     prompt = _canonical_prompt(
         work_root, attempt_path, accepted_brief_bytes, brief.attempt_id, checkpoint, environment, choice
@@ -1719,11 +1830,16 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         checkpoint_value = validated_brief.checkpoint
         if isinstance(choice.review, work_brief_models.LocalCorrectionSourceReview):
             if (failure := validate_local_correction_source_review(choice.review, validated_brief)) is not None:
+                mapped = (
+                    _stale_review_failure(choice.review, validated_brief, _ReviewBindingSource.CORRECTION_CONTEXT)
+                    if failure.code == work_brief_models.WorkBriefErrorCode.REVIEW_STALE
+                    else review_failure(failure)
+                )
                 return _after_publication_failure(
-                    review_failure(failure).code,
-                    failure.message,
+                    mapped.code,
+                    mapped.message,
                     review_publication_surfaces,
-                    None,
+                    mapped.details,
                     review_selector_facts,
                 )
             accepted_review_bytes = None

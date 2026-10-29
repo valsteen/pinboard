@@ -2199,3 +2199,348 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual("DISPATCH_CHECKOUT_MISMATCH", result["code"], result)
         self.assertFalse(result["state_changed"])
         self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def test_advertised_correction_binding_mismatch_diagnostics(self) -> None:
+        self.fixed_native_time()
+        fixture = self.correction_fixture()
+        history_id, full_choice = self.submit_and_return(fixture, "binding-diagnostic", committed=True)
+        reuse_choice = self.reuse_choice(fixture, full_choice)
+        candidate_choice = self.current_candidate_choice(fixture, history_id, full_choice)
+
+        correction_ctx = fixture.call_advertised_tool(
+            server.CORRECTION_CONTEXT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "correction_history_id": history_id,
+            },
+        )
+        self.assertEqual("ready", correction_ctx["status"], correction_ctx)
+        return_ctx = fixture.call_advertised_tool(
+            server.RETURN_CONTEXT_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "selection": {"kind": "current-candidate", "return_history_id": history_id},
+            },
+        )
+        self.assertEqual("ready", return_ctx["status"], return_ctx)
+        return_review_ctx = self.json_object(self.json_object(return_ctx["context"])["review_context"])
+        expected_brief_sha = str(correction_ctx["effective_brief_sha256"])
+        expected_checkpoint_sha = str(correction_ctx["checkpoint_sha256"])
+        self.assertEqual(expected_brief_sha, return_review_ctx["effective_brief_sha256"])
+        self.assertEqual(expected_checkpoint_sha, return_review_ctx["checkpoint_sha256"])
+
+        stale_full = deepcopy(full_choice)
+        self.json_object(self.json_object(stale_full["brief_review"])["contract_review"])["checkpoint_sha256"] = (
+            "f" * 64
+        )
+        stale_candidate = deepcopy(candidate_choice)
+        self.json_object(
+            self.json_object(self.json_object(stale_candidate["brief_review"])["source_review"])["contract_review"]
+        )["checkpoint_sha256"] = "f" * 64
+        stale_reuse = deepcopy(reuse_choice)
+        self.json_object(stale_reuse["brief_review"])["accepted_brief_sha256"] = "f" * 64
+
+        before = fixture.store.validated_snapshot()
+        for label, invalid, field_name, expected_val in (
+            ("correction", stale_full, "checkpoint_sha256", expected_checkpoint_sha),
+            ("candidate-correction", stale_candidate, "checkpoint_sha256", expected_checkpoint_sha),
+            ("reuse-correction", stale_reuse, "accepted_brief_sha256", expected_brief_sha),
+        ):
+            with self.subTest(kind=label):
+                rejected = fixture.call_advertised_tool(
+                    server.DISPATCH_TOOL,
+                    {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": invalid},
+                )
+                self.assertEqual("rejected", rejected["status"], rejected)
+                self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected["code"], rejected)
+                self.assertEqual("unchanged", rejected["effect"], rejected)
+                self.assertEqual("correct-input", rejected["retry"], rejected)
+                self.assertFalse(rejected["state_changed"], rejected)
+                self.assertEqual(
+                    [{"field": field_name, "expected": expected_val, "observed": "f" * 64}],
+                    rejected["mismatches"],
+                )
+                observed = rejected["observed"]
+                assert isinstance(observed, list)
+                observed_by_field = {fact["field"]: fact["value"] for fact in observed if isinstance(fact, dict)}
+                self.assertEqual("pinboard_correction_context", observed_by_field["binding_source_tool"])
+                self.assertEqual("pinboard_return_context", observed_by_field["alternate_binding_source_tool"])
+                self.assertEqual("current-candidate", observed_by_field["alternate_binding_source_selection"])
+                self.assertIn("pinboard_correction_context", str(rejected["message"]))
+                self.assertIn("pinboard_return_context", str(rejected["message"]))
+                self.assertEqual(before, fixture.store.validated_snapshot())
+
+        dispatched_reuse = fixture.call_advertised_tool(
+            server.DISPATCH_TOOL,
+            {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": reuse_choice},
+        )
+        self.assertEqual("ready", dispatched_reuse["status"], dispatched_reuse)
+
+    def test_advertised_local_correction_binding_mismatch_diagnostic(self) -> None:
+        self.fixed_native_time()
+        local_fixture = self.native_fixture(self.checkpoint_fixture(local=True))
+        local_snapshot_ctx = local_fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert local_snapshot_ctx is not None
+        local_reason = "Submit a clean local commit."
+        local_history_id = self.return_for_correction(local_fixture, local_reason, "local-binding")
+        local_fixture = self.pause_and_resume(local_fixture, 2)
+        local_ctx = local_fixture.call_advertised_tool(
+            server.CORRECTION_CONTEXT_TOOL,
+            {
+                "project_root": str(local_fixture.project),
+                "work_root": str(local_fixture.work),
+                "attempt_id": "work-a-1",
+                "correction_history_id": local_history_id,
+            },
+        )
+        self.assertEqual("ready", local_ctx["status"], local_ctx)
+        local_expected_sha = str(local_ctx["effective_brief_sha256"])
+        local_action = self.project_action(local_fixture, "dispatch:work-a-1")
+        local_review: JsonObject = {
+            "schema": "pinboard-local-correction-source-review/v1",
+            "accepted_brief_sha256": local_expected_sha,
+            "reviewer_task_id": "independent-local-reviewer",
+            "starting_candidate": local_ctx["starting_candidate"],
+            "correction_input": {"reason": local_reason},
+            "assessment": "Local candidate assessment is complete.",
+        }
+        local_environment = msgspec.structs.replace(
+            test_dispatch.DispatchTest().environment(local_fixture.project),
+            branch=local_fixture.brief.branch,
+            starting_revision=local_fixture.brief.base_revision,
+        )
+        local_choice: JsonObject = {
+            "kind": "local-correction",
+            "receipt": {
+                "action_id": local_action["action_id"],
+                "subject_revision": local_action["subject_revision"],
+            },
+            "checkpoint_id": local_fixture.brief.checkpoint.checkpoint_id,
+            "environment": msgspec.to_builtins(local_environment, enc_hook=test_dispatch.dispatch_environment_enc_hook),
+            "prompt": None,
+            "review_id": "local-binding-review",
+            "correction_history_id": local_history_id,
+            "brief_review": local_review,
+        }
+        stale_local = deepcopy(local_choice)
+        self.json_object(stale_local["brief_review"])["accepted_brief_sha256"] = "f" * 64
+        local_before = local_fixture.store.validated_snapshot()
+        local_rejected = local_fixture.call_advertised_tool(
+            server.DISPATCH_TOOL,
+            {
+                "project_root": str(local_fixture.project),
+                "work_root": str(local_fixture.work),
+                "dispatch": stale_local,
+            },
+        )
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", local_rejected["code"], local_rejected)
+        self.assertEqual(
+            [{"field": "accepted_brief_sha256", "expected": local_expected_sha, "observed": "f" * 64}],
+            local_rejected["mismatches"],
+        )
+        local_observed = local_rejected["observed"]
+        assert isinstance(local_observed, list)
+        local_observed_map = {fact["field"]: fact["value"] for fact in local_observed if isinstance(fact, dict)}
+        self.assertEqual("pinboard_correction_context", local_observed_map["binding_source_tool"])
+        self.assertEqual("pinboard_return_context", local_observed_map["alternate_binding_source_tool"])
+        self.assertEqual(local_before, local_fixture.store.validated_snapshot())
+        local_ready = local_fixture.call_advertised_tool(
+            server.DISPATCH_TOOL,
+            {
+                "project_root": str(local_fixture.project),
+                "work_root": str(local_fixture.work),
+                "dispatch": local_choice,
+            },
+        )
+        self.assertEqual("ready", local_ready["status"], local_ready)
+
+    def test_advertised_replacement_readiness_binding_mismatch_diagnostic(self) -> None:
+        self.fixed_native_time()
+        replacement_fixture = self.correction_fixture()
+        old_history, _old_choice = self.submit_and_return(replacement_fixture, "replacement-diag", committed=True)
+        candidate = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=replacement_fixture.project, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        checkpoint = replacement_fixture.brief.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        replacement_brief = msgspec.structs.replace(
+            replacement_fixture.brief,
+            artifact_revision=replacement_fixture.brief.artifact_revision + 1,
+            checkpoint=msgspec.structs.replace(
+                checkpoint,
+                title="Replacement checkpoint for binding diagnostic",
+            ),
+        )
+        published = replacement_fixture.call_advertised_tool(
+            server.BRIEF_PUBLISH_TOOL,
+            {
+                "project_root": str(replacement_fixture.project),
+                "work_root": str(replacement_fixture.work),
+                "brief": msgspec.to_builtins(replacement_brief),
+            },
+        )
+        self.assertEqual("committed", published["status"], published)
+        brief_ref = self.json_object(published["reference"])
+        rebound = self.transition_result(
+            replacement_fixture,
+            self.project_action(replacement_fixture, "rebind-attempt:work-a-1"),
+            {
+                "branch": replacement_brief.branch,
+                "base_revision": replacement_brief.base_revision,
+                "brief_artifact_ref_id": brief_ref["artifact_ref_id"],
+            },
+        )
+        self.assertEqual("committed", rebound["status"], rebound)
+        replacement_fixture = dataclasses.replace(replacement_fixture, brief=replacement_brief)
+        replacement_status = replacement_fixture.call_advertised_tool(
+            server.BRIEF_REVIEW_TOOL,
+            {
+                "request": {
+                    "operation": "status",
+                    "project_root": str(replacement_fixture.project),
+                    "work_root": str(replacement_fixture.work),
+                    "brief_artifact_ref_id": brief_ref["artifact_ref_id"],
+                }
+            },
+        )
+        returned_context = SQLiteWorkStore(replacement_fixture.work / "state.sqlite3").read_review_job_context(
+            AttemptId("work-a-1"), None, HistoryId(old_history), None, None
+        )
+        assert returned_context is not None and returned_context.returned_candidate_snapshot is not None
+        replacement_choice = self.correction_choice(
+            replacement_fixture,
+            "replacement-readiness-diag",
+            returned_context.returned_candidate_snapshot.reference,
+            old_history,
+            "Repair the test-only candidate.",
+        )
+        replacement_choice["kind"] = "replacement-readiness"
+        replacement_choice["current_candidate"] = candidate
+        del replacement_choice["environment"]
+        del replacement_choice["prompt"]
+        stale_replacement = deepcopy(replacement_choice)
+        self.json_object(self.json_object(stale_replacement["brief_review"])["contract_review"])[
+            "checkpoint_sha256"
+        ] = "f" * 64
+        replacement_rejected = replacement_fixture.call_advertised_tool(
+            server.DISPATCH_TOOL,
+            {
+                "project_root": str(replacement_fixture.project),
+                "work_root": str(replacement_fixture.work),
+                "dispatch": stale_replacement,
+            },
+        )
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", replacement_rejected["code"], replacement_rejected)
+        self.assertEqual(
+            [
+                {
+                    "field": "checkpoint_sha256",
+                    "expected": replacement_status["checkpoint_sha256"],
+                    "observed": "f" * 64,
+                }
+            ],
+            replacement_rejected["mismatches"],
+        )
+        replacement_observed = replacement_rejected["observed"]
+        assert isinstance(replacement_observed, list)
+        replacement_observed_map = {
+            fact["field"]: fact["value"] for fact in replacement_observed if isinstance(fact, dict)
+        }
+        self.assertEqual("pinboard_brief_review", replacement_observed_map["binding_source_tool"])
+        self.assertEqual("status", replacement_observed_map["binding_source_operation"])
+        replacement_ready = replacement_fixture.call_advertised_tool(
+            server.DISPATCH_TOOL,
+            {
+                "project_root": str(replacement_fixture.project),
+                "work_root": str(replacement_fixture.work),
+                "dispatch": replacement_choice,
+            },
+        )
+        self.assertEqual("replacement-ready", replacement_ready["status"], replacement_ready)
+
+    def test_advertised_return_reason_line_break_diagnostic_and_controls(self) -> None:
+        self.fixed_native_time()
+        escaped_text = r"First line\nSecond line"
+        actual_text = "First line\nSecond line"
+        for label, canonical_reason, supplied_reason in (
+            ("canonical-escaped-supplied-actual", escaped_text, actual_text),
+            ("canonical-actual-supplied-escaped", actual_text, escaped_text),
+        ):
+            with self.subTest(direction=label):
+                fixture = self.correction_fixture()
+                history_id, choice = self.submit_and_return(fixture, label, committed=True, reason=canonical_reason)
+                before = fixture.store.validated_snapshot()
+                mismatched = deepcopy(choice)
+                self.json_object(self.json_object(mismatched["brief_review"])["correction_input"])["reason"] = (
+                    supplied_reason
+                )
+                rejected = fixture.call_advertised_tool(
+                    server.DISPATCH_TOOL,
+                    {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": mismatched},
+                )
+                self.assertEqual("rejected", rejected["status"], rejected)
+                self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected["code"], rejected)
+                self.assertEqual("unchanged", rejected["effect"], rejected)
+                self.assertEqual("correct-input", rejected["retry"], rejected)
+                self.assertFalse(rejected["state_changed"], rejected)
+                self.assertEqual(
+                    [{"field": "correction_reason", "expected": canonical_reason, "observed": supplied_reason}],
+                    rejected["mismatches"],
+                )
+                observed = rejected["observed"]
+                assert isinstance(observed, list)
+                observed_by_field = {fact["field"]: fact["value"] for fact in observed if isinstance(fact, dict)}
+                self.assertEqual("escaped-versus-actual-line-breaks", observed_by_field["correction_reason_difference"])
+                self.assertEqual("pinboard_correction_context", observed_by_field["canonical_reason_source_tool"])
+                self.assertEqual("pinboard_return_context", observed_by_field["alternate_canonical_reason_source_tool"])
+                self.assertIn("escape sequences versus actual line breaks", str(rejected["message"]))
+                self.assertIn("pinboard_correction_context", str(rejected["message"]))
+                self.assertIn("pinboard_return_context", str(rejected["message"]))
+                self.assertEqual(before, fixture.store.validated_snapshot())
+
+                unrelated = deepcopy(choice)
+                self.json_object(self.json_object(unrelated["brief_review"])["correction_input"])["reason"] = (
+                    "Completely unrelated reason."
+                )
+                unrelated_rejected = fixture.call_advertised_tool(
+                    server.DISPATCH_TOOL,
+                    {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": unrelated},
+                )
+                self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", unrelated_rejected["code"], unrelated_rejected)
+                self.assertEqual(
+                    [
+                        {
+                            "field": "correction_reason",
+                            "expected": canonical_reason,
+                            "observed": "Completely unrelated reason.",
+                        }
+                    ],
+                    unrelated_rejected["mismatches"],
+                )
+                unrelated_observed = unrelated_rejected["observed"]
+                assert isinstance(unrelated_observed, list)
+                unrelated_fields = {fact["field"] for fact in unrelated_observed if isinstance(fact, dict)}
+                self.assertNotIn("correction_reason_difference", unrelated_fields)
+                self.assertNotIn("canonical_reason_source_tool", unrelated_fields)
+                self.assertNotIn("escape sequences versus actual line breaks", str(unrelated_rejected["message"]))
+                self.assertEqual(before, fixture.store.validated_snapshot())
+
+                context = fixture.call_advertised_tool(
+                    server.CORRECTION_CONTEXT_TOOL,
+                    {
+                        "project_root": str(fixture.project),
+                        "work_root": str(fixture.work),
+                        "attempt_id": "work-a-1",
+                        "correction_history_id": history_id,
+                    },
+                )
+                self.assertEqual(canonical_reason, context["correction_reason"])
+                dispatched = fixture.call_advertised_tool(
+                    server.DISPATCH_TOOL,
+                    {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
+                )
+                self.assertEqual("ready", dispatched["status"], dispatched)

@@ -19,13 +19,14 @@ from pathlib import Path
 
 import msgspec
 
-from evals.behavioral import claude_driver, codex_driver, credentials, processes, world
+from evals.behavioral import agy_driver, claude_driver, codex_driver, credentials, processes, world
 from evals.behavioral.board import SEEDED_HOST_ID
 from evals.behavioral.claude_driver import ClaudeSession, now
 from evals.behavioral.export import SeedFailure
 from evals.behavioral.layout import RUN_RECORD, SCENARIO_RECORD, SCORER_INPUT, Layout
 from evals.behavioral.processes import GitError
 from evals.behavioral.records import (
+    AgyEffort,
     ClaudeEffort,
     Completed,
     ExportRecord,
@@ -501,4 +502,119 @@ def codex_thread(state: RunState, built: world.World, home: Path, plan: CodexPla
             return Failed(stage=f"turn {index}", reason="session incomplete; unreported usage and cost unknown")
         if completed.returncode != 0 or reading.errors:
             return Failed(stage=f"turn {index}", reason="; ".join(reading.errors)[:2000] or completed.stderr[:2000])
+    return Completed()
+
+
+@dataclass(frozen=True)
+class AgyPlan:
+    run: RunPlan
+    reasoning_effort: AgyEffort
+
+
+def run_agy(plan: AgyPlan, budget: Budget, jobs: int) -> list[str]:
+    """Run every planned Antigravity run; an unpriced model or isolation breach stops further runs."""
+    agy_driver.price(plan.run.model)
+    return execute(
+        plan.run, budget, jobs, Category.ANTIGRAVITY_AGENT_RUN, lambda scenario, key: agy_run(plan, scenario, key)
+    )
+
+
+def agy_run(plan: AgyPlan, scenario: Scenario, key: RunKey) -> RunRecord:
+    run_plan = plan.run
+    agy_driver.price(run_plan.model)
+    state = start(run_plan, scenario, key)
+    project = state.world_root() / "tally"
+    home_path = state.world_root().with_name(f"{state.world_root().name}-agy-home")
+    version = "unreported"
+    outcome: RunOutcome = Completed()
+    interrupted: BaseException | None = None
+    entries: list[InventoryEntry] = []
+    observed_model: str | None = None
+    try:
+        with agy_driver.isolated_home(home_path) as home:
+            try:
+                version = agy_driver.agy_version(home, run_plan.window)
+                built, state.seeded = world.build_world(
+                    state.world_root(),
+                    scenario,
+                    Runtime.ANTIGRAVITY,
+                    Path(run_plan.export.plugin_root),
+                    str(uuid.uuid4()),
+                    run_plan.window,
+                )
+                agy_driver.install_plugin(home, Path(run_plan.export.plugin_root), run_plan.window)
+                plugins = agy_driver.installed_plugins(home, run_plan.window)
+                entries = agy_driver.loaded_context(project, plugins, processes.agy_environment(home))
+                findings = agy_driver.isolation_findings(home, project, run_plan.export, version, plugins, entries)
+                if findings:
+                    outcome = Stopped(reason=ISOLATION_FAILED + "; ".join(findings))
+                else:
+                    state.snapshot(built)
+                    session = agy_driver.AgySession.start(
+                        home=home,
+                        project=project,
+                        model=run_plan.model,
+                        effort=plan.reasoning_effort,
+                        window=run_plan.window,
+                    )
+                    outcome = agy_turns(state, built, session)
+                    observed_model = session.observed_model
+            except processes.CleanupUnconfirmed as failure:
+                outcome = Failed(stage=f"turn {len(state.turns)}", reason=str(failure))
+                interrupted = failure
+                raise
+            except (SeedFailure, GitError, agy_driver.AgyUnavailableError) as failure:
+                outcome = Failed(
+                    stage="world" if not state.turns else f"after turn {len(state.turns)}", reason=str(failure)
+                )
+            except (agy_driver.AgyStreamError, msgspec.DecodeError, subprocess.SubprocessError, OSError) as failure:
+                if isinstance(failure, processes.ProcessIncomplete):
+                    interrupted = failure
+                outcome = Failed(stage=f"turn {len(state.turns)}", reason=str(failure) or type(failure).__name__)
+            except BaseException as failure:
+                outcome = Failed(stage="harness", reason=repr(failure))
+                interrupted = failure
+    except processes.CleanupUnconfirmed:
+        pass
+    record = state.finish(
+        Runtime.ANTIGRAVITY,
+        version or "unreported",
+        agy_driver.details(plan.reasoning_effort, observed_model),
+        entries,
+        [],
+        outcome,
+    )
+    if interrupted is not None:
+        raise interrupted
+    if isinstance(outcome, Stopped) and outcome.reason.startswith(ISOLATION_FAILED):
+        raise IsolationBreachError(f"{key.display()}: {outcome.reason}; no further Antigravity run starts")
+    return record
+
+
+def agy_turns(state: RunState, built: world.World, session: agy_driver.AgySession) -> RunOutcome:
+    for index, turn in enumerate(state.scenario.turns, start=1):
+        state.run_hook(built, index)
+        raw_path = state.directory / f"turn-{index}.json"
+        try:
+            session.send_turn(index, turn.human, turn.before, raw_path)
+        except (processes.ProcessIncomplete, processes.CleanupUnconfirmed) as failure:
+            try:
+                raw_path.write_text(failure.stdout)
+                if failure.stderr:
+                    raw_path.with_suffix(".stderr").write_text(failure.stderr)
+            except BaseException as evidence_failure:
+                failure.add_note(f"raw turn output write failed: {evidence_failure}")
+                raise failure from evidence_failure
+            raise
+        except (
+            agy_driver.AgyStreamError,
+            msgspec.DecodeError,
+            subprocess.SubprocessError,
+            OSError,
+        ) as failure:
+            return Failed(stage=f"turn {index}", reason=str(failure) or type(failure).__name__)
+        finally:
+            if session.turn_evidence is not None:
+                state.turns.append(session.turn_evidence)
+        state.snapshot(built)
     return Completed()

@@ -97,6 +97,7 @@ class ScenarioSet(Record, frozen=True):
 class Runtime(Enum):
     CLAUDE_CODE = "claude-code"
     CODEX = "codex"
+    ANTIGRAVITY = "antigravity"
 
 
 class RunKey(Record, frozen=True):
@@ -185,7 +186,23 @@ class CodexRunDetails(Record, frozen=True, tag="codex"):
     credential_write_back: bool
 
 
-type RunDetails = ClaudeRunDetails | CodexRunDetails
+class AgyEffort(Enum):
+    """The effort levels Antigravity CLI's ``--effort`` option accepts for one session."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    MAX = "max"
+
+
+class AntigravityRunDetails(Record, frozen=True, tag="antigravity"):
+    reasoning_effort: AgyEffort
+    observed_model: str | None
+    permissions_allow: list[NonEmpty]
+    price_source: NonEmpty
+
+
+type RunDetails = ClaudeRunDetails | CodexRunDetails | AntigravityRunDetails
 
 
 class Completed(Record, frozen=True, tag="completed"):

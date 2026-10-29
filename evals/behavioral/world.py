@@ -1,8 +1,8 @@
 """Disposable scenario worlds: the ``tally`` project, its bare ``origin``, seeded boards, hooks and state snapshots.
 
-A world lives under a caller-named directory. The project fixture is identical for every runtime except the one
-declared difference in ``fixture_difference``: Codex reads ``AGENTS.md`` and not ``CLAUDE.md``, so a Codex world's
-``AGENTS.md`` also carries the project guidance a Claude Code world keeps in ``CLAUDE.md``.
+A world lives under a caller-named directory. The project fixture is identical for every runtime except the
+declared difference in ``fixture_difference``: Codex and Antigravity read ``AGENTS.md`` and not ``CLAUDE.md``, so
+their worlds' ``AGENTS.md`` also carries the project guidance a Claude Code world keeps in ``CLAUDE.md``.
 """
 
 import asyncio
@@ -11,7 +11,7 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -63,8 +63,14 @@ def fixture_difference(runtime: Runtime) -> str | None:
                 "(Pinboard route, inspection-only rule, maintainer identity), because Codex reads AGENTS.md "
                 "and not CLAUDE.md"
             )
+        case Runtime.ANTIGRAVITY:
+            return (
+                "AGENTS.md also carries the project guidance that Claude Code worlds keep in CLAUDE.md "
+                "(Pinboard route, inspection-only rule, maintainer identity), because Antigravity loads "
+                "directory-based workspace rules from AGENTS.md and not CLAUDE.md"
+            )
         case _ as unreachable:
-            raise AssertionError(unreachable)
+            assert_never(unreachable)
 
 
 def agents_file(runtime: Runtime) -> str:
@@ -72,10 +78,10 @@ def agents_file(runtime: Runtime) -> str:
     match runtime:
         case Runtime.CLAUDE_CODE:
             return repository
-        case Runtime.CODEX:
+        case Runtime.CODEX | Runtime.ANTIGRAVITY:
             return repository + "\n" + (FIXTURE / "project-guidance.md").read_text()
         case _ as unreachable:
-            raise AssertionError(unreachable)
+            assert_never(unreachable)
 
 
 def build_world(

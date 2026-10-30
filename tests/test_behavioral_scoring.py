@@ -1,10 +1,17 @@
-"""Strict decoding of blind scorer answers: only a complete checklist answer for the right label counts."""
+"""Strict decoding of blind scorer answers and isolated Claude / Antigravity Gemini one-shot scorer execution."""
 
 import json
+import tempfile
 import unittest
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from unittest import mock
 
-from evals.behavioral import scoring
+from evals.behavioral import agy_driver, cli, oneshot, processes, scoring
+from evals.behavioral.processes import Completed as ProcessResult
+from evals.behavioral.processes import Window
 from evals.behavioral.records import Redaction, ScoreRecord, ScoringFailure
+from tests.test_behavioral_agy import turn_json
 
 
 def item(verdict: str) -> dict[str, str]:
@@ -65,6 +72,129 @@ class RedactTest(unittest.TestCase):
             ],
         )
         self.assertEqual("at <world>/tally and <other>, plugin <plugin>, also <path> y", redacted)
+
+
+class OneshotAndCliScoreModelTest(unittest.TestCase):
+    def test_oneshot_ask_runs_agy_gemini_in_disposable_home_with_empty_permissions_and_list_price(self) -> None:
+        scored_text = answer("T1", [1])
+        seen: list[tuple[processes.Tool, list[str], Path, list[Path], Path, bool, list[str], str | None]] = []
+
+        def fake_run_tool(
+            tool: processes.Tool,
+            arguments: Sequence[str],
+            *,
+            cwd: Path,
+            environment: Mapping[str, str],
+            stdin: str | None,
+            timeout_seconds: float,
+            window: Window,
+        ) -> ProcessResult:
+            window.timeout(timeout_seconds)
+            home = Path(environment["HOME"])
+            settings = json.loads((home / ".gemini" / "antigravity-cli" / "settings.json").read_text())
+            seen.append(
+                (
+                    tool,
+                    list(arguments),
+                    cwd,
+                    list(cwd.iterdir()),
+                    home,
+                    (home / "Library" / "Keychains").is_symlink(),
+                    settings["permissions"]["allow"],
+                    stdin,
+                )
+            )
+            return ProcessResult(
+                0,
+                turn_json(
+                    response=scored_text,
+                    input_tokens=10_000,
+                    output_tokens=1_000,
+                    thinking_tokens=500,
+                    cache_read_tokens=2_000,
+                ),
+                "",
+                False,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_real_home = Path(tmp) / "real-home"
+            (fake_real_home / "Library" / "Keychains").mkdir(parents=True)
+            with (
+                mock.patch.object(Path, "home", return_value=fake_real_home),
+                mock.patch.object(processes, "run_tool", side_effect=fake_run_tool),
+            ):
+                result = oneshot.ask("score prompt", "gemini-4-argon", Window(None))
+
+        self.assertEqual(1, len(seen))
+        tool, args, cwd, cwd_entries, home, has_keychain, allow, stdin = seen[0]
+        self.assertIs(processes.Tool.AGY, tool)
+        self.assertEqual(
+            [
+                "-p",
+                "score prompt",
+                "--output-format",
+                "json",
+                "--model",
+                "gemini-4-argon",
+                "--disable-slash-commands",
+                "--print-timeout",
+                "5m",
+            ],
+            args,
+        )
+        self.assertEqual([], cwd_entries)
+        self.assertNotEqual(cwd, home)
+        self.assertTrue(has_keychain)
+        self.assertEqual([], allow)
+        self.assertIsNone(stdin)
+        self.assertFalse(home.exists())
+        self.assertFalse(cwd.exists())
+        self.assertIsNone(result.problem)
+        self.assertEqual(scored_text, result.text)
+        # gemini-4-argon short context: $2/1M input, $0.20/1M cached, $12/1M output+thinking
+        expected_cost = (10_000 * 2.0 + 2_000 * 0.20 + 1_500 * 12.0) / 1_000_000
+        self.assertAlmostEqual(expected_cost, result.cost_usd or 0.0, places=9)
+        decoded = scoring.decode_score(result.text, "T1", 1)
+        self.assertIsInstance(decoded, ScoreRecord)
+
+    def test_oneshot_ask_handles_agy_error_and_timeout_states(self) -> None:
+        cases: tuple[tuple[str, ProcessResult, bool, str], ...] = (
+            ("timed-out", ProcessResult(0, turn_json(), "", True), False, "timed out"),
+            (
+                "print-timeout",
+                ProcessResult(0, turn_json(), "[agy] print timeout after 5m0s", False),
+                False,
+                "timed out",
+            ),
+            ("malformed-json", ProcessResult(0, "{bad", "err", False), False, "no decodable agy result"),
+            ("negative-tokens", ProcessResult(0, turn_json(input_tokens=-5), "", False), False, "invalid usage"),
+            ("error-status", ProcessResult(0, turn_json(status="ERROR"), "", False), True, "reported an error"),
+            ("empty-response", ProcessResult(0, turn_json(response="   "), "", False), True, "no text"),
+        )
+        for label, completed, has_cost, expected_problem in cases:
+            with self.subTest(label=label), mock.patch.object(processes, "run_tool", return_value=completed):
+                res = oneshot.ask("prompt", "gemini-4-argon", Window(None))
+                self.assertIsNone(res.text)
+                self.assertEqual(has_cost, res.cost_usd is not None)
+                self.assertIn(expected_problem, res.problem or "")
+
+    def test_oneshot_and_cli_score_reject_flash_and_unknown_gemini_models_before_subprocess(self) -> None:
+        for bad_model in ("gemini-3.8-flash", "gemini-3.8-flash-high", "gemini-3-flash", "gemini-unknown-99"):
+            with self.subTest(bad_model=bad_model), mock.patch.object(processes, "run_tool") as run_mock:
+                with self.assertRaises(agy_driver.AgyUnavailableError):
+                    oneshot.ask("prompt", bad_model, Window(None))
+                run_mock.assert_not_called()
+            with self.subTest(cli_model=bad_model), mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+                cli.decode(["score", "--out", "out", "--cap-usd", "5.0", "--model", bad_model])
+
+        default_score = cli.decode(["score", "--out", "out", "--cap-usd", "5.0"])
+        assert isinstance(default_score, cli.Score)
+        self.assertEqual(scoring.SCORER_MODEL, default_score.model)
+
+        gemini_score = cli.decode(["score", "--out", "out", "--cap-usd", "5.0", "--model", "gemini-4-argon"])
+        assert isinstance(gemini_score, cli.Score)
+        self.assertEqual("gemini-4-argon", gemini_score.model)
 
 
 if __name__ == "__main__":

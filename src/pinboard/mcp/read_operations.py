@@ -265,7 +265,7 @@ def _read_item_status(  # noqa: PLR0912 - distinct leaves and selected-state dia
         case contracts.ItemStatusItemRequest():
             projected = queries.project_item_status(
                 store,
-                review_operations.AttemptReadyRecordReader(durable, store),
+                review_operations.AttemptStatusArtifactReader(durable, store),
                 WorkItemId(request.item_id),
                 datetime.now(UTC),
                 views.board_pages(durable.work_root),

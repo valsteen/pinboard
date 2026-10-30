@@ -188,6 +188,10 @@ class PromptText(msgspec.Struct, frozen=True):
     text: str
 
 
+class PromptItem(msgspec.Struct, frozen=True):
+    type: str
+
+
 class PromptMessage(msgspec.Struct, frozen=True):
     content: list[msgspec.Raw]
 
@@ -366,10 +370,13 @@ def loaded_context(home: Path, project: Path, window: processes.Window) -> Loade
 
 
 def prompt_text(stdout: str) -> str:
+    """Join the text parts of the rendered messages; other prompt items, such as tool declarations, carry none."""
+    items = msgspec.json.decode(stdout.encode(), type=list[msgspec.Raw])
     parts = [
         part
-        for message in msgspec.json.decode(stdout.encode(), type=list[PromptMessage])
-        for part in message.content
+        for item in items
+        if msgspec.json.decode(item, type=PromptItem).type == "message"
+        for part in msgspec.json.decode(item, type=PromptMessage).content
         if msgspec.json.decode(part, type=PromptPart).type in {"input_text", "output_text", "text"}
     ]
     return "\n".join(msgspec.json.decode(part, type=PromptText).text for part in parts)

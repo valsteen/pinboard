@@ -50,6 +50,7 @@ from pinboard.adapters.sqlite.dependencies import read_accepted_checkpoints
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     NonterminalAttemptContextSelection,
+    OpenAttemptRow,
     TerminalAttemptContextSelection,
     current_definition_anchor,
     decode_definition_revision,
@@ -130,20 +131,6 @@ class _IntegrationItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
 class _IntegrationAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: AttemptId
     candidate_revision: str | None
-
-
-class _BoardAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    attempt_id: AttemptId
-    item_id: WorkItemId
-    state: work_models.AttemptState
-    branch: str
-    base_revision: str
-    accepted_scope_revision: int
-    accepted_scope_digest: str
-    candidate_revision: str | None
-    candidate_recorded_at: datetime | None
-    brief_artifact_ref_id: ArtifactRefId
-    subject_revision: int
 
 
 class _SelectedAttemptLinkRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -456,7 +443,7 @@ def _read_board_records(connection: sqlite3.Connection, snapshot: LedgerSnapshot
     histories are read by primary key for the live items only.
     """
 
-    attempts: list[tuple[_BoardAttemptRow, query_models.NonterminalAttemptState]] = []
+    attempts: list[tuple[OpenAttemptRow, query_models.NonterminalAttemptState]] = []
     for row in connection.execute(
         """
         SELECT attempt_id, item_id, state, branch, base_revision, accepted_scope_revision,
@@ -467,7 +454,7 @@ def _read_board_records(connection: sqlite3.Connection, snapshot: LedgerSnapshot
         ORDER BY item_id
         """
     ).fetchall():
-        attempt = decode_row(row, _BoardAttemptRow)
+        attempt = decode_row(row, OpenAttemptRow)
         open_state = queries.open_attempt_state(attempt.state)
         if open_state is None:
             raise StorageError(StorageErrorCode.INVALID_STATE, "The live-attempt index selected a finished attempt.")

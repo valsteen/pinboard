@@ -1232,7 +1232,7 @@ class BoardPagePathTest(unittest.TestCase):
 
                 self.assertEqual("pinboard-overview/v7", overview["schema"])
                 self.assertEqual(expected, overview["board"])
-                self.assertEqual("pinboard-item-status/v3", status["schema"])
+                self.assertEqual("pinboard-item-status/v4", status["schema"])
                 self.assertEqual(expected, status["board"])
                 self.assertNotEqual(project_root, work_root.parent)
                 self.assertFalse((work_root / "views" / "board.md").exists())

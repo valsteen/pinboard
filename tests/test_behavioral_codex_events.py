@@ -148,6 +148,28 @@ def native_rollout(outcome: str) -> str:
     return "\n".join(event(r) for r in records) + "\n"
 
 
+class PromptTextTest(unittest.TestCase):
+    def test_rendered_messages_are_joined_and_tool_declarations_are_skipped(self) -> None:
+        rendered = json.dumps(
+            [
+                {"type": "additional_tools", "role": "developer", "id": "t", "tools": []},
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "id": "d",
+                    "content": [{"type": "input_text", "text": "Approval policy is currently on-request"}],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "id": "u",
+                    "content": [{"type": "input_image", "image_url": "x"}, {"type": "input_text", "text": "Hello"}],
+                },
+            ]
+        )
+        self.assertEqual(codex_driver.prompt_text(rendered), "Approval policy is currently on-request\nHello")
+
+
 class RolloutRefusalTest(unittest.TestCase):
     def test_recovered_sandbox_failure_remains_evidence_without_a_terminal_rejection(self) -> None:
         reading = codex_driver.rollout_refusals(native_rollout("allow"))

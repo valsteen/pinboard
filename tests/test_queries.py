@@ -42,7 +42,7 @@ from tests.decision_support import BOARD, discover_actions, project_overview
 from tests.domain_support import expect_success
 from tests.support import (
     SQLITE_NOW,
-    NoReadyCandidateReviews,
+    LedgerOnlyStatusArtifacts,
     complete_sqlite_state,
     initialize_store,
     test_definition,
@@ -249,12 +249,12 @@ class SQLiteQueriesTest(unittest.TestCase):
             )
         )
 
-        live = project_item_status(store, NoReadyCandidateReviews(), WorkItemId("work-a"), SQLITE_NOW, BOARD)
-        done = project_item_status(store, NoReadyCandidateReviews(), done_item.item_id, SQLITE_NOW, BOARD)
+        live = project_item_status(store, LedgerOnlyStatusArtifacts(), WorkItemId("work-a"), SQLITE_NOW, BOARD)
+        done = project_item_status(store, LedgerOnlyStatusArtifacts(), done_item.item_id, SQLITE_NOW, BOARD)
 
         self.assertEqual(
             query_models.ItemStatus(
-                "pinboard-item-status/v3",
+                "pinboard-item-status/v4",
                 "sqlite-v11",
                 "12",
                 "work-a",
@@ -273,6 +273,9 @@ class SQLiteQueriesTest(unittest.TestCase):
                         None,
                         None,
                         decision_batch=None,
+                        current_checkpoint=query_models.UnreadableCurrentCheckpoint(
+                            "Ledger-only test attempt 'work-a-1' stores no brief bytes."
+                        ),
                     ),
                 ),
                 query_models.NoReviewVerdict(),
@@ -285,7 +288,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         )
         self.assertEqual(
             query_models.ItemStatus(
-                "pinboard-item-status/v3",
+                "pinboard-item-status/v4",
                 "sqlite-v11",
                 "12",
                 "work-b",
@@ -333,7 +336,9 @@ class SQLiteQueriesTest(unittest.TestCase):
             )
 
             with self.subTest(terminal=terminal.value):
-                status = project_item_status(store, NoReadyCandidateReviews(), terminal_item.item_id, SQLITE_NOW, BOARD)
+                status = project_item_status(
+                    store, LedgerOnlyStatusArtifacts(), terminal_item.item_id, SQLITE_NOW, BOARD
+                )
                 assert isinstance(status, query_models.ItemStatus)
                 self.assertEqual(terminal.value, status.state.value)
                 self.assertEqual((), status.attempts)
@@ -349,6 +354,11 @@ class SQLiteQueriesTest(unittest.TestCase):
                     raise AssertionError(f"Unexpected item selection: {work_item_id}")
                 return self.facts
 
+        brief_reference = next(
+            value
+            for value in complete_sqlite_state().artifact_references
+            if value.kind == work_models.ArtifactKind.BRIEF
+        )
         legal_shapes = (
             (stored_state.StoredWorkItemState.INTAKE, None),
             (stored_state.StoredWorkItemState.READY, None),
@@ -368,7 +378,17 @@ class SQLiteQueriesTest(unittest.TestCase):
                 if attempt_state is None
                 else (
                     query_models.ItemStatusAttemptFacts(
-                        AttemptId("selected-1"), attempt_state, "codex/selected", None, None, None
+                        AttemptId("selected-1"),
+                        WorkItemId("selected"),
+                        attempt_state,
+                        "codex/selected",
+                        "base",
+                        1,
+                        "digest",
+                        None,
+                        brief_reference,
+                        None,
+                        None,
                     ),
                 )
             )
@@ -395,7 +415,7 @@ class SQLiteQueriesTest(unittest.TestCase):
 
             with self.subTest(item_state=item_state.value, attempt_state=attempt_state):
                 status = project_item_status(
-                    Reader(facts), NoReadyCandidateReviews(), WorkItemId("selected"), SQLITE_NOW, BOARD
+                    Reader(facts), LedgerOnlyStatusArtifacts(), WorkItemId("selected"), SQLITE_NOW, BOARD
                 )
 
             self.assertIsInstance(status, query_models.ItemStatus)
@@ -430,7 +450,21 @@ class SQLiteQueriesTest(unittest.TestCase):
             4,
         )
         attempt = query_models.ItemStatusAttemptFacts(
-            AttemptId("selected-1"), work_models.AttemptState.ACTIVE, "codex/selected", "candidate-a", None, None
+            AttemptId("selected-1"),
+            WorkItemId("selected"),
+            work_models.AttemptState.ACTIVE,
+            "codex/selected",
+            "base",
+            1,
+            "digest",
+            "candidate-a",
+            next(
+                value
+                for value in complete_sqlite_state().artifact_references
+                if value.kind == work_models.ArtifactKind.BRIEF
+            ),
+            None,
+            None,
         )
         for selected_item, attempts, expected, observed in (
             (item, (attempt,), "none", "active"),
@@ -454,7 +488,7 @@ class SQLiteQueriesTest(unittest.TestCase):
 
             with self.subTest(item_state=selected_item.state.value, observed=observed):
                 failure = project_item_status(
-                    Reader(facts), NoReadyCandidateReviews(), WorkItemId("selected"), SQLITE_NOW, BOARD
+                    Reader(facts), LedgerOnlyStatusArtifacts(), WorkItemId("selected"), SQLITE_NOW, BOARD
                 )
 
             self.assertIsInstance(failure, DecisionFailure)
@@ -478,7 +512,7 @@ class SQLiteQueriesTest(unittest.TestCase):
     def test_item_status_rejects_an_unknown_canonical_identity(self) -> None:
         store = self._store()
 
-        missing = project_item_status(store, NoReadyCandidateReviews(), WorkItemId("missing-item"), SQLITE_NOW, BOARD)
+        missing = project_item_status(store, LedgerOnlyStatusArtifacts(), WorkItemId("missing-item"), SQLITE_NOW, BOARD)
 
         self.assertIsInstance(missing, DecisionFailure)
         assert isinstance(missing, DecisionFailure)

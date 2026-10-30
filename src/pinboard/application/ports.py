@@ -12,6 +12,7 @@ from pinboard.application import (
     query_models,
     roadmap,
     stored_state,
+    work_brief_models,
 )
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.mutation_models import (
@@ -211,10 +212,20 @@ class ItemStatusReader(Protocol):
     def read_item_status(self, work_item_id: WorkItemId) -> query_models.ItemStatusFacts | None: ...
 
 
-class ReadyCandidateReviewReader(Protocol):
-    """Read the record-ready review bound to an attempt's current candidate, brief, result, and review."""
+class ItemStatusArtifactReader(Protocol):
+    """Read the artifacts item status projects for its current attempt.
 
-    def read_ready_candidate_review(self, attempt_id: AttemptId) -> query_models.ReadyCandidateReview | None: ...
+    The current brief is read by its accepted reference and identity-checked against the attempt; the ready review
+    is the record-ready review bound to the attempt's current candidate, that same decoded brief, result and review.
+    """
+
+    def read_attempt_brief(
+        self, attempt: query_models.ItemStatusAttemptFacts
+    ) -> work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure: ...
+
+    def read_ready_candidate_review(
+        self, attempt: query_models.ItemStatusAttemptFacts, brief: work_brief_models.WorkBrief
+    ) -> query_models.ReadyCandidateReview | None: ...
 
 
 class BranchOwnerReader(Protocol):

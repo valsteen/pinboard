@@ -750,7 +750,7 @@ class CompletionRecoveryRequired:
     reason: str
 
 
-type ItemStatusSchema = Literal["pinboard-item-status/v3"]
+type ItemStatusSchema = Literal["pinboard-item-status/v4"]
 type ItemStatusAuthority = Literal["sqlite-v11"]
 
 
@@ -836,10 +836,17 @@ class ItemStatusItemFacts:
 
 @dataclass(frozen=True, slots=True)
 class ItemStatusAttemptFacts:
+    """The current attempt's row facts, including the identity its current accepted brief must match."""
+
     attempt_id: AttemptId
+    item_id: WorkItemId
     state: work_models.AttemptState
     branch: str
+    base_revision: str
+    accepted_scope_revision: int
+    accepted_scope_digest: str
     candidate_revision: str | None
+    brief_reference: stored_state.ArtifactReference
     pause_reason: RecordedPauseReason
     review_event: ReviewEventFacts | None
 
@@ -888,14 +895,50 @@ class ReadyCandidateReview:
     reference: stored_state.ArtifactReference
 
 
+class ContinuingCurrentCheckpoint(
+    msgspec.Struct, tag="continue", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    """The current accepted brief's checkpoint and its recorded remaining work, exactly as accepted."""
+
+    checkpoint_id: str
+    title: str
+    remaining_work: str
+
+
+class TerminalCurrentCheckpoint(
+    msgspec.Struct, tag="terminal", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    """The current accepted brief's checkpoint, after which no further checkpoint is recorded."""
+
+    checkpoint_id: str
+    title: str
+
+
+class UnreadableCurrentCheckpoint(
+    msgspec.Struct, tag="unreadable", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    """The current accepted brief could not be read, decoded or matched to the attempt."""
+
+    message: str
+
+
+type CurrentCheckpoint = ContinuingCurrentCheckpoint | TerminalCurrentCheckpoint | UnreadableCurrentCheckpoint
+
+
 class ItemStatusAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: str
     state: work_models.AttemptState
     branch: str
     candidate_revision: str | None
     pause_reason: str | None
-    decision_batch: decision_batches.DecisionBatchView | None
     """The reason recorded when the attempt was paused; null unless a recorded pause is current."""
+    decision_batch: decision_batches.DecisionBatchView | None
+    current_checkpoint: CurrentCheckpoint
+    """The current accepted brief's checkpoint.
+
+    Checkpoint acceptance keeps the brief, so this matches a checkpoint-accepted verdict's checkpoint until a rebind
+    or revised-brief resume replaces the brief and this names the new, unaccepted checkpoint.
+    """
 
 
 class IntakeContext(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

@@ -244,9 +244,16 @@ class AgyCliTest(unittest.TestCase):
             ["run", "agy", *self.BASE_ARGS, "--model", "claude-sonnet-5-5"],
             ["run", "agy", *self.BASE_ARGS, "--reasoning-effort", "high"],
             ["run", "agy", *self.BASE_ARGS, "--model", "claude-sonnet-5-5", "--reasoning-effort", "minimal"],
+            ["score", "--out", "out", "--cap-usd", "5.0", "--model", "gemini-3.8-flash"],
+            ["score", "--out", "out", "--cap-usd", "5.0", "--model", "gemini-3-flash"],
+            ["score", "--out", "out", "--cap-usd", "5.0", "--model", "   "],
         ):
             with self.subTest(bad_args=bad_args), mock.patch("sys.stderr"), self.assertRaises(SystemExit):
                 cli.decode(bad_args)
+
+        score_cmd = cli.decode(["score", "--out", "out", "--cap-usd", "5.0", "--model", "gemini-4-argon"])
+        assert isinstance(score_cmd, cli.Score)
+        self.assertEqual("gemini-4-argon", score_cmd.model)
 
 
 class AgyDriverAndRunnerTest(unittest.TestCase):

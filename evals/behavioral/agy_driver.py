@@ -9,7 +9,7 @@ headless permissions under ``.gemini/antigravity-cli/settings.json``, and instal
 import json
 import re
 import shutil
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +30,7 @@ from evals.behavioral.records import (
 )
 
 
-class AgyUnavailableError(Exception):
+class AgyUnavailableError(ValueError):
     """A preflight requirement for Antigravity runs is not met; no agent turn started."""
 
 
@@ -224,8 +224,8 @@ def agy_version(home: Path, window: processes.Window) -> str:
 
 
 @contextmanager
-def isolated_home(home: Path) -> Generator[Path]:
-    """Create a disposable HOME with only the macOS Keychains link and headless settings."""
+def disposable_home(home: Path, permissions_allow: Sequence[str]) -> Generator[Path]:
+    """Create a disposable HOME with only the macOS Keychains link and explicit headless permissions."""
     home.mkdir(parents=True, exist_ok=False)
     try:
         keychains = Path.home() / "Library" / "Keychains"
@@ -235,7 +235,7 @@ def isolated_home(home: Path) -> Generator[Path]:
             (library / "Keychains").symlink_to(keychains)
         settings = home / ".gemini" / "antigravity-cli" / "settings.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text(json.dumps({"permissions": {"allow": list(PERMISSIONS_ALLOW)}}, indent=2) + "\n")
+        settings.write_text(json.dumps({"permissions": {"allow": list(permissions_allow)}}, indent=2) + "\n")
         yield home
     except processes.CleanupUnconfirmed:
         raise
@@ -244,6 +244,13 @@ def isolated_home(home: Path) -> Generator[Path]:
         raise
     else:
         shutil.rmtree(home, ignore_errors=True)
+
+
+@contextmanager
+def isolated_home(home: Path) -> Generator[Path]:
+    """Create a disposable HOME with only the macOS Keychains link and headless settings."""
+    with disposable_home(home, PERMISSIONS_ALLOW) as created:
+        yield created
 
 
 def install_plugin(home: Path, plugin_root: Path, window: processes.Window) -> None:

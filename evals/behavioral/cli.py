@@ -24,6 +24,7 @@ from evals.behavioral import (
     export,
     investigation,
     investigation_trials,
+    oneshot,
     probe,
     processes,
     runner,
@@ -118,6 +119,7 @@ class Score:
     cap_usd: float
     scores_per_run: int
     variants: tuple[str, ...]
+    model: str
 
 
 @dataclass(frozen=True)
@@ -313,6 +315,7 @@ def parser() -> argparse.ArgumentParser:  # noqa: PLR0915
     scoring_parser.add_argument("--cap-usd", type=float, required=True)
     scoring_parser.add_argument("--scores-per-run", type=positive, default=1)
     scoring_parser.add_argument("--variant", action="append", default=[])
+    scoring_parser.add_argument("--model", type=scorer_model, default=scoring.SCORER_MODEL)
 
     assessing = commands.add_parser("assess", help="assess whether Codex final replies carry the substance")
     assessing.add_argument("--out", type=Path, required=True)
@@ -427,6 +430,16 @@ def positive(value: str) -> int:
     return number
 
 
+def scorer_model(value: str) -> str:
+    if not value.strip():
+        raise argparse.ArgumentTypeError("model must be non-empty")
+    try:
+        oneshot.is_agy_model(value)
+    except agy_driver.AgyUnavailableError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+    return value
+
+
 def decode(arguments: Sequence[str]) -> Command:  # noqa: C901, PLR0912
     options = parser().parse_args(arguments)
     command: str = options.command
@@ -438,7 +451,7 @@ def decode(arguments: Sequence[str]) -> Command:  # noqa: C901, PLR0912
         case "probe":
             return decode_probe(options)
         case "score":
-            return Score(options.out, options.cap_usd, options.scores_per_run, tuple(options.variant))
+            return Score(options.out, options.cap_usd, options.scores_per_run, tuple(options.variant), options.model)
         case "assess":
             return Assess(options.out, options.cap_usd)
         case "compare":
@@ -865,9 +878,9 @@ def probe_codex(command: ProbeCodex) -> int:
 def score(command: Score) -> list[str]:
     layout = Layout(command.out)
     session = scoring.ScoringRun(
-        layout, spend.Budget(layout, command.cap_usd, processes.Window(None), False), scoring.SCORER_MODEL
+        layout, spend.Budget(layout, command.cap_usd, processes.Window(None), False), command.model
     )
-    counts = scoring.valid_score_counts(layout, scoring.SCORER_MODEL)
+    counts = scoring.valid_score_counts(layout, command.model)
     skipped: list[str] = []
     pending: list[ScorerInput] = [
         source for source in layout.scorer_inputs() if not command.variants or source.run.variant in command.variants

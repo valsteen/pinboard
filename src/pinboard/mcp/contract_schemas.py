@@ -1024,7 +1024,7 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         msgspec.convert(content, type=ArtifactReferenceMismatch, strict=True)
     elif tool_name == "pinboard_artifact_verify":
         msgspec.convert(content, type=ArtifactBytesInvalid, strict=True)
-    elif schema == "pinboard-item-status/v3" and tool_name == "pinboard_item_status":
+    elif schema == "pinboard-item-status/v4" and tool_name == "pinboard_item_status":
         msgspec.convert(content, type=query_models.ItemStatus, strict=True)
     elif schema == "pinboard-branch-owners/v1" and tool_name == "pinboard_item_status":
         msgspec.convert(content, type=query_models.BranchOwners, strict=True)

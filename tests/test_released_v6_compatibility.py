@@ -31,7 +31,7 @@ from pinboard.mcp import server as mcp_server
 from tests.decision_support import BOARD, project_decision_snapshot
 from tests.domain_support import expect_success
 from tests.native_support import call_advertised_tool
-from tests.support import SQLITE_NOW, NoReadyCandidateReviews
+from tests.support import SQLITE_NOW, LedgerOnlyStatusArtifacts
 
 FIXTURES = (
     ("intake", "54630c601c4dea4a6647453d6a678dd51a516c1b034cb5257ab7ed7e19a99ff3"),
@@ -104,7 +104,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                     ),
                 )
                 status = queries.project_item_status(
-                    store, NoReadyCandidateReviews(), WorkItemId("intake-work"), SQLITE_NOW, BOARD
+                    store, LedgerOnlyStatusArtifacts(), WorkItemId("intake-work"), SQLITE_NOW, BOARD
                 )
                 assert isinstance(status, query_models.ItemStatus)
                 self.assertEqual(stored_state.StoredWorkItemState.READY, status.state)

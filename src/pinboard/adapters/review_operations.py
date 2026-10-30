@@ -437,52 +437,55 @@ def read_ready_record(
     )
 
 
+def read_current_brief(
+    attempt: work_briefs.AttemptBriefIdentity,
+    reference: stored_state.ArtifactReference,
+    artifacts: ArtifactRepository,
+) -> work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure:
+    """Read, decode and identity-check one open attempt's current brief; an unreadable artifact is a failure."""
+
+    try:
+        return work_briefs.decode_attempt_brief(attempt, reference, artifacts)
+    except ArtifactError as error:
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+            f"Live attempt '{attempt.attempt_id}' accepted brief could not be read: {error}",
+        )
+
+
 @dataclass(frozen=True, slots=True)
-class AttemptReadyRecordReader:
-    """Read the ready record of one attempt's current candidate, brief, result.md and review.md for item status."""
+class AttemptStatusArtifactReader:
+    """Read item status's current brief and the ready record of the current candidate, brief and evidence."""
 
     durable: DurableRoots
     store: ports.WorkStore
 
-    def read_ready_candidate_review(self, attempt_id: AttemptId) -> query_models.ReadyCandidateReview | None:
-        context = self.store.read_attempt_context(attempt_id)
-        if not (
-            isinstance(context, query_models.NonterminalAttemptContextFacts)
-            and context.state == work_models.AttemptState.REVIEW
-            and context.candidate_revision is not None
-        ):
+    def read_attempt_brief(
+        self, attempt: query_models.ItemStatusAttemptFacts
+    ) -> work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure:
+        return read_current_brief(attempt, attempt.brief_reference, ArtifactRepository(self.durable))
+
+    def read_ready_candidate_review(
+        self, attempt: query_models.ItemStatusAttemptFacts, brief: work_brief_models.WorkBrief
+    ) -> query_models.ReadyCandidateReview | None:
+        if attempt.state != work_models.AttemptState.REVIEW or attempt.candidate_revision is None:
             return None
         artifacts = ArtifactRepository(self.durable)
         try:
-            brief = work_briefs.decode_canonical_work_brief(artifacts.read(context.brief_reference))
-            if isinstance(brief, work_brief_models.WorkBriefFailure):
-                return None
-            snapshot = self.store.read_candidate_snapshot_context(attempt_id)
+            snapshot = self.store.read_candidate_snapshot_context(attempt.attempt_id)
             subject = ready_record_subject(
                 brief,
-                context.candidate_revision,
+                attempt.candidate_revision,
                 None if snapshot is None else snapshot.reference,
-                context.brief_reference,
-                read_attempt_evidence_digests(self.durable.work_root, attempt_id),
+                attempt.brief_reference,
+                read_attempt_evidence_digests(self.durable.work_root, attempt.attempt_id),
             )
             current = None if subject is None else read_ready_record(self.store, artifacts, subject)
         except ArtifactError:
             return None
         if current is None:
             return None
-        return query_models.ReadyCandidateReview(context.candidate_revision, current.reference)
-
-
-def _board_brief(
-    attempt: query_models.BoardAttemptRecords, artifacts: ArtifactRepository
-) -> work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure:
-    try:
-        return work_briefs.decode_attempt_brief(attempt, attempt.brief_reference, artifacts)
-    except ArtifactError as error:
-        return work_brief_models.WorkBriefFailure(
-            work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
-            f"Live attempt '{attempt.attempt_id}' accepted brief could not be read: {error}",
-        )
+        return query_models.ReadyCandidateReview(attempt.candidate_revision, current.reference)
 
 
 def _board_ready_record(
@@ -514,7 +517,10 @@ def read_board_history(
     """
 
     artifacts = ArtifactRepository(durable)
-    briefs = {attempt.attempt_id: _board_brief(attempt, artifacts) for attempt in records.attempts}
+    briefs = {
+        attempt.attempt_id: read_current_brief(attempt, attempt.brief_reference, artifacts)
+        for attempt in records.attempts
+    }
     subjects: dict[AttemptId, ReadyRecordSubject] = {}
     for attempt in records.attempts:
         brief = briefs[attempt.attempt_id]

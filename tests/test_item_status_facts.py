@@ -20,15 +20,15 @@ from pinboard.adapters.files.models import AffectedViews, UnavailableViewRefresh
 from pinboard.adapters.files.views import board_pages
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import queries, query_models
+from pinboard.application import queries, query_models, work_brief_models
 from pinboard.application.ports import GeneratedViewReader
-from pinboard.domain import decision_models
+from pinboard.domain import decision_models, work_models
 from pinboard.domain.identifiers import AttemptId, HistoryId, WorkItemId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import native_tools
-from tests.support import JsonObject, NoReadyCandidateReviews
+from tests.support import JsonObject, status_artifacts
 
 CLOSED_AT = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
 COMPLETED_AT = datetime(2030, 1, 3, 4, 5, 6, tzinfo=UTC)
@@ -61,21 +61,34 @@ class ItemLifecycleSupport(CheckpointPackageSupport):
         """Read the verdict through the advertised item leaf and again from a fresh store."""
 
         status = self.item_leaf(fixture)
-        self.assertEqual("pinboard-item-status/v3", status["schema"], status)
+        self.assertEqual("pinboard-item-status/v4", status["schema"], status)
         for attempt in self.json_array(status["attempts"]):
             self.assertEqual(fixture.brief.branch, self.json_object(attempt)["branch"])
         verdict = self.json_object(status["review_verdict"])
+        self.assertEqual(status, self.fresh_status(fixture))
+        return verdict
+
+    def fresh_status(self, fixture: CheckpointFixture, item_id: str = "work-a") -> JsonObject:
+        """Project the item through the application query from a fresh store with the production artifact reads."""
+
+        store = SQLiteWorkStore(fixture.work / "state.sqlite3")
         fresh = queries.project_item_status(
-            SQLiteWorkStore(fixture.work / "state.sqlite3"),
-            NoReadyCandidateReviews(),
-            WorkItemId("work-a"),
+            store,
+            status_artifacts(fixture.work, store),
+            WorkItemId(item_id),
             datetime.now(UTC),
             board_pages(fixture.work),
         )
         assert isinstance(fresh, query_models.ItemStatus)
-        if verdict["kind"] != "ready":
-            self.assertEqual(verdict, msgspec.to_builtins(fresh.review_verdict))
-        return verdict
+        return self.json_object(msgspec.json.decode(msgspec.json.encode(fresh)))
+
+    def current_checkpoint(self, fixture: CheckpointFixture) -> JsonObject:
+        """Read the current attempt's checkpoint through the item leaf, confirming the application query agrees."""
+
+        status = self.item_leaf(fixture)
+        self.assertEqual(status, self.fresh_status(fixture))
+        (attempt,) = self.json_array(status["attempts"])
+        return self.json_object(self.json_object(attempt)["current_checkpoint"])
 
     def assert_valid(self, fixture: CheckpointFixture) -> None:
         validated, stdout, stderr = self.run_cli(*fixture.common, "validate", "--json")
@@ -312,6 +325,96 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
         )
         self.assertIsNone(self.json_object(self.json_array(self.item_leaf(fixture)["attempts"])[0])["pause_reason"])
         self.assert_valid(fixture)
+
+    def test_current_checkpoint_reports_the_current_brief_and_its_exact_remaining_work(self) -> None:
+        fixture = self.native_fixture(self.checkpoint_fixture())
+        checkpoint = fixture.brief.checkpoint
+        assert isinstance(checkpoint.disposition, work_brief_models.ContinueCheckpointDisposition)
+        self.assertEqual(
+            {
+                "kind": "continue",
+                "checkpoint_id": checkpoint.checkpoint_id,
+                "title": checkpoint.title,
+                "remaining_work": checkpoint.disposition.remaining_work,
+            },
+            self.current_checkpoint(fixture),
+        )
+        fixture = self.terminalize_brief(fixture)
+        self.assertEqual(
+            {"kind": "terminal", "checkpoint_id": checkpoint.checkpoint_id, "title": checkpoint.title},
+            self.current_checkpoint(fixture),
+        )
+
+    def test_unreadable_current_brief_is_named_and_withholds_the_ready_verdict(self) -> None:
+        fixture = self.native_fixture(self.checkpoint_fixture())
+        self.return_for_review(fixture, "Rework the candidate.")
+        self.record_ready(fixture, self.submit_candidate(fixture, "reviewed"))
+        self.assertEqual("ready", self.verdict(fixture)["kind"])
+        self.assertEqual("continue", self.current_checkpoint(fixture)["kind"])
+        reference = fixture.store.read_latest_artifact_reference(
+            work_models.ArtifactKind.BRIEF, fixture.brief.attempt_id
+        )
+        assert reference is not None
+        path = fixture.work / reference.selector
+        path.chmod(0o644)
+        path.write_bytes(path.read_bytes() + b" ")
+        unreadable = self.current_checkpoint(fixture)
+        self.assertEqual("unreadable", unreadable["kind"])
+        message = unreadable["message"]
+        assert isinstance(message, str)
+        self.assertIn("work-a-1", message)
+        self.assertEqual({"kind": "none"}, self.verdict(fixture))
+
+    def test_rebind_after_checkpoint_acceptance_names_both_checkpoints(self) -> None:
+        fixture = self.native_fixture(self.accepted_package_fixture())
+        accepted = fixture.brief.checkpoint.checkpoint_id
+        accepted_disposition = fixture.brief.checkpoint.disposition
+        assert isinstance(accepted_disposition, work_brief_models.ContinueCheckpointDisposition)
+        self.assertEqual({"kind": "checkpoint-accepted", "checkpoint": accepted}, self.verdict(fixture))
+        self.assertEqual(
+            {
+                "kind": "continue",
+                "checkpoint_id": accepted,
+                "title": fixture.brief.checkpoint.title,
+                "remaining_work": accepted_disposition.remaining_work,
+            },
+            self.current_checkpoint(fixture),
+        )
+        remaining = "Run the installed smoke checks.\n- Reconnect after a wrong port\n- Reject a stale target"
+        next_brief = replace_struct(
+            fixture.brief,
+            artifact_revision=2,
+            checkpoint=replace_struct(
+                fixture.brief.checkpoint,
+                checkpoint_id="live-verification",
+                title="Verify the installed product",
+                disposition=work_brief_models.ContinueCheckpointDisposition(remaining),
+            ),
+        )
+        published = fixture.call_native_tool(
+            mcp_server.BRIEF_PUBLISH_TOOL,
+            {**self.roots(fixture), "brief": self.json_object(msgspec.json.decode(msgspec.json.encode(next_brief)))},
+        )
+        self.assertEqual("committed", published["status"], published)
+        self.transition(
+            fixture,
+            "rebind-attempt:work-a-1",
+            {
+                "branch": next_brief.branch,
+                "base_revision": next_brief.base_revision,
+                "brief_artifact_ref_id": self.json_object(published["reference"])["artifact_ref_id"],
+            },
+        )
+        self.assertEqual({"kind": "checkpoint-accepted", "checkpoint": accepted}, self.verdict(fixture))
+        self.assertEqual(
+            {
+                "kind": "continue",
+                "checkpoint_id": "live-verification",
+                "title": "Verify the installed product",
+                "remaining_work": remaining,
+            },
+            self.current_checkpoint(fixture),
+        )
 
     def test_retained_decision_v1_return_reports_its_evidence_without_failure(self) -> None:
         for evidence in ("Retained reason.", None):
@@ -555,6 +658,7 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
         )
         self.assertEqual([], completed["attempts"])
         self.assertEqual({"kind": "none"}, completed["review_verdict"])
+        self.assertEqual(completed, self.fresh_status(fixture))
         receipts = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot().transition_receipts
         close_history, complete_history = (
             next(

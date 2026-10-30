@@ -77,7 +77,7 @@ from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.decision_support import BOARD
 from tests.domain_support import action
 from tests.native_support import call_native_tool, native_tools
-from tests.support import SQLITE_NOW, NoReadyCandidateReviews, complete_sqlite_state, initialize_store
+from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, status_artifacts
 from tests.test_proposals import proposal as proposal_input
 from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
 
@@ -1161,7 +1161,7 @@ class McpTransportTest(unittest.TestCase):
                 {"request": common | {"role": "worker", "lease_id": "lease ", "generation": 1}},
             )
             assert isinstance(accepted, CallToolResult) and isinstance(accepted.structured_content, dict)
-            self.assertEqual("pinboard-item-status/v3", accepted.structured_content["schema"])
+            self.assertEqual("pinboard-item-status/v4", accepted.structured_content["schema"])
             for result, code in (
                 (invalid_path, "ITEM_STATUS_INVALID"),
                 (invalid_identity, "ACTIONS_INVALID"),
@@ -3016,9 +3016,10 @@ class McpTransportTest(unittest.TestCase):
         self.assertIsInstance(missing_preparation, DecisionFailure)
 
     def _expected_bytes(self, roots: DurableRoots, item_id: str) -> bytes:
+        store = SQLiteWorkStore(roots.database_path)
         projected = queries.project_item_status(
-            SQLiteWorkStore(roots.database_path),
-            NoReadyCandidateReviews(),
+            store,
+            status_artifacts(roots.work_root, store),
             WorkItemId(item_id),
             datetime.now(UTC),
             board_pages(roots.work_root),

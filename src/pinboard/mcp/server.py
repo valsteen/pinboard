@@ -177,7 +177,10 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "through these tools, never through Bash, Python or .pinboard/state.sqlite3.\n\n"
             "Before current-attempt review claims, read pinboard_item_status operation item and its review_verdict. "
             "That verdict selects the nonterminal attempt; terminal none and overview omission do not deny "
-            "historical review. For historical candidate or merged-commit coverage, verify selected available "
+            "historical review. For what agreed work is left, read that attempt's current_checkpoint, whose "
+            "remaining_work is the current brief's exact recorded text. A checkpoint-accepted verdict names the last "
+            "accepted checkpoint: until a rebind or revised-brief resume both name that same checkpoint and only "
+            "remaining_work is left; afterwards current_checkpoint names the new, unaccepted one. For historical candidate or merged-commit coverage, verify selected available "
             "evidence for that exact subject and time; retain verified coverage and qualify unavailable or "
             "conflicting coverage. An informal favorable note cannot authorize ready recording or completion. "
             "Preserve the effect of explicit human retention or deferral: product absence does not reopen it. "
@@ -431,7 +434,10 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "Read one current Pinboard item status, map an exact branch to the items and attempts that own it, "
             "or check whether an item's reviewed change is present by content in a named local Git target. "
             "Put all fields inside request. Use operation item and its review_verdict for current-attempt review claims; terminal none and overview "
-            "omission do not deny historical exact coverage. Qualify unavailable or conflicting historical evidence."
+            "omission do not deny historical exact coverage. Qualify unavailable or conflicting historical evidence. "
+            "The item leaf's current_checkpoint names the current brief's checkpoint and its exact recorded "
+            "remaining_work; it matches a checkpoint-accepted verdict's checkpoint until a rebind or revised-brief "
+            "resume replaces the brief."
         ),
     )
     async def item_status(request: dict[str, JsonValue]) -> dict[str, JsonValue]:

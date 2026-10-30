@@ -6,13 +6,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from pinboard.adapters import review_operations
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite import persistence as sqlite_persistence
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.database import APPLICATION, SCHEMA_VERSION
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models, stored_state
+from pinboard.application import query_models, stored_state, work_brief_models
 from pinboard.application.mutation_models import CheckpointMutationAllocation
 from pinboard.cli import work_views
 from pinboard.domain import authority_models, decision_models, work_models
@@ -51,11 +52,27 @@ def loaded_board_history(work_root: Path, state: stored_state.StoredWorkState) -
     return work_views.read_loaded_board_history(work_root_durable(work_root), state)
 
 
-class NoReadyCandidateReviews:
-    """Status reader stand-in for tests whose attempts have no record-ready candidate review."""
+def status_artifacts(work_root: Path, store: SQLiteWorkStore) -> review_operations.AttemptStatusArtifactReader:
+    """Compose the production item-status brief and ready-review reads for a test ledger."""
 
-    def read_ready_candidate_review(self, attempt_id: AttemptId) -> query_models.ReadyCandidateReview | None:
-        del attempt_id
+    return review_operations.AttemptStatusArtifactReader(work_root_durable(work_root), store)
+
+
+class LedgerOnlyStatusArtifacts:
+    """Item-status artifact stand-in for ledger-only tests, which store no brief bytes and no ready review."""
+
+    def read_attempt_brief(
+        self, attempt: query_models.ItemStatusAttemptFacts
+    ) -> work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure:
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
+            f"Ledger-only test attempt '{attempt.attempt_id}' stores no brief bytes.",
+        )
+
+    def read_ready_candidate_review(
+        self, attempt: query_models.ItemStatusAttemptFacts, brief: work_brief_models.WorkBrief
+    ) -> query_models.ReadyCandidateReview | None:
+        del attempt, brief
         return None
 
 

@@ -15,6 +15,7 @@ from typing import Annotated, NoReturn, assert_never
 
 import msgspec
 
+from pinboard.adapters.sqlite.artifacts import read_artifact_references_by_ids
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.dependencies import DependencyRow, DependencyTargetRow, read_accepted_checkpoints
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
@@ -173,11 +174,19 @@ def _consumed_receipt(row: sqlite3.Row) -> query_models.ConsumedTransitionReceip
     )
 
 
-class _ItemStatusAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class OpenAttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """One open attempt's row, with the identity its current brief must match, for the board and item status."""
+
     attempt_id: AttemptId
+    item_id: WorkItemId
     state: work_models.AttemptState
     branch: str
+    base_revision: str
+    accepted_scope_revision: int
+    accepted_scope_digest: str
     candidate_revision: str | None
+    candidate_recorded_at: datetime | None
+    brief_artifact_ref_id: ArtifactRefId
     subject_revision: int
 
 
@@ -699,7 +708,8 @@ def read_item_status(
     definition = None if definition_row is None else decode_definition_revision(definition_row)
     attempt_row = connection.execute(
         """
-        SELECT attempt_id, state, branch, candidate_revision, subject_revision
+        SELECT attempt_id, item_id, state, branch, base_revision, accepted_scope_revision, accepted_scope_digest,
+               candidate_revision, candidate_recorded_at, brief_artifact_ref_id, subject_revision
         FROM attempts INDEXED BY one_live_attempt_per_item
         WHERE item_id = ? AND state != 'done'
         """,
@@ -707,7 +717,12 @@ def read_item_status(
     ).fetchone()
     attempts: tuple[query_models.ItemStatusAttemptFacts, ...] = ()
     if attempt_row is not None:
-        selected_attempt = decode_row(attempt_row, _ItemStatusAttemptRow)
+        selected_attempt = decode_row(attempt_row, OpenAttemptRow)
+        brief = read_artifact_references_by_ids(connection, (selected_attempt.brief_artifact_ref_id,)).get(
+            selected_attempt.brief_artifact_ref_id
+        )
+        if brief is None or brief.kind != work_models.ArtifactKind.BRIEF:
+            raise StorageError(StorageErrorCode.INVALID_STATE, "The current attempt has no accepted brief reference.")
         pause_reasons = read_recorded_pause_reasons(
             connection,
             ((selected_attempt.attempt_id, selected_attempt.state, selected_attempt.subject_revision),),
@@ -715,9 +730,14 @@ def read_item_status(
         attempts = (
             query_models.ItemStatusAttemptFacts(
                 selected_attempt.attempt_id,
+                selected_attempt.item_id,
                 selected_attempt.state,
                 selected_attempt.branch,
+                selected_attempt.base_revision,
+                selected_attempt.accepted_scope_revision,
+                selected_attempt.accepted_scope_digest,
                 selected_attempt.candidate_revision,
+                brief,
                 pause_reasons.get(selected_attempt.attempt_id),
                 _read_review_event(
                     connection, item.work_item_id, selected_attempt.attempt_id, selected_attempt.subject_revision

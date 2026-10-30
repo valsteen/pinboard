@@ -1083,13 +1083,15 @@ def _board_condition(facts: query_models.BoardAttemptFacts) -> query_models.Boar
             assert_never(unreachable)
 
 
-def _board_checkpoint(
-    facts: query_models.BoardAttemptFacts,
+def project_current_checkpoint(
+    attempt_id: AttemptId,
+    reference: stored_state.ArtifactReference,
+    brief: work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure,
 ) -> query_models.BoardCheckpoint | query_models.UnreadableBrief:
-    brief = facts.brief
-    records = facts.records
+    """Project an open attempt's current checkpoint from its identity-checked current brief, for board and status."""
+
     if isinstance(brief, work_brief_models.WorkBriefFailure):
-        return query_models.UnreadableBrief(records.attempt_id, brief.message)
+        return query_models.UnreadableBrief(attempt_id, brief.message)
     checkpoint = brief.checkpoint
     remaining: query_models.RecordedRemainingWork | query_models.FinalCheckpoint
     match checkpoint.disposition:
@@ -1099,10 +1101,23 @@ def _board_checkpoint(
             remaining = query_models.FinalCheckpoint()
         case _ as unreachable:
             assert_never(unreachable)
-    reference = records.brief_reference
     return query_models.BoardCheckpoint(
         checkpoint.checkpoint_id, checkpoint.title, reference.revision, reference.created_at, remaining
     )
+
+
+def _status_checkpoint(
+    checkpoint: query_models.BoardCheckpoint | query_models.UnreadableBrief,
+) -> query_models.CurrentCheckpoint:
+    if isinstance(checkpoint, query_models.UnreadableBrief):
+        return query_models.UnreadableCurrentCheckpoint(checkpoint.message)
+    match checkpoint.remaining_work:
+        case query_models.RecordedRemainingWork(text=text):
+            return query_models.ContinuingCurrentCheckpoint(checkpoint.checkpoint_id, checkpoint.title, text)
+        case query_models.FinalCheckpoint():
+            return query_models.TerminalCurrentCheckpoint(checkpoint.checkpoint_id, checkpoint.title)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _board_milestones(
@@ -1226,7 +1241,7 @@ def _board_items(
 
     attempts = {
         str(facts.records.item_id): query_models.BoardAttemptProgress(
-            _board_checkpoint(facts),
+            project_current_checkpoint(facts.records.attempt_id, facts.records.brief_reference, facts.brief),
             _board_condition(facts),
             _board_milestones(facts.records),
             facts.records.decision_batch,
@@ -1426,18 +1441,25 @@ def _decode_checkpoint_acceptance(
 
 def _review_verdict(
     attempt: query_models.ItemStatusAttemptFacts,
-    reviews: ports.ReadyCandidateReviewReader,
+    brief: work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure,
+    artifacts: ports.ItemStatusArtifactReader,
 ) -> query_models.ReviewVerdict | query_models.DamagedTransitionReceipt:
-    """Derive the current attempt's verdict from its latest review-relevant receipt."""
+    """Derive the current attempt's verdict from its latest review-relevant receipt.
+
+    A ready verdict needs the same identity-checked brief the current checkpoint was projected from, so one call
+    never reports a brief readable for review and unreadable for the checkpoint.
+    """
 
     event = attempt.review_event
     if event is None:
         return query_models.NoReviewVerdict()
     match event.action_kind:
         case decision_models.ActionKind.SUBMIT_REVIEW:
-            if attempt.state != work_models.AttemptState.REVIEW:
+            if attempt.state != work_models.AttemptState.REVIEW or isinstance(
+                brief, work_brief_models.WorkBriefFailure
+            ):
                 return query_models.NoReviewVerdict()
-            ready = reviews.read_ready_candidate_review(attempt.attempt_id)
+            ready = artifacts.read_ready_candidate_review(attempt, brief)
             if ready is None:
                 return query_models.NoReviewVerdict()
             reference = ready.reference
@@ -1543,7 +1565,7 @@ def presented_item_state(value: stored_state.StoredWorkItemState) -> stored_stat
 
 def project_item_status(
     reader: ports.ItemStatusReader,
-    reviews: ports.ReadyCandidateReviewReader,
+    artifacts: ports.ItemStatusArtifactReader,
     work_item_id: WorkItemId,
     now: datetime,
     board: query_models.BoardPages,
@@ -1591,6 +1613,7 @@ def project_item_status(
     for selected in facts.attempts:
         if isinstance(selected.pause_reason, query_models.DamagedTransitionReceipt):
             return selected.pause_reason
+        brief = artifacts.read_attempt_brief(selected)
         attempts.append(
             query_models.ItemStatusAttempt(
                 str(selected.attempt_id),
@@ -1599,14 +1622,15 @@ def project_item_status(
                 selected.candidate_revision,
                 selected.pause_reason,
                 facts.batches_by_attempt.get(selected.attempt_id),
+                _status_checkpoint(project_current_checkpoint(selected.attempt_id, selected.brief_reference, brief)),
             )
         )
-        selected_verdict = _review_verdict(selected, reviews)
+        selected_verdict = _review_verdict(selected, brief, artifacts)
         if isinstance(selected_verdict, query_models.DamagedTransitionReceipt):
             return selected_verdict
         verdict = selected_verdict
     return query_models.ItemStatus(
-        "pinboard-item-status/v3",
+        "pinboard-item-status/v4",
         "sqlite-v11",
         str(facts.project_revision),
         str(item.work_item_id),

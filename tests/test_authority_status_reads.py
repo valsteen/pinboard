@@ -27,7 +27,7 @@ from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.persistence import SQLiteWorkTransaction
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import authority_operations, query_models, service, stored_state
-from pinboard.application.dependency_authoring import DependencyBriefPin
+from pinboard.application.dependency_authoring import DependencyCheckpointPin
 from pinboard.application.mutation_models import ProposalCreationResult
 from pinboard.application.ports import WorkStore
 from pinboard.application.work_briefs import canonical_work_brief_bytes
@@ -70,7 +70,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
             *,
             actor_task_id: TaskId,
             actor_host_id: HostId,
-            dependency_brief_pins: tuple[DependencyBriefPin, ...],
+            dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
         ) -> DecisionResult[ProposalCreationResult]:
             result = original_create(
                 store,

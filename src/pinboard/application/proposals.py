@@ -5,7 +5,7 @@ from pinboard.application.proposal_models import ProposalInput
 from pinboard.domain import proposal_models as domain_proposal_models
 from pinboard.domain import work_models
 from pinboard.domain.history import dependency_from_payload, obligation_from_payload
-from pinboard.domain.identifiers import ProposalId, TaskId, WorkItemId
+from pinboard.domain.identifiers import CheckpointId, ProposalId, TaskId, WorkItemId
 
 
 def convert_proposal(value: ProposalInput) -> domain_proposal_models.CreateProposalOperation:
@@ -42,6 +42,7 @@ def convert_proposal(value: ProposalInput) -> domain_proposal_models.CreatePropo
             value.freshness_assumptions,
             work_models.CheckoutPolicy(value.checkout_policy),
             tuple(obligation_from_payload(obligation) for obligation in value.obligations),
+            tuple(CheckpointId(checkpoint) for checkpoint in value.checkpoints),
             value.position,
         )
     )

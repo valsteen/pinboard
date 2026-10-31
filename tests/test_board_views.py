@@ -238,6 +238,7 @@ def _prerequisite_intake() -> ProposalIntake:
                 work_models.ObligationDeferralPolicy.FORBIDDEN,
             ),
         ),
+        (),
     )
 
 

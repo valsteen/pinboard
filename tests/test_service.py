@@ -984,6 +984,7 @@ class ServiceTest(unittest.TestCase):
                     work_models.ObligationDeferralPolicy.FORBIDDEN,
                 ),
             ),
+            (),
         )
 
         with reject_table_deletes("work_items"):
@@ -1049,6 +1050,7 @@ class ServiceTest(unittest.TestCase):
                     work_models.ObligationDeferralPolicy.FORBIDDEN,
                 ),
             ),
+            (),
             2,
         )
 
@@ -1112,6 +1114,7 @@ class ServiceTest(unittest.TestCase):
                     work_models.ObligationDeferralPolicy.FORBIDDEN,
                 ),
             ),
+            (),
         )
 
         result = self._create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
@@ -1152,6 +1155,7 @@ class ServiceTest(unittest.TestCase):
                     work_models.ObligationDeferralPolicy.FORBIDDEN,
                 ),
             ),
+            (),
             6,
         )
         before = store.validated_snapshot()
@@ -1188,6 +1192,7 @@ class ServiceTest(unittest.TestCase):
                     work_models.ObligationDeferralPolicy.FORBIDDEN,
                 ),
             ),
+            (),
         )
         before = store.validated_snapshot()
 

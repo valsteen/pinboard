@@ -117,6 +117,7 @@ def definition_anchor(
                     work_models.ObligationDeferralPolicy.FORBIDDEN,
                 ),
             ),
+            (),
         ),
     )
 
@@ -899,6 +900,104 @@ class LifecycleDecisionTest(unittest.TestCase):
             NOW,
         )
         self.assertEqual(("done", "covered elsewhere"), (closed.receipt.outcome, closed.receipt.evidence))
+
+    def test_superseded_close_requires_an_unresolved_existing_non_dropped_replacement(self) -> None:
+        source = item("source", work_models.WorkState.READY)
+        target = item("replacement", work_models.WorkState.READY)
+        relation = work_models.PlannedReplacement(
+            source.work_item_id,
+            1,
+            target.work_item_id,
+            "Avoid duplicate work.",
+            work_models.PlannedReplacementStatus.CURRENT,
+            TaskId("human"),
+            NOW,
+        )
+        snapshot = LedgerSnapshot(
+            "r",
+            (source, target),
+            planned_replacements=(relation,),
+            accepted_checkpoints=frozenset(),
+            dependency_facts=(),
+            dropped_item_ids=frozenset(),
+        )
+        superseded = work_models.CloseOutcome.SUPERSEDED
+        cases = (
+            ("done-with-replacement", snapshot, work_models.CloseOutcome.DONE, DecisionFailureCode.REPLACEMENT_STALE),
+            ("dropped", snapshot, work_models.CloseOutcome.DROPPED, DecisionFailureCode.ACTION_NOT_AVAILABLE),
+            (
+                "no-relation",
+                replace_dataclass(snapshot, planned_replacements=()),
+                superseded,
+                DecisionFailureCode.REPLACEMENT_INVALID,
+            ),
+            (
+                "withdrawn",
+                replace_dataclass(
+                    snapshot,
+                    planned_replacements=(
+                        replace_dataclass(relation, status=work_models.PlannedReplacementStatus.WITHDRAWN),
+                    ),
+                ),
+                superseded,
+                DecisionFailureCode.REPLACEMENT_INVALID,
+            ),
+            (
+                "missing-target",
+                replace_dataclass(snapshot, items=(source,)),
+                superseded,
+                DecisionFailureCode.REPLACEMENT_INVALID,
+            ),
+            (
+                "dropped-target",
+                replace_dataclass(
+                    snapshot,
+                    items=(source,),
+                    history_items=(target.work_item_id,),
+                    dropped_item_ids=frozenset({target.work_item_id}),
+                ),
+                superseded,
+                DecisionFailureCode.REPLACEMENT_INVALID,
+            ),
+            (
+                "retained",
+                replace_dataclass(
+                    snapshot,
+                    replacement_dispositions=(
+                        work_models.ReplacementDisposition(
+                            source.work_item_id, 1, "Keep it.", relation.replacement_cost, TaskId("human"), NOW
+                        ),
+                    ),
+                ),
+                superseded,
+                DecisionFailureCode.REPLACEMENT_INVALID,
+            ),
+            ("live-target", snapshot, superseded, None),
+            (
+                "terminal-target",
+                replace_dataclass(snapshot, items=(source,), history_items=(target.work_item_id,)),
+                superseded,
+                None,
+            ),
+        )
+        for label, facts, outcome, code in cases:
+            with self.subTest(case=label):
+                result = decision_outcome(
+                    facts,
+                    decision_models.CloseCommand(
+                        action(decision_models.CloseAction, source.work_item_id),
+                        work_models.CloseInput(outcome, "Absorbed by replacement.", "Close source."),
+                    ),
+                    NOW,
+                )
+                if code is None:
+                    self.assertNotIsInstance(result, DecisionFailure)
+                    assert not isinstance(result, DecisionFailure)
+                    self.assertEqual("superseded", result.receipt.outcome)
+                else:
+                    self.assertIsInstance(result, DecisionFailure)
+                    assert isinstance(result, DecisionFailure)
+                    self.assertEqual(code, result.code)
 
     def test_completion_leaf_is_selected_by_authoritative_checkpoint_history(self) -> None:
         active = item("target", work_models.WorkState.ACTIVE, attempt="target-1")

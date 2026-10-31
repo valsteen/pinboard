@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import ProposalId, TaskId, WorkItemId
+from pinboard.domain.identifiers import CheckpointId, ProposalId, TaskId, WorkItemId
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +21,7 @@ class ProposalIntake:
     freshness_assumptions: tuple[str, ...]
     checkout_policy: work_models.CheckoutPolicy
     obligations: tuple[work_models.DefinitionObligation, ...]
+    checkpoints: tuple[CheckpointId, ...]
     position: int | None = None
 
 

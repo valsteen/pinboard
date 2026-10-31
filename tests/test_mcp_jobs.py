@@ -250,6 +250,13 @@ class McpJobsTest(CheckpointPackageSupport):
             self.assertIn("pinboard-correction-source-review/v1", dispatch.description)
             assert dispatch.output_schema is not None
             self.assertIn("TracePreflightResult", dispatch.output_schema["$defs"])
+            for tool_name in ("pinboard_dispatch", "pinboard_review_job"):
+                output_schema = tools[tool_name].output_schema
+                assert output_schema is not None
+                claude_args = output_schema["$defs"]["ClaudeLaunchArguments"]
+                self.assertEqual({"description", "prompt"}, set(claude_args["properties"]))
+                self.assertEqual(["description", "prompt"], claude_args["required"])
+                self.assertEqual(False, claude_args["additionalProperties"])
         finally:
             executor.shutdown()
 
@@ -733,29 +740,32 @@ class McpJobsTest(CheckpointPackageSupport):
         self.assertEqual(str(work), selected.work_root)
 
     def test_claude_worker_launch_is_complete_and_cannot_request_another_checkout(self) -> None:
-        project, work, choice = self.dispatch_fixture()
-        environment = self.json_object(choice["environment"])
-        choice["environment"] = environment | {"runtime": "claude-code", "background": False}
-        outcome = mcp_jobs._dispatch_job(str(project), str(work), choice, mcp_execution.CancellationToken())
-        self.assertEqual("ready", outcome.content["status"])
-        launch = self.json_object(outcome.content["native_launch"])
-        self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
-        self.assertEqual("claude-code", launch["runtime"])
-        self.assertEqual("Agent", launch["tool"])
-        self.assertFalse(launch["background"])
-        arguments = self.json_object(launch["arguments"])
-        self.assertEqual({"description", "prompt", "run_in_background"}, set(arguments))
-        self.assertFalse(arguments["run_in_background"])
-        self.assertNotIn("isolation", arguments)
-        prompt = arguments["prompt"]
-        assert isinstance(prompt, str)
-        reference = self.json_object(outcome.content["prompt_reference"])
-        published_prompt = (work / str(reference["selector"])).read_text(encoding="utf-8")
-        self.assertNotIn("BEGIN ACCEPTED PINBOARD TASK", prompt)
-        self.assertNotIn(published_prompt, prompt)
-        self.assertIn(str(work / str(reference["selector"])), prompt)
-        self.assertIn(str(reference["sha256"]), prompt)
-        self.assertIn("Do not return successful delivery before", prompt)
+        for background in (False, True):
+            with self.subTest(background=background):
+                project, work, choice = self.dispatch_fixture()
+                environment = self.json_object(choice["environment"])
+                choice["environment"] = environment | {"runtime": "claude-code", "background": background}
+                outcome = mcp_jobs._dispatch_job(str(project), str(work), choice, mcp_execution.CancellationToken())
+                self.assertEqual("ready", outcome.content["status"])
+                contract_schemas.validate_result("pinboard_dispatch", outcome.content)
+                launch = self.json_object(outcome.content["native_launch"])
+                self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
+                self.assertEqual("claude-code", launch["runtime"])
+                self.assertEqual("Agent", launch["tool"])
+                self.assertEqual(background, launch["background"])
+                arguments = self.json_object(launch["arguments"])
+                self.assertEqual({"description", "prompt"}, set(arguments))
+                self.assertNotIn("run_in_background", arguments)
+                self.assertNotIn("isolation", arguments)
+                prompt = arguments["prompt"]
+                assert isinstance(prompt, str)
+                reference = self.json_object(outcome.content["prompt_reference"])
+                published_prompt = (work / str(reference["selector"])).read_text(encoding="utf-8")
+                self.assertNotIn("BEGIN ACCEPTED PINBOARD TASK", prompt)
+                self.assertNotIn(published_prompt, prompt)
+                self.assertIn(str(work / str(reference["selector"])), prompt)
+                self.assertIn(str(reference["sha256"]), prompt)
+                self.assertIn("Do not return successful delivery before", prompt)
 
     def test_antigravity_worker_launch_is_complete_fresh_context_and_cannot_request_another_checkout(self) -> None:
         for background in (False, True):
@@ -823,6 +833,7 @@ class McpJobsTest(CheckpointPackageSupport):
         )
         for kind, ids in rounds:
             with self.subTest(kind=kind):
+                background = "correction" in kind
                 outcome = mcp_jobs._review_job(
                     str(fixture.project),
                     str(fixture.work),
@@ -831,7 +842,7 @@ class McpJobsTest(CheckpointPackageSupport):
                         "attempt_id": "work-a-1",
                         "candidate_revision": "b" * 40,
                         "runtime": "claude-code",
-                        "background": False,
+                        "background": background,
                         **ids,
                     },
                     mcp_execution.CancellationToken(),
@@ -842,10 +853,10 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
                 self.assertEqual("claude-code", launch["runtime"])
                 self.assertEqual("Agent", launch["tool"])
-                self.assertFalse(launch["background"])
+                self.assertEqual(background, launch["background"])
                 arguments = self.json_object(launch["arguments"])
-                self.assertEqual({"description", "prompt", "run_in_background"}, set(arguments))
-                self.assertFalse(arguments["run_in_background"])
+                self.assertEqual({"description", "prompt"}, set(arguments))
+                self.assertNotIn("run_in_background", arguments)
                 self.assertNotIn("isolation", arguments)
                 prompt = arguments["prompt"]
                 assert isinstance(prompt, str)

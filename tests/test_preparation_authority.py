@@ -629,6 +629,7 @@ class PreparationAuthorityTest(unittest.TestCase):
                     work_models.ObligationDeferralPolicy.FORBIDDEN,
                 ),
             ),
+            (),
         )
         before = store.validated_snapshot()
 
@@ -682,6 +683,7 @@ class PreparationAuthorityTest(unittest.TestCase):
                     work_models.ObligationDeferralPolicy.FORBIDDEN,
                 ),
             ),
+            (),
         )
         before = store.validated_snapshot()
 

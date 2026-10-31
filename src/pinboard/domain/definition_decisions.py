@@ -65,6 +65,18 @@ def decide_definition_revision(
             "The expected definition revision and digest are stale.",
             None,
         )
+    removed_checkpoints = tuple(
+        str(checkpoint)
+        for checkpoint in current.definition.checkpoints
+        if checkpoint not in value.definition.checkpoints
+    )
+    if removed_checkpoints:
+        removed = ", ".join(removed_checkpoints)
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_DEFINITION_INVALID,
+            f"Definition revision cannot remove declared checkpoints: {removed}.",
+            None,
+        )
     digest = work_item_definition_digest(value.definition)
     if isinstance(digest, DecisionFailure):
         return digest

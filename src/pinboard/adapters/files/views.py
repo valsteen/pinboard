@@ -169,8 +169,15 @@ def _render_item(
         next_step = "No current action is recorded for this finished item.\n\n"
     match accepted:
         case work_models.WorkItemDefinition():
-            execution_details = "\n### Obligations\n\n" + _bullets(
-                tuple(_obligation_text(value) for value in accepted.obligations)
+            checkpoint_details = (
+                "\n### Checkpoints\n\n" + _bullets(tuple(str(value) for value in accepted.checkpoints))
+                if accepted.checkpoints
+                else ""
+            )
+            execution_details = (
+                "\n### Obligations\n\n"
+                + _bullets(tuple(_obligation_text(value) for value in accepted.obligations))
+                + checkpoint_details
             )
             policy_details = f"- Checkout policy: {accepted.checkout_policy.value}\n"
             format_details = ""
@@ -244,11 +251,18 @@ def _render_attempt(
 ) -> bytes:
     if (brief := attempt_briefs.get(attempt.attempt_id)) is not None:
         return brief
+    state = (
+        "superseded (item superseded)"
+        if item_state == stored_state.StoredWorkItemState.SUPERSEDED
+        else "cancelled (item dropped)"
+        if item_state == stored_state.StoredWorkItemState.DROPPED
+        else attempt.state.value
+    )
     return (
         _render_header("work-attempt-view")
         + f"# Attempt {attempt.attempt_id}\n\n"
         + f"- Item: {attempt.item_id}\n"
-        + f"- State: {'cancelled (item dropped)' if item_state == stored_state.StoredWorkItemState.DROPPED else attempt.state.value}\n"
+        + f"- State: {state}\n"
         + f"- Branch: {attempt.branch}\n"
         + f"- Base revision: {attempt.base_revision}\n"
         + f"- Candidate revision: {attempt.candidate_revision or 'none'}\n"
@@ -754,6 +768,8 @@ def _list_field_label(field: query_models.DefinitionListField) -> str:
             return "Evidence"
         case query_models.DefinitionListField.DEPENDENCIES:
             return "Dependencies"
+        case query_models.DefinitionListField.CHECKPOINTS:
+            return "Checkpoints"
         case _ as unreachable:
             assert_never(unreachable)
 

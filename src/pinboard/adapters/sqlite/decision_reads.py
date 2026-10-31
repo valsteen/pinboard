@@ -639,7 +639,7 @@ def read_current_snapshot(
     planned_replacements, replacement_dispositions = read_current_replacements(
         connection, (item.item_id for item in item_rows)
     )
-    history_items = tuple(
+    related_item_ids = tuple(
         dict.fromkeys(
             item_id
             for item_id in (
@@ -647,16 +647,16 @@ def read_current_snapshot(
                 *(proposal.relation_item_id for proposal in proposal_rows if proposal.relation_item_id is not None),
                 *(relation.replacement_item for relation in planned_replacements),
             )
-            if item_id not in live_item_ids
         )
     )
-
-    dropped = frozenset(
-        decode_row(row, _ItemIdRow).item_id
+    terminal_items = tuple(
+        decode_row(row, _ItemRow)
         for row in select_by_ids(
             connection,
-            "SELECT item_id FROM work_items WHERE item_id IN ({ids}) AND state = 'dropped'",
-            tuple(row.dependency_id for row in dependency_rows),
+            """SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
+                      subject_revision, queue_position
+               FROM work_items WHERE item_id IN ({ids}) AND queue_position IS NULL""",
+            related_item_ids,
         )
     )
     return LedgerSnapshot(
@@ -689,7 +689,7 @@ def read_current_snapshot(
         command_attempt_authorities=command_attempt_authorities,
         preparation_authorities=preparation_authorities,
         command_preparation_authorities=command_preparation_authorities,
-        history_items=history_items,
+        history_items=tuple(item.item_id for item in terminal_items),
         definitions=tuple(current_definition_anchor(value) for value in definitions),
         host_epoch=project.host_epoch,
         planned_replacements=planned_replacements,
@@ -698,7 +698,9 @@ def read_current_snapshot(
             connection, (target for targets in dependencies.values() for target in targets)
         ),
         dependency_facts=_recorded_dependency_facts(definitions),
-        dropped_item_ids=dropped,
+        dropped_item_ids=frozenset(
+            item.item_id for item in terminal_items if item.state == stored_state.StoredWorkItemState.DROPPED
+        ),
     )
 
 
@@ -790,10 +792,12 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             )
         )
     }
+    planned_replacements, replacement_dispositions = read_current_replacements(connection, primary_item_ids)
     related_ids = tuple(
         dict.fromkeys(
             (
                 *scope.related_work_item_ids,
+                *(relation.replacement_item for relation in planned_replacements),
                 *(
                     work_models.dependency_item(dependency)
                     for item_id in primary_item_ids
@@ -823,7 +827,6 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
     dependencies: dict[WorkItemId, list[work_models.Dependency]] = defaultdict(list)
     definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision] = {}
     contextual_item_ids: set[WorkItemId] = set()
-    selected_replacement_item_ids: set[WorkItemId] = set()
     dependency_item_ids: set[WorkItemId] = set()
 
     def read_item(
@@ -862,10 +865,8 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
                 StorageErrorCode.INVALID_STATE,
                 "Current definition dependencies do not match relational dependencies.",
             )
-        if context:
-            selected_replacement_item_ids.add(item_id)
-            if live:
-                contextual_item_ids.add(item_id)
+        if context and live:
+            contextual_item_ids.add(item_id)
         return item
 
     for item_id in dict.fromkeys(primary_item_ids):
@@ -883,6 +884,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             pending_closure.extend(work_models.dependency_item(target) for target in dependencies[item_id])
 
     related_item_ids = list(scope.related_work_item_ids)
+    related_item_ids.extend(relation.replacement_item for relation in planned_replacements)
     for item_id in contextual_item_ids:
         related_item_ids.extend(work_models.dependency_item(target) for target in dependencies[item_id])
     for dependent_id in dependent_ids:
@@ -984,9 +986,6 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             tuple(freshness[proposal.proposal_id]),
         )
         for proposal in proposals.values()
-    )
-    planned_replacements, replacement_dispositions = read_current_replacements(
-        connection, selected_replacement_item_ids
     )
     snapshot = LedgerSnapshot(
         revision=str(project.revision),

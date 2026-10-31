@@ -198,6 +198,42 @@ def validate_attempt_brief_identity(
     )
 
 
+def _terminal_attempt_continuation(
+    context: query_models.TerminalAttemptContextFacts,
+) -> query_models.TerminalAttemptContinuation:
+    constructor: type[query_models.TerminalAttemptContinuation]
+    match context.item_state:
+        case stored_state.StoredWorkItemState.DROPPED:
+            constructor = query_models.CancelledAttemptContinuation
+        case stored_state.StoredWorkItemState.SUPERSEDED:
+            constructor = query_models.SupersededAttemptContinuation
+        case (
+            stored_state.StoredWorkItemState.INTAKE
+            | stored_state.StoredWorkItemState.READY
+            | stored_state.StoredWorkItemState.ACTIVE
+            | stored_state.StoredWorkItemState.PAUSED
+            | stored_state.StoredWorkItemState.BLOCKED
+            | stored_state.StoredWorkItemState.DEFERRED
+            | stored_state.StoredWorkItemState.REVIEW
+            | stored_state.StoredWorkItemState.DONE
+        ):
+            constructor = query_models.TerminalAttemptContinuation
+        case _ as unreachable:
+            assert_never(unreachable)
+    return constructor(
+        "pinboard-attempt-continuation/v1",
+        context.attempt_id,
+        context.work_item_id,
+        context.project_revision,
+        None,
+        True,
+        False,
+        None,
+        (),
+        ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
+    )
+
+
 def project_attempt_continuation(
     context: query_models.AttemptContextFacts,
     owner_task_id: TaskId | None,
@@ -214,23 +250,7 @@ def project_attempt_continuation(
     """
     match context:
         case query_models.TerminalAttemptContextFacts():
-            constructor = (
-                query_models.CancelledAttemptContinuation
-                if context.item_state == stored_state.StoredWorkItemState.DROPPED
-                else query_models.TerminalAttemptContinuation
-            )
-            return constructor(
-                "pinboard-attempt-continuation/v1",
-                context.attempt_id,
-                context.work_item_id,
-                context.project_revision,
-                None,
-                True,
-                False,
-                None,
-                (),
-                ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
-            )
+            return _terminal_attempt_continuation(context)
         case query_models.NonterminalAttemptContextFacts():
             if owner_task_id is None:
                 return DecisionFailure(
@@ -470,6 +490,12 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 decision_models.action_id(action), action.kind, "Follow the accepted brief."
             )
     for action in actions:
+        if isinstance(action, decision_models.CloseAction):
+            return query_models.ActionContinuation(
+                decision_models.action_id(action),
+                action.kind,
+                "Move live dependents to the replacement or its checkpoints, then close the absorbed item as superseded.",
+            )
         if context.state == work_models.AttemptState.ACTIVE and isinstance(action, decision_models.RebindAttemptAction):
             return query_models.ActionContinuation(
                 decision_models.action_id(action),
@@ -1150,9 +1176,11 @@ def _definition_fields(definition: stored_state.StoredDefinition) -> _Definition
         case work_models.WorkItemDefinition():
             checkout_policy: str | None = definition.checkout_policy.value
             obligations = definition.obligations
+            checkpoints = tuple(str(value) for value in definition.checkpoints)
         case definition_compatibility.HistoricalDefinitionV1():
             checkout_policy = None
             obligations = ()
+            checkpoints = ()
         case _ as unreachable:
             assert_never(unreachable)
     return _DefinitionFields(
@@ -1178,6 +1206,7 @@ def _definition_fields(definition: stored_state.StoredDefinition) -> _Definition
                     for value in definition.dependencies
                 ),
             ),
+            (query_models.DefinitionListField.CHECKPOINTS, checkpoints),
         ),
         tuple(obligations),
     )
@@ -1666,7 +1695,9 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
                 str(owner.work_item_id),
                 owner.item_state,
                 str(owner.attempt_id),
-                "cancelled"
+                owner.item_state.value
+                if owner.item_state == stored_state.StoredWorkItemState.SUPERSEDED
+                else "cancelled"
                 if owner.item_state == stored_state.StoredWorkItemState.DROPPED
                 else owner.attempt_state.value,
             )

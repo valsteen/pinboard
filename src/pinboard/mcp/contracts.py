@@ -1934,6 +1934,7 @@ _REVIEW_CONTINUATION_ACTION_KINDS = (
     decision_models.ActionKind.REVISE_ITEM,
 )
 _PAUSED_CONTINUATION_ACTION_KINDS = (
+    decision_models.ActionKind.CLOSE,
     decision_models.ActionKind.REBIND_ATTEMPT,
     decision_models.ActionKind.RECORD_REPLACEMENT,
     decision_models.ActionKind.RETAIN_TEMPORARILY,
@@ -1941,6 +1942,7 @@ _PAUSED_CONTINUATION_ACTION_KINDS = (
     decision_models.ActionKind.RESUME,
 )
 _BLOCKED_CONTINUATION_ACTION_KINDS = (
+    decision_models.ActionKind.CLOSE,
     decision_models.ActionKind.RECORD_REPLACEMENT,
     decision_models.ActionKind.RETAIN_TEMPORARILY,
     decision_models.ActionKind.REVISE_ITEM,
@@ -1973,6 +1975,12 @@ class CancelledAttemptContinuation(
     TerminalAttemptContinuation, tag="dropped", tag_field="state", frozen=True, forbid_unknown_fields=True
 ):
     """Dropped parent disposition for a terminal retained attempt."""
+
+
+class SupersededAttemptContinuation(
+    TerminalAttemptContinuation, tag="superseded", tag_field="state", frozen=True, forbid_unknown_fields=True
+):
+    """Superseded parent disposition for a terminal retained attempt."""
 
 
 class NonterminalAttemptContinuationBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2065,22 +2073,23 @@ class ReviewAttemptContinuation(
             raise ValueError("a review continuation requires review, completion, or correction work")
 
 
-class DependencyOrResumeAttemptContinuationBase(NonterminalAttemptContinuationBase, frozen=True):
-    def _validate_dependency_or_resume(self) -> None:
+class PausedOrBlockedAttemptContinuationBase(NonterminalAttemptContinuationBase, frozen=True):
+    def _validate_paused_or_blocked(self) -> None:
         self._validate_common()
         operation = self.next_operation
         if not (
             isinstance(operation, ContinuationDependencies)
             or (
                 isinstance(operation, ContinuationAction)
-                and operation.action.action_kind == decision_models.ActionKind.RESUME
+                and operation.action.action_kind
+                in {decision_models.ActionKind.RESUME, decision_models.ActionKind.CLOSE}
             )
         ):
-            raise ValueError("a paused or blocked continuation requires dependency or resume work")
+            raise ValueError("a paused or blocked continuation requires dependency, resume, or close work")
 
 
 class PausedAttemptContinuation(
-    DependencyOrResumeAttemptContinuationBase,
+    PausedOrBlockedAttemptContinuationBase,
     tag="paused",
     tag_field="state",
     frozen=True,
@@ -2089,26 +2098,31 @@ class PausedAttemptContinuation(
     pause_reason: NonEmptyText | None
 
     def __post_init__(self) -> None:
-        self._validate_dependency_or_resume()
+        self._validate_paused_or_blocked()
         self._validate_legal_action_kinds(_PAUSED_CONTINUATION_ACTION_KINDS)
 
 
 class BlockedAttemptContinuation(
-    DependencyOrResumeAttemptContinuationBase,
+    PausedOrBlockedAttemptContinuationBase,
     tag="blocked",
     tag_field="state",
     frozen=True,
     forbid_unknown_fields=True,
 ):
     def __post_init__(self) -> None:
-        self._validate_dependency_or_resume()
+        self._validate_paused_or_blocked()
         self._validate_legal_action_kinds(_BLOCKED_CONTINUATION_ACTION_KINDS)
 
 
 type NonterminalAttemptContinuation = (
     ActiveAttemptContinuation | ReviewAttemptContinuation | PausedAttemptContinuation | BlockedAttemptContinuation
 )
-type AttemptContinuation = TerminalAttemptContinuation | CancelledAttemptContinuation | NonterminalAttemptContinuation
+type AttemptContinuation = (
+    TerminalAttemptContinuation
+    | CancelledAttemptContinuation
+    | SupersededAttemptContinuation
+    | NonterminalAttemptContinuation
+)
 
 
 class CandidateRecoveryAbsent(msgspec.Struct, tag="absent", tag_field="kind", frozen=True, forbid_unknown_fields=True):
@@ -2152,7 +2166,7 @@ type CandidateRecovery = CandidateRecoveryAbsent | CandidateRecoveryPresent
 class TerminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
     status: Literal["ok"]
-    continuation: TerminalAttemptContinuation | CancelledAttemptContinuation
+    continuation: TerminalAttemptContinuation | CancelledAttemptContinuation | SupersededAttemptContinuation
     candidate_recovery: CandidateRecovery
     accepted_brief: None
     result: EvidenceReference

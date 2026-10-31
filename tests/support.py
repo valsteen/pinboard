@@ -119,6 +119,7 @@ SQLITE_DEFINITION = work_models.WorkItemDefinition(
     "The next decision can run.",
     work_models.CheckoutPolicy.COORDINATOR_SELECTED,
     SQLITE_OBLIGATIONS,
+    (),
 )
 _SQLITE_DEFINITION_DIGEST = work_item_definition_digest(SQLITE_DEFINITION)
 assert isinstance(_SQLITE_DEFINITION_DIGEST, str)
@@ -155,6 +156,7 @@ def test_definition(item: WorkItemId) -> tuple[work_models.WorkItemDefinition, s
                     work_models.ObligationDeferralPolicy.FORBIDDEN,
                 ),
             ),
+            (),
         )
     else:
         definition = work_models.WorkItemDefinition(
@@ -170,6 +172,7 @@ def test_definition(item: WorkItemId) -> tuple[work_models.WorkItemDefinition, s
             SQLITE_DEFINITION.unlock,
             SQLITE_DEFINITION.checkout_policy,
             SQLITE_DEFINITION.obligations,
+            SQLITE_DEFINITION.checkpoints,
         )
     digest = work_item_definition_digest(definition)
     assert isinstance(digest, str)

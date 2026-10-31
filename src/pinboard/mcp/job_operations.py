@@ -170,7 +170,6 @@ def _mcp_launch_envelope(
                 dispatch_models.ClaudeLaunchArguments(
                     f"Pinboard {prompt_role} for {attempt_id}",
                     message,
-                    background,
                 ),
             )
         case "antigravity":

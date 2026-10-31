@@ -302,6 +302,7 @@ def _race_preparation_and_prerequisite_proposal(
                     work_models.ObligationDeferralPolicy.FORBIDDEN,
                 ),
             ),
+            (),
         )
         barrier.wait()
         result = create_proposal(

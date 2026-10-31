@@ -287,6 +287,7 @@ class MutationPersistenceTest(unittest.TestCase):
                     work_models.ObligationDeferralPolicy.FORBIDDEN,
                 ),
             ),
+            (),
         )
         current_digest = expect_success(work_item_definition_digest(current))
         state = replace(

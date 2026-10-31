@@ -1524,11 +1524,14 @@ def _mcp_attempt_continuation(
     )
     match continuation:
         case query_models.TerminalAttemptContinuation():
-            constructor = (
-                contracts.CancelledAttemptContinuation
-                if isinstance(continuation, query_models.CancelledAttemptContinuation)
-                else contracts.TerminalAttemptContinuation
-            )
+            constructor: type[contracts.TerminalAttemptContinuation]
+            match continuation:
+                case query_models.CancelledAttemptContinuation():
+                    constructor = contracts.CancelledAttemptContinuation
+                case query_models.SupersededAttemptContinuation():
+                    constructor = contracts.SupersededAttemptContinuation
+                case query_models.TerminalAttemptContinuation():
+                    constructor = contracts.TerminalAttemptContinuation
             return constructor(
                 *common,
                 None,

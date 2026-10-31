@@ -52,7 +52,7 @@ When selecting work, explain:
 6. which choice genuinely requires human priority;
 7. the recommended next item and why now.
 
-When known intake or selected-item context shows several ready items sharing a first step or scarce resource, apply the main skill's [shared-phase suggestion](../SKILL.md#match-detail-to-the-question) once: recommend one autonomous phase item with deliverables tracked separately. Keep compact status read-only; use the overview or focused context already needed for the answer, without a broad discovery walk. The suggestion leaves saved order, dependencies, and human choice intact.
+When known intake or selected-item context shows several ready items sharing a first step or scarce resource, or each too small to justify its own start, review, publication and close, apply the main skill's [shared-phase suggestion](../SKILL.md#match-detail-to-the-question) once: recommend one autonomous campaign item with each deliverable as a named checkpoint. Keep compact status read-only; use the overview or focused context already needed for the answer, without a broad discovery walk. The suggestion leaves saved order, dependencies, and human choice intact.
 
 Respect the saved live priority order from `overview` before making a heuristic recommendation. Its `next_unstarted` context names the first unstarted item and unsatisfied dependency targets; read the matching item row for lifecycle, replacement and preparation facts, and report an existing blocker rather than silently recommending a lower item. Active, review and previously started attempts remain current work, not new starts. Priority does not change dependencies, preparation authority, available actions or independent parallel eligibility.
 

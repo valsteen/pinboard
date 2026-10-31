@@ -1013,7 +1013,14 @@ class AuthorityStatusReadTest(unittest.TestCase):
 
         self.assertEqual("pinboard-branch-owners/v1", owners["schema"], owners)
         self.assertEqual(
-            [{"item_id": "work-b", "item_state": "superseded", "attempt_id": "unrelated-7", "attempt_state": "done"}],
+            [
+                {
+                    "item_id": "work-b",
+                    "item_state": "superseded",
+                    "attempt_id": "unrelated-7",
+                    "attempt_state": "superseded",
+                }
+            ],
             owners["owners"],
         )
         read_tables, statements = branch_reads

@@ -8,7 +8,7 @@ from pinboard.adapters import dispatch_operations
 from pinboard.application import action_models, brief_source_models, dispatch_models, query_models, work_brief_contract
 from pinboard.domain import decision_models
 from pinboard.domain.errors import DecisionFailureCode
-from pinboard.mcp import initiative_contracts
+from pinboard.mcp import consolidation_contracts, initiative_contracts
 from pinboard.mcp.contracts import (
     _ACTIVE_CONTINUATION_ACTION_KINDS,
     _BLOCKED_CONTINUATION_ACTION_KINDS,
@@ -846,6 +846,16 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
             else initiative_contracts.ReadResult
             if status == "ok"
             else initiative_contracts.Committed,
+            strict=True,
+        )
+    elif tool_name == "pinboard_consolidate":
+        msgspec.convert(
+            content,
+            type=consolidation_contracts.Rejected
+            if status == "rejected"
+            else consolidation_contracts.PreviewResult
+            if status == "ok"
+            else consolidation_contracts.Committed,
             strict=True,
         )
     elif tool_name == "pinboard_cancel":

@@ -15,6 +15,7 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters.sqlite import cancellation, pr_review
+from pinboard.adapters.sqlite import consolidation as consolidation_storage
 from pinboard.adapters.sqlite import initiatives as initiative_storage
 from pinboard.adapters.sqlite import obligation_coverage as obligation_storage
 from pinboard.adapters.sqlite import state as sqlite_state
@@ -91,6 +92,7 @@ from pinboard.application import (
     artifact_identity,
     cancellation_models,
     candidate_snapshots,
+    consolidation_models,
     history_archives,
     obligation_coverage,
     queries,
@@ -102,7 +104,7 @@ from pinboard.application import (
 from pinboard.application.artifacts import ArtifactRef, BriefArtifactRef
 from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.application.project_export import ProjectExportState
-from pinboard.domain import decision_models, history, work_models
+from pinboard.domain import consolidation, decision_models, history, work_models
 from pinboard.domain import initiatives as initiative_models
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import (
@@ -754,6 +756,14 @@ def _read_integration_facts(
 
 
 class SQLiteWorkStore:
+    def read_consolidation_facts(self, plan: consolidation.Plan, now: datetime) -> consolidation_models.Facts:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return consolidation_storage.read_facts(connection, plan, now)
+        finally:
+            connection.close()
+
     def read_obligation_origins(
         self, origins: tuple[work_models.ObligationOrigin, ...]
     ) -> frozenset[work_models.ObligationOrigin]:

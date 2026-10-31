@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 
-from pinboard.application import cancellation_models, query_models, stored_state
+from pinboard.application import cancellation_models, consolidation_models, query_models, stored_state
 from pinboard.application.artifacts import EvidenceArtifactRef, ResultArtifactRef
-from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain import authority_models, consolidation, decision_models, work_models
 from pinboard.domain.identifiers import (
     ArtifactRefId,
     AttemptId,
@@ -177,8 +177,16 @@ class CancellationMutation:
     preview: cancellation_models.CancellationPreview
 
 
+@dataclass(frozen=True, slots=True)
+class ConsolidationMutation:
+    receipt: MutationReceipt
+    change: consolidation.Change
+    queue_changes: tuple[consolidation_models.QueueChange, ...]
+
+
 type StoredStateMutation = (
-    CancellationMutation
+    ConsolidationMutation
+    | CancellationMutation
     | OrderMutation
     | TransitionMutation
     | ReviewSubmissionMutation

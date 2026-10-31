@@ -89,6 +89,7 @@ class ActionKind(Enum):
     BLOCK_ITEM = "block-item"
     COMPLETE = "complete"
     CANCEL = "cancel"
+    CONSOLIDATE = "consolidate"
     CLOSE = "close"
     CONTINUE = "continue"
     DEFER = "defer"
@@ -110,6 +111,15 @@ class ActionKind(Enum):
 
 def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR0912
     match kind:
+        case ActionKind.CONSOLIDATE:
+            return ActionSemantics(
+                "Consolidate selected live items after separate human confirmation.",
+                LifecycleEffect.CHANGES_LIFECYCLE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ITEM,
+                ActionLifecyclePrecondition.VALID_LEDGER,
+                "Carry work and waits into a campaign atomically and end the sources as superseded.",
+            )
         case ActionKind.CANCEL:
             return ActionSemantics(
                 "Cancel a live commitment after separate exact-item human confirmation.",

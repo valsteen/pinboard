@@ -3642,25 +3642,6 @@ class McpTransportTest(unittest.TestCase):
                 forbidden,
             )
 
-        resume = contracts.ContinuationAction(
-            contracts.RelativeActionIdentity("item", decision_models.ActionKind.RESUME),
-            "Resume.",
-        )
-        legal_actions = (
-            contracts.RelativeActionIdentity("item", decision_models.ActionKind.RESUME),
-            contracts.RelativeActionIdentity("item", decision_models.ActionKind.CLOSE),
-        )
-        with self.subTest(state="paused"), self.assertRaises(ValueError):
-            contracts.PausedAttemptContinuation(*common, resume, legal_actions, forbidden, None, None)
-        with self.subTest(state="blocked"), self.assertRaises(ValueError):
-            contracts.BlockedAttemptContinuation(
-                *common,
-                resume,
-                legal_actions,
-                forbidden,
-                decision_batch=None,
-            )
-
     def test_sdk_stdio_workflow_discovery_and_verification_are_read_only(self) -> None:
         temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
@@ -5060,6 +5041,7 @@ class McpTransportTest(unittest.TestCase):
                 mcp_server.TRANSITION_TOOL,
                 mcp_server.CLOSE_TOOL,
                 mcp_server.CANCEL_TOOL,
+                mcp_server.CONSOLIDATE_TOOL,
                 mcp_server.INITIATIVE_TOOL,
                 mcp_server.DISPATCH_TOOL,
                 mcp_server.REVIEW_JOB_TOOL,

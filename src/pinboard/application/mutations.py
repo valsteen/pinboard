@@ -18,6 +18,7 @@ from pinboard.application.mutation_models import (
     CheckpointArtifactChanges,
     CheckpointMutationAllocation,
     CompletionAcceptanceMutation,
+    ConsolidationMutation,
     MutationAllocation,
     MutationReceipt,
     OrderMutation,
@@ -103,7 +104,8 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                 ),
             )
         case (
-            CancellationMutation()
+            ConsolidationMutation()
+            | CancellationMutation()
             | ProposalCreationMutation()
             | AttemptAuthorityMutation()
             | PreparationAuthorityMutation()

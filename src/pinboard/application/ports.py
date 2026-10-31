@@ -8,6 +8,7 @@ from typing import Protocol
 from pinboard.application import (
     artifact_identity,
     cancellation_models,
+    consolidation_models,
     obligation_coverage,
     query_models,
     roadmap,
@@ -22,7 +23,7 @@ from pinboard.application.mutation_models import (
     StoredStateMutation,
 )
 from pinboard.application.project_export import ProjectExportState
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import consolidation, decision_models, work_models
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, LeaseId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
@@ -42,6 +43,8 @@ class ArtifactReferenceAcceptance:
 
 
 class WorkTransaction(Protocol):
+    def read_consolidation_facts(self, plan: consolidation.Plan, now: datetime) -> consolidation_models.Facts: ...
+
     def read_obligation_origins(
         self, origins: tuple[work_models.ObligationOrigin, ...]
     ) -> frozenset[work_models.ObligationOrigin]: ...
@@ -76,6 +79,8 @@ class WorkTransaction(Protocol):
 
 
 class WorkStore(Protocol):
+    def read_consolidation_facts(self, plan: consolidation.Plan, now: datetime) -> consolidation_models.Facts: ...
+
     def read_obligation_origins(
         self, origins: tuple[work_models.ObligationOrigin, ...]
     ) -> frozenset[work_models.ObligationOrigin]: ...

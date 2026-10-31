@@ -112,6 +112,20 @@ def _project(selection: models.Selection, facts: models.Facts, change: consolida
     )
 
 
+def _decide_change(
+    facts: models.Facts,
+    plan: consolidation.Plan,
+    actor: TaskId,
+    now: datetime,
+    dependency_pins: tuple[DependencyCheckpointPin, ...],
+) -> DecisionResult[consolidation.Change]:
+    if (
+        failure := validate_dependency_brief_pins(facts.snapshot, requested_dependencies(plan), dependency_pins)
+    ) is not None:
+        return failure
+    return consolidation.decide(facts.snapshot, plan, len(facts.live_order), actor, now)
+
+
 def preview(
     store: WorkStore,
     selection: models.Selection,
@@ -121,11 +135,7 @@ def preview(
 ) -> DecisionResult[models.Preview]:
     plan = models.plan(selection)
     facts = store.read_consolidation_facts(plan, now)
-    if (
-        failure := validate_dependency_brief_pins(facts.snapshot, requested_dependencies(plan), dependency_pins)
-    ) is not None:
-        return failure
-    change = consolidation.decide(facts.snapshot, plan, len(facts.live_order), actor, now)
+    change = _decide_change(facts, plan, actor, now, dependency_pins)
     if isinstance(change, DecisionFailure):
         return change
     if (failure := obligation_coverage.validate_origins(store, plan.definition.obligations)) is not None:
@@ -147,11 +157,7 @@ def confirm(
     plan = models.plan(selection)
     with store.write() as transaction:
         facts = transaction.read_consolidation_facts(plan, now)
-        if (
-            failure := validate_dependency_brief_pins(facts.snapshot, requested_dependencies(plan), dependency_pins)
-        ) is not None:
-            return failure
-        change = consolidation.decide(facts.snapshot, plan, len(facts.live_order), actor, now)
+        change = _decide_change(facts, plan, actor, now, dependency_pins)
         if isinstance(change, DecisionFailure):
             return change
         current = _project(selection, facts, change)

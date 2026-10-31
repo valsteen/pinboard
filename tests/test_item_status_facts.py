@@ -726,7 +726,12 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
         self.assertEqual(
             [
                 {"item_id": "work-a", "item_state": "active", "attempt_id": "work-a-1", "attempt_state": "active"},
-                {"item_id": "work-b", "item_state": "superseded", "attempt_id": "work-b-kept", "attempt_state": "done"},
+                {
+                    "item_id": "work-b",
+                    "item_state": "superseded",
+                    "attempt_id": "work-b-kept",
+                    "attempt_state": "superseded",
+                },
             ],
             self.branch_leaf(fixture, rebound)["owners"],
         )

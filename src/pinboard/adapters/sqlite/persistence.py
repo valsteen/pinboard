@@ -10,6 +10,7 @@ from typing import Literal, Self, assert_never
 
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.sqlite import cancellation
+from pinboard.adapters.sqlite import consolidation as consolidation_storage
 from pinboard.adapters.sqlite import initiatives as initiative_storage
 from pinboard.adapters.sqlite import obligation_coverage as obligation_storage
 from pinboard.adapters.sqlite import state as sqlite_state
@@ -33,14 +34,15 @@ from pinboard.adapters.sqlite.database import (
     decode_row,
     open_database,
     require_one_changed_row,
+    select_by_ids,
     translate_database_error,
 )
 from pinboard.adapters.sqlite.decision_reads import read_selected_decision_facts
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
-    decode_definition_revision,
     insert_attempt,
     insert_definition_revision,
+    read_current_definitions,
     rebind_attempt,
     replace_dependencies,
     set_attempt_state,
@@ -61,7 +63,13 @@ from pinboard.adapters.sqlite.proposals import (
     insert_planned_replacement,
     set_proposal_disposition,
 )
-from pinboard.application import artifact_identity, cancellation_models, query_models, stored_state
+from pinboard.application import (
+    artifact_identity,
+    cancellation_models,
+    consolidation_models,
+    query_models,
+    stored_state,
+)
 from pinboard.application.artifacts import ArtifactRef, EvidenceArtifactRef, ResultArtifactRef
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
@@ -70,6 +78,7 @@ from pinboard.application.mutation_models import (
     CheckpointMutationAllocation,
     CommittedEffect,
     CompletionAcceptanceMutation,
+    ConsolidationMutation,
     MutationAllocation,
     OrderMutation,
     PreparationAuthorityMutation,
@@ -80,11 +89,12 @@ from pinboard.application.mutation_models import (
 )
 from pinboard.application.mutations import stored_transition_receipt
 from pinboard.application.ports import ArtifactReferenceAcceptance
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import consolidation, decision_models, work_models
 from pinboard.domain import initiatives as initiative_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, WorkItemId
+from pinboard.domain.proposal_models import ProposalCreationDecision
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,45 +126,66 @@ class _PersistenceFacts:
             ) from None
 
 
+def _transition_subjects(
+    change: decision_models.NonCheckpointDecisionChange,
+) -> tuple[tuple[WorkItemId, ...], tuple[AttemptId, ...]]:
+    match change:
+        case (
+            decision_models.WorkItemStateChange(work_item_id=item)
+            | decision_models.BlockWorkItemChange(work_item_id=item)
+            | decision_models.ActivationChange(work_item_id=item)
+            | DefinitionRevisionDecision(work_item_id=item)
+        ):
+            return (item,), ()
+        case decision_models.WorkItemClosureChange(work_item_id=item, attempt_closure=closure):
+            return (item,), (() if closure is None else (closure.attempt,))
+        case decision_models.PlannedReplacementChange(relation=relation):
+            return (relation.affected_item,), ()
+        case decision_models.ReplacementDispositionChange(disposition=disposition):
+            return (disposition.affected_item,), ()
+        case (
+            decision_models.AttemptStateChange(work_item_id=item, attempt=attempt)
+            | decision_models.BlockAttemptChange(work_item_id=item, attempt=attempt)
+            | decision_models.ResumeAttemptChange(work_item_id=item, attempt=attempt)
+            | decision_models.ReviewSubmissionChange(work_item_id=item, attempt=attempt)
+            | decision_models.ReviewAcceptanceChange(work_item_id=item, attempt=attempt)
+            | decision_models.ReviewReturnChange(work_item_id=item, attempt=attempt)
+            | decision_models.CompletionChange(work_item_id=item, attempt=attempt)
+            | decision_models.RebindAttemptChange(work_item_id=item, attempt=attempt)
+        ):
+            return (item,), (attempt,)
+        case (
+            decision_models.MergedProposalChange(proposal=proposal)
+            | decision_models.RejectedProposalChange(proposal=proposal)
+        ):
+            return (WorkItemId(proposal),), ()
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _mutation_subjects(
     mutation: StoredStateMutation,
 ) -> tuple[tuple[WorkItemId, ...], tuple[AttemptId, ...]]:
     match mutation:
+        case ConsolidationMutation(change=change):
+            campaign_id = mutation.receipt.transition.work_item_id
+            assert campaign_id is not None
+            return (
+                (
+                    *(() if isinstance(change.campaign, ProposalCreationDecision) else (campaign_id,)),
+                    *(value.work_item_id for value in change.dependent_revisions),
+                    *(value.work_item_id for value in change.source_closures),
+                ),
+                tuple(
+                    value.attempt_closure.attempt
+                    for value in change.source_closures
+                    if value.attempt_closure is not None
+                ),
+            )
         case CancellationMutation(preview=preview):
             return (preview.item_id,), (() if preview.attempt is None else (preview.attempt.attempt_id,))
         case TransitionMutation(decision=decision) | ReviewSubmissionMutation(decision=decision):
-            match decision.change:
-                case (
-                    decision_models.WorkItemStateChange(work_item_id=item)
-                    | decision_models.BlockWorkItemChange(work_item_id=item)
-                    | decision_models.ActivationChange(work_item_id=item)
-                    | DefinitionRevisionDecision(work_item_id=item)
-                ):
-                    return (item,), ()
-                case decision_models.WorkItemClosureChange(work_item_id=item, attempt_closure=closure):
-                    return (item,), (() if closure is None else (closure.attempt,))
-                case decision_models.PlannedReplacementChange(relation=relation):
-                    return (relation.affected_item,), ()
-                case decision_models.ReplacementDispositionChange(disposition=disposition):
-                    return (disposition.affected_item,), ()
-                case (
-                    decision_models.AttemptStateChange(work_item_id=item, attempt=attempt)
-                    | decision_models.BlockAttemptChange(work_item_id=item, attempt=attempt)
-                    | decision_models.ResumeAttemptChange(work_item_id=item, attempt=attempt)
-                    | decision_models.ReviewSubmissionChange(work_item_id=item, attempt=attempt)
-                    | decision_models.ReviewAcceptanceChange(work_item_id=item, attempt=attempt)
-                    | decision_models.ReviewReturnChange(work_item_id=item, attempt=attempt)
-                    | decision_models.CompletionChange(work_item_id=item, attempt=attempt)
-                    | decision_models.RebindAttemptChange(work_item_id=item, attempt=attempt)
-                ):
-                    return (item,), (attempt,)
-                case (
-                    decision_models.MergedProposalChange(proposal=proposal)
-                    | decision_models.RejectedProposalChange(proposal=proposal)
-                ):
-                    return (WorkItemId(proposal),), ()
-                case _ as unreachable:
-                    assert_never(unreachable)
+            return _transition_subjects(decision.change)
         case CheckpointAcceptanceMutation(decision=decision) | CompletionAcceptanceMutation(decision=decision):
             return (decision.change.work_item_id,), (decision.change.attempt,)
         case ProposalCreationMutation() | AttemptAuthorityMutation() | PreparationAuthorityMutation() | OrderMutation():
@@ -166,45 +197,32 @@ def _mutation_subjects(
 def _read_persistence_facts(connection: sqlite3.Connection, mutation: StoredStateMutation) -> _PersistenceFacts:
     item_ids, attempt_ids = _mutation_subjects(mutation)
     items: dict[WorkItemId, stored_state.StoredWorkItem] = {}
-    for item_id in item_ids:
-        row = connection.execute(
-            """
+    for row in select_by_ids(
+        connection,
+        """
             SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
                    subject_revision, recorded_at, updated_at, queue_position
-            FROM work_items WHERE item_id = ?
+            FROM work_items WHERE item_id IN ({ids})
             """,
-            (item_id,),
-        ).fetchone()
-        if row is not None:
-            items[item_id] = decode_row(row, stored_state.StoredWorkItem)
+        item_ids,
+    ):
+        item = decode_row(row, stored_state.StoredWorkItem)
+        items[item.item_id] = item
     attempts: dict[AttemptId, stored_state.StoredAttempt] = {}
-    for attempt_id in attempt_ids:
-        row = connection.execute(
-            """
+    for row in select_by_ids(
+        connection,
+        """
             SELECT attempt_id, item_id, state, branch, base_revision, provenance,
                    brief_artifact_ref_id, result_artifact_ref_id, candidate_revision,
                    candidate_recorded_at, accepted_scope_revision, accepted_scope_digest,
                    subject_revision, recorded_at, updated_at
-            FROM attempts WHERE attempt_id = ?
+            FROM attempts WHERE attempt_id IN ({ids})
             """,
-            (attempt_id,),
-        ).fetchone()
-        if row is not None:
-            attempts[attempt_id] = decode_row(row, stored_state.StoredAttempt)
-    definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision] = {}
-    for item_id in item_ids:
-        row = connection.execute(
-            """
-            SELECT item_id, definition_revision AS revision, definition_digest AS digest,
-                   definition_json, reason, source_task_id, before_digest, after_digest,
-                   accepted_project_revision, accepted_at
-            FROM work_item_definition_revisions
-            WHERE item_id = ? ORDER BY definition_revision DESC LIMIT 1
-            """,
-            (item_id,),
-        ).fetchone()
-        if row is not None:
-            definitions[item_id] = decode_definition_revision(row)
+        attempt_ids,
+    ):
+        attempt = decode_row(row, stored_state.StoredAttempt)
+        attempts[attempt.attempt_id] = attempt
+    definitions = read_current_definitions(connection, item_ids)
     return _PersistenceFacts(MappingProxyType(items), MappingProxyType(attempts), MappingProxyType(definitions))
 
 
@@ -215,6 +233,11 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
     affected_items = list(item_ids)
     liveness_flip_roots: list[WorkItemId] = []
     match mutation:
+        case ConsolidationMutation(queue_changes=queue):
+            affected_items.extend(value.item_id for value in queue)
+            campaign_id = mutation.receipt.transition.work_item_id
+            assert campaign_id is not None
+            affected_items.append(campaign_id)
         case CancellationMutation(preview=preview):
             affected_items.extend(
                 decode_row(row, ItemIdRow).item_id
@@ -346,6 +369,46 @@ def _persist_definition_revision(
     ) is not None:
         return failure
     replace_dependencies(connection, decision.work_item_id, decision.definition.dependencies)
+    return None
+
+
+def _persist_closure(
+    connection: sqlite3.Connection,
+    facts: _PersistenceFacts,
+    change: decision_models.WorkItemClosureChange,
+    revision: int,
+    now: datetime,
+) -> DecisionFailure | None:
+    if (
+        failure := set_item_state(
+            connection,
+            facts.work_item(change.work_item_id),
+            change.item_before,
+            stored_state.stored_close_outcome(change.terminal_state),
+            revision,
+            now,
+            change.evidence,
+        )
+    ) is not None:
+        return failure
+    closure = change.attempt_closure
+    if closure is not None:
+        if (
+            failure := set_attempt_state(
+                connection,
+                facts.attempt(closure.attempt),
+                closure.attempt_before,
+                work_models.AttemptState.DONE,
+                revision,
+                now,
+            )
+        ) is not None:
+            return failure
+        if (
+            closure.authority_change is not None
+            and (failure := fence_attempt_authority(connection, closure.authority_change, now)) is not None
+        ):
+            return failure
     return None
 
 
@@ -610,42 +673,8 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 return failure
             if authority is not None and (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
-        case decision_models.WorkItemClosureChange(
-            work_item_id=item,
-            item_before=item_before,
-            terminal_state=terminal_state,
-            evidence=evidence,
-            attempt_closure=closure,
-        ):
-            if (
-                failure := set_item_state(
-                    connection,
-                    facts.work_item(item),
-                    item_before,
-                    stored_state.stored_close_outcome(terminal_state),
-                    revision,
-                    now,
-                    evidence,
-                )
-            ) is not None:
-                return failure
-            if closure is not None:
-                if (
-                    failure := set_attempt_state(
-                        connection,
-                        facts.attempt(closure.attempt),
-                        closure.attempt_before,
-                        work_models.AttemptState.DONE,
-                        revision,
-                        now,
-                    )
-                ) is not None:
-                    return failure
-                if (
-                    closure.authority_change is not None
-                    and (failure := fence_attempt_authority(connection, closure.authority_change, now)) is not None
-                ):
-                    return failure
+        case decision_models.WorkItemClosureChange():
+            return _persist_closure(connection, facts, change, revision, now)
         case DefinitionRevisionDecision():
             if (failure := _persist_definition_revision(connection, facts, change, revision)) is not None:
                 return failure
@@ -863,6 +892,49 @@ def _persist_state_change(  # noqa: C901, PLR0912 - exhaustive closed mutation p
     mutation: StoredStateMutation,
 ) -> DecisionFailure | None:
     match mutation:
+        case ConsolidationMutation(change=change):
+            match change.campaign:
+                case ProposalCreationDecision():
+                    if (
+                        failure := create_proposal(
+                            connection, ProposalCreationMutation(mutation.receipt, change.campaign)
+                        )
+                    ) is not None:
+                        return failure
+                case DefinitionRevisionDecision():
+                    if (
+                        failure := _persist_definition_revision(
+                            connection, facts, change.campaign, mutation.receipt.project_revision
+                        )
+                    ) is not None:
+                        return failure
+            for revision in change.dependent_revisions:
+                if (
+                    failure := _persist_definition_revision(
+                        connection, facts, revision, mutation.receipt.project_revision
+                    )
+                ) is not None:
+                    return failure
+            for relation in change.replacements:
+                insert_planned_replacement(connection, relation, mutation.receipt.project_revision)
+            # Descending removals preserve the earlier sources' observed dense queue positions.
+            closures = sorted(
+                change.source_closures,
+                key=lambda value: facts.work_item(value.work_item_id).queue_position or 0,
+                reverse=True,
+            )
+            for closure in closures:
+                if (
+                    failure := _persist_closure(
+                        connection,
+                        facts,
+                        closure,
+                        mutation.receipt.project_revision,
+                        mutation.receipt.transition.decided_at,
+                    )
+                ) is not None:
+                    return failure
+            return None
         case CancellationMutation():
             return cancellation.persist(
                 connection,
@@ -981,6 +1053,9 @@ def _persist(
 
 
 class SQLiteWorkTransaction:
+    def read_consolidation_facts(self, plan: consolidation.Plan, now: datetime) -> consolidation_models.Facts:
+        return consolidation_storage.read_facts(self.connection, plan, now)
+
     def read_obligation_origins(
         self, origins: tuple[work_models.ObligationOrigin, ...]
     ) -> frozenset[work_models.ObligationOrigin]:

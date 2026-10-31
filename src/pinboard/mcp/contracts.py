@@ -2534,6 +2534,7 @@ def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tu
             | decision_models.ActionKind.BLOCK
             | decision_models.ActionKind.BLOCK_ITEM
             | decision_models.ActionKind.CANCEL
+            | decision_models.ActionKind.CONSOLIDATE
             | decision_models.ActionKind.CLOSE
             | decision_models.ActionKind.DEFER
             | decision_models.ActionKind.MERGE_PROPOSAL

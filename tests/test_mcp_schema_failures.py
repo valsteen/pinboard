@@ -76,6 +76,53 @@ class NativeSchemaFailureTest(unittest.TestCase):
         preview = json.loads(output.getvalue())
         self.assertIn("plan_id", preview)
 
+    def assert_consolidation_refusal(
+        self,
+        project: Path,
+        work: Path,
+        native: NativeTools,
+        mismatch: dict[str, common.JsonValue],
+        preserved: dict[Path, tuple[bytes, int]],
+    ) -> None:
+        definition: dict[str, common.JsonValue] = {
+            "schema": "pinboard-work-item-definition/v2",
+            "title": "Campaign",
+            "objective": "Combine the selected work.",
+            "hypothesis": "One owner carries the work.",
+            "evidence": [],
+            "scope": ["Deliver selected work."],
+            "non_scope": [],
+            "acceptance_criteria": ["Selected work is delivered."],
+            "dependencies": [],
+            "effect": "Work has one owner.",
+            "unlock": "Run the campaign.",
+            "checkout_policy": "isolated",
+            "obligations": [
+                {"obligation_id": "deliver", "statement": "Deliver selected work.", "deferral_policy": "forbidden"}
+            ],
+        }
+        consolidation = native.call_advertised_tool(
+            "pinboard_consolidate",
+            {
+                "request": {
+                    "project_root": str(project),
+                    "work_root": str(work),
+                    "operation": "preview",
+                    "actor_task_id": "coordinator",
+                    "selection": {
+                        "sources": [{"item_id": "one", "replacement_cost": "Campaign owns it."}],
+                        "campaign": {"item_id": "campaign", "create": True, "definition": definition},
+                        "checkpoint_targets": [],
+                    },
+                }
+            },
+        )
+        self.assertEqual("SCHEMA_UNSUPPORTED", consolidation["code"], consolidation)
+        self.assertEqual("unchanged", consolidation["effect"])
+        self.assertEqual("do-not-retry", consolidation["retry"])
+        self.assertEqual(mismatch, consolidation["schema_mismatch"])
+        self.assertEqual(preserved, self.board_files(work))
+
     def test_exact_predecessors_reach_sdk_reads_mutations_and_preflight_with_executable_preview(self) -> None:
         for version in (6, 7, 8, 9, 10):
             with self.subTest(version=version):
@@ -104,6 +151,8 @@ class NativeSchemaFailureTest(unittest.TestCase):
                 self.assertEqual(preserved, self.board_files(work))
                 self.preview(mismatch)
                 self.assertEqual(preserved, self.board_files(work))
+
+                self.assert_consolidation_refusal(project, work, native, mismatch, preserved)
 
                 (work / "contributor-traces.config").write_text(
                     '[pinboard "unsafe_persist_exact_pinboard_traces"]\nmode = on\n'

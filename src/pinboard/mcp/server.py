@@ -23,6 +23,8 @@ from pinboard.application import (
 from pinboard.mcp import (
     cancellation_operations,
     common,
+    consolidation_contracts,
+    consolidation_operations,
     contract_schemas,
     contracts,
     execution,
@@ -53,6 +55,7 @@ from pinboard.mcp.tool_names import (
     CANDIDATE_OBSERVE_TOOL,
     CANDIDATE_RESTORE_TOOL,
     CLOSE_TOOL,
+    CONSOLIDATE_TOOL,
     CORRECTION_CONTEXT_TOOL,
     DISPATCH_TOOL,
     FIXTURE_REVIEW_TOOL,
@@ -1043,22 +1046,9 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             capture=capture,
         )
 
-    @server.tool(
-        name=CANCEL_TOOL,
-        description="Preview one live item's cancellation without effects, then confirm only after a separate explicit human confirmation for the exact shown item and consequences. Put all fields inside request. Never initiate cancellation or infer it from cleanup, completion, ambiguity or silence. Every sharing client must use a cancellation-aware build before first cancellation.",
-    )
-    async def cancel(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
-        arguments: dict[str, JsonValue] = {"request": request}
-        return await execution._run_request(
-            executor,
-            diagnostics,
-            next(request_ids),
-            CANCEL_TOOL,
-            str(request.get("project_root", "")),
-            partial(cancellation_operations.operate, arguments),
-            arguments=arguments,
-            capture=None if request.get("operation") == "preview" else capture,
-        )
+    consolidation_operations.register(server, executor, diagnostics, request_ids, capture)
+
+    cancellation_operations.register(server, executor, diagnostics, request_ids, capture)
 
     @server.tool(
         name=INITIATIVE_TOOL,
@@ -1096,6 +1086,11 @@ def _install_boundary_contracts(server: MCPServer) -> None:
                     contracts.ExecutorBusyResult,
                 )
             ),
+        ),
+        (
+            CONSOLIDATE_TOOL,
+            contract_schemas.schema_for(consolidation_contracts.Envelope),
+            contract_schemas.union_schema_for(consolidation_contracts.RESULT_TYPES),
         ),
         (
             CANCEL_TOOL,

@@ -902,7 +902,7 @@ def _complete(
             assert_never(unreachable)
 
 
-def _superseded_attempt_closure(
+def superseded_attempt_closure(
     snapshot: LedgerSnapshot,
     item: work_models.WorkItem,
     replacement: work_models.PlannedReplacement | None,
@@ -1010,7 +1010,7 @@ def _close(
         )
     attempt_closure = None
     if value.outcome == work_models.CloseOutcome.SUPERSEDED:
-        attempt_closure = _superseded_attempt_closure(snapshot, item, replacement)
+        attempt_closure = superseded_attempt_closure(snapshot, item, replacement)
         if isinstance(attempt_closure, DecisionFailure):
             return attempt_closure
     if item.work_item_id in snapshot.history_items:

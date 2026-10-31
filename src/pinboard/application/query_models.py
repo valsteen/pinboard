@@ -1010,6 +1010,7 @@ type ReviewVerdict = (
 
 
 class ItemClosureAction(Enum):
+    CONSOLIDATE = "consolidate"
     CANCEL = "cancel"
     COMPLETE = "complete"
     CLOSE = "close"

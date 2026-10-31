@@ -28,7 +28,7 @@ from pinboard.adapters.sqlite.lifecycle import (
 )
 from pinboard.adapters.sqlite.pr_review import validate_review_history
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
-from pinboard.application import decision_batches, project_export, stored_state
+from pinboard.application import consolidation, decision_batches, project_export, stored_state
 from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.identifiers import (
     AttemptId,
@@ -352,6 +352,7 @@ def _validate_replacements(
 
 
 def _validate_current_state(state: stored_state.StoredWorkState, error_code: StorageErrorCode) -> None:
+    _validate_consolidation_history(state.transition_receipts, error_code)
     validate_attempt_authority(state, error_code)
     positions = sorted(value.queue_position for value in state.lifecycle.work_items if value.queue_position is not None)
     if positions != list(range(1, len(positions) + 1)):
@@ -435,6 +436,17 @@ def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
     return state
 
 
+def _validate_consolidation_history(
+    receipts: tuple[stored_state.StoredTransitionReceipt, ...], error_code: StorageErrorCode
+) -> None:
+    for receipt in receipts:
+        if (
+            receipt.action_kind == decision_models.ActionKind.CONSOLIDATE
+            and (message := consolidation.receipt_failure(receipt)) is not None
+        ):
+            raise StorageError(error_code, f"Consolidation receipt {receipt.history_id} is invalid: {message}")
+
+
 def read_project_export_state(connection: sqlite3.Connection) -> project_export.ProjectExportState:
     """Read every exported relation while excluding local-only authority history."""
 
@@ -450,6 +462,7 @@ def read_project_export_state(connection: sqlite3.Connection) -> project_export.
     initiative_values = initiatives.read_all(connection)
     initiatives.validate_all(connection, initiative_values, project.revision)
     receipts = _read_history(connection)
+    _validate_consolidation_history(receipts, StorageErrorCode.INVALID_STATE)
     try:
         decision_batches.validate_batch_history(lifecycle, receipts)
     except (ValueError, KeyError) as error:

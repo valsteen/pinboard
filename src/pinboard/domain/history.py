@@ -220,7 +220,7 @@ def encode_completion_acceptance_outcome(*, candidate: str, evidence: str) -> by
     return msgspec.json.encode(CompletionAcceptanceOutcome(candidate, evidence, "complete"), order="sorted")
 
 
-def _work_item_definition_payload(
+def work_item_definition_payload(
     definition: work_models.WorkItemDefinition,
 ) -> DecisionResult[DefinitionPayload]:
     carries_origins = any(isinstance(value, work_models.CarriedWorkObligation) for value in definition.obligations)
@@ -271,7 +271,7 @@ def _work_item_definition_payload(
 
 
 def work_item_definition_bytes(definition: work_models.WorkItemDefinition) -> DecisionResult[bytes]:
-    payload = _work_item_definition_payload(definition)
+    payload = work_item_definition_payload(definition)
     if isinstance(payload, DecisionFailure):
         return payload
     return _encoded_record(payload)

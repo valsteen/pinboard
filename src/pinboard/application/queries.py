@@ -1088,6 +1088,7 @@ def _board_condition(facts: query_models.BoardAttemptFacts) -> query_models.Boar
             | decision_models.ActionKind.BLOCK_ITEM
             | decision_models.ActionKind.COMPLETE
             | decision_models.ActionKind.CANCEL
+            | decision_models.ActionKind.CONSOLIDATE
             | decision_models.ActionKind.CLOSE
             | decision_models.ActionKind.CONTINUE
             | decision_models.ActionKind.DEFER
@@ -1531,6 +1532,8 @@ def _closure_action(
             return query_models.ItemClosureAction.COMPLETE
         case decision_models.ActionKind.CANCEL:
             return query_models.ItemClosureAction.CANCEL
+        case decision_models.ActionKind.CONSOLIDATE:
+            return query_models.ItemClosureAction.CONSOLIDATE
         case decision_models.ActionKind.CLOSE:
             return query_models.ItemClosureAction.CLOSE
         case decision_models.ActionKind.MERGE_PROPOSAL:

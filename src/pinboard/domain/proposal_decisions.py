@@ -66,6 +66,7 @@ def decide_proposal_creation(  # noqa: C901, PLR0912 - exhaustive proposal relat
         intake.unlock,
         intake.checkout_policy,
         intake.obligations,
+        intake.checkpoints,
     )
     digest = work_item_definition_digest(definition)
     if isinstance(digest, DecisionFailure):
@@ -97,6 +98,7 @@ def decide_proposal_creation(  # noqa: C901, PLR0912 - exhaustive proposal relat
                     anchor.definition.unlock,
                     anchor.definition.checkout_policy,
                     anchor.definition.obligations,
+                    anchor.definition.checkpoints,
                 )
                 changed_digest = work_item_definition_digest(changed_definition)
                 if isinstance(changed_digest, DecisionFailure):

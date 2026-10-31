@@ -57,7 +57,7 @@ class ActionLifecyclePrecondition(Enum):
     ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE = "active-or-review-attempt-current-scope"
     DEFERRED_ITEM = "deferred-item"
     UNSTARTED_ITEM = "unstarted-item"
-    ITEM_WITHOUT_ATTEMPT = "item-without-attempt"
+    CLOSABLE_ITEM = "closable-item"
     NONTERMINAL_ITEM = "nonterminal-item"
     PAUSED_OR_BLOCKED_ITEM_WITHOUT_LIVE_DEPENDENCIES = "paused-or-blocked-item-without-live-dependencies"
     READY_ITEM = "ready-item"
@@ -229,14 +229,14 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.CLOSE:
             return ActionSemantics(
-                "Record the human's explicit success decision for eligible live work without an accepted attempt.",
+                "Record the human's explicit decision to close unstarted work as done or absorbed work as superseded.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
-                ActionLifecyclePrecondition.ITEM_WITHOUT_ATTEMPT,
+                ActionLifecyclePrecondition.CLOSABLE_ITEM,
                 "Apply only through the dedicated human-confirmed close route, not the general lifecycle transition, "
-                "carrying the human's decision in their own words; record the done outcome and remove the "
-                "item from live work.",
+                "carrying the human's decision in their own words; remove the item from live work as done or "
+                "superseded, closing any preserved paused or blocked attempt without claiming completion.",
             )
         case ActionKind.CONTINUE:
             return ActionSemantics(
@@ -900,12 +900,20 @@ class CoveredCompletionChange:
 
 
 @dataclass(frozen=True, slots=True)
+class SupersededAttemptClosure:
+    attempt: AttemptId
+    attempt_before: work_models.AttemptState
+    authority_change: AttemptAuthorityChange | None
+
+
+@dataclass(frozen=True, slots=True)
 class WorkItemClosureChange:
     work_item_id: WorkItemId
     item_before: work_models.WorkState
     terminal_state: work_models.CloseOutcome
     evidence: str
     human_decision: str
+    attempt_closure: SupersededAttemptClosure | None
 
 
 @dataclass(frozen=True, slots=True)

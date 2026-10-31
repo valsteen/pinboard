@@ -15,7 +15,8 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import dependencies as sqlite_dependencies
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import proposal_models, proposals, roadmap, service
+from pinboard.application import proposal_models, proposals, queries, query_models, roadmap, service
+from pinboard.application.dependency_authoring import DependencyDefinitionPin
 from pinboard.domain import history, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import CheckpointId, HostId, TaskId, WorkItemId
@@ -498,3 +499,158 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
                         )
                         connection.commit()
                     self.assertEqual(state, fixture.store.validated_snapshot())
+
+    def test_ready_prerequisite_definition_checkpoints_persist_author_dependencies_and_recheck_under_lock(
+        self,
+    ) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        producer_proposal = proposal()
+        producer_proposal.update(
+            proposal_id="planned-campaign",
+            relation={"kind": "independent", "item": None},
+            checkpoints=["phase-1", "phase-2"],
+        )
+        created_producer = fixture.call_advertised_tool(
+            mcp_server.PROPOSAL_CREATE_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "proposal": producer_proposal,
+                "actor_task_id": "coordinator",
+                "actor_host_id": "local",
+            },
+        )
+        self.assertEqual("committed", created_producer["status"], created_producer)
+
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+        reloaded = fresh.read_item_definition(WorkItemId("planned-campaign")).definition
+        assert reloaded is not None and isinstance(reloaded.definition, work_models.WorkItemDefinition)
+        self.assertEqual(
+            (CheckpointId("phase-1"), CheckpointId("phase-2")),
+            reloaded.definition.checkpoints,
+        )
+        producer_view = (fixture.work / "views/items/planned-campaign.md").read_text()
+        self.assertIn("### Checkpoints\n\n- phase-1\n- phase-2\n", producer_view)
+
+        unknown = self.create(
+            fixture,
+            "unknown-planned-checkpoint",
+            {"item": "planned-campaign", "checkpoint": "invented"},
+        )
+        self.assertEqual(("rejected", "ITEM_DEFINITION_INVALID"), (unknown["status"], unknown["code"]))
+        self.assertIn("Known current checkpoint IDs: phase-1, phase-2", str(unknown["message"]))
+
+        follow_up = self.create(
+            fixture,
+            "after-planned-phase-1",
+            {"item": "planned-campaign", "checkpoint": "phase-1"},
+        )
+        self.assertEqual("committed", follow_up["status"], follow_up)
+        self.assertFalse(self.overview(fixture)["after-planned-phase-1"]["eligible"])
+
+        child_definition = fresh.read_item_definition(WorkItemId("after-planned-phase-1")).definition
+        assert child_definition is not None and isinstance(child_definition.definition, work_models.WorkItemDefinition)
+        revised_child = self.transition_result(
+            fixture,
+            self.project_action(fixture, "revise-item:after-planned-phase-1"),
+            {
+                "schema": "pinboard-item-revision/v1",
+                "expected_revision": child_definition.revision,
+                "expected_digest": child_definition.digest,
+                "source_task": "coordinator",
+                "reason": "Depend on phase-2 instead of phase-1.",
+                "definition": {
+                    **self.json_object(
+                        msgspec.json.decode(
+                            expect_success(history.work_item_definition_bytes(child_definition.definition))
+                        )
+                    ),
+                    "dependencies": [{"item": "planned-campaign", "checkpoint": "phase-2"}],
+                },
+            },
+        )
+        self.assertEqual("committed", revised_child["status"], revised_child)
+
+        dependency = work_models.CheckpointDependency(WorkItemId("planned-campaign"), CheckpointId("phase-1"))
+        now = datetime.now(UTC)
+        pins = expect_success(
+            resolve_dependency_brief_pins(
+                fresh,
+                ArtifactRepository(resolve_durable_roots(fixture.project)),
+                (dependency,),
+                now,
+            )
+        )
+        self.assertEqual(
+            (DependencyDefinitionPin(dependency, reloaded.revision, reloaded.digest),),
+            pins,
+        )
+
+        removed_checkpoint_revision = self.transition_result(
+            fixture,
+            self.project_action(fixture, "revise-item:planned-campaign"),
+            {
+                "schema": "pinboard-item-revision/v1",
+                "expected_revision": reloaded.revision,
+                "expected_digest": reloaded.digest,
+                "source_task": "coordinator",
+                "reason": "Attempt to drop phase-2.",
+                "definition": {
+                    **self.json_object(
+                        msgspec.json.decode(expect_success(history.work_item_definition_bytes(reloaded.definition)))
+                    ),
+                    "checkpoints": ["phase-1"],
+                },
+            },
+        )
+        self.assertEqual(
+            ("rejected", "ITEM_DEFINITION_INVALID"),
+            (removed_checkpoint_revision["status"], removed_checkpoint_revision["code"]),
+        )
+
+        appended_checkpoint_revision = self.transition_result(
+            fixture,
+            self.project_action(fixture, "revise-item:planned-campaign"),
+            {
+                "schema": "pinboard-item-revision/v1",
+                "expected_revision": reloaded.revision,
+                "expected_digest": reloaded.digest,
+                "source_task": "coordinator",
+                "reason": "Append phase-3 to planned-campaign.",
+                "definition": {
+                    **self.json_object(
+                        msgspec.json.decode(expect_success(history.work_item_definition_bytes(reloaded.definition)))
+                    ),
+                    "checkpoints": ["phase-1", "phase-2", "phase-3"],
+                },
+            },
+        )
+        self.assertEqual("committed", appended_checkpoint_revision["status"], appended_checkpoint_revision)
+
+        revised_reloaded = fresh.read_item_definition(WorkItemId("planned-campaign")).definition
+        assert revised_reloaded is not None
+        changes = queries._scope_changes(reloaded.definition, revised_reloaded.definition)
+        self.assertEqual(
+            (query_models.ListFieldChange(query_models.DefinitionListField.CHECKPOINTS, ("phase-3",), ()),),
+            changes.lists,
+        )
+
+        stale_child = proposal()
+        stale_child.update(
+            proposal_id="stale-definition-pin-child",
+            relation={"kind": "follow-up", "item": {"item": "planned-campaign", "checkpoint": "phase-1"}},
+        )
+        operation = proposals.convert_proposal(msgspec.convert(stale_child, type=proposal_models.Proposal))
+        before = fresh.validated_snapshot()
+        stale_result = service.create_proposal(
+            fresh,
+            operation,
+            now,
+            actor_task_id=TaskId("coordinator"),
+            actor_host_id=HostId("local"),
+            dependency_brief_pins=pins,
+        )
+        self.assertIsInstance(stale_result, DecisionFailure)
+        assert isinstance(stale_result, DecisionFailure)
+        self.assertEqual("ITEM_DEFINITION_STALE", stale_result.code.value)
+        self.assertEqual(before, fresh.validated_snapshot())

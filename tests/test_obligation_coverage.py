@@ -8,13 +8,13 @@ import msgspec
 from pinboard.adapters.sqlite import lifecycle
 from pinboard.adapters.sqlite import obligation_coverage as coverage_storage
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import project_export, query_models
+from pinboard.application import project_export, query_models, stored_state
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import WorkItemId
+from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import native_tools
-from tests.support import JsonObject
+from tests.support import JsonObject, JsonValue
 from tests.test_proposals import proposal
 
 
@@ -94,14 +94,14 @@ class ObligationCoverageTest(CheckpointPackageSupport):
             }
         return fixture.call_advertised_tool(mcp_server.OBLIGATION_COVERAGE_TOOL, {"request": request})
 
-    def close(self, fixture: CheckpointFixture, item: str, decision: str) -> JsonObject:
+    def close(self, fixture: CheckpointFixture, item: str, outcome: str, decision: str) -> JsonObject:
         action = self.project_action(fixture, f"close:{item}")
         return fixture.call_advertised_tool(
             mcp_server.CLOSE_TOOL,
             {
                 **self.roots(fixture),
                 "receipt": {"action_id": action["action_id"], "subject_revision": action["subject_revision"]},
-                "payload": {"outcome": "done", "reason": decision, "human_decision": decision},
+                "payload": {"outcome": outcome, "reason": decision, "human_decision": decision},
                 "actor_task_id": "human",
                 "actor_host_id": "local",
             },
@@ -180,15 +180,15 @@ class ObligationCoverageTest(CheckpointPackageSupport):
             self.assertIn("source-work@1/obligation/first", (fixture.work / "views" / "board.html").read_text())
             terminal_coverage = self.coverage(fixture, "source-work", None)["coverage"]
             self.assertEqual(
-                "committed", self.close(fixture, "replacement-work", "Mark replacement-work done.")["status"]
+                "committed", self.close(fixture, "replacement-work", "done", "Mark replacement-work done.")["status"]
             )
             self.assertEqual(terminal_coverage, self.coverage(fixture, "source-work", None)["coverage"])
             # Coverage informs an explicit otherwise-legal ending; it adds no veto.
             self.assertEqual(
                 "committed",
-                self.close(fixture, "source-work", "End source-work despite the uncovered second obligation.")[
-                    "status"
-                ],
+                self.close(
+                    fixture, "source-work", "superseded", "End source-work despite the uncovered second obligation."
+                )["status"],
             )
             self.assertIs(True, self.run_json_cli(*fixture.common, "validate")["valid"])
             exported_code, exported_text, exported_error = self.run_cli(*fixture.common, "export", "--json")
@@ -203,6 +203,180 @@ class ObligationCoverageTest(CheckpointPackageSupport):
             self.assertEqual(carries[0], msgspec.to_builtins(retained.definition.obligations[0]))
             view = (fixture.work / "views" / "items" / "replacement-work.md").read_text()
             self.assertIn("source-work@1/obligation/first", view)
+
+    def test_superseded_close_waits_until_dependents_target_the_replacement_or_its_checkpoint(self) -> None:
+        for checkpoint in (False, True):
+            with self.subTest(checkpoint=checkpoint), native_tools() as native:
+                fixture = replace(
+                    self.checkpoint_fixture(local=True),
+                    call_native_tool=native.call_native_tool,
+                    call_advertised_tool=native.call_advertised_tool,
+                )
+                for name, source in (
+                    ("source-work", None),
+                    ("replacement-work", "source-work"),
+                    ("dependent-work", None),
+                ):
+                    obligation = self.own("deliver") if source is None else {**self.own("deliver"), "origin": None}
+                    created = self.create(fixture, name, [obligation], source)
+                    self.assertEqual("committed", created["status"], created)
+
+                def dependencies(
+                    selected: CheckpointFixture, item: str, targets: list[JsonValue], checkpoints: list[JsonValue]
+                ) -> JsonObject:
+                    current = self.current(selected, item)
+                    definition: JsonObject = msgspec.to_builtins(current.definition)
+                    definition["dependencies"] = targets
+                    definition["checkpoints"] = checkpoints
+                    return self.transition_result(
+                        selected,
+                        self.project_action(selected, f"revise-item:{item}"),
+                        {
+                            "schema": "pinboard-item-revision/v1",
+                            "expected_revision": current.definition_revision,
+                            "expected_digest": current.definition_digest,
+                            "source_task": "human",
+                            "reason": "Move the dependency to its owner.",
+                            "definition": definition,
+                        },
+                    )
+
+                self.assertEqual("committed", dependencies(fixture, "replacement-work", [], ["usable"])["status"])
+                self.assertEqual("committed", dependencies(fixture, "dependent-work", ["source-work"], [])["status"])
+                before = fixture.store.validated_snapshot()
+                for outcome, code in (("done", "REPLACEMENT_STALE"), ("dropped", "ACTION_NOT_AVAILABLE")):
+                    refused = self.close(fixture, "source-work", outcome, "Close source.")
+                    self.assertEqual(code, refused["code"], refused)
+                    self.assertEqual("unchanged", refused["effect"])
+                    self.assertEqual(before, fixture.store.validated_snapshot())
+                refused = self.close(fixture, "source-work", "superseded", "Close source as superseded.")
+                self.assertEqual("LIVE_DEPENDENTS", refused["code"], refused)
+                self.assertEqual("unchanged", refused["effect"])
+                observed = {
+                    self.json_object(row)["field"]: self.json_object(row)["value"]
+                    for row in self.json_array(refused["observed"])
+                }
+                self.assertEqual(
+                    {
+                        "affected_item": "source-work",
+                        "replacement_item": "replacement-work",
+                        "live_dependents": "dependent-work",
+                    },
+                    observed,
+                )
+                self.assertEqual(before, fixture.store.validated_snapshot())
+                targets: list[JsonValue] = (
+                    [{"item": "replacement-work", "checkpoint": "usable"}] if checkpoint else ["replacement-work"]
+                )
+                self.assertEqual("committed", dependencies(fixture, "dependent-work", targets, [])["status"])
+                closed = self.close(fixture, "source-work", "superseded", "Close source as superseded.")
+                self.assertEqual("committed", closed["status"], closed)
+                fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+                source = fresh.read_item_status(WorkItemId("source-work"))
+                assert source is not None
+                self.assertEqual(stored_state.StoredWorkItemState.SUPERSEDED, source.work_item.state)
+                dependent = fresh.read_item_status(WorkItemId("dependent-work"))
+                assert dependent is not None
+                self.assertFalse(dependent.dependencies[0].satisfied)
+                self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+                self.run_json_cli(*fixture.common, "export")
+
+    def test_superseded_close_finishes_paused_and_blocked_attempts_and_fences_authority(self) -> None:
+        for state, acquire_worker in (("paused", True), ("blocked", True), ("paused", False)):
+            with self.subTest(state=state, acquire_worker=acquire_worker), native_tools() as native:
+                fixture = replace(
+                    self.active_fixture(),
+                    call_native_tool=native.call_native_tool,
+                    call_advertised_tool=native.call_advertised_tool,
+                )
+                if acquire_worker:
+                    self.native_attempt_acquire(fixture, "absorbed-worker")
+                action_id = "pause:work-a-1" if state == "paused" else "block:work-a-1"
+                payload: JsonObject = {"reason": "This work moved to its replacement."}
+                if state == "blocked":
+                    depends_on: list[JsonValue] = []
+                    payload["depends_on"] = depends_on
+                stopped = self.transition_result(fixture, self.project_action(fixture, action_id), payload)
+                self.assertEqual("committed", stopped["status"], stopped)
+                created = self.create(fixture, "replacement-work", [{**self.own("deliver"), "origin": None}], "work-a")
+                self.assertEqual("committed", created["status"], created)
+                inspect = {**self.roots(fixture), "attempt_id": "work-a-1", "reconciliation": None}
+                pending = fixture.call_advertised_tool(mcp_server.ATTEMPT_INSPECT_TOOL, inspect)
+                continuation = self.json_object(pending["continuation"])
+                self.assertIn(
+                    {"target": "item", "action_kind": "close"}, self.json_array(continuation["legal_actions"])
+                )
+                authority_before = fixture.store.read_attempt_authority_status(AttemptId("work-a-1"))
+                assert authority_before is not None
+                if not acquire_worker:
+                    self.assertEqual("revoked", authority_before.status.value)
+                closed = self.close(fixture, "work-a", "superseded", "Close work-a as superseded.")
+                self.assertEqual("committed", closed["status"], closed)
+                fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+                item = next(value for value in fresh.lifecycle.work_items if value.item_id == "work-a")
+                attempt = next(value for value in fresh.lifecycle.attempts if value.attempt_id == "work-a-1")
+                self.assertEqual((stored_state.StoredWorkItemState.SUPERSEDED, None), (item.state, item.queue_position))
+                self.assertEqual(work_models.AttemptState.DONE, attempt.state)
+                authority = SQLiteWorkStore(fixture.work / "state.sqlite3").read_attempt_authority_status(
+                    AttemptId("work-a-1")
+                )
+                assert authority is not None
+                self.assertEqual("revoked", authority.status.value)
+                self.assertGreater(authority.generation, authority_before.generation)
+                inspected = fixture.call_advertised_tool(mcp_server.ATTEMPT_INSPECT_TOOL, inspect)
+                self.assertEqual("superseded", self.json_object(inspected["continuation"])["state"])
+                branch = fixture.call_advertised_tool(
+                    mcp_server.ITEM_STATUS_TOOL,
+                    {"request": {**self.roots(fixture), "operation": "branch", "branch": fixture.brief.branch}},
+                )
+                self.assertEqual("superseded", self.json_object(self.json_array(branch["owners"])[0])["attempt_state"])
+                self.assertIn("superseded (item superseded)", (fixture.work / "views/attempts/work-a-1.md").read_text())
+                self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+                self.run_json_cli(*fixture.common, "export")
+
+    def test_superseded_close_refuses_a_dropped_replacement_unchanged(self) -> None:
+        with native_tools() as native:
+            fixture = replace(
+                self.checkpoint_fixture(local=True),
+                call_native_tool=native.call_native_tool,
+                call_advertised_tool=native.call_advertised_tool,
+            )
+            self.assertEqual("committed", self.create(fixture, "source-work", [self.own("deliver")], None)["status"])
+            self.assertEqual(
+                "committed",
+                self.create(fixture, "replacement-work", [{**self.own("deliver"), "origin": None}], "source-work")[
+                    "status"
+                ],
+            )
+            preview = fixture.call_advertised_tool(
+                mcp_server.CANCEL_TOOL,
+                {
+                    "request": {
+                        **self.roots(fixture),
+                        "operation": "preview",
+                        "item_id": "replacement-work",
+                    }
+                },
+            )
+            cancelled = fixture.call_advertised_tool(
+                mcp_server.CANCEL_TOOL,
+                {
+                    "request": {
+                        **self.roots(fixture),
+                        "operation": "confirm",
+                        "item_id": "replacement-work",
+                        "binding": preview["binding"],
+                        "human_confirmation": "Cancel replacement-work.",
+                        "actor_task_id": "human",
+                        "actor_host_id": "local",
+                    }
+                },
+            )
+            self.assertEqual("committed", cancelled["status"], cancelled)
+            before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+            refused = self.close(fixture, "source-work", "superseded", "Close source.")
+            self.assertEqual(("REPLACEMENT_INVALID", "unchanged"), (refused["code"], refused["effect"]), refused)
+            self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
 
     def test_unresolvable_origins_reject_intake_and_revision_without_changing_state(self) -> None:
         with native_tools() as native:

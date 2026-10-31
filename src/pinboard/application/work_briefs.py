@@ -32,7 +32,7 @@ from pinboard.application.brief_sources import BriefSourceSelector
 from pinboard.application.ports import WorkStore
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId, WorkItemId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CheckpointId, WorkItemId
 
 type HistoricalWorkBriefValue = (
     work_brief_models.WorkBrief
@@ -160,6 +160,31 @@ def validate_definition_brief_agreement(
     }.get(definition.checkout_policy)
     if expected_selection is not None and brief.checkout_selection != expected_selection:
         return _invalid("The resolved checkout selection does not match the fixed definition policy.")
+    if definition.checkpoints:
+        checkpoint_id = CheckpointId(brief.checkpoint.checkpoint_id)
+        if checkpoint_id not in definition.checkpoints:
+            declared = ", ".join(str(value) for value in definition.checkpoints)
+            return _invalid(
+                f"Work brief checkpoint {brief.checkpoint.checkpoint_id} is not declared in the item definition's checkpoints ({declared})."
+            )
+        checkpoint_index = definition.checkpoints.index(checkpoint_id)
+        remaining_checkpoints = definition.checkpoints[checkpoint_index + 1 :]
+        if remaining_checkpoints:
+            if not isinstance(brief.checkpoint.disposition, work_brief_models.ContinueCheckpointDisposition):
+                remaining_names = ", ".join(str(value) for value in remaining_checkpoints)
+                return _invalid(
+                    f"Work brief checkpoint {brief.checkpoint.checkpoint_id} precedes remaining declared checkpoints ({remaining_names}) and must use a continue disposition."
+                )
+            missing_checkpoints = tuple(
+                str(value)
+                for value in remaining_checkpoints
+                if str(value) not in brief.checkpoint.disposition.remaining_work
+            )
+            if missing_checkpoints:
+                missing_names = ", ".join(missing_checkpoints)
+                return _invalid(
+                    f"Work brief checkpoint disposition.remaining_work must name every remaining declared checkpoint ID ({missing_names})."
+                )
     return None
 
 

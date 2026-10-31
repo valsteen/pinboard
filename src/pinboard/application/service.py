@@ -14,7 +14,7 @@ from pinboard.application.artifacts import (
     EvidenceArtifactRef,
     WorkBriefIdentity,
 )
-from pinboard.application.dependency_authoring import DependencyBriefPin, validate_dependency_brief_pins
+from pinboard.application.dependency_authoring import DependencyCheckpointPin, validate_dependency_brief_pins
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     AttemptAuthorityMutationResult,
@@ -471,7 +471,7 @@ def create_proposal(
     *,
     actor_task_id: TaskId,
     actor_host_id: HostId,
-    dependency_brief_pins: tuple[DependencyBriefPin, ...],
+    dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[ProposalCreationResult]:
     """Reread locked state, decide, and commit proposal facts plus their ready item."""
 
@@ -692,7 +692,7 @@ def _read_authorize_and_decide(
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     read_authorization_time: Callable[[], datetime],
-    dependency_brief_pins: tuple[DependencyBriefPin, ...],
+    dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[decision_models.CheckpointAcceptanceDecision]: ...
 
 
@@ -705,7 +705,7 @@ def _read_authorize_and_decide(
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     read_authorization_time: Callable[[], datetime],
-    dependency_brief_pins: tuple[DependencyBriefPin, ...],
+    dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[decision_models.TransitionDecision]: ...
 
 
@@ -718,7 +718,7 @@ def _read_authorize_and_decide(
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     read_authorization_time: Callable[[], datetime],
-    dependency_brief_pins: tuple[DependencyBriefPin, ...],
+    dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[decision_models.CompletionAcceptanceDecision]: ...
 
 
@@ -730,7 +730,7 @@ def _read_authorize_and_decide(
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     read_authorization_time: Callable[[], datetime],
-    dependency_brief_pins: tuple[DependencyBriefPin, ...],
+    dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[decision_models.Decision]:
     """Read exact facts, sample fresh authority validity, and decide without committing."""
 
@@ -778,7 +778,7 @@ def decide_and_commit_transition(
     read_authorization_time: Callable[[], datetime],
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
-    dependency_brief_pins: tuple[DependencyBriefPin, ...],
+    dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
     transition_brief_identity: WorkBriefIdentity | None = None,
 ) -> DecisionResult[CommittedEffect]:
     """Authorize with the supplied clock under lock; retain request-time receipt provenance."""

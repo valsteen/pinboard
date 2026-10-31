@@ -470,6 +470,12 @@ class CancelledAttemptContinuation(
     """Terminal retained attempt whose parent was dropped, without a completion claim."""
 
 
+class SupersededAttemptContinuation(
+    TerminalAttemptContinuation, tag="superseded", tag_field="state", frozen=True, forbid_unknown_fields=True
+):
+    """Terminal retained attempt whose work moved to a replacement item."""
+
+
 class NonterminalAttemptContinuationBase(AttemptContinuationIdentity, frozen=True, forbid_unknown_fields=True):
     owner_task_id: str
     terminal: bool
@@ -599,10 +605,11 @@ class PausedAttemptContinuation(
         if not (
             isinstance(operation, DependencyContinuation)
             or (
-                isinstance(operation, ActionContinuation) and operation.action_kind == decision_models.ActionKind.RESUME
+                isinstance(operation, ActionContinuation)
+                and operation.action_kind in {decision_models.ActionKind.RESUME, decision_models.ActionKind.CLOSE}
             )
         ):
-            raise ValueError("a paused continuation requires dependency or resume work")
+            raise ValueError("a paused continuation requires dependency, resume, or close work")
 
 
 class BlockedAttemptContinuation(
@@ -622,16 +629,22 @@ class BlockedAttemptContinuation(
         if not (
             isinstance(operation, DependencyContinuation)
             or (
-                isinstance(operation, ActionContinuation) and operation.action_kind == decision_models.ActionKind.RESUME
+                isinstance(operation, ActionContinuation)
+                and operation.action_kind in {decision_models.ActionKind.RESUME, decision_models.ActionKind.CLOSE}
             )
         ):
-            raise ValueError("a blocked continuation requires dependency or resume work")
+            raise ValueError("a blocked continuation requires dependency, resume, or close work")
 
 
 type NonterminalAttemptContinuation = (
     ActiveAttemptContinuation | ReviewAttemptContinuation | PausedAttemptContinuation | BlockedAttemptContinuation
 )
-type AttemptContinuation = TerminalAttemptContinuation | CancelledAttemptContinuation | NonterminalAttemptContinuation
+type AttemptContinuation = (
+    TerminalAttemptContinuation
+    | CancelledAttemptContinuation
+    | SupersededAttemptContinuation
+    | NonterminalAttemptContinuation
+)
 
 
 type NonterminalItemState = Literal[
@@ -1077,7 +1090,9 @@ class BranchOwner(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: str
     item_state: stored_state.StoredWorkItemState
     attempt_id: str
-    attempt_state: Annotated[str, msgspec.Meta(pattern=r"\A(?:active|paused|blocked|review|done|cancelled)\z")]
+    attempt_state: Annotated[
+        str, msgspec.Meta(pattern=r"\A(?:active|paused|blocked|review|done|cancelled|superseded)\z")
+    ]
 
 
 class BranchOwners(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1618,6 +1633,7 @@ class DefinitionListField(Enum):
     ACCEPTANCE_CRITERIA = "acceptance_criteria"
     EVIDENCE = "evidence"
     DEPENDENCIES = "dependencies"
+    CHECKPOINTS = "checkpoints"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1779,7 +1795,12 @@ class OriginWorkObligationView(WorkObligationView, frozen=True, forbid_unknown_f
 
 
 class WorkItemDefinitionView(
-    msgspec.Struct, tag="pinboard-work-item-definition/v2", tag_field="schema", frozen=True, forbid_unknown_fields=True
+    msgspec.Struct,
+    tag="pinboard-work-item-definition/v2",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+    omit_defaults=True,
 ):
     title: str
     objective: str
@@ -1793,6 +1814,7 @@ class WorkItemDefinitionView(
     unlock: str
     checkout_policy: work_models.CheckoutPolicy
     obligations: tuple[WorkObligationView, ...]
+    checkpoints: tuple[str, ...] = ()
 
 
 class OriginWorkItemDefinitionView(
@@ -1801,6 +1823,7 @@ class OriginWorkItemDefinitionView(
     tag_field="schema",
     frozen=True,
     forbid_unknown_fields=True,
+    omit_defaults=True,
 ):
     obligations: tuple[OriginWorkObligationView, ...]
 
@@ -1815,6 +1838,7 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
         case definition_compatibility.HistoricalDefinitionV1():
             return definition
         case work_models.WorkItemDefinition():
+            checkpoints = tuple(str(value) for value in definition.checkpoints)
             if any(isinstance(value, work_models.CarriedWorkObligation) for value in definition.obligations):
                 return OriginWorkItemDefinitionView(
                     definition.title,
@@ -1841,6 +1865,7 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
                         )
                         for value in definition.obligations
                     ),
+                    checkpoints,
                 )
             return WorkItemDefinitionView(
                 definition.title,
@@ -1862,6 +1887,7 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
                     )
                     for obligation in definition.obligations
                 ),
+                checkpoints,
             )
         case _ as unreachable:
             assert_never(unreachable)

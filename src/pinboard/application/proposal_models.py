@@ -122,10 +122,12 @@ class _ProposalFields(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
         return created_at.astimezone(UTC)
 
 
-def _validate_obligations(values: tuple[WorkObligationPayload, ...]) -> None:
+def _validate_obligations(values: tuple[WorkObligationPayload, ...], checkpoints: tuple[ProposalIdentity, ...]) -> None:
     obligation_ids = tuple(value.obligation_id for value in values)
     if len(obligation_ids) != len(set(obligation_ids)):
         raise ValueError("obligation identities must be ordered and unique.")
+    if len(checkpoints) != len(set(checkpoints)):
+        raise ValueError("checkpoints entries must be ordered and unique.")
 
 
 class Proposal(
@@ -133,21 +135,23 @@ class Proposal(
 ):
     obligations: Annotated[tuple[ProposalObligation, ...], msgspec.Meta(min_length=1)]
     position: Annotated[int, msgspec.Meta(ge=1)] | None = None
+    checkpoints: tuple[ProposalIdentity, ...] = ()
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        _validate_obligations(self.obligations)
+        _validate_obligations(self.obligations, self.checkpoints)
 
 
 class OriginProposal(
     _ProposalFields, frozen=True, forbid_unknown_fields=True, tag="pinboard-proposal/v3", tag_field="schema"
 ):
-    obligations: Annotated[tuple[OriginObligationPayload, ...], msgspec.Meta(min_length=1)]
     position: Annotated[int, msgspec.Meta(ge=1)] | None
+    obligations: Annotated[tuple[OriginObligationPayload, ...], msgspec.Meta(min_length=1)]
+    checkpoints: tuple[ProposalIdentity, ...] = ()
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        _validate_obligations(self.obligations)
+        _validate_obligations(self.obligations, self.checkpoints)
 
 
 type ProposalInput = Proposal | OriginProposal

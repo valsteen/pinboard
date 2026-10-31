@@ -290,6 +290,41 @@ class HumanConfirmedCloseTest(NativeFixtureSupport):
         self.assertEqual(("The maintainer closed it by hand.",) * 2, (decoded.reason, decoded.human_decision))
         self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
 
+    def test_retained_cli_accepts_superseded_after_a_planned_replacement(self) -> None:
+        fixture = self.native_fixture(self.checkpoint_fixture())
+        relation = self.transition_result(
+            fixture,
+            self.project_action(fixture, "record-replacement:zz-proposal-a"),
+            {
+                "schema": "pinboard-planned-replacement/v1",
+                "expected_relation_revision": 0,
+                "replacement_item": "work-c",
+                "replacement_cost": "The work moved to work-c.",
+                "status": "current",
+                "recorded_by": "human",
+            },
+        )
+        self.assertEqual("committed", relation["status"], relation)
+        closed = self.run_json_cli(
+            *fixture.common,
+            "close",
+            "zz-proposal-a",
+            "--outcome",
+            "superseded",
+            "--reason",
+            "Close the absorbed item as superseded.",
+            "--task-id",
+            "human",
+            "--host-id",
+            "local",
+        )
+        self.assertEqual("superseded", closed["outcome"])
+        status = SQLiteWorkStore(fixture.work / "state.sqlite3").read_item_status(WorkItemId("zz-proposal-a"))
+        assert status is not None
+        self.assertEqual(stored_state.StoredWorkItemState.SUPERSEDED, status.work_item.state)
+        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+        self.run_json_cli(*fixture.common, "export")
+
 
 class SubmittedCandidateSupport(NativeFixtureSupport):
     def observed(self, result: JsonObject) -> dict[str, JsonValue]:

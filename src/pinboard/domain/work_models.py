@@ -68,6 +68,7 @@ class AttemptState(Enum):
 class CloseOutcome(Enum):
     DONE = "done"
     DROPPED = "dropped"
+    SUPERSEDED = "superseded"
 
 
 class Timing(Enum):
@@ -445,6 +446,7 @@ class WorkItemDefinition:
     unlock: str
     checkout_policy: CheckoutPolicy
     obligations: tuple[DefinitionObligation, ...]
+    checkpoints: tuple[CheckpointId, ...]
 
 
 @dataclass(frozen=True, slots=True)

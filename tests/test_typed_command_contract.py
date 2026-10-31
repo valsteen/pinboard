@@ -232,6 +232,7 @@ class TypedTransitionContractTest(unittest.TestCase):
                                 work_models.ObligationDeferralPolicy.FORBIDDEN,
                             ),
                         ),
+                        (),
                     ),
                 ),
             ),

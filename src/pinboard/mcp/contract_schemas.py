@@ -518,13 +518,13 @@ def _forbidden_routes_constraint() -> dict[str, JsonSchemaValue]:
 
 
 def _apply_attempt_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
-    terminal = definitions.get("TerminalAttemptContinuation")
-    terminal_properties = terminal.get("properties") if isinstance(terminal, dict) else None
-    if isinstance(terminal_properties, dict):
-        terminal_properties["state"] = {"const": "done"}
-        terminal_properties["terminal"] = {"type": "boolean", "const": True}
-        terminal_properties["user_input_required"] = {"type": "boolean", "const": False}
-        terminal_properties["forbidden_routes"] = _forbidden_routes_constraint()
+    for name in ("TerminalAttemptContinuation", "CancelledAttemptContinuation", "SupersededAttemptContinuation"):
+        terminal = definitions.get(name)
+        terminal_properties = terminal.get("properties") if isinstance(terminal, dict) else None
+        if isinstance(terminal_properties, dict):
+            terminal_properties["terminal"] = {"type": "boolean", "const": True}
+            terminal_properties["user_input_required"] = {"type": "boolean", "const": False}
+            terminal_properties["forbidden_routes"] = _forbidden_routes_constraint()
     continuation_constraints: tuple[
         tuple[
             str,
@@ -563,6 +563,7 @@ def _apply_attempt_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
             (
                 {"$ref": "#/$defs/ContinuationDependencies"},
                 _action_continuation(decision_models.ActionKind.RESUME),
+                _action_continuation(decision_models.ActionKind.CLOSE),
             ),
             _PAUSED_CONTINUATION_ACTION_KINDS,
         ),
@@ -571,6 +572,7 @@ def _apply_attempt_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
             (
                 {"$ref": "#/$defs/ContinuationDependencies"},
                 _action_continuation(decision_models.ActionKind.RESUME),
+                _action_continuation(decision_models.ActionKind.CLOSE),
             ),
             _BLOCKED_CONTINUATION_ACTION_KINDS,
         ),
@@ -980,7 +982,9 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         continuation = content.get("continuation")
         state = continuation.get("state") if isinstance(continuation, dict) else None
         result_type = (
-            TerminalAttemptInspectionSuccess if state in {"done", "dropped"} else NonterminalAttemptInspectionSuccess
+            TerminalAttemptInspectionSuccess
+            if state in {"done", "dropped", "superseded"}
+            else NonterminalAttemptInspectionSuccess
         )
         msgspec.convert(content, type=result_type, strict=True)
     elif tool_name == "pinboard_correction_context":

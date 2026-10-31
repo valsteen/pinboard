@@ -106,7 +106,12 @@ def dependency_payload(value: work_models.Dependency) -> DependencyPayload:
 # v2 remains a current origin-free input and canonical encoding, preserving retained digest bindings.
 # Keep the mixed boundary here while both definition forms are supported.
 class WorkItemDefinitionPayload(
-    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-work-item-definition/v2", tag_field="schema"
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    omit_defaults=True,
+    tag="pinboard-work-item-definition/v2",
+    tag_field="schema",
 ):
     title: CanonicalLine
     objective: CanonicalLine
@@ -120,10 +125,12 @@ class WorkItemDefinitionPayload(
     unlock: CanonicalLine
     checkout_policy: Literal["main", "isolated", "coordinator-selected"]
     obligations: Annotated[tuple[WorkObligationPayload, ...], msgspec.Meta(min_length=1)]
+    checkpoints: tuple[Identity, ...] = ()
 
     def __post_init__(self) -> None:
         for field, values in (
             ("acceptance_criteria", self.acceptance_criteria),
+            ("checkpoints", self.checkpoints),
             ("evidence", self.evidence),
             ("non_scope", self.non_scope),
             ("scope", self.scope),
@@ -142,6 +149,7 @@ class OriginWorkItemDefinitionPayload(
     WorkItemDefinitionPayload,
     frozen=True,
     forbid_unknown_fields=True,
+    omit_defaults=True,
     tag="pinboard-work-item-definition/v3",
     tag_field="schema",
 ):
@@ -252,6 +260,7 @@ def _work_item_definition_payload(
                     }
                     for value in definition.obligations
                 ),
+                "checkpoints": definition.checkpoints,
             },
             type=DefinitionPayload,
             strict=True,
@@ -305,4 +314,5 @@ def work_item_definition_from_payload(record: DefinitionPayload) -> work_models.
         record.unlock,
         work_models.CheckoutPolicy(record.checkout_policy),
         tuple(obligation_from_payload(value) for value in record.obligations),
+        tuple(CheckpointId(value) for value in record.checkpoints),
     )

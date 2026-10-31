@@ -128,7 +128,6 @@ class CodexLaunchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
 class ClaudeLaunchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     description: NonEmptyLine
     prompt: Annotated[str, msgspec.Meta(min_length=1)]
-    run_in_background: bool
 
 
 class AntigravityLaunchArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True, rename="pascal"):

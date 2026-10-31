@@ -301,6 +301,16 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
         )
     ]
     if context.current_replacement_revision is not None and not context.replacement_resolved:
+        if context.item_state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}:
+            item_actions.append(
+                decision_models.CloseAction(
+                    factory.make(
+                        context.work_item_id,
+                        f"Close {context.work_item_id} as superseded",
+                        context.item_subject_revision,
+                    )
+                )
+            )
         item_actions.append(
             decision_models.RetainTemporarilyAction(
                 factory.make(
@@ -892,6 +902,67 @@ def _complete(
             assert_never(unreachable)
 
 
+def _superseded_attempt_closure(
+    snapshot: LedgerSnapshot,
+    item: work_models.WorkItem,
+    replacement: work_models.PlannedReplacement | None,
+) -> DecisionResult[decision_models.SupersededAttemptClosure | None]:
+    if (
+        replacement is None
+        or replacement.replacement_item in snapshot.dropped_item_ids
+        or (
+            snapshot.work_item(replacement.replacement_item) is None
+            and replacement.replacement_item not in snapshot.history_items
+        )
+    ):
+        return DecisionFailure(
+            DecisionFailureCode.REPLACEMENT_INVALID,
+            f"Closing '{item.work_item_id}' as superseded requires an unresolved current planned replacement "
+            "to an existing non-dropped item. Record or correct that replacement before closing; "
+            "the ledger is unchanged.",
+            None,
+        )
+    live_dependents = tuple(
+        str(dependent.work_item_id)
+        for dependent in snapshot.items
+        if any(work_models.dependency_item(target) == item.work_item_id for target in dependent.depends_on)
+    )
+    if live_dependents:
+        return DecisionFailure(
+            DecisionFailureCode.LIVE_DEPENDENTS,
+            f"Live items still depend on '{item.work_item_id}': {', '.join(live_dependents)}. Revise their dependencies "
+            f"to '{replacement.replacement_item}' or its declared checkpoints before closing as superseded; "
+            "the ledger is unchanged.",
+            FailureDetails(
+                observed=(
+                    FailureFact("affected_item", str(item.work_item_id)),
+                    FailureFact("replacement_item", str(replacement.replacement_item)),
+                    FailureFact("live_dependents", ", ".join(live_dependents)),
+                ),
+                mismatches=(),
+                retry=RetryDisposition.REFRESH_ACTION,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    if item.attempt is not None:
+        attempt = snapshot.attempts_by_id().get(item.attempt)
+        if attempt is None or attempt.state not in {
+            work_models.AttemptState.PAUSED,
+            work_models.AttemptState.BLOCKED,
+        }:
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                "Only a preserved paused or blocked attempt can close as superseded.",
+                None,
+            )
+        return decision_models.SupersededAttemptClosure(
+            item.attempt, attempt.state, _fence_retained_attempt_authority(snapshot, item.attempt)
+        )
+    return None
+
+
 def _close(
     snapshot: LedgerSnapshot, command: decision_models.CloseCommand, now: datetime
 ) -> DecisionResult[decision_models.TransitionDecision]:
@@ -915,7 +986,16 @@ def _close(
             )
         case _ as unreachable:
             assert_never(unreachable)
-    if item.attempt is not None:
+    replacement = snapshot.unresolved_replacement(item.work_item_id)
+    if value.outcome == work_models.CloseOutcome.DONE and replacement is not None:
+        return DecisionFailure(
+            DecisionFailureCode.REPLACEMENT_STALE,
+            f"Item '{item_id}' has an unresolved planned replacement '{replacement.replacement_item}'. "
+            "Move its live dependents to the replacement or its checkpoints, then close it as superseded; "
+            "the ledger is unchanged.",
+            None,
+        )
+    if item.attempt is not None and value.outcome != work_models.CloseOutcome.SUPERSEDED:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             "An accepted attempt must resume and follow its review path; changing accepted semantics requires item "
@@ -925,9 +1005,14 @@ def _close(
     if value.outcome == work_models.CloseOutcome.DROPPED:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            f"Dropping '{item.work_item_id}' requires a fresh cancellation preview and separate exact-item human confirmation; ordinary close records successful completion only.",
+            f"Dropping '{item.work_item_id}' requires a fresh cancellation preview and separate exact-item human confirmation; ordinary close records done or superseded.",
             None,
         )
+    attempt_closure = None
+    if value.outcome == work_models.CloseOutcome.SUPERSEDED:
+        attempt_closure = _superseded_attempt_closure(snapshot, item, replacement)
+        if isinstance(attempt_closure, DecisionFailure):
+            return attempt_closure
     if item.work_item_id in snapshot.history_items:
         return DecisionFailure(
             DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.work_item_id}'.", None
@@ -936,7 +1021,7 @@ def _close(
         action,
         now,
         decision_models.WorkItemClosureChange(
-            item.work_item_id, item.state, value.outcome, value.reason, value.human_decision
+            item.work_item_id, item.state, value.outcome, value.reason, value.human_decision, attempt_closure
         ),
         work_item_id=item.work_item_id,
         outcome=value.outcome.value,

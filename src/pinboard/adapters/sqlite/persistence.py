@@ -128,10 +128,11 @@ def _mutation_subjects(
                     decision_models.WorkItemStateChange(work_item_id=item)
                     | decision_models.BlockWorkItemChange(work_item_id=item)
                     | decision_models.ActivationChange(work_item_id=item)
-                    | decision_models.WorkItemClosureChange(work_item_id=item)
                     | DefinitionRevisionDecision(work_item_id=item)
                 ):
                     return (item,), ()
+                case decision_models.WorkItemClosureChange(work_item_id=item, attempt_closure=closure):
+                    return (item,), (() if closure is None else (closure.attempt,))
                 case decision_models.PlannedReplacementChange(relation=relation):
                     return (relation.affected_item,), ()
                 case decision_models.ReplacementDispositionChange(disposition=disposition):
@@ -614,6 +615,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             item_before=item_before,
             terminal_state=terminal_state,
             evidence=evidence,
+            attempt_closure=closure,
         ):
             if (
                 failure := set_item_state(
@@ -627,6 +629,23 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 )
             ) is not None:
                 return failure
+            if closure is not None:
+                if (
+                    failure := set_attempt_state(
+                        connection,
+                        facts.attempt(closure.attempt),
+                        closure.attempt_before,
+                        work_models.AttemptState.DONE,
+                        revision,
+                        now,
+                    )
+                ) is not None:
+                    return failure
+                if (
+                    closure.authority_change is not None
+                    and (failure := fence_attempt_authority(connection, closure.authority_change, now)) is not None
+                ):
+                    return failure
         case DefinitionRevisionDecision():
             if (failure := _persist_definition_revision(connection, facts, change, revision)) is not None:
                 return failure

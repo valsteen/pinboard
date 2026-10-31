@@ -129,7 +129,7 @@ def stored_live_work_state(
 
 def stored_close_outcome(value: work_models.CloseOutcome) -> StoredWorkItemState:
     match value:
-        case work_models.CloseOutcome.DONE | work_models.CloseOutcome.DROPPED:
+        case work_models.CloseOutcome.DONE | work_models.CloseOutcome.DROPPED | work_models.CloseOutcome.SUPERSEDED:
             return StoredWorkItemState(value.value)
         case _ as unreachable:
             assert_never(unreachable)

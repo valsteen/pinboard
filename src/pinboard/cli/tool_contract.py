@@ -201,13 +201,13 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
             postcondition = "Return one bound reverse plan without changing files or Git metadata."
             retry = "safe-to-repeat"
         case "close":
-            purpose = "Record a terminal decision for eligible live work without an accepted attempt."
+            purpose = "Close unstarted work as done or absorbed work as superseded, including preserved paused or blocked attempts."
             mutation = "mutates-ledger"
             scope = "focused"
             roles = ("project",)
             authority = "direct-project-operation-with-task-host-attribution"
             subject = "item"
-            precondition = "item-without-attempt"
+            precondition = "closable-item"
             postcondition = (
                 "Commit exactly one legal close with invoking actor attribution and return its committed revision."
             )

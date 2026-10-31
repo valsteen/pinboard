@@ -1,5 +1,62 @@
 {
   "schema": "pinboard-duplication-exceptions/v1",
   "detector_version": "5.4.1",
-  "records": []
+  "records": [
+    {
+      "identity": {
+        "id": "independent-consolidation-initiative-native-boundaries",
+        "format": "python",
+        "tokens": 66,
+        "lines": 9,
+        "occurrences": [
+          {
+            "endpoint": {
+              "name": "mcp/consolidation_operations.py",
+              "start": 62,
+              "end": 70,
+              "startLoc": {
+                "line": 62,
+                "column": 63,
+                "position": 2850
+              },
+              "endLoc": {
+                "line": 70,
+                "column": 31,
+                "position": 3199
+              }
+            },
+            "sha256": "2c4e82aa4f8179d32efb0aac0baa760d083bff11ef071f07b49c6d5f13e3999a"
+          },
+          {
+            "endpoint": {
+              "name": "mcp/initiative_operations.py",
+              "start": 33,
+              "end": 40,
+              "startLoc": {
+                "line": 33,
+                "column": 62,
+                "position": 1214
+              },
+              "endLoc": {
+                "line": 40,
+                "column": 30,
+                "position": 1602
+              }
+            },
+            "sha256": "bb49e96a04bf87b564ea9bd4443999f3f64c8e12e6286f281a427633e5105cdf"
+          }
+        ],
+        "owners": [
+          "src/pinboard/mcp/consolidation_operations.py: consolidation request decoding and rejection projection",
+          "src/pinboard/mcp/initiative_operations.py: initiative request decoding and rejection projection"
+        ],
+        "rationale": "Required independent native boundary shapes: consolidation decodes its own preview/confirm Envelope and emits consolidation-specific DecisionFailureCode, recovery and correct-input/refresh-action results; initiative decodes its distinct operation union and emits initiative RejectionCode, recovery and correct-input results. The shared algorithm already belongs to msgspec.convert. Further sharing would parameterize or couple independently owned schemas and rejection decisions without giving one product decision a clearer owner. Retain the typed local producers and decoders. This judgment is falsified if both boundaries actually acquire one accepted request family and the same rejection/recovery/retry contract; current concrete Envelope and Rejected declarations show that they differ. Recompute exact matched occurrences and direct residue after source changes; this record applies only to the independently reviewed pair, not another occurrence or a future protocol change."
+      },
+      "certification": {
+        "reviewer_task_id": "01a19436-f4f5-7193-9339-0ba82a1a9a42",
+        "reviewed_pair_sha256": "fc862825f556b029f95b28c98f07bb042a2d7b9d1882e577f841c4b34beebb3e",
+        "evidence_sha256": "35a0349eb5010b556f60e8badde6858d618d6c5da198c43ca89ca8a59cce63e5"
+      }
+    }
+  ]
 }

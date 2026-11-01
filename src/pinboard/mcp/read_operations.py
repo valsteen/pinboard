@@ -1388,6 +1388,7 @@ def _mcp_action(
             projected.generation,
             projected.semantics,
             completion,
+            contracts.action_invocation(projected, project_root, work_root),
         )
     else:
         record = contracts.ActionView(
@@ -1399,6 +1400,7 @@ def _mcp_action(
             projected.generation,
             projected.semantics,
             input_contract,
+            contracts.action_invocation(projected, project_root, work_root),
         )
     content = msgspec.to_builtins(record)
     assert isinstance(content, dict)

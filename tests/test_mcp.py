@@ -2138,18 +2138,38 @@ class McpTransportTest(unittest.TestCase):
                     if not isinstance(actions, list) or len(actions) != 1 or not isinstance(actions[0], dict):
                         raise AssertionError(f"Missing exact {kind} action: {discovered}")
                     selected = actions[0]
-                    return await call(
-                        mcp_server.TRANSITION_TOOL,
-                        {
-                            "role": role,
-                            "receipt": {
-                                "action_id": selected["action_id"],
-                                "subject_revision": selected["subject_revision"],
-                            },
-                            "payload": payload,
-                            **authority,
-                        },
+                    invocation = selected["invocation"]
+                    assert isinstance(invocation, dict)
+                    tool, arguments = invocation["tool"], invocation["arguments"]
+                    assert isinstance(tool, str) and isinstance(arguments, dict)
+                    request = arguments["request"]
+                    assert isinstance(request, dict)
+                    request["payload"] = payload
+                    if role == "project":
+                        request.update(authority)
+                    before = SQLiteWorkStore(roots.database_path).validated_snapshot()
+                    receipt = request["receipt"]
+                    assert isinstance(receipt, dict)
+                    invalid_requests: tuple[dict[str, contracts.JsonValue], ...] = (
+                        {**request, "receipt": {**receipt, "subject_revision": 1}},
+                        {**request, "role": "observer"},
+                        {key: value for key, value in request.items() if key != "payload"},
                     )
+                    for invalid_request in invalid_requests:
+                        refused = await session.call_tool(tool, {"request": invalid_request})
+                        self.assertTrue(
+                            refused.is_error
+                            or (
+                                isinstance(refused.structured_content, dict)
+                                and refused.structured_content.get("status") == "rejected"
+                            ),
+                            refused,
+                        )
+                        self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+                    result = await session.call_tool(tool, arguments)
+                    assert not result.is_error and isinstance(result.structured_content, dict)
+                    self.assertEqual("committed", result.structured_content["status"])
+                    return result.structured_content
 
                 await call(mcp_server.PROPOSAL_CREATE_TOOL, {"proposal": proposal_input(), **actor})
                 reloaded_state("ready")
@@ -2231,6 +2251,41 @@ class McpTransportTest(unittest.TestCase):
                     {"brief_artifact_ref_id": reference["artifact_ref_id"]},
                 )
                 reloaded_state("active")
+                discovery = await call(
+                    mcp_server.ACTIONS_TOOL,
+                    {"role": "project", "action_id": {"kind": "dispatch", "subject": "proposal-1-1"}},
+                )
+                dispatch_actions = discovery["actions"]
+                assert isinstance(dispatch_actions, list) and isinstance(dispatch_actions[0], dict)
+                invocation = dispatch_actions[0]["invocation"]
+                assert isinstance(invocation, dict)
+                tool, arguments = invocation["tool"], invocation["arguments"]
+                assert isinstance(tool, str) and isinstance(arguments, dict)
+                dispatch = arguments["dispatch"]
+                assert isinstance(dispatch, dict)
+                self.assertIsNone(dispatch["kind"])
+                dispatch.update(
+                    {
+                        "kind": "ordinary",
+                        "checkpoint_id": checkpoint.checkpoint_id,
+                        "prompt": None,
+                        "environment": {
+                            "schema": "pinboard-dispatch/v2",
+                            "runtime": "codex",
+                            "background": False,
+                            "checkout": str(project),
+                            "branch": branch,
+                            "starting_revision": base,
+                            "host_id": "local",
+                            "fresh_context": True,
+                            "lease_ttl_seconds": 3600,
+                            "permissions": ["repository-read", "repository-write"],
+                        },
+                    }
+                )
+                dispatched = await session.call_tool(tool, arguments)
+                assert not dispatched.is_error and isinstance(dispatched.structured_content, dict)
+                self.assertEqual("ready", dispatched.structured_content["status"], dispatched.structured_content)
                 acquired = await call(
                     mcp_server.ATTEMPT_AUTHORITY_TOOL,
                     {
@@ -3107,6 +3162,26 @@ class McpTransportTest(unittest.TestCase):
         )
         invalid_results.append(("unknown-action-field", {**result, "actions": [{**dispatch, "unknown": True}]}))
         invalid_results.append(("unknown-result-field", {**result, "unknown": True}))
+        invalid_invocations: tuple[tuple[str, str, contracts.JsonValue], ...] = (
+            ("wrong-invocation-role", "role", "worker"),
+            ("invented-payload", "payload", {"reason": "Invented"}),
+        )
+        for label, field, value in invalid_invocations:
+            altered = deepcopy(block)
+            invocation = altered["invocation"]
+            assert isinstance(invocation, dict)
+            arguments = invocation["arguments"]
+            assert isinstance(arguments, dict)
+            request = arguments["request"]
+            assert isinstance(request, dict)
+            request[field] = value
+            invalid_results.append((label, {**result, "actions": [altered]}))
+        invalid_results.append(("missing-mutating-invocation", {**result, "actions": [{**block, "invocation": None}]}))
+        observer_actions = results[1]["actions"]
+        assert isinstance(observer_actions, list)
+        for row in observer_actions:
+            assert isinstance(row, dict)
+            self.assertIsNone(row["invocation"])
         for label, invalid in invalid_results:
             with self.subTest(rejection=label):
                 before = deepcopy(invalid)
@@ -3128,6 +3203,41 @@ class McpTransportTest(unittest.TestCase):
 
         with native_tools() as native:
             _run_async(advertised_schema_scenario())
+
+    def test_close_starter_preserves_top_level_call_and_required_human_values(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        common = {"project_root": str(project), "work_root": str(roots.work_root)}
+        with native_tools() as native:
+            result = native.call_advertised_tool(
+                mcp_server.ACTIONS_TOOL,
+                {"request": {**common, "role": "project", "action_id": {"kind": "close", "subject": "work-c"}}},
+            )
+            rows = result["actions"]
+            assert isinstance(rows, list) and isinstance(rows[0], dict)
+            self.assertIn("replacement_coverage", rows[0])
+            invocation = rows[0]["invocation"]
+            assert isinstance(invocation, dict)
+            tool, arguments = invocation["tool"], invocation["arguments"]
+            assert isinstance(tool, str) and isinstance(arguments, dict)
+            self.assertIsNone(arguments["actor_task_id"])
+            self.assertIsNone(arguments["actor_host_id"])
+            self.assertIsNone(arguments["payload"])
+            arguments.update({"actor_task_id": "coordinator", "actor_host_id": "local"})
+            arguments["payload"] = {"outcome": "done", "reason": "Finished externally."}
+            before = SQLiteWorkStore(roots.database_path).validated_snapshot()
+            rejected = native.call_advertised_tool(tool, arguments)
+            self.assertEqual("rejected", rejected["status"])
+            self.assertEqual("unchanged", rejected["effect"])
+            self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
+            arguments["payload"]["human_decision"] = "Close work-c as done."
+            closed = native.call_advertised_tool(tool, arguments)
+            self.assertEqual("committed", closed["status"], closed)
+            after = SQLiteWorkStore(roots.database_path).validated_snapshot()
+            stale = native.call_advertised_tool(tool, arguments)
+            self.assertEqual("rejected", stale["status"])
+            self.assertEqual("unchanged", stale["effect"])
+            self.assertEqual(after, SQLiteWorkStore(roots.database_path).validated_snapshot())
 
     def test_action_and_continuation_results_reject_cross_correlated_content(self) -> None:  # noqa: PLR0915 - one correlated contract matrix
         temporary, _project, roots = self._project()

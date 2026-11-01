@@ -57,6 +57,62 @@
         "reviewed_pair_sha256": "fc862825f556b029f95b28c98f07bb042a2d7b9d1882e577f841c4b34beebb3e",
         "evidence_sha256": "35a0349eb5010b556f60e8badde6858d618d6c5da198c43ca89ca8a59cce63e5"
       }
+    },
+    {
+      "identity": {
+        "id": "independent-action-routing-and-result-effects",
+        "format": "python",
+        "tokens": 71,
+        "lines": 12,
+        "occurrences": [
+          {
+            "endpoint": {
+              "name": "mcp/contracts.py",
+              "start": 1805,
+              "end": 1816,
+              "startLoc": {
+                "line": 1805,
+                "column": 12,
+                "position": 66436
+              },
+              "endLoc": {
+                "line": 1816,
+                "column": 41,
+                "position": 67060
+              }
+            },
+            "sha256": "e54a1405a58524dbdfe3ad0abe967a248930f6613091456b72f5ff76d2d3d16d"
+          },
+          {
+            "endpoint": {
+              "name": "mcp/contracts.py",
+              "start": 2695,
+              "end": 2706,
+              "startLoc": {
+                "line": 2695,
+                "column": 12,
+                "position": 100820
+              },
+              "endLoc": {
+                "line": 2706,
+                "column": 41,
+                "position": 101444
+              }
+            },
+            "sha256": "e54a1405a58524dbdfe3ad0abe967a248930f6613091456b72f5ff76d2d3d16d"
+          }
+        ],
+        "owners": [
+          "src/pinboard/mcp/contracts.py: action_invocation_tool selects supported MCP request destinations",
+          "src/pinboard/mcp/contracts.py: _committed_transition_surfaces validates committed result effect combinations"
+        ],
+        "rationale": "Independent review: retain this exact detector pair. action_invocation_tool classifies supported MCP request destinations; _committed_transition_surfaces validates allowed committed-result effects. These are independent supported protocol decisions, not two copies of one classification. Concrete counterexamples: CLOSE and CANCEL both permit ledger-only committed effects, but CLOSE routes to pinboard_close while CANCEL has no starter. ACCEPT_CHECKPOINT and ACTIVATE both route to pinboard_transition but permit different committed surfaces. SUBMIT_REVIEW routes to transition and permits artifact effects, unlike the ledger-only PR actions in the second list. Sharing the matched list would couple request routing to effect validation or introduce an artificial common subset without a shared product decision. Existing exhaustive branches keep newly introduced action kinds visible at both independently relevant boundaries. No decoder relaxation, dispatch change, state mutation, or new generic routing table is justified. Reopen if a single accepted protocol owner genuinely determines both classifications or either branch loses its supported consumer. This certificate covers only the present native pair and source bytes; it is not candidate acceptance or a blanket future exemption. No tests were run for this read-only semantic assessment."
+      },
+      "certification": {
+        "reviewer_task_id": "01a196c0-26a5-7d11-b8b0-b3af77fdcae3",
+        "reviewed_pair_sha256": "6d9bd12919433ec17c4a01df653f9c5f212e56ed229bd5251e50c5c94600a934",
+        "evidence_sha256": "de27099456f49fa3546b3e64cc927e7ea42868879518232de9ea0348be8d01e6"
+      }
     }
   ]
 }

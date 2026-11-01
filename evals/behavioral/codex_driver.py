@@ -474,7 +474,7 @@ def read_events(stdout: str) -> TurnReading:
         mcp_calls_completed=[],
         errors=[],
     )
-    for line in stdout.splitlines():
+    for line in stdout.split("\n"):
         if not line.strip().startswith("{"):
             continue
         raw = line.encode()
@@ -601,7 +601,7 @@ class UsageRecord(msgspec.Struct, frozen=True):
 
 
 def rollout_records(text: str) -> list[RolloutEnvelope]:
-    lines = text.splitlines()
+    lines = text.split("\n")
     if lines and not text.endswith("\n"):
         try:
             msgspec.json.decode(lines[-1].encode(), type=RolloutEnvelope)

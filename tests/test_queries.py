@@ -18,9 +18,9 @@ from pinboard.application import (
 )
 from pinboard.application.actions import discover_current_actions
 from pinboard.application.queries import (
-    project_current_overview,
     project_item_status,
     project_live_portfolio,
+    project_portfolio,
     select_board_records,
     select_item_definition,
     select_item_definition_history,
@@ -38,7 +38,7 @@ from pinboard.domain.identifiers import (
     TaskId,
     WorkItemId,
 )
-from tests.decision_support import BOARD, discover_actions, project_overview
+from tests.decision_support import BOARD, discover_actions
 from tests.domain_support import expect_success
 from tests.support import (
     SQLITE_NOW,
@@ -63,24 +63,20 @@ class SQLiteQueriesTest(unittest.TestCase):
         store = self._store()
 
         state = store.validated_snapshot()
-        overview = project_overview(state, SQLITE_NOW, BOARD)
-        self.assertEqual("sqlite-v11", overview.authority)
-        self.assertEqual("12", overview.revision)
-        self.assertEqual(("work-a-1",), overview.active_attempts)
+        overview = project_portfolio(state, SQLITE_NOW)
         self.assertEqual(
             ("intake-work", "work-a", "work-c", "zz-proposal-a"),
-            tuple(item.item_id for item in overview.items),
+            tuple(item.item_id for item in overview),
         )
-        self.assertIsNone(overview.items[0].source)
-        self.assertIsNone(overview.items[0].notes)
-        proposal = overview.items[-1]
+        self.assertIsNone(overview[0].source)
+        self.assertIsNone(overview[0].notes)
+        proposal = overview[-1]
         self.assertEqual((4, False, ("work-c",)), (proposal.position, proposal.eligible, proposal.depends_on))
         self.assertEqual("work-c", proposal.dependency_reasons[0].item_id)
         self.assertIn("Follow-up to work-c", proposal.dependency_reasons[0].reason)
         self.assertIsNotNone(proposal.proposal_origin)
         assert proposal.proposal_origin is not None
         self.assertEqual("source-task", proposal.proposal_origin.source_task_id)
-        self.assertNotIn("zz-proposal-a", overview.immediate_options)
 
     def test_overview_exposes_duplicate_contradiction_and_clarification_for_review(self) -> None:
         for relation in (
@@ -104,7 +100,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             )
 
             with self.subTest(relation=relation.kind.value):
-                item = project_overview(store.validated_snapshot(), SQLITE_NOW, BOARD).items[-1]
+                item = project_portfolio(store.validated_snapshot(), SQLITE_NOW)[-1]
                 self.assertEqual((), item.depends_on)
                 self.assertTrue(item.eligible)
                 self.assertIsNotNone(item.proposal_origin)
@@ -123,13 +119,19 @@ class SQLiteQueriesTest(unittest.TestCase):
         )
         store = self._store(replace(state, proposals=replace(state.proposals, proposals=(returned,))))
 
-        full = project_overview(store.validated_snapshot(), SQLITE_NOW, BOARD)
-        focused = project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD)
+        full = project_portfolio(store.validated_snapshot(), SQLITE_NOW)
+        focused = tuple(
+            value.overview
+            for value in store.read_generated_view_facts(
+                tuple(WorkItemId(value.item_id) for value in full), (), (), SQLITE_NOW
+            ).items
+            if value.overview is not None
+        )
 
         self.assertEqual(full, focused)
-        self.assertIsNotNone(focused.items[-1].proposal_origin)
-        assert focused.items[-1].proposal_origin is not None
-        self.assertEqual("Clarify the retained boundary.", focused.items[-1].proposal_origin.disposition_reason)
+        self.assertIsNotNone(focused[-1].proposal_origin)
+        assert focused[-1].proposal_origin is not None
+        self.assertEqual("Clarify the retained boundary.", focused[-1].proposal_origin.disposition_reason)
 
     def test_overview_supplies_definition_context_and_explicit_replacement_warning_in_one_read(self) -> None:
         state = complete_sqlite_state()
@@ -146,11 +148,17 @@ class SQLiteQueriesTest(unittest.TestCase):
         state = replace(state, replacements=stored_state.ReplacementRecords((relation,), ()))
         store = self._store(state)
 
-        full = project_overview(store.validated_snapshot(), SQLITE_NOW, BOARD)
-        focused = project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD)
+        full = project_portfolio(store.validated_snapshot(), SQLITE_NOW)
+        focused = tuple(
+            value.overview
+            for value in store.read_generated_view_facts(
+                tuple(WorkItemId(value.item_id) for value in full), (), (), SQLITE_NOW
+            ).items
+            if value.overview is not None
+        )
 
         self.assertEqual(full, focused)
-        item = next(value for value in focused.items if value.item_id == "work-c")
+        item = next(value for value in focused if value.item_id == "work-c")
         definition = next(
             value.definition for value in state.lifecycle.definition_revisions if value.item_id == WorkItemId("work-c")
         )
@@ -161,7 +169,6 @@ class SQLiteQueriesTest(unittest.TestCase):
         assert item.planned_replacement is not None
         self.assertEqual("work-a", item.planned_replacement.replacement_item_id)
         self.assertFalse(item.planned_replacement.temporarily_retained)
-        self.assertNotIn("work-c", focused.immediate_options)
 
     def test_focused_action_order_remains_identity_stable_while_overview_uses_queue_order(self) -> None:
         state = complete_sqlite_state()
@@ -189,14 +196,17 @@ class SQLiteQueriesTest(unittest.TestCase):
         focused_actions = expect_success(
             discover_current_actions(store.read_current_action_snapshot(SQLITE_NOW), decision_models.Role.PROJECT)
         )
-        complete_overview = project_overview(reordered, SQLITE_NOW, BOARD)
-        focused_overview = project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD)
+        complete_overview = project_portfolio(reordered, SQLITE_NOW)
+        focused_overview = store.read_overview_page(0, 25)
 
         self.assertEqual(
             tuple(decision_models.action_id(value) for value in complete_actions),
             tuple(decision_models.action_id(value) for value in focused_actions),
         )
-        self.assertEqual(complete_overview, focused_overview)
+        self.assertEqual(
+            tuple(value.item_id for value in complete_overview),
+            tuple(value.item_id for value in focused_overview.items),
+        )
         self.assertEqual(
             ("work-c", "work-a", "intake-work", "zz-proposal-a"),
             tuple(value.item_id for value in focused_overview.items),
@@ -254,7 +264,7 @@ class SQLiteQueriesTest(unittest.TestCase):
 
         self.assertEqual(
             query_models.ItemStatus(
-                "pinboard-item-status/v4",
+                "pinboard-item-status/v5",
                 "sqlite-v11",
                 "12",
                 "work-a",
@@ -283,12 +293,15 @@ class SQLiteQueriesTest(unittest.TestCase):
                 None,
                 BOARD,
                 dependencies=(query_models.DependencyStatus("work-c", False, False),),
+                dependency_reasons=(query_models.DependencyReason("work-c", "Recorded dependency.", None, False),),
+                proposal_origin=None,
+                planned_replacement=None,
             ),
             live,
         )
         self.assertEqual(
             query_models.ItemStatus(
-                "pinboard-item-status/v4",
+                "pinboard-item-status/v5",
                 "sqlite-v11",
                 "12",
                 "work-b",
@@ -305,12 +318,15 @@ class SQLiteQueriesTest(unittest.TestCase):
                 None,
                 BOARD,
                 dependencies=(),
+                dependency_reasons=(),
+                proposal_origin=None,
+                planned_replacement=None,
             ),
             done,
         )
         self.assertNotIn(
             "work-b",
-            tuple(item.item_id for item in project_overview(store.validated_snapshot(), SQLITE_NOW, BOARD).items),
+            tuple(item.item_id for item in project_portfolio(store.validated_snapshot(), SQLITE_NOW)),
         )
 
     def test_item_status_returns_terminal_siblings_with_non_null_attempt_arrays(self) -> None:
@@ -411,6 +427,9 @@ class SQLiteQueriesTest(unittest.TestCase):
                 None,
                 dependencies=(),
                 batches_by_attempt={},
+                proposals=(),
+                replacement=None,
+                replacement_disposition=None,
             )
 
             with self.subTest(item_state=item_state.value, attempt_state=attempt_state):
@@ -484,6 +503,9 @@ class SQLiteQueriesTest(unittest.TestCase):
                 None,
                 dependencies=(),
                 batches_by_attempt={},
+                proposals=(),
+                replacement=None,
+                replacement_disposition=None,
             )
 
             with self.subTest(item_state=selected_item.state.value, observed=observed):

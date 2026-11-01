@@ -30,7 +30,6 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     definition_compatibility,
     ports,
-    queries,
     query_models,
     roadmap,
     stored_state,
@@ -50,7 +49,6 @@ from pinboard.mcp import read_operations as mcp_reads
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import CheckpointFixture
-from tests.decision_support import BOARD
 from tests.domain_support import expect_success
 from tests.native_support import call_advertised_tool, call_native_tool
 from tests.support import (
@@ -965,12 +963,7 @@ class BoardProjectionTest(unittest.TestCase):
         self.assertIn("views rebuild", str(warning["recovery"]))
         self.assertEqual(
             requested,
-            [
-                value.item_id
-                for value in queries.project_current_overview(
-                    store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD
-                ).items
-            ],
+            [value.item_id for value in store.read_overview_page(0, 25).items],
         )
         with patch(
             "pinboard.adapters.files.views.atomic_replace",
@@ -1226,14 +1219,14 @@ class BoardPagePathTest(unittest.TestCase):
                 }
                 selected: JsonObject = {"project_root": str(project_root), "work_root": str(work_root)}
 
-                overview = call_advertised_tool("pinboard_overview", selected)
+                overview = call_advertised_tool("pinboard_overview", selected | {"max_items": 25, "continuation": None})
                 status = call_advertised_tool(
                     "pinboard_item_status", {"request": selected | {"operation": "item", "item_id": "work-c"}}
                 )
 
-                self.assertEqual("pinboard-overview/v7", overview["schema"])
+                self.assertEqual("pinboard-overview/v8", overview["schema"])
                 self.assertEqual(expected, overview["board"])
-                self.assertEqual("pinboard-item-status/v4", status["schema"])
+                self.assertEqual("pinboard-item-status/v5", status["schema"])
                 self.assertEqual(expected, status["board"])
                 self.assertNotEqual(project_root, work_root.parent)
                 self.assertFalse((work_root / "views" / "board.md").exists())

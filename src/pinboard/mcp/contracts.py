@@ -329,6 +329,8 @@ class BriefPublishFileRequest(msgspec.Struct, frozen=True, forbid_unknown_fields
 class OverviewRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
+    max_items: Annotated[int, msgspec.Meta(ge=1, le=25)]
+    continuation: query_models.OverviewCursor | None
 
 
 class OrderRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -3488,7 +3490,7 @@ ITEM_STATUS_RESULT_TYPES = (
     ItemStatusGitUnavailable,
     ExecutorBusyResult,
 )
-OVERVIEW_RESULT_TYPES = (query_models.WorkOverview, OverviewRejected, ExecutorBusyResult)
+OVERVIEW_RESULT_TYPES = (query_models.DiscoveryPage, OverviewRejected, ExecutorBusyResult)
 ORDER_RESULT_TYPES = (OrderCommitted, OrderRejected, ExecutorBusyResult)
 PARALLEL_PREVIEW_RESULT_TYPES = (ParallelPreviewSuccess, ParallelPreviewRejected, ExecutorBusyResult)
 ACTIONS_RESULT_TYPES = (

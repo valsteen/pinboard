@@ -12,13 +12,12 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import queries, service, stored_state
+from pinboard.application import service, stored_state
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import HostId, LeaseId, TaskId, WorkItemId
 from pinboard.mcp import server as mcp_server
-from tests.decision_support import BOARD
 from tests.native_support import call_native_tool
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 
@@ -102,7 +101,7 @@ class OrderingTest(unittest.TestCase):
         for path, previous in old_files.items():
             if path.name not in {f"{self.order[0]}.md", f"{self.order[1]}.md"}:
                 self.assertEqual(previous, (path.read_bytes(), path.stat().st_mtime_ns))
-        overview = queries.project_current_overview(fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD)
+        overview = fresh.read_overview_page(0, 25)
         self.assertEqual(requested, tuple(item.item_id for item in overview.items))
 
     def test_invalid_requests_and_stale_competitors_leave_ledger_unchanged(self) -> None:
@@ -149,34 +148,18 @@ class OrderingTest(unittest.TestCase):
             {
                 "project_root": str(self.project),
                 "work_root": str(self.roots.work_root),
+                "max_items": 25,
+                "continuation": None,
             },
         )
         next_unstarted = overview["next_unstarted"]
         assert isinstance(next_unstarted, dict)
         self.assertEqual("zz-proposal-a", next_unstarted["item_id"])
-        dependencies = next_unstarted["unsatisfied_dependencies"]
-        assert isinstance(dependencies, list)
-        self.assertEqual(["work-c"], dependencies)
-        immediate_options = overview["immediate_options"]
-        assert isinstance(immediate_options, list)
-        self.assertNotIn("zz-proposal-a", immediate_options)
-        self.assertIn("work-c", immediate_options)
-        for state in (work_models.AttemptState.PAUSED, work_models.AttemptState.REVIEW):
-            snapshot = self.store.read_project_overview(SQLITE_NOW)
-            items = tuple(
-                replace(item, state=work_models.WorkState(state.value))
-                if item.work_item_id == WorkItemId("work-a")
-                else item
-                for item in snapshot.snapshot.items
-            )
-            attempts = tuple(replace(attempt, state=state) for attempt in snapshot.snapshot.attempts)
-            overview = queries.project_current_overview(
-                replace(snapshot, snapshot=replace(snapshot.snapshot, items=items, attempts=attempts)),
-                SQLITE_NOW,
-                BOARD,
-            )
-            assert overview.next_unstarted is not None
-            self.assertEqual("zz-proposal-a", overview.next_unstarted.item_id)
+        rows = overview["items"]
+        assert isinstance(rows, list)
+        blocked = next(value for value in rows if isinstance(value, dict) and value["item_id"] == "zz-proposal-a")
+        assert isinstance(blocked, dict)
+        self.assertEqual(1, blocked["unsatisfied_dependency_count"])
 
     def test_native_order_rejects_unknown_fields_duplicate_items_and_wrong_schema(self) -> None:
         invalid_values: tuple[JsonObject, ...] = (
@@ -235,10 +218,9 @@ class OrderingTest(unittest.TestCase):
                 initialize_store(store, state)
                 result = service.reorder(store, self.order, requested, TaskId("owner"), HostId("local"), SQLITE_NOW)
                 self.assertNotIsInstance(result, DecisionFailure)
-                overview = queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD)
+                overview = store.read_overview_page(0, 25)
                 assert overview.next_unstarted is not None
                 self.assertEqual(item, overview.next_unstarted.item_id)
-                self.assertEqual(retained, item in overview.immediate_options)
                 self.assertEqual(state.replacements, store.validated_snapshot().replacements)
         prepared = service.start_preparation(
             self.store,
@@ -252,10 +234,9 @@ class OrderingTest(unittest.TestCase):
         self.assertNotIsInstance(prepared, DecisionFailure)
         before_authority = self.store.validated_snapshot().authority
         self.assertNotIsInstance(self.reorder(self.order, requested), DecisionFailure)
-        overview = queries.project_current_overview(self.store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD)
+        overview = self.store.read_overview_page(0, 25)
         assert overview.next_unstarted is not None
         self.assertEqual(item, overview.next_unstarted.item_id)
-        self.assertNotIn(item, overview.immediate_options)
         self.assertEqual(before_authority, self.store.validated_snapshot().authority)
 
     def test_empty_project_has_no_unstarted_item_and_accepts_empty_order(self) -> None:
@@ -265,6 +246,6 @@ class OrderingTest(unittest.TestCase):
         store = SQLiteWorkStore(roots.database_path)
         result = service.reorder(store, (), (), TaskId("owner"), HostId("local"), SQLITE_NOW)
         self.assertNotIsInstance(result, DecisionFailure)
-        overview = queries.project_current_overview(store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD)
+        overview = store.read_overview_page(0, 25)
         self.assertIsNone(overview.next_unstarted)
         self.assertEqual((), overview.items)

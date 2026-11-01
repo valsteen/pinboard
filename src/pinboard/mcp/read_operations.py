@@ -63,7 +63,7 @@ from pinboard.domain.identifiers import (
     TaskId,
     WorkItemId,
 )
-from pinboard.mcp import common, contracts, execution, tool_names
+from pinboard.mcp import common, contracts, execution, host_profiles, tool_names
 from pinboard.mcp.contracts import JsonValue
 
 type IntegerBoundaryValue = bool | int | float | str | None
@@ -928,29 +928,76 @@ def _brief_review(  # noqa: C901, PLR0912 - strict inline/file publication and r
             assert_never(unreachable)
 
 
-def _read_overview(project_root: str, work_root: str, token: execution.CancellationToken) -> execution.OperationResult:
+def _read_overview(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
     token.checkpoint()
     try:
-        request = msgspec.convert(
-            {"project_root": project_root, "work_root": work_root},
-            type=contracts.OverviewRequest,
-            strict=True,
-        )
-        durable = common._resolve_durable(request.project_root, request.work_root)
-    except (msgspec.ValidationError, ValueError, OSError) as error:
+        request = msgspec.convert(raw, type=contracts.OverviewRequest, strict=True)
+    except msgspec.ValidationError:
         return common._read_failure(
-            "pinboard-mcp-overview-result/v1", "OVERVIEW_INVALID", f"Cannot read overview: {error}", None
+            "pinboard-mcp-overview-result/v1",
+            "OVERVIEW_INVALID",
+            "Cannot read overview: use valid project_root and work_root, max_items from 1 to 25, and continuation null to restart.",
+            None,
+        )
+    try:
+        durable = common._resolve_durable(request.project_root, request.work_root)
+    except (ValueError, OSError) as error:
+        diagnostic = str(error)
+        return common._read_failure(
+            "pinboard-mcp-overview-result/v1",
+            "OVERVIEW_INVALID",
+            diagnostic
+            if len(diagnostic.encode()) <= 2000
+            else "Cannot resolve overview roots. Use the exact initialized project's roots from the accepted task; a human must repair unavailable board storage before discovery can continue.",
+            None,
         )
     token.checkpoint()
-    operation_time = datetime.now(UTC)
     store = common.compose_store(durable)
-    overview = queries.project_current_overview(
-        store.read_project_overview(operation_time), operation_time, views.board_pages(durable.work_root)
-    )
+    cursor = request.continuation
+    after = 0 if cursor is None else cursor.after_position
+    facts = store.read_overview_page(after, request.max_items)
+    if cursor is not None and (
+        cursor.revision != facts.revision
+        or cursor.work_root != str(durable.work_root)
+        or cursor.after_position >= facts.total_items
+    ):
+        return common._read_failure(
+            "pinboard-mcp-overview-result/v1",
+            "OVERVIEW_INVALID",
+            "Overview continuation is stale or invalid for this board. Restart pinboard_overview with the same roots, max_items from 1 to 25, and continuation null; discard the previous partial traversal.",
+            None,
+        )
     token.checkpoint()
-    content = msgspec.to_builtins(overview)
-    assert isinstance(content, dict)
-    return execution.OperationResult(content, "ok", overview.revision)
+    items = facts.items
+    while True:
+        last = after if not items else items[-1].position
+        page = query_models.DiscoveryPage(
+            "pinboard-overview/v8",
+            "sqlite-v11",
+            facts.revision,
+            items,
+            facts.total_items,
+            facts.next_unstarted,
+            None
+            if last == facts.total_items
+            else query_models.OverviewCursor(facts.revision, last, str(durable.work_root)),
+            request.max_items,
+            8000,
+            "summaries-use-item-status-and-item-definition-for-full-facts",
+            views.board_pages(durable.work_root),
+        )
+        content = msgspec.to_builtins(page)
+        assert isinstance(content, dict)
+        if host_profiles.envelope_size(content, host_profiles.Representation.STRUCTURED_AND_TEXT) <= page.max_bytes:
+            return execution.OperationResult(content, "ok", facts.revision)
+        if len(items) <= 1:
+            return common._read_failure(
+                "pinboard-mcp-overview-result/v1",
+                "OVERVIEW_INVALID",
+                "The selected overview row or board metadata cannot fit the 8000-byte envelope. No state changed. Use pinboard_item_status operation item and pinboard_item_definition operation current for the selected identity; report an unavailable discovery identity to the human.",
+                None,
+            )
+        items = items[:-1]
 
 
 def _order(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
@@ -975,7 +1022,12 @@ def _order(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> 
         )
     recovery: dict[str, JsonValue] = {
         "tool": tool_names.OVERVIEW_TOOL,
-        "arguments": {"project_root": request.project_root, "work_root": request.work_root},
+        "arguments": {
+            "project_root": request.project_root,
+            "work_root": request.work_root,
+            "max_items": 25,
+            "continuation": None,
+        },
         "meaning": "current-state-only-not-caller-commit-proof",
     }
     store = common.compose_store(durable)
@@ -1067,7 +1119,7 @@ def _parallel_preview(raw: Mapping[str, JsonValue], token: execution.Cancellatio
             "pinboard-mcp-parallel-preview-result/v1",
             "PARALLEL_SELECTION_INVALID",
             preview.message
-            + " Read pinboard_overview with the same exact roots to verify current item IDs, then correct the intended selection; this preview grants no launch authority.",
+            + " Read pinboard_overview with the same exact roots, max_items:25 and continuation:null; follow continuation to verify all current item IDs, then correct the intended selection. This preview grants no launch authority.",
             None,
         )
     token.checkpoint()
@@ -1132,6 +1184,8 @@ def _action_failure_details(
             note = "Use current subject facts to rediscover only the intended supported action; discovery grants no mutation or human-decision authority."
         case _ as unreachable:
             assert_never(unreachable)
+    if inspection_tool == tool_names.OVERVIEW_TOOL:
+        inspection_input.update(max_items=25, continuation=None)
     observations += (
         FailureFact("next_step_tool", inspection_tool),
         FailureFact("next_step_input", msgspec.json.encode(inspection_input, order="sorted").decode()),

@@ -17,6 +17,7 @@ from typing import Annotated, assert_never
 import msgspec
 from mcp.types import InitializeRequestParams
 
+from pinboard import __version__
 from pinboard.mcp import contracts
 
 
@@ -37,6 +38,29 @@ class Representation(Enum):
 class ClientInfo(msgspec.Struct, frozen=True):
     name: Annotated[str, msgspec.Meta(min_length=1)]
     version: Annotated[str, msgspec.Meta(min_length=1)]
+
+
+def envelope_size(content: dict[str, contracts.JsonValue], representation: Representation) -> int:
+    """Price the complete compact SDK result, including its duplicate text representation."""
+    companion: list[dict[str, str]]
+    match representation:
+        case Representation.STRUCTURED_AND_TEXT:
+            companion = [{"type": "text", "text": msgspec.json.encode(content).decode()}]
+        case Representation.STRUCTURED_ONLY:
+            companion = []
+        case _ as unreachable:
+            assert_never(unreachable)
+    return len(
+        msgspec.json.encode(
+            {
+                "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "pinboard", "version": __version__}},
+                "content": companion,
+                "structuredContent": content,
+                "isError": False,
+                "resultType": "complete",
+            }
+        )
+    )
 
 
 def select(client_params: InitializeRequestParams | None) -> HostProfile:

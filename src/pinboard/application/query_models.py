@@ -49,13 +49,6 @@ class RecentReceiptFacts:
 
 
 @dataclass(frozen=True, slots=True)
-class ProjectOverviewFacts:
-    snapshot: LedgerSnapshot
-    proposals: tuple[stored_state.StoredProposal, ...]
-    preparations: tuple[PreparationAuthorityStatus, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class LivePortfolioFacts:
     """Live items with direct dependency reasons and open attempts; no authority, receipts, or artifacts.
 
@@ -763,7 +756,7 @@ class CompletionRecoveryRequired:
     reason: str
 
 
-type ItemStatusSchema = Literal["pinboard-item-status/v4"]
+type ItemStatusSchema = Literal["pinboard-item-status/v5"]
 type ItemStatusAuthority = Literal["sqlite-v11"]
 
 
@@ -900,6 +893,9 @@ class ItemStatusFacts:
     preparation: PreparationAuthorityStatus | None
     dependencies: tuple[DependencyStatus, ...]
     batches_by_attempt: dict[AttemptId, decision_batches.DecisionBatchView]
+    proposals: tuple[stored_state.StoredProposal, ...]
+    replacement: work_models.PlannedReplacement | None
+    replacement_disposition: work_models.ReplacementDisposition | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1071,6 +1067,9 @@ class ItemStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     preparation: PreparationStatusView | None
     board: BoardPages
     dependencies: tuple[DependencyStatus, ...]
+    dependency_reasons: tuple[DependencyReason, ...]
+    proposal_origin: ProposalOrigin | None
+    planned_replacement: PlannedReplacementWarning | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1713,19 +1712,45 @@ class BoardPortfolio:
         return max((item.updated_at for item in self.items), default=None)
 
 
-class NextUnstarted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class DiscoveryItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: str
-    unsatisfied_dependencies: tuple[history.DependencyPayload, ...]
+    state: work_models.WorkState
+    position: Annotated[int, msgspec.Meta(ge=1)]
+    label: Annotated[str, msgspec.Meta(max_length=160)]
+    attempt_id: str | None
+    dependency_count: Annotated[int, msgspec.Meta(ge=0)]
+    unsatisfied_dependency_count: Annotated[int, msgspec.Meta(ge=0)]
 
 
-class WorkOverview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-overview/v7"]
+class DiscoveryNextUnstarted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryFacts:
+    revision: str
+    items: tuple[DiscoveryItem, ...]
+    next_unstarted: DiscoveryNextUnstarted | None
+    total_items: int
+
+
+class OverviewCursor(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    revision: Annotated[str, msgspec.Meta(min_length=1)]
+    after_position: Annotated[int, msgspec.Meta(ge=1)]
+    work_root: str
+
+
+class DiscoveryPage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-overview/v8"]
     authority: Literal["sqlite-v11"]
     revision: str
-    active_attempts: tuple[str, ...]
-    items: tuple[OverviewItem, ...]
-    immediate_options: tuple[str, ...]
-    next_unstarted: NextUnstarted | None
+    items: Annotated[tuple[DiscoveryItem, ...], msgspec.Meta(max_length=25)]
+    total_items: Annotated[int, msgspec.Meta(ge=0)]
+    next_unstarted: DiscoveryNextUnstarted | None
+    continuation: OverviewCursor | None
+    max_items: Annotated[int, msgspec.Meta(ge=1, le=25)]
+    max_bytes: Literal[8000]
+    detail: Literal["summaries-use-item-status-and-item-definition-for-full-facts"]
     board: BoardPages
 
 

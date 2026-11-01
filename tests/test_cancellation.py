@@ -379,15 +379,20 @@ class CancellationTest(CheckpointPackageSupport):
         )
         self.assertIsInstance(result, DecisionFailure)
         overview = call_advertised_tool(
-            mcp_server.OVERVIEW_TOOL, {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+            mcp_server.OVERVIEW_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "max_items": 25,
+                "continuation": None,
+            },
         )
         item = next(
             self.json_object(value)
             for value in self.json_array(overview["items"])
             if self.json_object(value)["item_id"] == "work-a"
         )
-        self.assertIs(False, item["eligible"])
-        self.assertEqual(["work-c"], item["unsatisfied_dependencies"])
+        self.assertEqual(1, item["unsatisfied_dependency_count"])
         parallel = call_advertised_tool(
             mcp_server.PARALLEL_PREVIEW_TOOL,
             {

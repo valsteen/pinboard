@@ -74,7 +74,6 @@ from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import read_operations as mcp_reads
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
-from tests.decision_support import BOARD
 from tests.domain_support import action
 from tests.native_support import call_native_tool, native_tools
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, status_artifacts
@@ -544,12 +543,7 @@ class McpTransportTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         store = SQLiteWorkStore(roots.database_path)
         before = store.validated_snapshot()
-        current = tuple(
-            item.item_id
-            for item in queries.project_current_overview(
-                store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD
-            ).items
-        )
+        current = tuple(item.item_id for item in store.read_overview_page(0, 25).items)
         requested = (*current[1:], current[0])
         request: dict[str, contracts.JsonValue] = {
             "project_root": str(project),
@@ -608,12 +602,7 @@ class McpTransportTest(unittest.TestCase):
             after = fresh.validated_snapshot()
             self.assertEqual(
                 requested,
-                tuple(
-                    item.item_id
-                    for item in queries.project_current_overview(
-                        fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD
-                    ).items
-                ),
+                tuple(item.item_id for item in fresh.read_overview_page(0, 25).items),
             )
             self.assertEqual(before.authority, after.authority)
             self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
@@ -642,9 +631,7 @@ class McpTransportTest(unittest.TestCase):
                 "requested_order": list[contracts.JsonValue](requested),
             }
             # Matching fresh order is identical before and after a no-op: it cannot prove our commit.
-            prior_overview = queries.project_current_overview(
-                fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD
-            )
+            prior_overview = fresh.read_overview_page(0, 25)
             with patch(
                 "pinboard.adapters.files.views.atomic_replace",
                 side_effect=FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "injected view failure"),
@@ -656,7 +643,7 @@ class McpTransportTest(unittest.TestCase):
             self.assertEqual("current-state-only-not-caller-commit-proof", warning_view.recovery.meaning)
             self.assertEqual(
                 prior_overview.items,
-                queries.project_current_overview(fresh.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD).items,
+                fresh.read_overview_page(0, 25).items,
             )
             self.assertNotEqual(committed["history_id"], warning["history_id"])
             assert warning_view.warning is not None
@@ -870,12 +857,7 @@ class McpTransportTest(unittest.TestCase):
             temporary, project, roots = self._project()
         self.addCleanup(temporary.cleanup)
         store = SQLiteWorkStore(roots.database_path)
-        current = tuple(
-            item.item_id
-            for item in queries.project_current_overview(
-                store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD
-            ).items
-        )
+        current = tuple(item.item_id for item in store.read_overview_page(0, 25).items)
         executor = mcp_execution.BoundedExecutor(worker_count=2, unfinished_limit=2)
         self.addCleanup(executor.shutdown)
         locked, contender_started = threading.Event(), threading.Event()
@@ -950,12 +932,7 @@ class McpTransportTest(unittest.TestCase):
             original_state = store.validated_snapshot()
             self.assertEqual(
                 current[::-1],
-                tuple(
-                    item.item_id
-                    for item in queries.project_current_overview(
-                        store.read_project_overview(SQLITE_NOW), SQLITE_NOW, BOARD
-                    ).items
-                ),
+                tuple(item.item_id for item in store.read_overview_page(0, 25).items),
             )
             self.assertEqual(2, len(original_state.transition_receipts))
 
@@ -1161,7 +1138,7 @@ class McpTransportTest(unittest.TestCase):
                 {"request": common | {"role": "worker", "lease_id": "lease ", "generation": 1}},
             )
             assert isinstance(accepted, CallToolResult) and isinstance(accepted.structured_content, dict)
-            self.assertEqual("pinboard-item-status/v4", accepted.structured_content["schema"])
+            self.assertEqual("pinboard-item-status/v5", accepted.structured_content["schema"])
             for result, code in (
                 (invalid_path, "ITEM_STATUS_INVALID"),
                 (invalid_identity, "ACTIONS_INVALID"),
@@ -3667,7 +3644,7 @@ class McpTransportTest(unittest.TestCase):
                 }
                 continue_id: dict[str, contracts.JsonValue] = {"kind": "continue", "subject": "work-a-1"}
                 return (
-                    await session.call_tool(mcp_server.OVERVIEW_TOOL, common),
+                    await session.call_tool(mcp_server.OVERVIEW_TOOL, common | {"max_items": 25, "continuation": None}),
                     await session.call_tool(
                         mcp_server.ACTIONS_TOOL, _mcp_arguments(mcp_server.ACTIONS_TOOL, common | {"role": "observer"})
                     ),
@@ -3753,9 +3730,11 @@ class McpTransportTest(unittest.TestCase):
             self.assertIsInstance(successful.structured_content, dict)
         overview_content = overview.structured_content
         assert isinstance(overview_content, dict)
-        self.assertEqual("pinboard-overview/v7", overview_content["schema"])
+        self.assertEqual("pinboard-overview/v8", overview_content["schema"])
         self.assertEqual("sqlite-v11", overview_content["authority"])
-        self.assertEqual(["work-a-1"], overview_content["active_attempts"])
+        self.assertEqual(
+            ["work-a-1"], [row["attempt_id"] for row in overview_content["items"] if row["state"] == "active"]
+        )
         observer_content = observer.structured_content
         assert isinstance(observer_content, dict)
         self.assertEqual(["inspect"], [value["action_id"]["kind"] for value in observer_content["actions"]])
@@ -3812,8 +3791,19 @@ class McpTransportTest(unittest.TestCase):
         common = (str(project), str(roots.work_root))
 
         results = (
-            (mcp_server.OVERVIEW_TOOL, mcp_reads._read_overview(*common, token)),
-            (mcp_server.OVERVIEW_TOOL, mcp_reads._read_overview("", str(roots.work_root), token)),
+            (
+                mcp_server.OVERVIEW_TOOL,
+                mcp_reads._read_overview(
+                    {"project_root": common[0], "work_root": common[1], "max_items": 25, "continuation": None}, token
+                ),
+            ),
+            (
+                mcp_server.OVERVIEW_TOOL,
+                mcp_reads._read_overview(
+                    {"project_root": "", "work_root": str(roots.work_root), "max_items": 25, "continuation": None},
+                    token,
+                ),
+            ),
             (
                 mcp_server.ACTIONS_TOOL,
                 mcp_reads._read_actions(
@@ -3976,7 +3966,15 @@ class McpTransportTest(unittest.TestCase):
             (
                 mcp_server.OVERVIEW_TOOL,
                 "OVERVIEW_INVALID",
-                mcp_reads._read_overview(str(project), str(uninitialized), token),
+                mcp_reads._read_overview(
+                    {
+                        "project_root": str(project),
+                        "work_root": str(uninitialized),
+                        "max_items": 25,
+                        "continuation": None,
+                    },
+                    token,
+                ),
             ),
             (
                 mcp_server.PROPOSAL_CREATE_TOOL,

@@ -49,7 +49,8 @@ _CANCELLED_REQUEST_MESSAGE = (
     "Before deciding whether another call is safe, use pinboard_attempt_inspect with the original exact roots, "
     "attempt_id and reconciliation:null, or pinboard_item_status with request containing the original roots, "
     "operation:'item' and item_id. For a request without an item or attempt, read pinboard_overview with the "
-    "original project_root and work_root. Cancellation does not prove rollback; do not blindly replay a mutation."
+    "original project_root and work_root, max_items:25 and continuation:null, following continuation for complete "
+    "coverage. Cancellation does not prove rollback; do not blindly replay a mutation."
 )
 
 

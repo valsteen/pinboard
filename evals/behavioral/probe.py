@@ -21,7 +21,8 @@ from evals.behavioral.spend import Budget, Category
 PROBE_TURNS = (
     "Reply with exactly: OK",
     "Call the pinboard_overview tool of the pinboard MCP server once, with project_root set to the current "
-    "directory's absolute path and work_root set to its .pinboard subdirectory, then reply with exactly: OK again",
+    "directory's absolute path, work_root set to its .pinboard subdirectory, max_items 25 and continuation null, "
+    "then reply with exactly: OK again",
 )
 
 

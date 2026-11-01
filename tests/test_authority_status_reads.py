@@ -806,6 +806,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 "project_meta",
                 "work_item_definition_revisions",
                 "work_items",
+                "proposals",
+                "planned_replacements",
+                "replacement_dispositions",
             },
             read_tables,
         )
@@ -860,7 +863,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
                     status_stdout = self.native(
                         mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"operation": "item", "item_id": "work-a"}
                     )
-                overview_stdout = self.native(mcp_server.OVERVIEW_TOOL, str(project), str(work), {})
+                overview_stdout = self.native(
+                    mcp_server.OVERVIEW_TOOL, str(project), str(work), {"max_items": 25, "continuation": None}
+                )
 
             self.assertNotIn("code", status_stdout)
             self.assertNotIn("code", overview_stdout)
@@ -876,16 +881,11 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 ("item_id", "item_id"),
                 ("label", "label"),
                 ("state", "state"),
-                ("timing", "timing"),
-                ("source", "source"),
                 ("queue_position", "position"),
-                ("preparation", "preparation"),
             ):
                 self.assertEqual(status[status_field], overview_item[overview_field], status_field)
             intake_context = self.json_object(status["intake_context"])
             self.assertEqual("original-context", intake_context["label"])
-            self.assertEqual(overview_item["next_action"], intake_context["next_action"])
-            self.assertEqual(overview_item["notes"], intake_context["notes"])
             self.assertNotIn("review_verdict", overview_item)
             attempts = self.json_array(status["attempts"])
             current_attempt = None if not attempts else self.json_object(attempts[0])["attempt_id"]
@@ -978,7 +978,9 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 mcp_server.ITEM_STATUS_TOOL, str(project), str(work), {"operation": "item", "item_id": "work-a"}
             )
         with self.record_store_reads() as overview_reads:
-            overview = self.native(mcp_server.OVERVIEW_TOOL, str(project), str(work), {})
+            overview = self.native(
+                mcp_server.OVERVIEW_TOOL, str(project), str(work), {"max_items": 25, "continuation": None}
+            )
 
         self.assertEqual({"kind": "none"}, status["review_verdict"])
         self.assertEqual(

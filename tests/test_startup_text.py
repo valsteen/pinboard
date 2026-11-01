@@ -19,9 +19,16 @@ from mcp.server.mcpserver import MCPServer
 from mcp_types import ClientCapabilities, Implementation, InitializeRequestParams, TextContent
 
 from pinboard.adapters.files import git_config, host_settings
+from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.application import artifact_identity
+from pinboard.application.artifacts import NewArtifact
 from pinboard.domain import work_models
+from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import common, contract_schemas, contracts, execution, host_profiles, server, startup_text
+from tests.artifact_support import write_revision
 from tests.checkpoint_support import CheckpointPackageSupport
+from tests.support import SQLITE_NOW
 
 DUAL = host_profiles.Representation.STRUCTURED_AND_TEXT
 MEASURED_CLIENTS = (
@@ -186,6 +193,113 @@ class StartupTextTest(CheckpointPackageSupport):
         self.assertEqual([], list(directory.iterdir()))
         self.assertFalse((self.root / "absent").exists())
 
+    def test_codex_worker_and_reviewer_artifacts_reduce_actual_sdk_transport(self) -> None:  # noqa: PLR0915 - one paired SDK paging and artifact-rejection journey
+        line = (
+            '{"requirement":"Preserve complete accepted scope, independent review, explicit human authority '
+            'and exact UTF-8 bytes.","text":"Line one\\nLine two"}\n'
+        )
+        payload = (line * 2000).encode()[:189728]
+        self.assertEqual(
+            "377a779a8662c012c03c49444540ba92372d36ba77229cfb9254044440b7b055", hashlib.sha256(payload).hexdigest()
+        )
+        fixture = self.checkpoint_fixture()
+        executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        transport = server.create_server(executor, execution.Diagnostics(io.StringIO(), event_limit=2, line_limit=256))
+        self.addCleanup(executor.shutdown)
+
+        async def consume(source: dict[str, contracts.JsonValue], dual: bool) -> tuple[int, int]:
+            request: dict[str, contracts.JsonValue] = {
+                "operation": "artifact-start",
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "source": source,
+                "max_batch_bytes": 20000,
+            }
+            parts: list[str] = []
+            byte_count = 0
+            position = 0
+            async with Client(
+                transport, client_info=Implementation(name="codex-mcp-client", version="0.164.0"), mode="legacy"
+            ) as client:
+                while True:
+                    result = await client.call_tool("pinboard_startup_text", {"request": request})
+                    sent = result.model_dump_json(by_alias=True, exclude_none=True).encode()
+                    self.assertLessEqual(len(sent), 20000)
+                    byte_count += len(sent)
+                    page = result.structured_content
+                    self.assertEqual("ok", page["status"])
+                    self.assertEqual(source, page["source"])
+                    self.assertEqual(position, page["start_character"])
+                    parts.append(page["text"])
+                    position += len(parts[-1])
+                    self.assertEqual(position, page["end_character"])
+                    self.assertEqual("delivery-only", page["authority"])
+                    self.assertFalse(page["state_changed"])
+                    if dual:
+                        companion = result.content[0]
+                        assert isinstance(companion, TextContent)
+                        self.assertEqual(page, msgspec.json.decode(companion.text))
+                    else:
+                        self.assertEqual([], result.content)
+                    if page["continuation"] is None:
+                        break
+                    request = page["continuation"]
+                self.assertEqual(payload, "".join(parts).encode())
+                for changed in (
+                    {"artifact_ref_id": 999999},
+                    {"selector": "unavailable"},
+                    {"sha256": "0" * 64},
+                    {"size_bytes": 1},
+                ):
+                    rejected = await client.call_tool(
+                        "pinboard_startup_text",
+                        {
+                            "request": {
+                                "operation": "artifact-start",
+                                "project_root": str(fixture.project),
+                                "work_root": str(fixture.work),
+                                "source": source | changed,
+                                "max_batch_bytes": 20000,
+                            }
+                        },
+                    )
+                    self.assertEqual("rejected", rejected.structured_content["status"])
+                    self.assertEqual("unchanged", rejected.structured_content["effect"])
+                    self.assertEqual("correct-input", rejected.structured_content["retry"])
+            return len(parts), byte_count
+
+        with patch.dict(os.environ, {"HOME": str(self.root / "home")}):
+            for role in ("worker", "reviewer"):
+                published = write_revision(
+                    resolve_durable_roots(fixture.project),
+                    NewArtifact(work_models.ArtifactKind.EVIDENCE, f"{role}-prompt", 1, ".txt", payload),
+                )
+                accepted = fixture.store.accept_artifact_reference(
+                    fixture.work,
+                    published,
+                    SQLITE_NOW,
+                    ownership=artifact_identity.AttemptMembership(
+                        AttemptId(fixture.brief.attempt_id), artifact_identity.AttemptRole.SOURCE
+                    ),
+                )
+                assert not isinstance(accepted, DecisionFailure)
+                reference = accepted.reference
+                source: dict[str, contracts.JsonValue] = {
+                    "kind": "artifact",
+                    "artifact_ref_id": int(reference.artifact_ref_id),
+                    "selector": reference.selector,
+                    "sha256": reference.content_sha256,
+                    "size_bytes": reference.size_bytes,
+                }
+                with self.subTest(role=role):
+                    # Freeze the accepted base's only changed decision, keeping the same SDK and artifact.
+                    with patch.object(host_profiles, "representation", return_value=DUAL):
+                        baseline = asyncio.run(consume(source, True))
+                    candidate = asyncio.run(consume(source, False))
+                    self.assertLess(candidate[0], baseline[0])
+                    self.assertLess(candidate[1], baseline[1])
+                    print(f"{role} SDK baseline calls/bytes={baseline}; candidate={candidate}")
+
     def test_high_level_sdk_server_metadata_fits_the_complete_page_budget(self) -> None:
         self.path.write_text("x" * 17000)
         executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
@@ -318,8 +432,86 @@ class HostProfileTest(unittest.TestCase):
         self.assertEqual(8000, page["max_batch_bytes"])
         self.assertLessEqual(host_profiles.envelope_size(page, DUAL), 8000)
 
+    def test_codex_sdk_preserves_edge_inputs_and_rejection_diagnostics(self) -> None:
+        executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        transport = server.create_server(executor, execution.Diagnostics(io.StringIO(), event_limit=2, line_limit=256))
+        self.addCleanup(executor.shutdown)
+
+        async def scenario() -> None:
+            async with Client(
+                transport, client_info=Implementation(name="codex-mcp-client", version="0.164.0"), mode="legacy"
+            ) as client:
+                for text in ('"\\café 音\n' * 4000, 'é音\\"' * 20000, "short", ""):
+                    self.path.write_bytes(text.encode())
+                    request = self.request | {"max_batch_bytes": 4000}
+                    parts: list[str] = []
+                    while True:
+                        result = await client.call_tool("pinboard_startup_text", {"request": request})
+                        self.assertEqual([], result.content)
+                        self.assertLessEqual(
+                            len(result.model_dump_json(by_alias=True, exclude_none=True).encode()), 4000
+                        )
+                        page = result.structured_content
+                        self.assertEqual("ok", page["status"])
+                        self.assertEqual(sum(map(len, parts)), page["start_character"])
+                        self.assertEqual(hashlib.sha256(text.encode()).hexdigest(), page["source"]["sha256"])
+                        parts.append(page["text"])
+                        if page["continuation"] is None:
+                            break
+                        request = page["continuation"]
+                    self.assertEqual(text.encode(), "".join(parts).encode())
+
+                self.path.write_text("long" * 10000)
+                first = await client.call_tool("pinboard_startup_text", {"request": self.request})
+                continuation = first.structured_content["continuation"]
+                self.path.write_text("changed")
+                requests = (
+                    continuation,
+                    continuation | {"start_character": 999999},
+                    continuation | {"extra": True},
+                    self.request | {"max_batch_bytes": 1},
+                    self.request | {"path": str(self.root / "missing")},
+                )
+                for request in requests:
+                    with patch.object(host_profiles, "representation", return_value=DUAL):
+                        baseline = await client.call_tool("pinboard_startup_text", {"request": request})
+                    candidate = await client.call_tool("pinboard_startup_text", {"request": request})
+                    self.assertEqual([], candidate.content)
+                    self.assertEqual(baseline.structured_content, candidate.structured_content)
+                    self.assertEqual("rejected", candidate.structured_content["status"])
+                    self.assertEqual("unchanged", candidate.structured_content["effect"])
+                    self.assertTrue(candidate.structured_content["recovery"])
+                    # After the changed-source case, test malformed ranges against the original bytes.
+                    self.path.write_text("long" * 10000)
+                arguments = {
+                    "request": {
+                        "operation": "starter",
+                        "boundary": "local",
+                        "project_root": str(self.root),
+                        "work_root": str(self.root / "absent"),
+                    }
+                }
+                ordinary = await client.call_tool("pinboard_brief_contract", arguments)
+                companion = ordinary.content[0]
+                assert isinstance(companion, TextContent)
+                self.assertEqual(ordinary.structured_content, msgspec.json.decode(companion.text))
+                self.settings.write_text('[host "codex"]\nstartup-page-bytes = broken\n')
+                with patch.object(host_profiles, "representation", return_value=DUAL):
+                    baseline = await client.call_tool("pinboard_startup_text", {"request": self.request})
+                candidate = await client.call_tool("pinboard_startup_text", {"request": self.request})
+                self.assertEqual([], candidate.content)
+                self.assertEqual(baseline.structured_content, candidate.structured_content)
+                self.assertEqual("HOST_PAGE_SETTING_UNAVAILABLE", candidate.structured_content["code"])
+                self.assertEqual("unchanged", candidate.structured_content["effect"])
+
+        asyncio.run(scenario())
+
     def test_initialize_client_info_selects_budget_and_representation(self) -> None:
-        clients = (*MEASURED_CLIENTS, ("unlisted-host", "1.0.0", host_profiles.HostProfile.UNMEASURED))
+        clients = (
+            *MEASURED_CLIENTS,
+            ("unlisted-host", "1.0.0", host_profiles.HostProfile.UNMEASURED),
+            ("codex-mcp-client", "", host_profiles.HostProfile.UNMEASURED),
+        )
         for name, version, profile in clients:
             executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
             transport = server.create_server(
@@ -335,10 +527,10 @@ class HostProfileTest(unittest.TestCase):
                     self.assertEqual(host_profiles.measured_page_bytes(expected), page["max_batch_bytes"])
                     sent = len(result.model_dump_json(by_alias=True, exclude_none=True).encode())
                     self.assertLessEqual(sent, host_profiles.measured_page_bytes(expected))
-                    match host_profiles.representation(expected):
-                        case host_profiles.Representation.STRUCTURED_ONLY:
+                    match expected:
+                        case host_profiles.HostProfile.CLAUDE_CODE | host_profiles.HostProfile.CODEX:
                             self.assertEqual([], result.content)
-                        case host_profiles.Representation.STRUCTURED_AND_TEXT:
+                        case host_profiles.HostProfile.ANTIGRAVITY | host_profiles.HostProfile.UNMEASURED:
                             companion = result.content[0]
                             assert isinstance(companion, TextContent)
                             self.assertEqual(page, msgspec.json.decode(companion.text))

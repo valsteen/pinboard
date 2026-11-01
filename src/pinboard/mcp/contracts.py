@@ -1719,6 +1719,150 @@ class NoPayloadInputContract(msgspec.Struct, frozen=True, forbid_unknown_fields=
     semantics: action_models.ActionSemanticsView
 
 
+class CloseCallStarter(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Replace unresolved null values using the destination's negotiated input schema."""
+
+    project_root: RootPath
+    work_root: RootPath
+    receipt: TransitionReceipt[decision_models.ActionKind]
+    payload: None
+    actor_task_id: None
+    actor_host_id: None
+
+
+class ProjectCallStarter(CloseCallStarter, tag="project", tag_field="role", frozen=True):
+    pass
+
+
+type TransitionCallStarter = (
+    ProjectCallStarter
+    | WorkerTransitionRequest[decision_models.ActionKind, None]
+    | PreparerTransitionRequest[decision_models.ActionKind, None]
+)
+
+
+class TransitionInvocation(
+    msgspec.Struct, tag="pinboard_transition", tag_field="tool", frozen=True, forbid_unknown_fields=True
+):
+    """Copy arguments and replace null payload/actor values from the action contract and caller facts before calling."""
+
+    arguments: TransitionEnvelope[TransitionCallStarter]
+
+
+class CloseInvocation(msgspec.Struct, tag="pinboard_close", tag_field="tool", frozen=True, forbid_unknown_fields=True):
+    arguments: CloseCallStarter
+
+
+class DispatchCallChoice(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Choose kind and add its required semantic fields from pinboard_dispatch's input schema; retain receipt."""
+
+    receipt: DispatchReceipt
+    kind: None
+
+
+class DispatchCallStarter(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    dispatch: DispatchCallChoice
+
+
+class DispatchInvocation(
+    msgspec.Struct, tag="pinboard_dispatch", tag_field="tool", frozen=True, forbid_unknown_fields=True
+):
+    arguments: DispatchCallStarter
+
+
+type ActionInvocation = TransitionInvocation | CloseInvocation | DispatchInvocation | None
+
+
+def action_invocation_tool(
+    kind: decision_models.ActionKind,
+) -> Literal["pinboard_transition", "pinboard_close", "pinboard_dispatch"] | None:
+    """Select only the destinations covered by action-call starters."""
+    match kind:
+        case decision_models.ActionKind.DISPATCH:
+            return "pinboard_dispatch"
+        case decision_models.ActionKind.CLOSE:
+            return "pinboard_close"
+        case (
+            decision_models.ActionKind.START_PR_REVIEW
+            | decision_models.ActionKind.REVIEW_PR_BRIEF
+            | decision_models.ActionKind.OBSERVE_PR_HEAD
+            | decision_models.ActionKind.RECORD_PR_ROUND
+            | decision_models.ActionKind.CLOSE_PR_REVIEW
+            | decision_models.ActionKind.CANCEL
+            | decision_models.ActionKind.CONSOLIDATE
+            | decision_models.ActionKind.CONTINUE
+            | decision_models.ActionKind.INSPECT
+            | decision_models.ActionKind.REPORT_BLOCKER
+        ):
+            return None
+        case (
+            decision_models.ActionKind.ACCEPT_CHECKPOINT
+            | decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
+            | decision_models.ActionKind.ACTIVATE
+            | decision_models.ActionKind.BLOCK
+            | decision_models.ActionKind.BLOCK_ITEM
+            | decision_models.ActionKind.COMPLETE
+            | decision_models.ActionKind.DEFER
+            | decision_models.ActionKind.MERGE_PROPOSAL
+            | decision_models.ActionKind.PAUSE
+            | decision_models.ActionKind.REJECT_PROPOSAL
+            | decision_models.ActionKind.REOPEN
+            | decision_models.ActionKind.RECORD_REPLACEMENT
+            | decision_models.ActionKind.REBIND_ATTEMPT
+            | decision_models.ActionKind.RESUME
+            | decision_models.ActionKind.RETURN_FOR_CORRECTION
+            | decision_models.ActionKind.RETAIN_TEMPORARILY
+            | decision_models.ActionKind.REVISE_ITEM
+            | decision_models.ActionKind.SUBMIT_REVIEW
+        ):
+            return "pinboard_transition"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def action_invocation(action: action_models.ActionView, project_root: str, work_root: str) -> ActionInvocation:
+    """Preserve discovered inputs; null values require caller facts and grant no execution authority."""
+    tool = action_invocation_tool(action.kind)
+    if tool == "pinboard_dispatch":
+        assert action.subject_revision is not None
+        return DispatchInvocation(
+            DispatchCallStarter(
+                project_root,
+                work_root,
+                DispatchCallChoice(
+                    DispatchReceipt(TransitionActionIdentity("dispatch", action.subject), action.subject_revision),
+                    None,
+                ),
+            )
+        )
+    if tool is None:
+        return None
+    assert action.subject_revision is not None
+    receipt = TransitionReceipt(TransitionActionIdentity(action.kind, action.subject), action.subject_revision)
+    if tool == "pinboard_close":
+        return CloseInvocation(CloseCallStarter(project_root, work_root, receipt, None, None, None))
+    match action.authorization:
+        case "project":
+            request: TransitionCallStarter = ProjectCallStarter(project_root, work_root, receipt, None, None, None)
+        case "attempt":
+            assert action.lease_id is not None and action.generation is not None
+            request = WorkerTransitionRequest(
+                project_root, work_root, receipt, None, action.lease_id, action.generation
+            )
+        case "preparation":
+            assert action.lease_id is not None and action.generation is not None
+            request = PreparerTransitionRequest(
+                project_root, work_root, receipt, None, action.lease_id, action.generation
+            )
+        case "observer":
+            return None
+        case _ as unreachable:
+            assert_never(unreachable)
+    return TransitionInvocation(TransitionEnvelope(request))
+
+
 class ActionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     action_id: ActionIdentity
     label: NonEmptyText
@@ -1728,10 +1872,11 @@ class ActionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     generation: PositiveInt | None
     semantics: action_models.ActionSemanticsView
     input_contract: action_models.InputContractView
+    invocation: ActionInvocation
 
     def __post_init__(self) -> None:
         identity = self.action_id
-        action_models.ActionView(
+        projected = action_models.ActionView(
             identity.kind,
             identity.subject,
             self.label,
@@ -1742,6 +1887,19 @@ class ActionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
             self.semantics,
             self.input_contract,
         )
+        match self.invocation:
+            case TransitionInvocation(arguments=arguments):
+                project_root, work_root = arguments.request.project_root, arguments.request.work_root
+            case CloseInvocation(arguments=arguments) | DispatchInvocation(arguments=arguments):
+                project_root, work_root = arguments.project_root, arguments.work_root
+            case None:
+                if action_invocation_tool(identity.kind) is not None:
+                    raise ValueError("this action requires an invocation starter")
+                return
+            case _ as unreachable:
+                assert_never(unreachable)
+        if self.invocation != action_invocation(projected, project_root, work_root):
+            raise ValueError("action invocation must preserve its exact receipt, authority and destination")
 
 
 class ActionsSuccess(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):

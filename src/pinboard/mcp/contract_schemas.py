@@ -1,6 +1,6 @@
 """Generate negotiated MCP schemas and validate emitted transport results."""
 
-from typing import get_args
+from typing import assert_never, get_args
 
 import msgspec
 
@@ -136,6 +136,7 @@ from pinboard.mcp.contracts import (
     TransitionRequest,
     _committed_transition_surfaces,
     _fixed_state_changed,
+    action_invocation_tool,
 )
 
 
@@ -379,7 +380,28 @@ def _apply_action_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
         decision_models.Role.WORKER: "attempt",
         decision_models.Role.PREPARER: "preparation",
     }
-    correlations: list[JsonSchemaValue] = [{"oneOf": authority_shapes}]
+    authority_correlations: list[JsonSchemaValue] = [{"oneOf": authority_shapes}]
+    for role, authority in role_authorities.items():
+        authority_correlations.append(
+            {
+                "if": {"properties": {"authorization": {"const": authority}}},
+                "then": {
+                    "properties": {
+                        "invocation": {
+                            "if": {"type": "object", "properties": {"tool": {"const": "pinboard_transition"}}},
+                            "then": {
+                                "properties": {
+                                    "arguments": {
+                                        "properties": {"request": {"properties": {"role": {"const": role.value}}}}
+                                    }
+                                }
+                            },
+                        }
+                    }
+                },
+            }
+        )
+    correlations = list(authority_correlations)
     for kind in decision_models.ActionKind:
         semantics = decision_models.action_semantics(kind)
         semantic_constraint = _action_semantics_constraint(kind)
@@ -400,6 +422,7 @@ def _apply_action_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
                     "properties": {
                         "authorization": {"enum": [role_authorities[role] for role in semantics.permitted_roles]},
                         "semantics": semantic_constraint,
+                        "invocation": _action_invocation_constraint(kind),
                         "input_contract": {
                             "type": "object",
                             "properties": {
@@ -419,12 +442,13 @@ def _apply_action_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
         semantics = decision_models.action_semantics(kind)
         semantic_constraint = _action_semantics_constraint(kind)
         completion["allOf"] = [
-            {"oneOf": authority_shapes},
+            *authority_correlations,
             {
                 "properties": {
                     "action_id": {"properties": {"kind": {"const": kind.value}}},
                     "authorization": {"enum": [role_authorities[role] for role in semantics.permitted_roles]},
                     "semantics": semantic_constraint,
+                    "invocation": _action_invocation_constraint(kind),
                     "input_contract": {
                         "properties": {
                             "action_kind": {"const": kind.value},
@@ -437,6 +461,29 @@ def _apply_action_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
                 }
             },
         ]
+    close = definitions.get("CloseActionView")
+    if isinstance(close, dict):
+        close["allOf"] = correlations
+
+
+def _action_invocation_constraint(kind: decision_models.ActionKind) -> JsonSchemaValue:
+    tool = action_invocation_tool(kind)
+    if tool is None:
+        return {"type": "null"}
+    receipt: dict[str, JsonSchemaValue] = {
+        "properties": {"receipt": {"properties": {"action_id": {"properties": {"kind": {"const": kind.value}}}}}}
+    }
+    match tool:
+        case "pinboard_transition":
+            arguments = dict[str, JsonSchemaValue](properties={"request": receipt})
+        case "pinboard_dispatch":
+            arguments = dict[str, JsonSchemaValue](properties={"dispatch": receipt})
+        case "pinboard_close":
+            arguments = receipt
+        case _ as unreachable:
+            assert_never(unreachable)
+    properties = dict[str, JsonSchemaValue](tool={"const": tool}, arguments=arguments)
+    return {"type": "object", "properties": properties}
 
 
 def _apply_transition_constraints(definitions: dict[str, JsonSchemaValue]) -> None:

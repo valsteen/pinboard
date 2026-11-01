@@ -173,7 +173,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                     {path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()},
                 )
 
-    def test_direct_and_covered_discovery_select_exact_input_without_mutation(self) -> None:
+    def test_direct_and_covered_discovery_select_exact_input_without_mutation(self) -> None:  # noqa: PLR0915 - one focused completion evidence/schema matrix
         valid_results: list[JsonObject] = []
         invalid_results: list[tuple[str, JsonObject]] = []
         for covered in (False, True):
@@ -201,6 +201,20 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 self.assertIs(result, contract_schemas.validate_result(mcp_server.ACTIONS_TOOL, result))
                 self.assertEqual(original, result)
                 action = self.json_object(self.json_array(result["actions"])[0])
+                invocation = self.json_object(action["invocation"])
+                self.assertEqual(mcp_server.TRANSITION_TOOL, invocation["tool"])
+                starter = self.json_object(self.json_object(invocation["arguments"])["request"])
+                self.assertEqual(
+                    {"action_id": action["action_id"], "subject_revision": action["subject_revision"]},
+                    starter["receipt"],
+                )
+                self.assertEqual("project", starter["role"])
+                self.assertIsNone(starter["actor_task_id"])
+                self.assertIsNone(starter["actor_host_id"])
+                self.assertIsNone(starter["payload"])
+                invalid_results.append(
+                    ("missing-completion-starter", {**result, "actions": [{**action, "invocation": None}]})
+                )
                 contract = self.json_object(action["input_contract"])
                 schema = self.json_object(contract["payload_schema"])
                 self.assertNotIn("oneOf", schema)

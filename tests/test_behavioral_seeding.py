@@ -72,6 +72,68 @@ class ToolResultTest(unittest.TestCase):
 
 
 class ItemStateReadTest(unittest.IsolatedAsyncioTestCase):
+    async def test_board_text_reads_complete_pages_and_exact_dependency_targets(self) -> None:
+        cursor: dict[str, contracts.JsonValue] = {"revision": "7", "after_position": 1, "work_root": "/board"}
+        pages: list[dict[str, contracts.JsonValue]] = [
+            {
+                "revision": "7",
+                "items": [{"item_id": "one", "state": "ready", "attempt_id": None, "position": 1}],
+                "continuation": cursor,
+            },
+            {
+                "revision": "7",
+                "items": [{"item_id": "two", "state": "ready", "attempt_id": None, "position": 2}],
+                "continuation": None,
+            },
+        ]
+        original_pages = tuple(pages)
+        detail_revision = "7"
+        requests: list[dict[str, contracts.JsonValue]] = []
+
+        async def read(tool: str, arguments: dict[str, contracts.JsonValue]) -> CallToolResult:
+            requests.append(arguments)
+            if tool == "pinboard_overview":
+                msgspec.convert(arguments, type=contracts.OverviewRequest, strict=True)
+                return CallToolResult(content=[], structured_content=pages.pop(0), is_error=False)
+            selected = msgspec.convert(arguments, type=contracts.ItemStatusEnvelope, strict=True).request
+            assert isinstance(selected, contracts.ItemStatusItemRequest)
+            return CallToolResult(
+                content=[],
+                structured_content={
+                    "revision": detail_revision,
+                    "dependencies": [{"target": "one"}] if selected.item_id == "two" else [],
+                },
+                is_error=False,
+            )
+
+        session = MagicMock(spec=board.ClientSession)
+        session.call_tool = AsyncMock(side_effect=read)
+
+        @asynccontextmanager
+        async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
+            yield board.BoardClient(session, window)
+
+        with patch.object(board, "connect", connected):
+            observed = await board.overview(
+                Path("launcher"), Path("log"), Path("/project"), Path("/board"), Window(None)
+            )
+        self.assertEqual(["one", "two"], [value.item_id for value in observed.items])
+        self.assertEqual(["one"], observed.items[1].depends_on)
+        self.assertIsNone(requests[0]["continuation"])
+        self.assertEqual(cursor, requests[1]["continuation"])
+        for changed in ("page", "detail"):
+            pages = list(original_pages)
+            if changed == "page":
+                pages[1] = pages[1] | {"revision": "8"}
+            else:
+                detail_revision = "8"
+            with (
+                self.subTest(changed=changed),
+                patch.object(board, "connect", connected),
+                self.assertRaises(SeedFailure),
+            ):
+                await board.overview(Path("launcher"), Path("log"), Path("/project"), Path("/board"), Window(None))
+
     async def test_seed_verification_uses_the_current_native_item_request(self) -> None:
         async def read_item(tool: str, arguments: dict[str, contracts.JsonValue]) -> CallToolResult:
             self.assertEqual("pinboard_item_status", tool)

@@ -300,9 +300,17 @@ class AttemptInspect(Request, frozen=True):
     reconciliation: None
 
 
-class Roots(Request, frozen=True):
+class OverviewCursor(Request, frozen=True):
+    revision: str
+    after_position: int
+    work_root: str
+
+
+class OverviewRequest(Request, frozen=True):
     project_root: str
     work_root: str
+    max_items: int
+    continuation: OverviewCursor | None
 
 
 class ItemStatus(Request, frozen=True):
@@ -390,6 +398,28 @@ class Overview(Projection, frozen=True):
     items: list[OverviewItem]
 
 
+class DiscoveryItem(Projection, frozen=True):
+    item_id: str
+    state: str
+    attempt_id: str | None
+    position: int
+
+
+class DiscoveryPage(Projection, frozen=True):
+    revision: str
+    items: list[DiscoveryItem]
+    continuation: OverviewCursor | None
+
+
+class Dependency(Projection, frozen=True):
+    target: str
+
+
+class ItemDependencies(Projection, frozen=True):
+    revision: str
+    dependencies: list[Dependency]
+
+
 @dataclass(frozen=True)
 class BoardClient:
     session: ClientSession
@@ -435,9 +465,39 @@ async def overview(
     launcher: Path, log: Path, project_root: Path, work_root: Path, window: processes.Window
 ) -> Overview:
     async with connect(launcher, log, window) as board:
-        return await board.call(
-            "pinboard_overview", Roots(project_root=str(project_root), work_root=str(work_root)), Overview
+        page = await board.call(
+            "pinboard_overview", OverviewRequest(str(project_root), str(work_root), 25, None), DiscoveryPage
         )
+        revision = page.revision
+        selected = list(page.items)
+        while page.continuation is not None:
+            page = await board.call(
+                "pinboard_overview",
+                OverviewRequest(str(project_root), str(work_root), 25, page.continuation),
+                DiscoveryPage,
+            )
+            if page.revision != revision:
+                raise SeedFailure("Overview revision changed during complete traversal")
+            selected.extend(page.items)
+        items: list[OverviewItem] = []
+        for item in selected:
+            detail = await board.call(
+                "pinboard_item_status",
+                Enveloped(ItemStatus("item", str(project_root), str(work_root), item.item_id)),
+                ItemDependencies,
+            )
+            if detail.revision != revision:
+                raise SeedFailure("Item dependencies changed after overview traversal")
+            items.append(
+                OverviewItem(
+                    item.item_id,
+                    item.state,
+                    item.attempt_id,
+                    item.position,
+                    [dependency.target for dependency in detail.dependencies],
+                )
+            )
+        return Overview(items)
 
 
 async def tool_names(launcher: Path, log: Path, window: processes.Window) -> list[str]:

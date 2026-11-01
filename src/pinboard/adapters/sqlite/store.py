@@ -14,7 +14,7 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.adapters.sqlite import cancellation, pr_review
+from pinboard.adapters.sqlite import cancellation, overview, pr_review
 from pinboard.adapters.sqlite import consolidation as consolidation_storage
 from pinboard.adapters.sqlite import initiatives as initiative_storage
 from pinboard.adapters.sqlite import obligation_coverage as obligation_storage
@@ -1017,27 +1017,11 @@ class SQLiteWorkStore:
         finally:
             connection.close()
 
-    def read_project_overview(self, now: datetime) -> query_models.ProjectOverviewFacts:
+    def read_overview_page(self, after_position: int, max_items: int) -> query_models.DiscoveryFacts:
         connection = open_database(self._path, OpenMode.READ_ONLY)
         try:
             with read_operation(connection):
-                snapshot = read_current_snapshot(
-                    connection,
-                    now,
-                    include_proposals=False,
-                    include_action_authorities=False,
-                    include_pause_reasons=True,
-                )
-                preparations = read_preparation_authority_statuses(
-                    connection, tuple(item.work_item_id for item in snapshot.items)
-                )
-                return query_models.ProjectOverviewFacts(
-                    snapshot,
-                    _read_overview_proposals(connection, snapshot),
-                    tuple(
-                        status for item in snapshot.items if (status := preparations.get(item.work_item_id)) is not None
-                    ),
-                )
+                return overview.read_overview_page(connection, after_position, max_items)
         finally:
             connection.close()
 
@@ -1151,6 +1135,15 @@ class SQLiteWorkStore:
                 if lifecycle.work_item.state == stored_state.StoredWorkItemState.REVIEW and not lifecycle.attempts:
                     pr_review.validate_review_history(connection, (work_item_id,))
                 preparation = read_preparation_authority_status(connection, work_item_id)
+                proposal_ids = (
+                    ProposalId(work_item_id),
+                    *(
+                        ProposalId(work_models.dependency_item(history.dependency_from_payload(value.target)))
+                        for value in lifecycle.dependencies
+                    ),
+                )
+                selected_proposals = read_proposals_by_ids(connection, proposal_ids)
+                replacements, dispositions = read_current_replacements(connection, (work_item_id,))
                 return query_models.ItemStatusFacts(
                     lifecycle.project_revision,
                     lifecycle.work_item,
@@ -1160,6 +1153,9 @@ class SQLiteWorkStore:
                     preparation,
                     lifecycle.dependencies,
                     read_decision_batches(connection, (attempt.attempt_id for attempt in lifecycle.attempts)),
+                    tuple(selected_proposals.values()),
+                    None if not replacements else replacements[0],
+                    None if not dispositions else dispositions[0],
                 )
         finally:
             connection.close()

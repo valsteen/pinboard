@@ -9,7 +9,6 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard import __version__
 from pinboard.adapters.files import host_settings
 from pinboard.adapters.files import startup_text as files
 from pinboard.adapters.files.setting_resolution import (
@@ -21,29 +20,6 @@ from pinboard.adapters.files.setting_resolution import (
     SettingResolutionError,
 )
 from pinboard.mcp import contracts, execution, host_profiles, read_operations
-
-
-def envelope_size(content: dict[str, contracts.JsonValue], representation: host_profiles.Representation) -> int:
-    """Price the compact SDK tool result exactly as the selected representation sends it."""
-    companion: list[dict[str, str]]
-    match representation:
-        case host_profiles.Representation.STRUCTURED_AND_TEXT:
-            companion = [{"type": "text", "text": msgspec.json.encode(content).decode()}]
-        case host_profiles.Representation.STRUCTURED_ONLY:
-            companion = []
-        case _ as unreachable:
-            assert_never(unreachable)
-    return len(
-        msgspec.json.encode(
-            {
-                "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "pinboard", "version": __version__}},
-                "content": companion,
-                "structuredContent": content,
-                "isError": False,
-                "resultType": "complete",
-            }
-        )
-    )
 
 
 def _rejected(
@@ -63,10 +39,10 @@ def _rejected(
     )
     content: dict[str, contracts.JsonValue] = msgspec.to_builtins(result)
     representation = host_profiles.representation(profile)
-    if budget is not None and envelope_size(content, representation) > budget:
+    if budget is not None and host_profiles.envelope_size(content, representation) > budget:
         result = msgspec.structs.replace(result, message="Selected source or continuation is invalid.")
         content = msgspec.to_builtins(result)
-        if envelope_size(content, representation) > budget:
+        if host_profiles.envelope_size(content, representation) > budget:
             result = msgspec.structs.replace(
                 result,
                 resource="max_batch_bytes",
@@ -295,13 +271,13 @@ def _bounded_page(
 ) -> execution.OperationResult:
     representation = host_profiles.representation(profile)
     final = _page(request, budget, source, text, start, len(text))
-    if envelope_size(final, representation) <= budget:
+    if host_profiles.envelope_size(final, representation) <= budget:
         return execution.OperationResult(final, "read", None)
     low, high = start, min(len(text) - 1, start + budget)
     while low < high:
         end = (low + high + 1) // 2
         candidate = _page(request, budget, source, text, start, end)
-        if envelope_size(candidate, representation) <= budget:
+        if host_profiles.envelope_size(candidate, representation) <= budget:
             low = end
         else:
             high = end - 1

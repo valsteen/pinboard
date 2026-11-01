@@ -132,7 +132,7 @@ async def _single_startup_representation(ctx: ServerRequestContext[Any, Any], ca
             assert_never(unreachable)
 
 
-def create_server(  # noqa: C901 - explicit installed SDK tool registration
+def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registration
     executor: execution.BoundedExecutor,
     diagnostics: execution.Diagnostics,
     capture: execution.SemanticCapture | execution.AutomaticCapture | None = None,
@@ -155,7 +155,10 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "through the final section (including ByteOffset=46080 continuation above 46,080 bytes in Antigravity); "
             "otherwise, when native complete reading is unavailable or refused, use pinboard_startup_text file-start "
             "with its actual resolved absolute SKILL.md path. Follow each exact continuation under request until null, one page per outer response without aggregation. EOF establishes delivery only. Then load only its reference for the requested phase; status uses status and "
-            "selection. Read pinboard_overview; if no board exists, say that nothing was saved and offer "
+            "selection. Use exact item/attempt reads for known work. Use pinboard_overview for board-wide "
+            "discovery with max_items 25 and continuation null, following every continuation at one revision "
+            "before complete-board claims or priority changes. A partial page establishes no absence. "
+            "If no board exists, say that nothing was saved and offer "
             "Pinboard setup instead of claiming to remember. Before reading or editing source for a saved item, load "
             "the pinboard skill and follow its start, pause and review route; do not implement or commit a saved "
             "item outside it unless the human chooses that. For a paused item, read pinboard_item_status operation "
@@ -193,7 +196,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "Preserve the effect of explicit human retention or deferral: product absence does not reopen it. "
             "Distinguish unresolved landing from retained work and merged-unreviewed work from implementation "
             "in flight. Before any worker claim, read "
-            "pinboard_attempt_authority operation status for the exact attempt. Overview's preparation is a "
+            "pinboard_attempt_authority operation status for the exact attempt. Preparation authority is a "
             "different authority; its release or revocation never proves worker release or revocation. A rejected "
             "or malformed read provides no observation: keep unavailable facts unknown. Every separate decision "
             "asked of the human carries its own recommendation or default beside that question.\n\n"
@@ -569,10 +572,16 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
     @server.tool(
         name=OVERVIEW_TOOL,
         description=(
-            "Read the current authoritative Pinboard work overview without changing durable state. "
-            "Arguments are top-level project_root and work_root (no request wrapper). "
-            "Call it before answering or acting on this project's saved work: status, what to do next, "
-            "priority, paused, merged or done work, or starting, continuing or closing a saved item. "
+            "Read one compact discovery page in saved order without changing durable state. "
+            "Arguments are top-level project_root, work_root, max_items (1-25), and continuation (null to start), with no request wrapper. "
+            "Each complete SDK envelope is at most 8000 bytes, including duplicate text and metadata. "
+            "Follow returned continuation unchanged at the same revision until null for complete-board claims "
+            "or priority order; stale continuation requires restarting from null. Partial pages prove no absence. "
+            "Labels are prefixes of at most 160 characters; dependencies are counts. "
+            "Global next_unstarted names the first unstarted identity, even outside this page. "
+            "Known work uses exact item status/definition or attempt inspection directly. Item status supplies "
+            "full dependency targets/reasons, proposal origin, replacement warning, pauses and review; "
+            "item definition supplies the complete title, effect and unlock. Discovery grants no authority. "
             "work_root is <project_root>/.pinboard unless the user named another board. "
             "Files under .pinboard/views are generated copies, not authority. "
             "Before answering, including quick read-only status, load the complete pinboard main skill through "
@@ -580,7 +589,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
             "(including ByteOffset=46080 continuation above 46,080 bytes in Antigravity), or otherwise (when native "
             "complete reading is unavailable or refused) read its actual resolved SKILL.md completely through "
             "pinboard_startup_text file-start paging, then its status-and-selection "
-            "reference. Overview omits review_verdict and its preparation is not worker authority: read "
+            "reference. Overview omits review_verdict; preparation is not worker authority: read "
             "pinboard_item_status operation item for current-attempt review claims; terminal none is not historical "
             "denial. Verify selected historical coverage when needed, qualify unknowns and preserve settled "
             "human retention decisions. Read pinboard_attempt_authority operation "
@@ -588,15 +597,23 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
         ),
         meta={"anthropic/alwaysLoad": True},
     )
-    async def overview(project_root: str, work_root: str) -> dict[str, JsonValue]:
+    async def overview(
+        project_root: str, work_root: str, max_items: int, continuation: dict[str, JsonValue] | None
+    ) -> dict[str, JsonValue]:
+        arguments: dict[str, JsonValue] = {
+            "project_root": project_root,
+            "work_root": work_root,
+            "max_items": max_items,
+            "continuation": continuation,
+        }
         return await execution._run_request(
             executor,
             diagnostics,
             next(request_ids),
             OVERVIEW_TOOL,
             project_root,
-            partial(read_operations._read_overview, project_root, work_root),
-            arguments={"project_root": project_root, "work_root": work_root},
+            partial(read_operations._read_overview, arguments),
+            arguments=arguments,
             capture=capture,
         )
 
@@ -795,7 +812,7 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
 
     @server.tool(
         name=ATTEMPT_AUTHORITY_TOOL,
-        description="Read or change one exact Pinboard attempt authority. Put all fields inside request. Use operation status before worker claims; overview preparation release or revocation says nothing about this worker authority.",
+        description="Read or change one exact Pinboard attempt authority. Put all fields inside request. Use operation status before worker claims; preparation release or revocation says nothing about this worker authority.",
         annotations=LOCAL_AUTHORITY_ANNOTATIONS,
     )
     async def attempt_authority(

@@ -94,8 +94,11 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
             {
                 "project_root": str(fixture.project),
                 "work_root": str(fixture.work),
+                "max_items": 25,
+                "continuation": None,
             },
         )
+        self.assertIsNone(value["continuation"])
         return {str(row["item_id"]): row for raw in self.json_array(value["items"]) if (row := self.json_object(raw))}
 
     def test_authoring_acceptance_fresh_reload_views_export_and_cancellation_agree(self) -> None:  # noqa: PLR0915 - one installed dependency lifecycle
@@ -112,9 +115,8 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
             created = self.create(fixture, item_id, dependency)
             self.assertEqual("committed", created["status"], created)
         initial = self.overview(fixture)
-        self.assertFalse(initial["after-checkpoint"]["eligible"])
-        self.assertEqual([target], initial["after-checkpoint"]["depends_on"])
-        self.assertFalse(initial["after-campaign"]["eligible"])
+        self.assertEqual(1, initial["after-checkpoint"]["unsatisfied_dependency_count"])
+        self.assertEqual(1, initial["after-campaign"]["unsatisfied_dependency_count"])
 
         action = self.project_action(fixture, "accept-checkpoint:work-a-1")
         accepted = self.transition_result(fixture, action, self.json_object(json.loads(fixture.payload.read_bytes())))
@@ -128,10 +130,8 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         self.assertIsNone(links[WorkItemId("after-campaign")].checkpoint_id)
 
         current = self.overview(fixture)
-        self.assertTrue(current["after-checkpoint"]["eligible"])
-        self.assertFalse(current["after-campaign"]["eligible"])
-        reasons = self.json_array(current["after-checkpoint"]["dependency_reasons"])
-        self.assertTrue(self.json_object(reasons[0])["checkpoint_accepted"])
+        self.assertEqual(0, current["after-checkpoint"]["unsatisfied_dependency_count"])
+        self.assertEqual(1, current["after-campaign"]["unsatisfied_dependency_count"])
         status = fixture.call_advertised_tool(
             mcp_server.ITEM_STATUS_TOOL,
             {
@@ -144,6 +144,7 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
             },
         )
         self.assertEqual([{"target": target, "satisfied": True, "checkpoint_accepted": True}], status["dependencies"])
+        self.assertTrue(self.json_object(self.json_array(status["dependency_reasons"])[0])["checkpoint_accepted"])
         preview = fixture.call_advertised_tool(
             mcp_server.PARALLEL_PREVIEW_TOOL,
             {
@@ -198,13 +199,13 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
             },
         )
         self.assertEqual("committed", rebound["status"], rebound)
-        self.assertTrue(self.overview(fixture)["after-checkpoint"]["eligible"])
+        self.assertEqual(0, self.overview(fixture)["after-checkpoint"]["unsatisfied_dependency_count"])
         old_declaration = self.create(fixture, "late-old-checkpoint", target)
         self.assertEqual("rejected", old_declaration["status"])
         self.assertIn("Known current checkpoint IDs: next-phase", str(old_declaration["message"]))
         next_dependency = self.create(fixture, "after-next", {"item": "work-a", "checkpoint": "next-phase"})
         self.assertEqual("committed", next_dependency["status"], next_dependency)
-        self.assertFalse(self.overview(fixture)["after-next"]["eligible"])
+        self.assertEqual(1, self.overview(fixture)["after-next"]["unsatisfied_dependency_count"])
 
         roots: JsonObject = {"project_root": str(fixture.project), "work_root": str(fixture.work), "item_id": "work-a"}
         preview_cancel = fixture.call_advertised_tool(
@@ -229,9 +230,9 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         )
         self.assertEqual("committed", cancelled["status"], cancelled)
         retained = self.overview(fixture)
-        self.assertTrue(retained["after-checkpoint"]["eligible"])
-        self.assertFalse(retained["after-campaign"]["eligible"])
-        self.assertFalse(retained["after-next"]["eligible"])
+        self.assertEqual(0, retained["after-checkpoint"]["unsatisfied_dependency_count"])
+        self.assertEqual(1, retained["after-campaign"]["unsatisfied_dependency_count"])
+        self.assertEqual(1, retained["after-next"]["unsatisfied_dependency_count"])
         after_cancel = fresh.read_roadmap()
         self.assertEqual(roadmap.Wave(1), after_cancel.placements[WorkItemId("after-checkpoint")])
         self.assertIsInstance(after_cancel.placements[WorkItemId("after-campaign")], roadmap.Blocked)
@@ -290,7 +291,7 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         }
         revised = self.transition_result(fixture, self.project_action(fixture, "revise-item:revised-child"), payload)
         self.assertEqual("committed", revised["status"], revised)
-        self.assertTrue(self.overview(fixture)["revised-child"]["eligible"])
+        self.assertEqual(0, self.overview(fixture)["revised-child"]["unsatisfied_dependency_count"])
 
         dependency = work_models.CheckpointDependency(
             WorkItemId("work-a"), CheckpointId(fixture.brief.checkpoint.checkpoint_id)
@@ -546,7 +547,7 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
             {"item": "planned-campaign", "checkpoint": "phase-1"},
         )
         self.assertEqual("committed", follow_up["status"], follow_up)
-        self.assertFalse(self.overview(fixture)["after-planned-phase-1"]["eligible"])
+        self.assertEqual(1, self.overview(fixture)["after-planned-phase-1"]["unsatisfied_dependency_count"])
 
         child_definition = fresh.read_item_definition(WorkItemId("after-planned-phase-1")).definition
         assert child_definition is not None and isinstance(child_definition.definition, work_models.WorkItemDefinition)

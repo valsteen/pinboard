@@ -1145,7 +1145,7 @@ class McpDeadlineTest(unittest.IsolatedAsyncioTestCase):
             patch.object(board.anyio, "fail_after", side_effect=bounded_wait) as bounded,
         ):
             async with board.connect(Path("launcher"), Path(directory) / "mcp.log", window) as client:
-                result = await client.call("tool", board.Roots(project_root="p", work_root="w"), board.Status)
+                result = await client.call("tool", board.OverviewRequest("p", "w", 25, None), board.Status)
             self.assertEqual("committed", result.status)
             self.assertEqual([5, 5], [call.args[0] for call in bounded.call_args_list])
             session.initialize.assert_awaited_once()

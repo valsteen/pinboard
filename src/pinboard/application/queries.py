@@ -671,53 +671,6 @@ def _proposal_origin(
     )
 
 
-def _next_unstarted(items: tuple[query_models.OverviewItem, ...]) -> query_models.NextUnstarted | None:
-    for item in items:
-        match item.state:
-            case work_models.WorkState.READY | work_models.WorkState.BLOCKED | work_models.WorkState.DEFERRED:
-                if item.attempt_id is None:
-                    return query_models.NextUnstarted(item.item_id, item.unsatisfied_dependencies)
-            case work_models.WorkState.ACTIVE | work_models.WorkState.PAUSED | work_models.WorkState.REVIEW:
-                pass
-            case _ as unreachable:
-                assert_never(unreachable)
-    return None
-
-
-def present_overview(
-    revision: str,
-    active_attempts: tuple[str, ...],
-    items: tuple[query_models.OverviewItem, ...],
-    board: query_models.BoardPages,
-) -> query_models.WorkOverview:
-    """Assemble the overview from live items in saved order and the selected work root's board pages."""
-
-    immediate = tuple(
-        item.item_id
-        for item in items
-        if item.eligible
-        and (item.planned_replacement is None or item.planned_replacement.temporarily_retained)
-        and (item.preparation is None or item.preparation.status != authority_models.PreparationLeaseStatus.ACTIVE)
-        and item.state
-        in {
-            work_models.WorkState.READY,
-            work_models.WorkState.DEFERRED,
-            work_models.WorkState.PAUSED,
-            work_models.WorkState.BLOCKED,
-        }
-    )
-    return query_models.WorkOverview(
-        "pinboard-overview/v7",
-        "sqlite-v11",
-        revision,
-        active_attempts,
-        items,
-        immediate,
-        _next_unstarted(items),
-        board,
-    )
-
-
 def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tuple[query_models.OverviewItem, ...]:
     """Project every live item in saved order from complete state, as generated views render it."""
 
@@ -803,6 +756,20 @@ def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tup
     )
 
 
+def _replacement_warning(
+    replacement: work_models.PlannedReplacement | None,
+    disposition: work_models.ReplacementDisposition | None,
+) -> query_models.PlannedReplacementWarning | None:
+    if replacement is None or replacement.status != work_models.PlannedReplacementStatus.CURRENT:
+        return None
+    return query_models.PlannedReplacementWarning(
+        replacement.relation_revision,
+        str(replacement.replacement_item),
+        replacement.replacement_cost,
+        disposition is not None,
+    )
+
+
 def _project_overview_item(
     item: work_models.WorkItem,
     definition: work_models.WorkItemDefinition,
@@ -835,25 +802,17 @@ def _project_overview_item(
         item.next_action,
         item.source,
         item.notes,
-        None
-        if replacement is None or replacement.status != work_models.PlannedReplacementStatus.CURRENT
-        else query_models.PlannedReplacementWarning(
-            replacement.relation_revision,
-            str(replacement.replacement_item),
-            replacement.replacement_cost,
-            replacement_disposition is not None,
-        ),
+        _replacement_warning(replacement, replacement_disposition),
         _project_selected_preparation_status(preparation, now),
     )
 
 
 def _project_current_items(
-    facts: query_models.ProjectOverviewFacts, now: datetime
+    facts: query_models.LivePortfolioFacts, now: datetime
 ) -> tuple[query_models.OverviewItem, ...]:
     snapshot = facts.snapshot
     definitions = {value.work_item_id: value.definition for value in snapshot.definitions}
     proposals, prerequisite_proposals = _proposal_maps(facts.proposals)
-    preparations = {value.work_item_id: value for value in facts.preparations}
     unsatisfied_ids = snapshot.unsatisfied_dependency_ids
 
     return tuple(
@@ -870,7 +829,7 @@ def _project_current_items(
             snapshot.accepted_checkpoints,
             proposals,
             prerequisite_proposals,
-            preparations.get(item.work_item_id),
+            None,
             snapshot.current_replacement(item.work_item_id),
             None
             if (replacement := snapshot.current_replacement(item.work_item_id)) is None
@@ -878,23 +837,6 @@ def _project_current_items(
             now,
         )
         for item in sorted(snapshot.items, key=_decision_item_key)
-    )
-
-
-def project_current_overview(
-    facts: query_models.ProjectOverviewFacts, now: datetime, board: query_models.BoardPages
-) -> query_models.WorkOverview:
-    """Project overview output from current facts that exclude retained history."""
-
-    return present_overview(
-        facts.snapshot.revision,
-        tuple(
-            str(attempt.attempt)
-            for attempt in facts.snapshot.attempts
-            if attempt.state == work_models.AttemptState.ACTIVE
-        ),
-        _project_current_items(facts, now),
-        board,
     )
 
 
@@ -1306,7 +1248,7 @@ def project_live_portfolio(
     """Project the board from the live read, which never carries preparation authority."""
 
     updated_at = {str(item_id): value for item_id, value in facts.item_updated_at}
-    items = _project_current_items(query_models.ProjectOverviewFacts(facts.snapshot, facts.proposals, ()), now)
+    items = _project_current_items(facts, now)
     return query_models.BoardPortfolio(_board_items(items, updated_at, history))
 
 
@@ -1661,8 +1603,15 @@ def project_item_status(
         if isinstance(selected_verdict, query_models.DamagedTransitionReceipt):
             return selected_verdict
         verdict = selected_verdict
+    proposals, prerequisites = _proposal_maps(facts.proposals)
+    accepted = frozenset(
+        target
+        for value in facts.dependencies
+        if value.checkpoint_accepted
+        and isinstance((target := history.dependency_from_payload(value.target)), work_models.CheckpointDependency)
+    )
     return query_models.ItemStatus(
-        "pinboard-item-status/v4",
+        "pinboard-item-status/v5",
         "sqlite-v11",
         str(facts.project_revision),
         str(item.work_item_id),
@@ -1679,6 +1628,14 @@ def project_item_status(
         _project_selected_preparation_status(facts.preparation, now),
         board,
         facts.dependencies,
+        tuple(
+            _dependency_reason(
+                proposals, prerequisites, work_item_id, history.dependency_from_payload(value.target), accepted
+            )
+            for value in facts.dependencies
+        ),
+        _proposal_origin(proposals, work_item_id),
+        _replacement_warning(facts.replacement, facts.replacement_disposition),
     )
 
 

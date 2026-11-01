@@ -14,7 +14,7 @@ from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models, service, stored_state
+from pinboard.application import queries, query_models, service, stored_state
 from pinboard.application.mutation_models import PreparationStart
 from pinboard.application.mutations import project_transition_mutation
 from pinboard.application.queries import select_parallel_preview
@@ -24,7 +24,7 @@ from pinboard.domain.authority_decisions import decide_preparation_authority
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HostId, LeaseId, ProposalId, TaskId, WorkItemId
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
-from tests.decision_support import BOARD, discover_actions, project_decision_snapshot, project_overview
+from tests.decision_support import discover_actions, project_decision_snapshot
 from tests.domain_support import expect_success
 from tests.support import (
     SQLITE_NOW,
@@ -574,16 +574,14 @@ class PreparationAuthorityTest(unittest.TestCase):
         self.assertEqual(
             (WorkItemId("work-c"),), tuple(value.item_id for value in reloaded.authority.preparation_leases)
         )
-        before = project_overview(reloaded, expires_at - timedelta(microseconds=1), BOARD)
-        at = project_overview(reloaded, expires_at, BOARD)
-        before_item = next(value for value in before.items if value.item_id == "work-c")
-        at_item = next(value for value in at.items if value.item_id == "work-c")
+        before = queries.project_portfolio(reloaded, expires_at - timedelta(microseconds=1))
+        at = queries.project_portfolio(reloaded, expires_at)
+        before_item = next(value for value in before if value.item_id == "work-c")
+        at_item = next(value for value in at if value.item_id == "work-c")
         assert before_item.preparation is not None
         assert at_item.preparation is not None
         self.assertEqual(authority_models.PreparationLeaseStatus.ACTIVE, before_item.preparation.status)
         self.assertEqual(authority_models.PreparationLeaseStatus.EXPIRED, at_item.preparation.status)
-        self.assertNotIn("work-c", before.immediate_options)
-        self.assertIn("work-c", at.immediate_options)
         before_parallel = select_parallel_preview(
             store, selected=("work-c",), now=expires_at - timedelta(microseconds=1)
         )

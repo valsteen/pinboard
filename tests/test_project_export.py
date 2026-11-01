@@ -582,7 +582,7 @@ class ProjectExportTest(unittest.TestCase):
             connection.close()
 
         with self.assertRaises(StorageError):
-            store.read_project_overview(SQLITE_NOW)
+            store.read_generated_view_facts((WorkItemId("work-c"),), (), (), SQLITE_NOW)
         with self.assertRaises(StorageError):
             store.read_project_export_batches()
 

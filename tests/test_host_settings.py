@@ -99,7 +99,7 @@ class HostSettingsTest(unittest.TestCase):
                 self.request["max_batch_bytes"] = requested
                 page = self.read()
                 self.assertEqual(effective, page["max_batch_bytes"])
-                self.assertLessEqual(startup_text.envelope_size(page, host_profiles.representation(CLAUDE)), effective)
+                self.assertLessEqual(host_profiles.envelope_size(page, host_profiles.representation(CLAUDE)), effective)
         self.assertIn("9000", self.settings.read_text())
 
     def test_malformed_and_out_of_bounds_values_fail_without_falling_back(self) -> None:

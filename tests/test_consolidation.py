@@ -214,7 +214,9 @@ class ConsolidationTest(CheckpointPackageSupport):
         statuses = {value.item_id: value.state for value in after.lifecycle.work_items}
         self.assertEqual(stored_state.StoredWorkItemState.SUPERSEDED, statuses[WorkItemId("source-a")])
         self.assertEqual(stored_state.StoredWorkItemState.SUPERSEDED, statuses[WorkItemId("source-b")])
-        overview = fixture.call_advertised_tool(mcp_server.OVERVIEW_TOOL, self.roots(fixture))
+        overview = fixture.call_advertised_tool(
+            mcp_server.OVERVIEW_TOOL, self.roots(fixture) | {"max_items": 25, "continuation": None}
+        )
         self.assertIn("campaign", str(overview))
         views_before = {
             path.relative_to(fixture.work): path.read_bytes()

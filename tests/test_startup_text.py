@@ -72,7 +72,7 @@ class StartupTextTest(CheckpointPackageSupport):
                 while True:
                     page = self.call(request)
                     self.assertEqual("ok", page["status"], page)
-                    self.assertLessEqual(startup_text.envelope_size(page, DUAL), 4000)
+                    self.assertLessEqual(host_profiles.envelope_size(page, DUAL), 4000)
                     self.assertEqual(start, page["start_character"])
                     source = page["source"]
                     assert isinstance(source, dict)
@@ -122,7 +122,7 @@ class StartupTextTest(CheckpointPackageSupport):
         self.assertEqual("rejected", rejected["status"])
         self.assertEqual("max_batch_bytes", rejected["resource"])
         page = self.call(self.request)
-        self.assertLess(len(msgspec.json.encode(page)), startup_text.envelope_size(page, DUAL))
+        self.assertLess(len(msgspec.json.encode(page)), host_profiles.envelope_size(page, DUAL))
         self.assertGreater(len(msgspec.json.encode([page, page, page])), 4000)
         invalid = dict(page)
         invalid["end_character"] = 0
@@ -294,7 +294,7 @@ class HostProfileTest(unittest.TestCase):
                         page = self.read(request, profile)
                         self.assertEqual("ok", page["status"], page)
                         self.assertEqual(effective, page["max_batch_bytes"])
-                        self.assertLessEqual(startup_text.envelope_size(page, representation), effective)
+                        self.assertLessEqual(host_profiles.envelope_size(page, representation), effective)
                         chunk = page["text"]
                         assert isinstance(chunk, str)
                         parts.append(chunk)
@@ -307,7 +307,7 @@ class HostProfileTest(unittest.TestCase):
                     self.assertEqual(self.path.read_text(), "".join(parts))
                     if effective == ceiling and len(parts) > 1:
                         self.assertGreater(
-                            startup_text.envelope_size(page | {"text": parts[0]}, representation), effective // 2
+                            host_profiles.envelope_size(page | {"text": parts[0]}, representation), effective // 2
                         )
 
     def test_a_continuation_from_a_larger_profile_is_bounded_by_the_current_one(self) -> None:
@@ -316,7 +316,7 @@ class HostProfileTest(unittest.TestCase):
         assert isinstance(continuation, dict)
         page = self.read(continuation, host_profiles.HostProfile.UNMEASURED)
         self.assertEqual(8000, page["max_batch_bytes"])
-        self.assertLessEqual(startup_text.envelope_size(page, DUAL), 8000)
+        self.assertLessEqual(host_profiles.envelope_size(page, DUAL), 8000)
 
     def test_initialize_client_info_selects_budget_and_representation(self) -> None:
         clients = (*MEASURED_CLIENTS, ("unlisted-host", "1.0.0", host_profiles.HostProfile.UNMEASURED))

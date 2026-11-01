@@ -61,7 +61,7 @@ class ItemLifecycleSupport(CheckpointPackageSupport):
         """Read the verdict through the advertised item leaf and again from a fresh store."""
 
         status = self.item_leaf(fixture)
-        self.assertEqual("pinboard-item-status/v4", status["schema"], status)
+        self.assertEqual("pinboard-item-status/v5", status["schema"], status)
         for attempt in self.json_array(status["attempts"]):
             self.assertEqual(fixture.brief.branch, self.json_object(attempt)["branch"])
         verdict = self.json_object(status["review_verdict"])

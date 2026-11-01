@@ -109,7 +109,7 @@ def execute(  # noqa: C901, PLR0912, PLR0915 - exact inline/file leaves retain a
             if state is None:
                 return _rejected(
                     DecisionFailureCode.ITEM_NOT_FOUND.value,
-                    f"Review item '{request.item_id}' does not exist. Read pinboard_overview with project_root={request.project_root!r} and work_root={request.work_root!r} to discover current items; do not create a replacement without human intent.",
+                    f"Review item '{request.item_id}' does not exist. Read pinboard_overview with project_root={request.project_root!r}, work_root={request.work_root!r}, max_items=25 and continuation=null; follow its continuation to discover all live items. Do not create a replacement without human intent.",
                 )
             return _present(state, committed=False)
         case contracts.PrReviewStartRequest() | contracts.PrReviewStartFileRequest():

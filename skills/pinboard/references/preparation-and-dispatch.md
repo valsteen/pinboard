@@ -2,6 +2,8 @@
 
 Load this phase when authorized work starts or resumes and before preparing or dispatching it. The [main conversation core](../SKILL.md) owns scope, limitations, opportunity suggestions and the human picture. Load [brief preservation](brief-preservation.md) only for a cross-boundary checkpoint.
 
+Known item and attempt identities use exact item status, definition, attempt inspection and the required authority/evidence reads. Do not preload overview; board-wide discovery follows [bounded discovery](status-and-selection.md#bounded-discovery) only when the requested decision needs it.
+
 For brief construction, choose the boundary from accepted work and call `pinboard_brief_contract` operation `starter` with exact roots and that boundary. Copy its complete `starter`, choose one returned structural variant at every applicable `selection_path`, replace only those values with complete templates, then fill each semantic `null` from accepted scope and reviewed evidence. Preserve the remaining fields and apply its canonical byte rule, relational constraints and fact-validation boundary. Use operation `full` when the generated schema is needed. Never publish unresolved, partial or invented values. Publication does not verify declared Git facts or prove semantic claims.
 
 Publication verifies the current accepted definition, complete obligation correspondence, and fixed checkout-policy agreement. Activation additionally verifies the brief's owner, branch, base revision, actual checkout classification, and declared source authorities against the exact selected checkout before lifecycle mutation.

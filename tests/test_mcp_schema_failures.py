@@ -209,7 +209,8 @@ class NativeSchemaFailureTest(unittest.TestCase):
             connection.execute("UPDATE project_meta SET schema_version = 999")
         before = self.board_files(work)
         result = native.call_advertised_tool(
-            "pinboard_overview", {"project_root": str(project), "work_root": str(work)}
+            "pinboard_overview",
+            {"project_root": str(project), "work_root": str(work), "max_items": 25, "continuation": None},
         )
         mismatch = result["schema_mismatch"]
         assert isinstance(mismatch, dict)
@@ -230,7 +231,8 @@ class NativeSchemaFailureTest(unittest.TestCase):
         async def corrupt_read() -> None:
             async with Client(native.server) as client:
                 failed = await client.call_tool(
-                    "pinboard_overview", {"project_root": str(project), "work_root": str(work)}
+                    "pinboard_overview",
+                    {"project_root": str(project), "work_root": str(work), "max_items": 25, "continuation": None},
                 )
             self.assertTrue(failed.is_error)
             self.assertIsNone(failed.structured_content)

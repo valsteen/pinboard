@@ -458,7 +458,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
 
         with patch.object(sqlite_store, "open_database", traced_open):
             store.read_project_status()
-            store.read_project_overview(SQLITE_NOW)
+            store.read_overview_page(0, 25)
             store.read_current_action_snapshot(SQLITE_NOW)
             store.read_current_parallel_snapshot(SQLITE_NOW)
             store.read_decision_facts(
@@ -500,7 +500,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
 
         statements.clear()
         with patch.object(sqlite_store, "open_database", traced_open):
-            store.read_project_overview(SQLITE_NOW)
+            store.read_overview_page(0, 25)
         self.assertFalse(any("from attempt_leases" in value.lower() for value in statements))
         self.assertFalse(any("from artifact_refs" in value.lower() for value in statements))
 

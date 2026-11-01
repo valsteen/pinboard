@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import msgspec
+
 from evals.behavioral import codex_driver, processes, runner, world
 from evals.behavioral.layout import Layout
 from evals.behavioral.records import (
@@ -31,6 +33,38 @@ def event(body: dict[str, Json]) -> str:
 
 
 class ReadEventsTest(unittest.TestCase):
+    def test_physical_lines_preserve_message_text_and_usage(self) -> None:
+        message = "First\u2028second\u2029third"
+        records = [
+            json.dumps(
+                {"type": "item.completed", "item": {"type": "agent_message", "text": message}}, ensure_ascii=False
+            ),
+            completed_turn(100, 20, 10, 2).split("\n")[-1],
+        ]
+        for name, separator, tail in [
+            ("LF", "\n", "\n"),
+            ("CRLF", "\r\n", "\r\n"),
+            ("blank lines", "\n \t\n", "\n"),
+            ("valid final fragment", "\n", ""),
+        ]:
+            with self.subTest(framing=name):
+                reading = codex_driver.read_events(separator.join(records) + tail)
+                self.assertEqual([message], reading.messages)
+                self.assertEqual(codex_driver.Usage(100, 20, 0, 10, 2), reading.usage)
+
+    def test_selected_invalid_records_reject_even_at_an_unterminated_tail(self) -> None:
+        valid = event({"type": "thread.started", "thread_id": "t-1"})
+        for name, stream in [
+            ("interior", "{\n" + valid),
+            ("terminated final", valid + "\n{\n"),
+            ("unterminated final", valid + "\n{"),
+        ]:
+            with self.subTest(framing=name), self.assertRaises(msgspec.DecodeError):
+                codex_driver.read_events(stream)
+        for name, stream in [("empty", ""), ("blank", "\n \t\r\n"), ("unselected", "not JSON\n[]\n")]:
+            with self.subTest(framing=name):
+                self.assertEqual([], codex_driver.read_events(stream).messages)
+
     def test_the_last_agent_message_is_the_final_reply_and_earlier_ones_are_commentary(self) -> None:
         stream = "\n".join(
             [
@@ -171,6 +205,83 @@ class PromptTextTest(unittest.TestCase):
 
 
 class RolloutRefusalTest(unittest.TestCase):
+    def test_physical_lines_preserve_refusal_and_observed_accounting(self) -> None:
+        refusal = "request\u2028requires approval, but approval policy is never\u2029stopped"
+        records: list[dict[str, Json]] = [
+            {"type": "turn_context", "payload": {"turn_id": "primary", "model": "gpt-6-sol"}},
+            {"type": "turn_context", "payload": {"turn_id": "review", "model": "codex-auto-review"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "call_id": "refused",
+                    "internal_chat_message_metadata_passthrough": {"turn_id": "primary"},
+                    "output": refusal,
+                },
+            },
+        ]
+        for thread, turn in [("main", "primary"), ("reviewer", "review")]:
+            records.append(
+                {
+                    "type": "token_usage_record",
+                    "payload": {
+                        "thread_id": thread,
+                        "turn_id": turn,
+                        "response_id": thread,
+                        "thread_token_usage": {
+                            "input_tokens": 100,
+                            "cached_input_tokens": 20,
+                            "cache_write_input_tokens": 0,
+                            "output_tokens": 10,
+                            "reasoning_output_tokens": 2,
+                        },
+                    },
+                }
+            )
+        for name, separator, tail in [
+            ("LF", "\n", "\n"),
+            ("CRLF", "\r\n", "\r\n"),
+            ("blank lines", "\n \t\n", "\n"),
+            ("valid final fragment", "\n", ""),
+            ("interrupted final fragment", "\n", "\n{"),
+        ]:
+            with self.subTest(framing=name):
+                text = separator.join(json.dumps(record, ensure_ascii=False) for record in records) + tail
+                self.assertEqual([refusal], codex_driver.rollout_refusals(text).approvals)
+                accounting = codex_driver.rollout_accounting(text, "gpt-6-sol", True)
+                self.assertAlmostEqual(0.000264, accounting.main_known_cost_usd)
+                self.assertTrue(accounting.main_usage_complete)
+                self.assertEqual(1, len(accounting.reviewer_usage))
+                reviewer = accounting.reviewer_usage[0]
+                self.assertEqual(
+                    ("reviewer", "codex-auto-review", 100, 20, 0, 10, 2),
+                    (
+                        reviewer.thread_id,
+                        reviewer.model,
+                        reviewer.input_tokens,
+                        reviewer.cached_input_tokens,
+                        reviewer.cache_write_input_tokens,
+                        reviewer.output_tokens,
+                        reviewer.reasoning_output_tokens,
+                    ),
+                )
+                self.assertIsNone(accounting.reviewer_price_usd)
+                self.assertFalse(codex_driver.rollout_accounting(text, "gpt-6-sol", False).main_usage_complete)
+
+    def test_invalid_records_reject_except_an_unterminated_final_fragment(self) -> None:
+        valid = event({"type": "turn_context", "payload": {"turn_id": "primary", "model": "gpt-6-sol"}})
+        for name, text in [
+            ("invalid interior", "{\n" + valid),
+            ("invalid terminated final", valid + "\n{\n"),
+            ("non-JSON interior", "not JSON\n" + valid),
+            ("non-JSON terminated final", valid + "\nnot JSON\n"),
+        ]:
+            with self.subTest(framing=name), self.assertRaises(msgspec.DecodeError):
+                codex_driver.rollout_records(text)
+        for name, text in [("empty", ""), ("blank", "\n \t\r\n"), ("interrupted final", "{")]:
+            with self.subTest(framing=name):
+                self.assertEqual([], codex_driver.rollout_records(text))
+
     def test_recovered_sandbox_failure_remains_evidence_without_a_terminal_rejection(self) -> None:
         reading = codex_driver.rollout_refusals(native_rollout("allow"))
         self.assertEqual(1, len(reading.git_writes))

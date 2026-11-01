@@ -3314,6 +3314,7 @@ class McpTransportTest(unittest.TestCase):
             "unchanged",
             "safe-to-repeat",
             (),
+            None,
         )
         inspection_result = msgspec.json.decode(msgspec.json.encode(inspection))
         assert isinstance(inspection_result, dict)
@@ -3345,6 +3346,17 @@ class McpTransportTest(unittest.TestCase):
         resumed_review_result = msgspec.json.decode(msgspec.json.encode(resumed_review))
         assert isinstance(resumed_review_result, dict)
         contract_schemas.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, resumed_review_result)
+
+        changed_inspections = []
+        for state, content in (("active", inspection_result), ("review", resumed_review_result)):
+            invalid = deepcopy(content)
+            invalid["state_changed"] = True
+            changed_inspections.append(invalid)
+            with (
+                self.subTest(state=state),
+                self.assertRaisesRegex(msgspec.ValidationError, "state_changed must be false"),
+            ):
+                contract_schemas.validate_result(mcp_server.ATTEMPT_INSPECT_TOOL, invalid)
 
         for field, value in (
             (
@@ -3397,6 +3409,7 @@ class McpTransportTest(unittest.TestCase):
                     (mcp_server.ACTIONS_TOOL, wrong_identity),
                     (mcp_server.ATTEMPT_INSPECT_TOOL, missing_forbidden),
                     (mcp_server.ATTEMPT_INSPECT_TOOL, state_incompatible_legal),
+                    *((mcp_server.ATTEMPT_INSPECT_TOOL, invalid) for invalid in changed_inspections),
                 ):
                     with self.assertRaises(RuntimeError):
                         await session.validate_tool_result(

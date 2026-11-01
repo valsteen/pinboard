@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import msgspec
 from mcp_types import CallToolResult
+from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files import file_io
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
@@ -30,11 +31,69 @@ from pinboard.mcp import contract_schemas, contracts, server
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import read_operations as mcp_reads
 from tests import test_mcp
+from tests.native_support import native_tools
 from tests.test_work_brief_contract import complete_starter, json_object, select_structural_variant
-from tests.work_brief_support import example_work_brief, work_c_brief
+from tests.work_brief_support import example_work_brief, work_a_brief, work_c_brief
 
 
 class McpBriefPreparationTest(unittest.TestCase):
+    def test_prepublication_lookup_survives_lost_inline_and_file_responses(self) -> None:
+        for construction in ({"operation": "full"}, {"operation": "starter", "boundary": "local"}):
+            for file_input in (False, True):
+                with self.subTest(construction=construction, file_input=file_input), native_tools() as native:
+                    temporary, project, durable = test_mcp.McpTransportTest()._project()
+                    self.addCleanup(temporary.cleanup)
+                    roots: dict[str, contracts.JsonValue] = {
+                        "project_root": str(project),
+                        "work_root": str(durable.work_root),
+                    }
+                    contract = native.call_advertised_tool(
+                        server.BRIEF_CONTRACT_TOOL, {"request": roots | construction}
+                    )
+                    lookup = json_object(contract["lookup"])
+                    arguments = json_object(lookup["arguments"])
+                    self.assertEqual(roots | {"attempt_id": None, "artifact_revision": None}, arguments)
+                    brief = replace_struct(work_a_brief(project), artifact_revision=2)
+                    arguments.update(attempt_id=brief.attempt_id, artifact_revision=brief.artifact_revision)
+                    if file_input:
+                        source = project / "brief.json"
+                        source.write_bytes(msgspec.json.encode(brief))
+                        native.call_advertised_tool(
+                            server.BRIEF_PUBLISH_FILE_TOOL,
+                            roots
+                            | {
+                                "brief_path": str(source),
+                                "brief_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                            },
+                        )
+                    else:
+                        native.call_advertised_tool(
+                            server.BRIEF_PUBLISH_TOOL, roots | {"brief": msgspec.to_builtins(brief)}
+                        )
+                    # The publication response is deliberately discarded; only the original brief fills the starter.
+                    recovered = native.call_advertised_tool(str(lookup["tool"]), arguments)
+                    self.assertEqual("pinboard-verified-artifact-reference/v1", recovered["schema"])
+                    self.assertEqual(
+                        hashlib.sha256(work_briefs.canonical_work_brief_bytes(brief)).hexdigest(), recovered["sha256"]
+                    )
+                    accepted = durable.work_root / str(recovered["selector"])
+                    saved = accepted.read_bytes()
+                    before = {path: path.read_bytes() for path in durable.work_root.rglob("*") if path.is_file()}
+                    missing = native.call_advertised_tool(str(lookup["tool"]), arguments | {"artifact_revision": 3})
+                    self.assertEqual("BRIEF_NOT_FOUND", missing["code"])
+                    self.assertEqual([], missing["changed_surfaces"])
+                    self.assertEqual(
+                        before, {path: path.read_bytes() for path in durable.work_root.rglob("*") if path.is_file()}
+                    )
+                    try:
+                        accepted.write_bytes(b"damaged")
+                        rejected = native.call_advertised_tool(str(lookup["tool"]), arguments)
+                        self.assertEqual("ARTIFACT_BYTES_INVALID", rejected["code"])
+                        self.assertEqual("do-not-retry", rejected["retry"])
+                        self.assertEqual(b"damaged", accepted.read_bytes())
+                    finally:
+                        accepted.write_bytes(saved)
+
     @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -73,9 +132,10 @@ class McpBriefPreparationTest(unittest.TestCase):
                 server.BRIEF_CONTRACT_TOOL, {"request": {**self.roots, "operation": "full"}}
             )
             assert isinstance(full, CallToolResult)
+            assert isinstance(full.structured_content, dict)
             self.assertEqual(
                 msgspec.json.decode(msgspec.json.encode(work_brief_contract.describe_work_brief_contract())),
-                full.structured_content,
+                {key: value for key, value in full.structured_content.items() if key != "lookup"},
             )
             for boundary, completed in (("local", work_c_brief()), ("cross-boundary", example_work_brief())):
                 result = await transport.call_tool(
@@ -84,7 +144,7 @@ class McpBriefPreparationTest(unittest.TestCase):
                 )
                 assert isinstance(result, CallToolResult)
                 contract = msgspec.json.decode(
-                    msgspec.json.encode(result.structured_content), type=work_brief_contract.WorkBriefStarterContract
+                    msgspec.json.encode(result.structured_content), type=contracts.WorkBriefStarterContractResult
                 )
                 template = msgspec.json.decode(bytes(contract.starter))
                 choices = {choice.choice_id: choice for choice in contract.structural_choices}

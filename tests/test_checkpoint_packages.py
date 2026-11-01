@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import contextlib
 import hashlib
@@ -11,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import msgspec
+from mcp import Client
 from mcp.server.mcpserver.exceptions import UnexpectedToolError
 from msgspec.structs import replace as replace_struct
 
@@ -47,7 +49,7 @@ from pinboard.domain.identifiers import AttemptId, CheckpointId
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import AcceptedPackageFixture, CheckpointFixture, CheckpointPackageSupport
-from tests.native_support import call_native_tool
+from tests.native_support import call_native_tool, native_tools
 from tests.support import SQLITE_NOW, JsonObject, JsonValue
 
 
@@ -701,6 +703,31 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                     },
                 )
 
+    def test_review_job_rejects_selected_receipts_owned_by_another_attempt(self) -> None:
+        for selected in ("package", "correction"):
+            with self.subTest(selected=selected):
+                fixture, package_id, correction_id = self.review_job_fixture()
+                history_id = package_id if selected == "package" else correction_id
+                with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+                    connection.execute(
+                        "UPDATE transition_history SET subject_id = ? WHERE history_id = ?",
+                        ("another-attempt", history_id),
+                    )
+                before = {path: path.read_bytes() for path in fixture.work.rglob("*") if path.is_file()}
+                rejected = self.review_result(
+                    fixture,
+                    {
+                        "kind": "package-correction",
+                        "checkpoint_history_id": package_id,
+                        "correction_history_id": correction_id,
+                    },
+                )
+                self.assertEqual("rejected", rejected["status"], rejected)
+                self.assertEqual([], rejected["changed_surfaces"])
+                self.assertEqual(
+                    before, {path: path.read_bytes() for path in fixture.work.rglob("*") if path.is_file()}
+                )
+
     def test_review_job_selects_older_real_return_with_newer_review_and_third_candidate(self) -> None:
         fixture = self.accepted_package_fixture()
         package_receipt = next(
@@ -779,15 +806,31 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 package_path.unlink()
             else:
                 package_path.write_bytes(b"corrupt\n")
+            arguments: JsonObject = {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "review": {
+                    "attempt_id": fixture.brief.attempt_id,
+                    "candidate_revision": "b" * 40,
+                    "runtime": "codex",
+                    "background": False,
+                    "kind": "package-initial",
+                    "checkpoint_history_id": package_history_id,
+                },
+            }
             with self.subTest(failure=failure), self.assertRaises(UnexpectedToolError) as raised:
-                self.review_result(
-                    fixture,
-                    {
-                        "kind": "package-initial",
-                        "checkpoint_history_id": package_history_id,
-                    },
-                )
+                fixture.call_native_tool(mcp_server.REVIEW_JOB_TOOL, arguments)
             self.assertIsInstance(raised.exception.__cause__, ArtifactError)
+            before = fixture.store.validated_snapshot()
+            with native_tools() as native:
+
+                async def scenario(arguments: JsonObject) -> None:
+                    async with Client(native.server) as client:
+                        response = await client.call_tool(mcp_server.REVIEW_JOB_TOOL, arguments)
+                        self.assertTrue(response.is_error)
+
+                asyncio.run(scenario(arguments))
+            self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_review_job_keeps_selected_return_and_current_review_independent(self) -> None:
         fixture, package_history_id, older_correction_history_id = self.review_job_fixture()

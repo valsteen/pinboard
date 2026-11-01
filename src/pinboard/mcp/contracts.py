@@ -17,6 +17,7 @@ from pinboard.application import (
     pr_reviews,
     proposal_models,
     query_models,
+    work_brief_contract,
     work_brief_models,
 )
 from pinboard.domain import authority_models, decision_models, ordering
@@ -879,6 +880,27 @@ class BriefLookupRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     artifact_revision: PositiveInt
 
 
+class BriefLookupStarterArguments(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    attempt_id: None
+    artifact_revision: None
+
+
+class BriefLookupInvocation(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    tool: Literal["pinboard_brief_lookup"]
+    arguments: BriefLookupStarterArguments
+    unresolved_fields: tuple[Literal["attempt_id"], Literal["artifact_revision"]]
+
+
+class WorkBriefContractResult(work_brief_contract.WorkBriefContract, frozen=True):
+    lookup: BriefLookupInvocation
+
+
+class WorkBriefStarterContractResult(work_brief_contract.WorkBriefStarterContract, frozen=True):
+    lookup: BriefLookupInvocation
+
+
 class TransitionActionIdentity[KindT](msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     kind: KindT
     subject: PathComponent
@@ -1060,6 +1082,63 @@ class ReviewJobRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     project_root: RootPath
     work_root: RootPath
     review: ReviewChoice
+
+
+class ReviewLaunchStarter(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: PathComponent
+    candidate_revision: NonEmptyText
+    runtime: None
+    background: None
+
+
+class InitialReviewStarter(ReviewLaunchStarter, tag="initial", tag_field="kind", frozen=True):
+    pass
+
+
+class PackageInitialReviewStarter(ReviewLaunchStarter, tag="package-initial", tag_field="kind", frozen=True):
+    checkpoint_history_id: None
+
+
+class CorrectionReviewStarter(ReviewLaunchStarter, tag="correction", tag_field="kind", frozen=True):
+    correction_history_id: None
+
+
+class PackageCorrectionReviewStarter(ReviewLaunchStarter, tag="package-correction", tag_field="kind", frozen=True):
+    checkpoint_history_id: None
+    correction_history_id: None
+
+
+class ReviewStarterArguments[ChoiceT](msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    project_root: RootPath
+    work_root: RootPath
+    review: ChoiceT
+
+
+class ReviewInvocation[ChoiceT](msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    tool: Literal["pinboard_review_job"]
+    arguments: ReviewStarterArguments[ChoiceT]
+
+
+class ReviewLaunchInvocations(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    initial: ReviewInvocation[InitialReviewStarter]
+    package_initial: ReviewInvocation[PackageInitialReviewStarter]
+    correction: ReviewInvocation[CorrectionReviewStarter]
+    package_correction: ReviewInvocation[PackageCorrectionReviewStarter]
+
+
+class RecordReadyReviewStarter(
+    msgspec.Struct, tag="record-ready", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    attempt_id: PathComponent
+    candidate_revision: NonEmptyText
+    candidate_snapshot_sha256: Sha256
+    accepted_brief_sha256: Sha256
+    result_sha256: Sha256
+    reviewer_prompt_sha256: Sha256
+    review_sha256: None
+    reviewer_task_id: None
+    verdict: None
+    acceptance_evidence: None
 
 
 class TransitionReceipt[KindT](msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2352,6 +2431,29 @@ class NonterminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, froz
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
+    review_launch: ReviewLaunchInvocations | None
+
+    def __post_init__(self) -> None:
+        _require_fixed_state_changed(self)
+        operation = self.continuation.next_operation
+        if not isinstance(operation, ContinuationReview):
+            if self.review_launch is not None:
+                raise ValueError("Only a review continuation supplies review launch starters.")
+            return
+        if self.review_launch is None:
+            raise ValueError("A review continuation requires its explicit launch selections.")
+        for invocation in (
+            self.review_launch.initial,
+            self.review_launch.package_initial,
+            self.review_launch.correction,
+            self.review_launch.package_correction,
+        ):
+            choice = invocation.arguments.review
+            if (choice.attempt_id, choice.candidate_revision) != (
+                self.continuation.attempt_id,
+                operation.candidate_revision,
+            ):
+                raise ValueError("Review launch starters must retain the inspected subject.")
 
 
 class ReviewEvidenceReference(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -3353,11 +3455,29 @@ class ReviewJobReady(PublishedJobReady, frozen=True):
     prior_checkpoint_package: review_operations.PriorCheckpointPackageSelection
     review_round: review_operations.ReviewRound
     return_contract: NonEmptyText
+    record_ready: ReviewInvocation[RecordReadyReviewStarter]
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.candidate_revision != self.candidate_recovery.candidate:
             raise ValueError("Review job and protected snapshot must identify the same candidate.")
+        starter = self.record_ready.arguments.review
+        if (
+            starter.attempt_id,
+            starter.candidate_revision,
+            starter.candidate_snapshot_sha256,
+            starter.accepted_brief_sha256,
+            starter.result_sha256,
+            starter.reviewer_prompt_sha256,
+        ) != (
+            self.attempt_id,
+            self.candidate_revision,
+            self.candidate_recovery.sha256,
+            self.brief_sha256,
+            self.result_sha256,
+            self.prompt_reference.sha256,
+        ):
+            raise ValueError("Ready-record starter must retain the commissioned subject bindings.")
 
 
 class CandidateReviewRecorded(_VariableStateChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):

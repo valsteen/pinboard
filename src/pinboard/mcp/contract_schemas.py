@@ -5,7 +5,7 @@ from typing import assert_never, get_args
 import msgspec
 
 from pinboard.adapters import dispatch_operations
-from pinboard.application import action_models, brief_source_models, dispatch_models, query_models, work_brief_contract
+from pinboard.application import action_models, brief_source_models, dispatch_models, query_models
 from pinboard.domain import decision_models
 from pinboard.domain.errors import DecisionFailureCode
 from pinboard.mcp import consolidation_contracts, initiative_contracts
@@ -134,6 +134,8 @@ from pinboard.mcp.contracts import (
     TransitionFailedAfterPublication,
     TransitionRejected,
     TransitionRequest,
+    WorkBriefContractResult,
+    WorkBriefStarterContractResult,
     _committed_transition_surfaces,
     _fixed_state_changed,
     action_invocation_tool,
@@ -779,8 +781,8 @@ def union_schema_for(boundary_types: tuple[type[msgspec.Struct], ...]) -> dict[s
 
 
 BRIEF_CONTRACT_RESULT_TYPES = (
-    work_brief_contract.WorkBriefContract,
-    work_brief_contract.WorkBriefStarterContract,
+    WorkBriefContractResult,
+    WorkBriefStarterContractResult,
     BriefContractRejected,
     ExecutorBusyResult,
 )
@@ -802,9 +804,9 @@ def validate_brief_preparation_result(content: dict[str, JsonValue]) -> dict[str
     """Decode Raw-bearing construction outputs exactly; structured requests never take this route."""
     match content.get("schema"):
         case "pinboard-work-brief-contract/v1":
-            msgspec.json.decode(msgspec.json.encode(content), type=work_brief_contract.WorkBriefContract)
+            msgspec.json.decode(msgspec.json.encode(content), type=WorkBriefContractResult)
         case "pinboard-work-brief-starter/v1":
-            msgspec.json.decode(msgspec.json.encode(content), type=work_brief_contract.WorkBriefStarterContract)
+            msgspec.json.decode(msgspec.json.encode(content), type=WorkBriefStarterContractResult)
         case "pinboard-brief-source-plan/v1":
             msgspec.convert(content, type=brief_source_models.BriefSourcePlanView, strict=True)
         case "pinboard-brief-source-plan-output/v1":

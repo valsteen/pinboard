@@ -159,7 +159,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         )
 
     def review_result(self, fixture: CheckpointFixture, review: JsonObject) -> JsonObject:
-        return fixture.call_native_tool(
+        return fixture.call_advertised_tool(
             mcp_server.REVIEW_JOB_TOOL,
             {
                 "project_root": str(fixture.project),

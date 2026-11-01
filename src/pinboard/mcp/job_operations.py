@@ -726,6 +726,25 @@ def _review_job(
             prepared.prior_checkpoint_package,
             prepared.review_round,
             prepared.return_contract,
+            contracts.ReviewInvocation(
+                "pinboard_review_job",
+                contracts.ReviewStarterArguments(
+                    request.project_root,
+                    request.work_root,
+                    contracts.RecordReadyReviewStarter(
+                        choice.attempt_id,
+                        choice.candidate_revision,
+                        recovery.sha256,
+                        reference.content_sha256,
+                        prepared.result_sha256,
+                        publication.reference.sha256,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                ),
+            ),
         )
     )
     assert isinstance(content, dict)

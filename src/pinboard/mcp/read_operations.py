@@ -563,6 +563,13 @@ def _brief_contract(raw: Mapping[str, JsonValue], token: execution.CancellationT
             assert_never(unreachable)
     # Raw fragments require JSON output decoding, not dictionary conversion.
     content: dict[str, JsonValue] = msgspec.json.decode(msgspec.json.encode(contract))
+    content["lookup"] = msgspec.to_builtins(
+        contracts.BriefLookupInvocation(
+            "pinboard_brief_lookup",
+            contracts.BriefLookupStarterArguments(request.project_root, request.work_root, None, None),
+            ("attempt_id", "artifact_revision"),
+        )
+    )
     return execution.OperationResult(content, "read", None)
 
 
@@ -1638,6 +1645,8 @@ def _mcp_attempt_continuation(
 
 
 def _attempt_inspection_success(
+    project_root: str,
+    work_root: str,
     continuation: query_models.AttemptContinuation,
     candidate_recovery: contracts.CandidateRecovery,
     candidate_review: contracts.CandidateReviewReference,
@@ -1686,10 +1695,46 @@ def _attempt_inspection_success(
             "unchanged",
             "safe-to-repeat",
             (),
+            _review_launch_invocations(project_root, work_root, continuation),
         )
     content = msgspec.to_builtins(record)
     assert isinstance(content, dict)
     return content
+
+
+def _review_launch_invocations(
+    project_root: str,
+    work_root: str,
+    continuation: query_models.NonterminalAttemptContinuation,
+) -> contracts.ReviewLaunchInvocations | None:
+    operation = continuation.next_operation
+    if not isinstance(operation, query_models.ReviewContinuation):
+        return None
+    subject = (continuation.attempt_id, operation.candidate_revision, None, None)
+    return contracts.ReviewLaunchInvocations(
+        contracts.ReviewInvocation(
+            "pinboard_review_job",
+            contracts.ReviewStarterArguments(project_root, work_root, contracts.InitialReviewStarter(*subject)),
+        ),
+        contracts.ReviewInvocation(
+            "pinboard_review_job",
+            contracts.ReviewStarterArguments(
+                project_root, work_root, contracts.PackageInitialReviewStarter(*subject, None)
+            ),
+        ),
+        contracts.ReviewInvocation(
+            "pinboard_review_job",
+            contracts.ReviewStarterArguments(
+                project_root, work_root, contracts.CorrectionReviewStarter(*subject, None)
+            ),
+        ),
+        contracts.ReviewInvocation(
+            "pinboard_review_job",
+            contracts.ReviewStarterArguments(
+                project_root, work_root, contracts.PackageCorrectionReviewStarter(*subject, None, None)
+            ),
+        ),
+    )
 
 
 def _mcp_candidate_recovery(
@@ -2018,6 +2063,8 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
             details,
         )
     content = _attempt_inspection_success(
+        request.project_root,
+        request.work_root,
         continuation,
         recovery,
         candidate_review,

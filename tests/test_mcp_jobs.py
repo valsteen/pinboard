@@ -825,6 +825,17 @@ class McpJobsTest(CheckpointPackageSupport):
     def test_review_jobs_select_four_rounds_and_keep_mutable_review_digest_separate(self) -> None:
         fixture, package_id, correction_id = self.review_job_fixture()
         before = fixture.store.validated_snapshot()
+        native = self.enterContext(native_tools())
+        inspected = native.call_advertised_tool(
+            "pinboard_attempt_inspect",
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": "work-a-1",
+                "reconciliation": None,
+            },
+        )
+        starters = self.json_object(inspected["review_launch"])
         rounds: tuple[tuple[str, dict[str, contracts.JsonValue]], ...] = (
             ("initial", {}),
             ("package-initial", {"checkpoint_history_id": package_id}),
@@ -834,22 +845,22 @@ class McpJobsTest(CheckpointPackageSupport):
         for kind, ids in rounds:
             with self.subTest(kind=kind):
                 background = "correction" in kind
-                outcome = mcp_jobs._review_job(
-                    str(fixture.project),
-                    str(fixture.work),
-                    {
-                        "kind": kind,
-                        "attempt_id": "work-a-1",
-                        "candidate_revision": "b" * 40,
-                        "runtime": "claude-code",
-                        "background": background,
-                        **ids,
-                    },
-                    mcp_execution.CancellationToken(),
+                invocation = self.json_object(starters[kind.replace("-", "_")])
+                arguments = self.json_object(invocation["arguments"])
+                choice = self.json_object(arguments["review"])
+                self.assertEqual("b" * 40, choice["candidate_revision"])
+                self.assertEqual(
+                    {"runtime", "background", *ids}, {key for key, value in choice.items() if value is None}
                 )
-                self.assertEqual("ready", outcome.content["status"], outcome.content)
-                contract_schemas.validate_result("pinboard_review_job", outcome.content)
-                launch = self.json_object(outcome.content["native_launch"])
+                choice.update(runtime="claude-code", background=background)
+                if ids:
+                    rejected = native.call_advertised_tool(str(invocation["tool"]), arguments)
+                    self.assertEqual("rejected", rejected["status"])
+                    self.assertEqual([], rejected["changed_surfaces"])
+                choice.update(ids)
+                outcome = native.call_advertised_tool(str(invocation["tool"]), arguments)
+                self.assertEqual("ready", outcome["status"], outcome)
+                launch = self.json_object(outcome["native_launch"])
                 self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
                 self.assertEqual("claude-code", launch["runtime"])
                 self.assertEqual("Agent", launch["tool"])
@@ -860,17 +871,17 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertNotIn("isolation", arguments)
                 prompt = arguments["prompt"]
                 assert isinstance(prompt, str)
-                reference = self.json_object(outcome.content["prompt_reference"])
+                reference = self.json_object(outcome["prompt_reference"])
                 published_prompt = (fixture.work / str(reference["selector"])).read_text(encoding="utf-8")
                 self.assertNotIn("BEGIN ACCEPTED PINBOARD TASK", prompt)
                 self.assertNotIn(published_prompt, prompt)
                 self.assertIn(str(fixture.work / str(reference["selector"])), prompt)
                 self.assertIn(str(reference["sha256"]), prompt)
                 self.assertIn(work_briefs.canonical_work_brief_bytes(fixture.brief).decode(), published_prompt)
-                round_ = self.json_object(outcome.content["review_round"])
+                round_ = self.json_object(outcome["review_round"])
                 if "correction" in kind:
                     self.assertEqual("candidate-a", round_["candidate_revision"])
-                    self.assertNotEqual(outcome.content["result_sha256"], round_["review_sha256"])
+                    self.assertNotEqual(outcome["result_sha256"], round_["review_sha256"])
                 after = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
                 self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
                 self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
@@ -1237,41 +1248,53 @@ class McpJobsTest(CheckpointPackageSupport):
                     roots | {key: reference[key] for key in ("artifact_ref_id", "selector", "sha256", "size_bytes")},
                 )
                 self.assertTrue(verified["verified"])
-            launched = native.call_advertised_tool(
-                "pinboard_review_job",
-                roots
-                | {
-                    "review": {
-                        "kind": "initial",
-                        "attempt_id": "work-a-1",
-                        "candidate_revision": snapshot["candidate"],
-                        "runtime": "codex",
-                        "background": False,
-                    }
-                },
-            )
+            invocation = self.json_object(self.json_object(inspected["review_launch"])["initial"])
+            arguments = self.json_object(invocation["arguments"])
+            choice = self.json_object(arguments["review"])
+            self.assertEqual({"runtime", "background"}, {key for key, value in choice.items() if value is None})
+            choice.update(runtime="codex", background=False)
+            launched = native.call_advertised_tool(str(invocation["tool"]), arguments)
             self.assertEqual("ready", launched["status"], launched)
-            prompt = self.json_object(launched["prompt_reference"])
-            # Deterministic review judgments test projection, not a real agent's semantic review.
-            recorded = native.call_advertised_tool(
-                "pinboard_review_job",
-                roots
-                | {
-                    "review": {
-                        "kind": "record-ready",
-                        "attempt_id": "work-a-1",
-                        "candidate_revision": snapshot["candidate"],
-                        "candidate_snapshot_sha256": snapshot["sha256"],
-                        "accepted_brief_sha256": brief["sha256"],
-                        "result_sha256": self.json_object(inspected["result"])["sha256"],
-                        "review_sha256": self.json_object(inspected["review"])["sha256"],
-                        "reviewer_prompt_sha256": prompt["sha256"],
-                        "reviewer_task_id": "public-contract-reviewer",
-                        "verdict": "ready",
-                        "acceptance_evidence": "Independent fixture judgments cover the accepted criteria.",
-                    }
-                },
+            malformed = deepcopy(launched)
+            malformed_review = self.json_object(
+                self.json_object(self.json_object(malformed["record_ready"])["arguments"])["review"]
             )
+            malformed_review["result_sha256"] = "0" * 64
+            with self.assertRaises(msgspec.ValidationError):
+                contract_schemas.validate_result("pinboard_review_job", malformed)
+            invocation = self.json_object(launched["record_ready"])
+            arguments = self.json_object(invocation["arguments"])
+            choice = self.json_object(arguments["review"])
+            self.assertEqual(
+                {"review_sha256", "reviewer_task_id", "verdict", "acceptance_evidence"},
+                {key for key, value in choice.items() if value is None},
+            )
+            # Deterministic judgments exercise bindings, not independent reviewer execution.
+            choice.update(
+                review_sha256=sha256((fixture.work / "attempts/work-a-1/review.md").read_bytes()).hexdigest(),
+                reviewer_task_id="public-contract-reviewer",
+                verdict="ready",
+                acceptance_evidence="Fixture judgment covers the accepted criteria.",
+            )
+            before = fixture.store.validated_snapshot()
+            invalid: tuple[tuple[str, contracts.JsonValue], ...] = (
+                ("candidate_revision", "wrong-candidate"),
+                ("candidate_snapshot_sha256", "0" * 64),
+                ("accepted_brief_sha256", "0" * 64),
+                ("result_sha256", "0" * 64),
+                ("review_sha256", "0" * 64),
+                ("reviewer_prompt_sha256", "0" * 64),
+                ("reviewer_task_id", fixture.brief.owner_task_id),
+            )
+            for field, value in invalid:
+                with self.subTest(field=field):
+                    refused = native.call_advertised_tool(
+                        str(invocation["tool"]), arguments | {"review": choice | {field: value}}
+                    )
+                    self.assertEqual("rejected", refused["status"], refused)
+                    self.assertEqual([], refused["changed_surfaces"])
+                    self.assertEqual(before, fixture.store.validated_snapshot())
+            recorded = native.call_advertised_tool(str(invocation["tool"]), arguments)
             self.assertEqual(("recorded", "committed"), (recorded["status"], recorded["effect"]), recorded)
             reference = self.json_object(recorded["candidate_review"])
             verified = native.call_advertised_tool(
@@ -1284,6 +1307,7 @@ class McpJobsTest(CheckpointPackageSupport):
             )
             self.assertEqual("present", self.json_object(fresh["candidate_review"])["kind"])
             self.assertEqual(reference["sha256"], self.json_object(fresh["candidate_review"])["sha256"])
+            self.assertIsNone(fresh["review_launch"])
 
     def test_stdio_dispatch_and_historical_review_publish_verifiable_prompts(self) -> None:
         project, work, choice = self.dispatch_fixture()

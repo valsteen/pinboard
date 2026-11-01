@@ -80,7 +80,23 @@ Big, open-ended items are where work gets lost or never starts. Split them:
 
 > This one is too vague. Make it one narrow fix, and save the research as a separate item for later.
 
-The narrow fix can ship this week, and the research waits on the board instead of in your head. If two saved ideas look like the same thing, ask whether they belong together. The agent shows what combining them would change and waits for your yes.
+The narrow fix can ship this week, and the research waits on the board instead of in your head.
+
+## Combine items into one campaign
+
+Several saved items may share the same first step, or be easier to see through in one longer run:
+
+> Could we consolidate the storage re-architecture, CSV export and JSON export into one campaign, with a checkpoint for each?
+
+The agent shows what each checkpoint would deliver, what has to happen first, and any work that should stay separate. It explains how the original commitments carry over and what changes for other items waiting on them. This is a preview; nothing on the board changes yet.
+
+> Yes, combine them as proposed.
+
+Pinboard records the campaign and marks the absorbed items superseded, keeping their definitions, evidence and history. Their work is now carried by the campaign. Confirming this does not start implementation or authorize a merge.
+
+> Start the campaign and keep going through the reviewed checkpoints. Ask me before merging.
+
+The agent lays out the checkpoint order and the decisions it expects to need from you, then works through the agreed scope. Each finished checkpoint gets a separate agent's review. Work that can proceed continues under your instructions; if only work needing your answer remains, the agent pauses with the pending decisions together and a recommendation for each. Reviewed progress stays recorded, and merging still waits for your choice.
 
 ## Run things in parallel
 

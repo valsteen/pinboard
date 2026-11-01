@@ -113,7 +113,7 @@ async def _compact_json_text(ctx: ServerRequestContext[Any, Any], call_next: Cal
 
 
 async def _single_startup_representation(ctx: ServerRequestContext[Any, Any], call_next: CallNext) -> HandlerResult:
-    """Send startup-text results once when the connected host shows the model only structuredContent."""
+    """Send startup-text results once for a host profile selecting structured-only delivery."""
     result = await call_next(ctx)
     if (
         ctx.method != "tools/call"

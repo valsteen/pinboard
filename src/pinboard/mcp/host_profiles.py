@@ -4,8 +4,8 @@ The MCP initialize clientInfo is an accepted externally owned boundary: only its
 decoded and validated, and every other field is ignored. A recognized host is identified by name for every
 version, because Antigravity reports a constant version and the user owns each recognized host's page size in
 the per-user host settings file. Each recognized profile names the measured default seeded into that file and
-which result representation the host passes to the model. Claude Code and Codex defaults sit with margin under
-the host's default delivery limit, so each page arrives whole. Antigravity saves any text block above about
+which result representation the server emits. Claude Code and Codex defaults sit with margin under
+the host's default delivery limit; envelope size alone does not prove model visibility. Antigravity saves any text block above about
 4 KB to a step file, so its default instead makes each page spill into one file that a single native read_file
 call reads whole, which takes fewer calls than pages small enough to stay inline. Any other client or a missing
 clientInfo selects the unmeasured profile, which has no setting.
@@ -119,15 +119,15 @@ def setting_host(profile: HostProfile) -> str | None:
 
 
 def representation(profile: HostProfile) -> Representation:
-    """Claude Code shows the model only structuredContent, so its pages omit the text companion.
+    """Claude Code and Codex startup pages carry one structured representation.
 
-    Antigravity shows only the text block, and Codex scripts receive the whole result; an advertised
-    output schema requires structuredContent, so those pages keep both forms.
+    Antigravity shows only the text block; its advertised output schema also requires structuredContent.
+    Codex native visibility requires version-bound evidence beyond SDK reconstruction.
     """
     match profile:
-        case HostProfile.CLAUDE_CODE:
+        case HostProfile.CLAUDE_CODE | HostProfile.CODEX:
             return Representation.STRUCTURED_ONLY
-        case HostProfile.CODEX | HostProfile.ANTIGRAVITY | HostProfile.UNMEASURED:
+        case HostProfile.ANTIGRAVITY | HostProfile.UNMEASURED:
             return Representation.STRUCTURED_AND_TEXT
         case _ as unreachable:
             assert_never(unreachable)

@@ -41,6 +41,8 @@ The agent reads the saved goal, change, and review, then names the next step.
 
 Pinboard keeps your saved priority order, the dependencies between items, and which work is ready to start. Ask what to do next and the agent explains which items are ready, which are waiting on another change, and what it would pick. Ask what can run at the same time and it shows the safe set and why the rest must wait. Initiatives group items under a goal and a success signal, with a roadmap that orders their remaining work by dependency.
 
+For fewer, longer runs, you can [consolidate saved items into one campaign](GUIDE.md#combine-items-into-one-campaign) with reviewed checkpoints. Their commitments and history stay attached to the combined work. The agent previews the proposal for your confirmation; starting the campaign and merging its changes remain separate choices.
+
 You can also ask for a comparison. Here the agent weighs four queued Pinboard improvements by size and uncertainty:
 
 <picture>

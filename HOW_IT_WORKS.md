@@ -26,6 +26,16 @@ Items carry a priority order that only you change and dependencies that say what
 
 Starting an item creates an **attempt**: one run of work on that item. The distinction matters because runs end in untidy ways. An attempt can pause at a useful point, go back for correction, be picked up by a fresh agent, or stop because the plan changed. The item, and the decision behind it, outlives all of that.
 
+### Consolidate work without losing its promises
+
+A **campaign** is one item carrying several saved outcomes through a longer run with named checkpoints. For example, storage re-architecture, CSV export and JSON export can become one campaign whose checkpoints each deliver a useful result. The agent first previews what comes together, what each checkpoint delivers and what still has to wait. You confirm that proposal separately before Pinboard changes the board.
+
+Consolidation carries every source obligation into the campaign, preserving its wording, whether it may be deferred, and the exact source item and revision. The original scope, exclusions and acceptance criteria remain binding context. Two identical promises from different sources keep their separate origins. Absorbed items end as **superseded**, with their definitions, evidence and history retained; their promised work remains to be delivered through the campaign.
+
+Prerequisites between absorbed items become work to order inside the campaign. Outside prerequisites remain, and other items waiting on an absorbed source now wait on the campaign. You can instead approve a wait on a named checkpoint when it covers all the prerequisite work that item needs. Merely declaring a checkpoint neither enforces an execution order nor makes the waiting work ready.
+
+Consolidation alone starts no agent and authorizes no merge. Once you start the campaign, its brief sets the checkpoint order and the work to deliver. Each checkpoint goes through implementation and separate review; accepted progress and the remaining work stay recorded so the campaign can continue under your instructions. Decisions that need you can be gathered together while independent work proceeds. [The conversation guide](GUIDE.md#combine-items-into-one-campaign) shows how to request and start one.
+
 ## Agree, build, and have someone else check
 
 Before any code changes, the agent works through the material open questions with you and writes the result down as a brief.

@@ -22,6 +22,7 @@ class ProposalIntake:
     checkout_policy: work_models.CheckoutPolicy
     obligations: tuple[work_models.DefinitionObligation, ...]
     checkpoints: tuple[CheckpointId, ...]
+    route_facts: work_models.RouteFacts
     position: int | None = None
 
 

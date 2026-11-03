@@ -510,6 +510,12 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
             proposal_id="planned-campaign",
             relation={"kind": "independent", "item": None},
             checkpoints=["phase-1", "phase-2"],
+            route_facts={
+                "size_class": "campaign",
+                "architecture_impact": "none",
+                "external_effects": "none",
+                "declares_checkpoints": True,
+            },
         )
         created_producer = fixture.call_advertised_tool(
             mcp_server.PROPOSAL_CREATE_TOOL,

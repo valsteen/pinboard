@@ -103,15 +103,23 @@ def dependency_payload(value: work_models.Dependency) -> DependencyPayload:
     return msgspec.convert({"item": value.item_id, "checkpoint": value.checkpoint_id}, type=CheckpointDependencyPayload)
 
 
-# v2 remains a current origin-free input and canonical encoding, preserving retained digest bindings.
-# Keep the mixed boundary here while both definition forms are supported.
-class WorkItemDefinitionPayload(
+class RouteFactsPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    size_class: work_models.SizeClass
+    architecture_impact: work_models.ArchitectureImpact
+    external_effects: work_models.ExternalEffects
+    declares_checkpoints: bool
+
+
+def route_facts_from_payload(value: RouteFactsPayload) -> work_models.RouteFacts:
+    return work_models.RouteFacts(
+        value.size_class, value.architecture_impact, value.external_effects, value.declares_checkpoints
+    )
+
+
+class _DefinitionFields(
     msgspec.Struct,
     frozen=True,
     forbid_unknown_fields=True,
-    omit_defaults=True,
-    tag="pinboard-work-item-definition/v2",
-    tag_field="schema",
 ):
     title: CanonicalLine
     objective: CanonicalLine
@@ -123,9 +131,9 @@ class WorkItemDefinitionPayload(
     dependencies: tuple[DependencyPayload, ...]
     effect: CanonicalLine
     unlock: CanonicalLine
-    checkout_policy: Literal["main", "isolated", "coordinator-selected"]
+    checkout_policy: work_models.CheckoutPolicy
     obligations: Annotated[tuple[WorkObligationPayload, ...], msgspec.Meta(min_length=1)]
-    checkpoints: tuple[Identity, ...] = ()
+    checkpoints: tuple[Identity, ...]
 
     def __post_init__(self) -> None:
         for field, values in (
@@ -145,6 +153,25 @@ class WorkItemDefinitionPayload(
             raise ValueError("dependencies must contain one entry per prerequisite item.")
 
 
+# Unclassified v2/v3 bytes remain readable and usable for route-independent revisions.
+# They share this codec with classified definitions so retained digests never gain inferred route facts.
+class WorkItemDefinitionPayload(
+    _DefinitionFields,
+    frozen=True,
+    forbid_unknown_fields=True,
+    omit_defaults=True,
+    tag="pinboard-work-item-definition/v2",
+    tag_field="schema",
+):
+    checkpoints: tuple[Identity, ...] = ()
+
+
+def _require_origin(obligations: tuple[OriginObligationPayload, ...], origin_free_schema: str) -> None:
+    """Origin-bearing schemas require at least one actual origin, including classified definitions."""
+    if not any(value.origin is not None for value in obligations):
+        raise ValueError(f"An origin-free definition uses {origin_free_schema}.")
+
+
 class OriginWorkItemDefinitionPayload(
     WorkItemDefinitionPayload,
     frozen=True,
@@ -157,11 +184,44 @@ class OriginWorkItemDefinitionPayload(
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if not any(value.origin is not None for value in self.obligations):
-            raise ValueError("An origin-free definition uses pinboard-work-item-definition/v2.")
+        _require_origin(self.obligations, "pinboard-work-item-definition/v2")
 
 
-type DefinitionPayload = WorkItemDefinitionPayload | OriginWorkItemDefinitionPayload
+class ClassifiedWorkItemDefinitionPayload(
+    _DefinitionFields,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="pinboard-work-item-definition/v4",
+    tag_field="schema",
+):
+    route_facts: RouteFactsPayload
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.route_facts.declares_checkpoints != bool(self.checkpoints):
+            raise ValueError("route_facts.declares_checkpoints must match the declared checkpoints.")
+
+
+class ClassifiedOriginWorkItemDefinitionPayload(
+    ClassifiedWorkItemDefinitionPayload,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="pinboard-work-item-definition/v5",
+    tag_field="schema",
+):
+    obligations: Annotated[tuple[OriginObligationPayload, ...], msgspec.Meta(min_length=1)]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        _require_origin(self.obligations, "pinboard-work-item-definition/v4")
+
+
+type DefinitionPayload = (
+    WorkItemDefinitionPayload
+    | OriginWorkItemDefinitionPayload
+    | ClassifiedWorkItemDefinitionPayload
+    | ClassifiedOriginWorkItemDefinitionPayload
+)
 
 
 class TransitionReceiptOutcome(msgspec.Struct, frozen=True, forbid_unknown_fields=True, omit_defaults=True):
@@ -224,6 +284,11 @@ def work_item_definition_payload(
     definition: work_models.WorkItemDefinition,
 ) -> DecisionResult[DefinitionPayload]:
     carries_origins = any(isinstance(value, work_models.CarriedWorkObligation) for value in definition.obligations)
+    route = definition.route_facts
+    if route is None:
+        schema = "pinboard-work-item-definition/v3" if carries_origins else "pinboard-work-item-definition/v2"
+    else:
+        schema = "pinboard-work-item-definition/v5" if carries_origins else "pinboard-work-item-definition/v4"
     try:
         payload: DefinitionPayload = msgspec.convert(
             {
@@ -234,7 +299,7 @@ def work_item_definition_payload(
                 "hypothesis": definition.hypothesis,
                 "non_scope": definition.non_scope,
                 "objective": definition.objective,
-                "schema": "pinboard-work-item-definition/v3" if carries_origins else "pinboard-work-item-definition/v2",
+                "schema": schema,
                 "scope": definition.scope,
                 "title": definition.title,
                 "unlock": definition.unlock,
@@ -261,6 +326,18 @@ def work_item_definition_payload(
                     for value in definition.obligations
                 ),
                 "checkpoints": definition.checkpoints,
+                **(
+                    {
+                        "route_facts": {
+                            "size_class": route.size_class.value,
+                            "architecture_impact": route.architecture_impact.value,
+                            "external_effects": route.external_effects.value,
+                            "declares_checkpoints": route.declares_checkpoints,
+                        }
+                    }
+                    if route is not None
+                    else {}
+                ),
             },
             type=DefinitionPayload,
             strict=True,
@@ -312,7 +389,10 @@ def work_item_definition_from_payload(record: DefinitionPayload) -> work_models.
         tuple(dependency_from_payload(value) for value in record.dependencies),
         record.effect,
         record.unlock,
-        work_models.CheckoutPolicy(record.checkout_policy),
+        record.checkout_policy,
         tuple(obligation_from_payload(value) for value in record.obligations),
         tuple(CheckpointId(value) for value in record.checkpoints),
+        route_facts_from_payload(record.route_facts)
+        if isinstance(record, ClassifiedWorkItemDefinitionPayload)
+        else None,
     )

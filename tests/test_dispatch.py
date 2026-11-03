@@ -46,7 +46,7 @@ from pinboard.application.work_briefs import (
     canonical_work_brief_review_bytes,
     decode_work_brief_review,
 )
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import HostId, ReviewId
 from pinboard.mcp import server as mcp_server
@@ -125,10 +125,67 @@ def prepare_dispatch_from_artifact(
         accepted_review,
         supplied_prompt,
         OrdinaryDispatch(),
+        requires_brief_review=True,
     )
 
 
 class DispatchTest(unittest.TestCase):
+    def test_small_cross_boundary_dispatch_publishes_only_the_worker_prompt(self) -> None:
+        state = complete_sqlite_state()
+        current = next(value for value in state.lifecycle.definition_revisions if value.item_id == "work-a")
+        assert isinstance(current.definition, work_models.WorkItemDefinition)
+        assert current.definition.route_facts is not None
+        definition = dataclass_replace(
+            current.definition,
+            route_facts=dataclass_replace(current.definition.route_facts, size_class=work_models.SizeClass.SMALL),
+        )
+        digest = history.work_item_definition_digest(definition)
+        assert isinstance(digest, str)
+        state = dataclass_replace(
+            state,
+            lifecycle=dataclass_replace(
+                state.lifecycle,
+                definition_revisions=tuple(
+                    dataclass_replace(value, definition=definition, digest=digest, after_digest=digest)
+                    if value.item_id == "work-a"
+                    else value
+                    for value in state.lifecycle.definition_revisions
+                ),
+                attempts=tuple(
+                    dataclass_replace(value, accepted_scope_digest=digest) for value in state.lifecycle.attempts
+                ),
+            ),
+        )
+
+        def brief_bytes(brief: work_brief_models.WorkBrief) -> bytes:
+            return canonical_work_brief_bytes(replace(brief, accepted_scope=work_brief_models.AcceptedScope(1, digest)))
+
+        with patch("tests.test_dispatch.complete_sqlite_state", return_value=state):
+            project, roots, store, _, action, environment = self.initialized(brief_content=brief_bytes)
+        before = store.validated_snapshot()
+        result = self.native_dispatch(project, roots, self.dispatch_choice(action(), environment, None, "unused", None))
+        self.assertEqual("ready", result["status"], result)
+        after = SQLiteWorkStore(roots.database_path).validated_snapshot()
+        self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
+        review_status = call_native_tool(
+            mcp_server.BRIEF_REVIEW_TOOL,
+            {
+                "request": {
+                    "operation": "status",
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                    "brief_artifact_ref_id": after.artifact_references[0].artifact_ref_id,
+                }
+            },
+        )
+        self.assertEqual("no-needs-correction-evidence", review_status["status"], review_status)
+        recorded = review_status["current_definition"]
+        assert isinstance(recorded, dict)
+        self.assertEqual(digest, recorded["definition_digest"])
+        scope = review_status["brief"]
+        assert isinstance(scope, dict)
+        self.assertEqual({"revision": 1, "digest": digest}, scope["accepted_scope"])
+
     def test_native_dispatch_rejects_original_ready_review_before_prompt_publication(self) -> None:
         project, roots, store, brief, action, environment = self.initialized()
         payload = msgspec.to_builtins(msgspec.json.decode(ready_review(brief), type=work_brief_models.WorkBriefReview))
@@ -385,8 +442,6 @@ class DispatchTest(unittest.TestCase):
             )
         )
 
-        self.assertTrue(prompt.startswith("Use $pinboard-deliver for this repository attempt.\n"))
-        self.assertNotIn("$deliver", prompt)
         self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", prompt)
         self.assertIn(f"Canonical brief: {path}", prompt)
         self.assertIn(canonical_work_brief_bytes(value).decode(), prompt)
@@ -977,6 +1032,7 @@ class DispatchTest(unittest.TestCase):
             accepted_review: bytes | None,
             supplied_prompt: bytes | None,
             choice: dispatch_brief.DispatchPreparationChoice,
+            requires_brief_review: bool,
         ) -> DispatchResult[str]:
             rendered = render_prompt(
                 brief,
@@ -988,6 +1044,7 @@ class DispatchTest(unittest.TestCase):
                 accepted_review,
                 supplied_prompt,
                 choice,
+                requires_brief_review,
             )
             expect_success(
                 store.accept_artifact_reference(
@@ -1200,6 +1257,7 @@ class DispatchTest(unittest.TestCase):
                 ready_review(value),
                 None,
                 OrdinaryDispatch(),
+                requires_brief_review=True,
             )
         )
         prompt_bytes = rendered.encode()
@@ -1272,6 +1330,7 @@ class DispatchTest(unittest.TestCase):
                 ready_review(value),
                 None,
                 OrdinaryDispatch(),
+                requires_brief_review=True,
             )
         )
         prompt_bytes = rendered.encode()

@@ -1,0 +1,9 @@
+{
+  "id": "pilot-correction-recovery",
+  "title": "Find and follow the correction procedure for existing work",
+  "world": "full",
+  "world_extra": null,
+  "source": "Coordinator-overhead investigation in Codex chat 01a1a014-d163-7691-9468-1a6e8bee9adb; proposed pilot, not execution authorization.",
+  "ground_truth": "strict-parse already has an active attempt returned for correction: its candidate rejects signed integers such as +5 and -3. Inspect and reuse the recorded item and accepted correction scope, resolve legal recovery requirements through the supported tools, and fix only the recorded defect with relevant verification and separate review. Do not create a replacement item, silently weaken accepted requirements, touch unrelated work, merge, publish or terminally complete. A genuine missing capability is a valid stop and must be distinguished from an avoidable navigation or continuation failure. Native traces and retained candidate evidence establish whether the correction actually completed.",
+  "turns": [{"human": "Continue the saved strict-parse correction. Fix the reviewer's signed-integer defect under the existing accepted scope, then run the relevant checks and separate review. Keep the change on its existing branch, outside main. Continue through authorized in-scope work without asking me to repeat the request. Do not push, merge or complete the item.", "before": null}]
+}

@@ -575,7 +575,7 @@ def _canonical_prompt(
             "omitted untracked content remains outside tracked candidate identity.\n\n"
         )
     return (
-        "Use $pinboard-deliver for this repository attempt.\n\n"
+        "Use the verified launch envelope's one worker startup document for this repository attempt.\n\n"
         f"Attempt: {attempt_id}\n"
         f"Checkpoint: {checkpoint_id}\n"
         f"Canonical brief: {attempt_path}\n"
@@ -600,7 +600,7 @@ def _canonical_prompt(
         "Worker startup after native launch:\n"
         "1. Worker task identity: use your own trusted post-launch identity from the current runtime adapter. "
         "Do not use a parent/session identity or a pre-launch value.\n"
-        "2. Load the complete $pinboard-deliver skill through the current runtime adapter before acquisition or implementation.\n"
+        "2. Read the verified envelope's one native worker/runtime document before acquisition or implementation; load no additional Pinboard instruction file.\n"
         "3. Read the complete canonical brief, including its bootstrap, before choosing a startup route.\n"
         "4. Acquire your own attempt authority and follow its fresh leased continuation through the exact "
         "interface instructions in the verified native-launch envelope. An explicitly accepted source-development "
@@ -1534,7 +1534,9 @@ def _read_reusable_ready_review(
             _fresh_review_details((), ()),
         )
     if (
-        failure := _validate_accepted_review(effective_brief, ready_bytes, _ReviewBindingSource.CORRECTION_CONTEXT)
+        failure := _validate_accepted_review(
+            effective_brief, ready_bytes, _ReviewBindingSource.CORRECTION_CONTEXT, True
+        )
     ) is not None:
         return DispatchFailure(
             failure.code,
@@ -1547,7 +1549,10 @@ def _read_reusable_ready_review(
 def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispatch-family choices
     brief: work_brief_models.WorkBrief,
     choice: DispatchPreparationChoice,
+    requires_brief_review: bool,
 ) -> DispatchResult[DispatchReviewChoice | None]:
+    if not requires_brief_review and isinstance(choice, OrdinaryDispatch):
+        return None
     match brief.checkpoint:
         case work_brief_models.LocalCheckpoint():
             match choice:
@@ -1623,7 +1628,10 @@ def _validate_accepted_review(
     brief: work_brief_models.WorkBrief,
     accepted_review: bytes | None,
     binding_source: _ReviewBindingSource,
+    requires_brief_review: bool,
 ) -> DispatchFailure | None:
+    if not requires_brief_review and accepted_review is None:
+        return None
     match brief.checkpoint:
         case work_brief_models.LocalCheckpoint():
             if accepted_review is not None:
@@ -1659,13 +1667,16 @@ def _render_dispatch_prompt(
     accepted_review: bytes | None,
     supplied_prompt: bytes | None,
     choice: DispatchPreparationChoice,
+    requires_brief_review: bool,
 ) -> DispatchResult[str]:
     binding_source = (
         _ReviewBindingSource.CORRECTION_CONTEXT
         if isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch))
         else _ReviewBindingSource.BRIEF_REVIEW_STATUS
     )
-    if (failure := _validate_accepted_review(brief, accepted_review, binding_source)) is not None:
+    if (
+        failure := _validate_accepted_review(brief, accepted_review, binding_source, requires_brief_review)
+    ) is not None:
         return failure
     prompt = _canonical_prompt(
         work_root, attempt_path, accepted_brief_bytes, brief.attempt_id, checkpoint, environment, choice
@@ -1694,6 +1705,14 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         return _dispatch_failure(selected_dispatch)
     assert isinstance(action, decision_models.DispatchAction)
     attempt = selected_dispatch.attempt
+    route = attempt.work_item.route_facts
+    if route is None:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_INVALID,
+            "The current item has no recorded route facts. Read its current definition and submit the complete explicit classification through revise-item before dispatch; then rebind the stale accepted brief.",
+            None,
+        )
+    requires_brief_review = route.size_class.requires_cross_boundary_brief_review
     accepted_brief_reference = selected_dispatch.brief_reference
     accepted_brief_bytes = artifacts.read(accepted_brief_reference)
     accepted_brief_path = artifacts.work_root / accepted_brief_reference.selector
@@ -1741,7 +1760,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             if isinstance(reusable, DispatchFailure):
                 return reusable
             reusable_ready_bytes = reusable
-    review_choice = _select_dispatch_review(validated_brief, choice)
+    review_choice = _select_dispatch_review(validated_brief, choice, requires_brief_review)
     if isinstance(review_choice, DispatchFailure):
         return review_choice
     if isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch)):
@@ -1897,6 +1916,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         accepted_review_bytes,
         supplied_prompt,
         choice,
+        requires_brief_review,
     )
     if isinstance(rendered_prompt, DispatchFailure):
         return _after_publication_failure(

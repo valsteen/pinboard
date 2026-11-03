@@ -20,6 +20,12 @@ ATTEMPT_STATE_ROLES: dict[work_models.AttemptState, str] = {
 }
 
 ACTION_GROUPS: dict[decision_models.ActionKind, str] = {
+    decision_models.ActionKind.PREVIEW_PARALLEL: "advisory",
+    decision_models.ActionKind.ORDER: "advisory",
+    decision_models.ActionKind.INSPECT_INITIATIVE: "advisory",
+    decision_models.ActionKind.REVIEW_CANDIDATE: "advisory",
+    decision_models.ActionKind.CREATE_PROPOSAL: "advisory",
+    decision_models.ActionKind.PREPARE: "advisory",
     decision_models.ActionKind.ACCEPT_CHECKPOINT: "review",
     decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE: "review",
     decision_models.ActionKind.ACTIVATE: "lifecycle",
@@ -222,7 +228,7 @@ DIAGRAM = Diagram(
             "scope",
             "Agreed scope",
             "Exact authorized version",
-            ("revision + digest bound to attempt",),
+            ("route facts recorded once", "revision + digest bound to attempt"),
             (),
             330,
             780,

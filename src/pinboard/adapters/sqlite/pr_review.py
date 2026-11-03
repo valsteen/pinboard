@@ -17,7 +17,7 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import move_item_state_count, read_current_definition
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.application import cancellation_models, pr_reviews, stored_state
-from pinboard.domain import decision_models
+from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import WorkItemId
 
@@ -77,6 +77,7 @@ class ReviewState:
     project_revision: int
     definition_revision: int
     definition_digest: str
+    route_facts: work_models.RouteFacts | None
     evidence: tuple[EvidenceRow, ...]
 
     @property
@@ -171,6 +172,9 @@ def _load(connection: sqlite3.Connection, item_id: WorkItemId) -> ReviewState | 
         project.revision,
         definition.revision,
         definition.digest,
+        definition.definition.route_facts
+        if isinstance(definition.definition, work_models.WorkItemDefinition)
+        else None,
         tuple(evidence),
     )
 
@@ -349,6 +353,12 @@ type Payload = (
 
 
 def _check(state: ReviewState, payload: Payload) -> DecisionFailure | None:  # noqa: C901, PLR0912
+    if not isinstance(payload, pr_reviews.ReviewClose) and state.route_facts is None:
+        return DecisionFailure(
+            DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
+            f"Item '{state.item_id}' definition {state.definition_revision} ({state.definition_digest}) lacks recorded route facts. Read its complete current definition and explicitly record size_class, architecture_impact, external_effects and declares_checkpoints through revise-item before this review operation. Existing review evidence remains readable; a changed definition requires a matching new brief.",
+            None,
+        )
     brief = state.brief
     rounds = state.rounds
     last_round = rounds[-1] if rounds else None

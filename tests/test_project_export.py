@@ -20,7 +20,7 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models, released_v6_compatibility, stored_state
+from pinboard.application import released_v6_compatibility, stored_state
 from pinboard.application.artifacts import ArtifactRef, NewArtifact
 from pinboard.application.project_export import (
     ContentEncoding,
@@ -30,7 +30,7 @@ from pinboard.application.project_export import (
 )
 from pinboard.cli.cli_output import RejectedOperationView
 from pinboard.cli.entrypoint import main
-from pinboard.domain import work_models
+from pinboard.domain import history, work_models
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import ArtifactRefId, ProposalId, TaskId, WorkItemId
 from pinboard.mcp import mutation_operations, server
@@ -409,7 +409,7 @@ class ProjectExportTest(unittest.TestCase):
         latest_definition = next(
             value for value in project_export.definition_revisions if value.item_id == "work-a" and value.revision == 2
         )
-        assert isinstance(latest_definition.definition, query_models.WorkItemDefinitionView)
+        assert isinstance(latest_definition.definition, history.ClassifiedWorkItemDefinitionPayload)
         self.assertEqual("Clarified the export objective.", latest_definition.reason)
         self.assertEqual("definition-owner", latest_definition.source_task_id)
         self.assertEqual(
@@ -497,7 +497,15 @@ class ProjectExportTest(unittest.TestCase):
         replacement_cost = "Work C implementation and review would be discarded."
         subprocess.run(("git", "init", "--quiet", str(project)), check=True)
         proposal: JsonObject = {
-            "schema": "pinboard-proposal/v2",
+            "schema": "pinboard-proposal/v4",
+            "position": None,
+            "checkpoints": [],
+            "route_facts": {
+                "size_class": "small",
+                "architecture_impact": "none",
+                "external_effects": "none",
+                "declares_checkpoints": False,
+            },
             "proposal_id": "provenance-replacement",
             "created_at": creation_time.isoformat(),
             "source_task_id": "discoverer",

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import msgspec
 from mcp.client.session import ClientSession
-from mcp_types import CallToolResult, TextContent
+from mcp_types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from evals.behavioral import board, export, processes, seeding, world, world_content
 from evals.behavioral.export import SeedFailure
@@ -72,6 +72,46 @@ class ToolResultTest(unittest.TestCase):
 
 
 class ItemStateReadTest(unittest.IsolatedAsyncioTestCase):
+    async def test_proposal_format_is_selected_from_metadata_before_any_effect(self) -> None:
+        for version in ("pinboard-proposal/v2", "pinboard-proposal/v4", "unsupported"):
+            session = MagicMock(spec=ClientSession)
+            session.list_tools = AsyncMock(
+                return_value=ListToolsResult(
+                    tools=[
+                        Tool(
+                            name="pinboard_proposal_create",
+                            input_schema={"$defs": {"Proposal": {"properties": {"schema": {"enum": [version]}}}}},
+                        )
+                    ]
+                )
+            )
+            session.call_tool = AsyncMock(
+                return_value=CallToolResult(content=[], structured_content={"status": "committed"})
+            )
+            if version == "unsupported":
+                with self.assertRaises(SeedFailure):
+                    await board.proposal_format(session)
+            else:
+                selected = await board.proposal_format(session)
+                self.assertEqual(version, selected)
+                seeder = seeding.Seeder(
+                    board.BoardClient(session, Window(None), selected), Path("project"), Path("work"), "owner"
+                )
+                await seeder.propose(
+                    "item",
+                    "One item",
+                    ("trigger", "why", "effect", "unlock", "obligation"),
+                    None,
+                    board.RouteFacts("small", "none", "none", False),
+                    (),
+                )
+                session.call_tool.assert_awaited_once()
+                payload = session.call_tool.call_args.args[1]["proposal"]
+                self.assertEqual(version, payload["schema"])
+                self.assertEqual(version == "pinboard-proposal/v4", "route_facts" in payload)
+            if version == "unsupported":
+                session.call_tool.assert_not_called()
+
     async def test_board_text_reads_complete_pages_and_exact_dependency_targets(self) -> None:
         cursor: dict[str, contracts.JsonValue] = {"revision": "7", "after_position": 1, "work_root": "/board"}
         pages: list[dict[str, contracts.JsonValue]] = [
@@ -111,7 +151,7 @@ class ItemStateReadTest(unittest.IsolatedAsyncioTestCase):
 
         @asynccontextmanager
         async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
-            yield board.BoardClient(session, window)
+            yield board.BoardClient(session, window, "pinboard-proposal/v4")
 
         with patch.object(board, "connect", connected):
             observed = await board.overview(
@@ -148,7 +188,7 @@ class ItemStateReadTest(unittest.IsolatedAsyncioTestCase):
 
         @asynccontextmanager
         async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
-            yield board.BoardClient(session, window)
+            yield board.BoardClient(session, window, "pinboard-proposal/v4")
 
         with patch.object(board, "connect", connected):
             observed = await board.item_states(
@@ -191,7 +231,10 @@ class SeededReviewTest(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as temporary, patch.object(seeding, "head", return_value="d" * 40):
             root = Path(temporary)
             fixture = seeding.Seeder(
-                board.BoardClient(session, Window(None)), root / "project", root / "board", "fixture-owner"
+                board.BoardClient(session, Window(None), "pinboard-proposal/v4"),
+                root / "project",
+                root / "board",
+                "fixture-owner",
             )
             attempt = fixture.work_root / "attempts" / "example-1"
             attempt.mkdir(parents=True)
@@ -280,7 +323,9 @@ class ContinueCheckpointWorldTest(unittest.TestCase):
         window = Window(None)
         with TemporaryDirectory() as temporary:
             project = committed_project(Path(temporary), window)
-            seeder = seeding.Seeder(board.BoardClient(session, window), project, project / ".pinboard", "owner")
+            seeder = seeding.Seeder(
+                board.BoardClient(session, window, "pinboard-proposal/v4"), project, project / ".pinboard", "owner"
+            )
             asyncio.run(world_content.seed_continue_checkpoint(seeder))
             candidate = seeding.head(seeder.worktree("usage-guide"), window)
 
@@ -314,7 +359,7 @@ class ContinueCheckpointWorldTest(unittest.TestCase):
 
         @asynccontextmanager
         async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
-            yield board.BoardClient(MagicMock(spec=ClientSession), window)
+            yield board.BoardClient(MagicMock(spec=ClientSession), window, "pinboard-proposal/v4")
 
         async def seed(seeder: seeding.Seeder) -> None:
             seeded_content.append(seeder.work_root)
@@ -359,7 +404,7 @@ class ContinueCheckpointWorldTest(unittest.TestCase):
 
             @asynccontextmanager
             async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
-                yield board.BoardClient(MagicMock(spec=ClientSession), window)
+                yield board.BoardClient(MagicMock(spec=ClientSession), window, "pinboard-proposal/v4")
 
             async def states(*arguments: Path | tuple[str, ...] | Window) -> list[tuple[str, str]]:
                 self.assertEqual(("exit-status",), arguments[4])

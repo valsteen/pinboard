@@ -49,6 +49,11 @@ class ConsolidationTest(CheckpointPackageSupport):
     def revise(self, fixture: CheckpointFixture, item: str, changes: JsonObject) -> JsonObject:
         current = self.current(fixture, item)
         definition = {**self.json_object(current["definition"]), **changes}
+        if "checkpoints" in changes and "route_facts" not in changes:
+            definition["route_facts"] = {
+                **self.json_object(definition["route_facts"]),
+                "declares_checkpoints": bool(changes["checkpoints"]),
+            }
         return fixture.call_advertised_tool(
             mcp_server.TRANSITION_TOOL,
             self.native_transition_request(
@@ -74,6 +79,11 @@ class ConsolidationTest(CheckpointPackageSupport):
             "title": "Combined campaign",
             "dependencies": [],
             "checkpoints": [*self.json_array(definition.get("checkpoints", [])), "usable"],
+            "route_facts": {
+                **self.json_object(definition["route_facts"]),
+                "size_class": "campaign",
+                "declares_checkpoints": True,
+            },
         }
         return {
             "sources": [
@@ -543,14 +553,14 @@ class ConsolidationTest(CheckpointPackageSupport):
         before = fixture.store.validated_snapshot()
         self.assertEqual(
             "rejected",
-            self.revise(fixture, "replacement", {"schema": "pinboard-work-item-definition/v3", "obligations": [bad]})[
+            self.revise(fixture, "replacement", {"schema": "pinboard-work-item-definition/v5", "obligations": [bad]})[
                 "status"
             ],
         )
         self.assertEqual(before, fixture.store.validated_snapshot())
         self.assertEqual(
             "committed",
-            self.revise(fixture, "replacement", {"schema": "pinboard-work-item-definition/v3", "obligations": [exact]})[
+            self.revise(fixture, "replacement", {"schema": "pinboard-work-item-definition/v5", "obligations": [exact]})[
                 "status"
             ],
         )

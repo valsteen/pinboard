@@ -619,7 +619,15 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                             "actor_task_id": "review-owner",
                             "actor_host_id": "local",
                             "proposal": {
-                                "schema": "pinboard-proposal/v2",
+                                "schema": "pinboard-proposal/v4",
+                                "position": None,
+                                "checkpoints": [],
+                                "route_facts": {
+                                    "size_class": "small",
+                                    "architecture_impact": "none",
+                                    "external_effects": "none",
+                                    "declares_checkpoints": False,
+                                },
                                 "proposal_id": proposal_id,
                                 "created_at": "2026-08-25T12:00:00+00:00",
                                 "source_task_id": "review-owner",
@@ -683,7 +691,15 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                         "actor_task_id": "review-owner",
                         "actor_host_id": "local",
                         "proposal": {
-                            "schema": "pinboard-proposal/v2",
+                            "schema": "pinboard-proposal/v4",
+                            "position": None,
+                            "checkpoints": [],
+                            "route_facts": {
+                                "size_class": "small",
+                                "architecture_impact": "none",
+                                "external_effects": "none",
+                                "declares_checkpoints": False,
+                            },
                             "proposal_id": "new-proposal",
                             "created_at": "2026-08-25T12:00:00+00:00",
                             "source_task_id": "review-owner",

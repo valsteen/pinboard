@@ -1,3 +1,4 @@
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Annotated, Literal, Protocol, assert_never, override
@@ -6,7 +7,7 @@ import msgspec
 
 from pinboard.application import action_models, stored_state
 from pinboard.application.brief_source_models import BriefSourceFailure, parse_authority_selector
-from pinboard.domain import work_models
+from pinboard.domain import history, work_models
 from pinboard.domain.errors import DescribedCode
 from pinboard.domain.history import RecordText
 
@@ -909,7 +910,16 @@ class CrossBoundaryReviewBasis(
     reviewed_authority_set_sha256: Sha256
 
 
-type ReviewBasis = LocalReviewBasis | CrossBoundaryReviewBasis
+class SmallWorkReviewBasis(msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="small", tag_field="boundary"):
+    # The exact definition makes the exemption portable and verifiable against accepted_scope.
+    definition: history.ClassifiedWorkItemDefinitionPayload | history.ClassifiedOriginWorkItemDefinitionPayload
+
+    def __post_init__(self) -> None:
+        if self.definition.route_facts.size_class != work_models.SizeClass.SMALL:
+            raise ValueError("Small-work review basis requires a recorded small definition.")
+
+
+type ReviewBasis = LocalReviewBasis | CrossBoundaryReviewBasis | SmallWorkReviewBasis
 
 
 class CheckpointReviewPackageV3(
@@ -950,6 +960,12 @@ class CheckpointReviewPackageV3(
         match self.review_basis:
             case LocalReviewBasis():
                 pass
+            case SmallWorkReviewBasis(definition=definition):
+                if (
+                    hashlib.sha256(msgspec.json.encode(definition, order="sorted") + b"\n").hexdigest()
+                    != self.accepted_scope.digest
+                ):
+                    raise ValueError("Small-work review basis must bind the exact accepted definition.")
             case CrossBoundaryReviewBasis(brief_review=brief_review, checkpoint_sha256=checkpoint_sha256):
                 if (brief_review.role, brief_review.kind) != ("brief-review", "evidence"):
                     raise ValueError("Cross-boundary checkpoint packages require one brief-review Evidence identity.")

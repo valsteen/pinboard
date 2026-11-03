@@ -96,7 +96,7 @@ def close(
             WorkItemId(command.item_id),
             CommandFailure(selected.code, selected.message, selected.details),
         )
-    selected_action = selected[0]
+    selected_action = selected.actions[0]
     if not isinstance(selected_action, decision_models.CloseAction):
         raise AssertionError("The exact close identity must select a close action.")
     # The human types this command directly, so their --reason text is also their recorded close decision.

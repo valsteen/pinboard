@@ -119,6 +119,10 @@ class DecisionFailureCode(DescribedCode):
         "ITEM_DEFINITION_STALE",
         "The accepted item definition no longer matches the current recorded revision.",
     )
+    ROUTE_CLASSIFICATION_REQUIRED = (
+        "ROUTE_CLASSIFICATION_REQUIRED",
+        "The retained current definition needs explicit route facts before this route-dependent operation.",
+    )
     ITEM_DEFINITION_LIFECYCLE_INVALID = (
         "ITEM_DEFINITION_LIFECYCLE_INVALID",
         "A terminal work item cannot have its definition revised.",

@@ -47,7 +47,7 @@ from pinboard.domain.proposal_models import CreateProposalOperation, ProposalInt
 from tests.artifact_support import write_revision
 from tests.decision_support import project_decision_snapshot
 from tests.domain_support import expect_success
-from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation
+from tests.support import SQLITE_NOW, TEST_ROUTE_FACTS, complete_sqlite_state, initialize_store, mutation_allocation
 
 
 def _commit_same_pause(
@@ -303,6 +303,7 @@ def _race_preparation_and_prerequisite_proposal(
                 ),
             ),
             (),
+            route_facts=TEST_ROUTE_FACTS,
         )
         barrier.wait()
         result = create_proposal(

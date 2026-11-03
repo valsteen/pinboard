@@ -11,9 +11,10 @@ from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.sqlite import pr_review
 from pinboard.application import pr_reviews
 from pinboard.diagnostic_codes import ProducerOnlyCode
+from pinboard.domain import decision_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HistoryId, WorkItemId
-from pinboard.mcp import common, contracts, execution
+from pinboard.mcp import common, contracts, execution, host_profiles, instructions
 from pinboard.mcp.contracts import JsonValue
 
 
@@ -26,7 +27,11 @@ def _rejected(code: str, message: str) -> execution.OperationResult:
 
 
 def _present(
-    state: pr_review.ReviewState, *, committed: bool, view_warning: str | None = None
+    state: pr_review.ReviewState,
+    *,
+    committed: bool,
+    profile: host_profiles.HostProfile,
+    view_warning: str | None = None,
 ) -> execution.OperationResult:
     brief = state.brief
     rounds = state.rounds
@@ -51,6 +56,8 @@ def _present(
         actions = ("observe", "round", "close")
     else:
         actions = ()
+    if state.route_facts is None:
+        actions = tuple(action for action in actions if action == "close")
     value = contracts.PrReviewSuccess(
         "pinboard-pr-review-status/v1",
         "committed-with-warning" if view_warning is not None else "committed" if committed else "ok",
@@ -67,6 +74,16 @@ def _present(
         unreviewed,
         state.close,
         actions,
+        instructions.action_instructions(
+            instructions.load_catalog(),
+            decision_models.ActionKind.START_PR_REVIEW,
+            decision_models.Role.PROJECT,
+            profile,
+            state.route_facts,
+        ),
+        None
+        if profile == host_profiles.HostProfile.UNMEASURED
+        else instructions.native_document(f"reviewer-{profile.value}"),
         "unverified",
         committed,
         "committed" if committed else "unchanged",
@@ -92,7 +109,7 @@ def _selected_record[T](path: str, sha256: str, record_type: type[T]) -> T | exe
 
 
 def execute(  # noqa: C901, PLR0912, PLR0915 - exact inline/file leaves retain actor and persistence checks
-    raw: dict[str, JsonValue], token: execution.CancellationToken
+    raw: dict[str, JsonValue], token: execution.CancellationToken, profile: host_profiles.HostProfile
 ) -> execution.OperationResult:
     token.checkpoint()
     try:
@@ -111,7 +128,7 @@ def execute(  # noqa: C901, PLR0912, PLR0915 - exact inline/file leaves retain a
                     DecisionFailureCode.ITEM_NOT_FOUND.value,
                     f"Review item '{request.item_id}' does not exist. Read pinboard_overview with project_root={request.project_root!r}, work_root={request.work_root!r}, max_items=25 and continuation=null; follow its continuation to discover all live items. Do not create a replacement without human intent.",
                 )
-            return _present(state, committed=False)
+            return _present(state, committed=False, profile=profile)
         case contracts.PrReviewStartRequest() | contracts.PrReviewStartFileRequest():
             if isinstance(request, contracts.PrReviewStartFileRequest):
                 selected = _selected_record(request.brief_path, request.brief_sha256, pr_reviews.ReviewBrief)
@@ -186,4 +203,4 @@ def execute(  # noqa: C901, PLR0912, PLR0915 - exact inline/file leaves retain a
         datetime.now(UTC),
     )
     warning = None if refreshed.warning is None else f"{refreshed.warning.message} {refreshed.warning.repair}"
-    return _present(result, committed=True, view_warning=warning)
+    return _present(result, committed=True, profile=profile, view_warning=warning)

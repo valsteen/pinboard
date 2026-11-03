@@ -1,0 +1,9 @@
+{
+  "id": "pilot-focused-question",
+  "title": "Answer one saved-item question without delivery preparation",
+  "world": "full",
+  "world_extra": null,
+  "source": "Coordinator-overhead investigation in Codex chat 01a1a014-d163-7691-9468-1a6e8bee9adb; proposed pilot, not execution authorization.",
+  "ground_truth": "Full fixture world. sort-flag has a favorably reviewed candidate on pinboard/sort-flag and has not reached main. This is a focused read-only question. No source, ledger, authority, review commission, or Git mutation is authorized. Answer the named question without a whole-board report. Native evidence separately checks which instructions were read and whether any implementation machinery ran; final-reply scoring cannot establish those facts.",
+  "turns": [{"human": "Use Pinboard to answer just this: is the saved --sorted change in main, and what is left before I can use it there? This is a question only; do not start, change, merge or close anything.", "before": null}]
+}

@@ -64,27 +64,12 @@ def _decode[PayloadT: transition_models.InputPayload](
 
 
 def _revise_item_input(payload: transition_models.ReviseItemInputPayload) -> work_models.ReviseWorkItemDefinitionInput:
-    definition = payload.definition
     return work_models.ReviseWorkItemDefinitionInput(
         payload.expected_revision,
         payload.expected_digest,
         TaskId(payload.source_task),
         payload.reason,
-        work_models.WorkItemDefinition(
-            definition.title,
-            definition.objective,
-            definition.hypothesis,
-            definition.evidence,
-            definition.scope,
-            definition.non_scope,
-            definition.acceptance_criteria,
-            tuple(history.dependency_from_payload(value) for value in definition.dependencies),
-            definition.effect,
-            definition.unlock,
-            work_models.CheckoutPolicy(definition.checkout_policy),
-            tuple(history.obligation_from_payload(obligation) for obligation in definition.obligations),
-            tuple(CheckpointId(checkpoint) for checkpoint in definition.checkpoints),
-        ),
+        history.work_item_definition_from_payload(payload.definition),
     )
 
 
@@ -298,6 +283,13 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             | decision_models.ContinueAction()
             | decision_models.DispatchAction()
             | decision_models.InspectAction()
+            | decision_models.PrepareAction()
+            | decision_models.CreateProposalAction()
+            | decision_models.PreviewParallelAction()
+            | decision_models.OrderAction()
+            | decision_models.InspectInitiativeAction()
+            | decision_models.ReviewCandidateAction()
+            | decision_models.ConsolidateAction()
             | decision_models.ReportBlockerAction()
         ):
             return TransitionInputFailure(

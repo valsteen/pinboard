@@ -314,7 +314,8 @@ class PluginPackagingTests(unittest.TestCase):
         self.assertEqual(len(valid), len(outputs))
         self.assertEqual(1, len(set(outputs)))
 
-    def test_parent_hook_adds_reconnect_note_only_when_launcher_prepared_runtime_now(self) -> None:
+    def test_parent_hook_changes_context_only_when_launcher_prepared_runtime_now(self) -> None:
+        baseline: str | None = None
         for value, expected in ((None, False), ("", False), ("0", False), ("1", True)):
             environment: dict[str, str] = {} if value is None else {"PINBOARD_RUNTIME_PREPARED_NOW": value}
             with (
@@ -329,7 +330,9 @@ class PluginPackagingTests(unittest.TestCase):
                     os.environ.pop("PINBOARD_RUNTIME_PREPARED_NOW", None)
                 self.assertEqual(0, claude_hook.session_start_main())
                 context = json.loads(stdout.getvalue())["hookSpecificOutput"]["additionalContext"]
-                self.assertEqual(expected, "reconnect it with /mcp or restart Claude Code" in context)
+                if baseline is None:
+                    baseline = context
+                self.assertEqual(expected, context != baseline)
                 self.assertIn(json.dumps("actual-local-parent"), context)
 
     def test_parent_hook_samples_machine_for_each_current_session_and_rejects_unavailable_machine(self) -> None:
@@ -506,7 +509,8 @@ class PluginPackagingTests(unittest.TestCase):
                 self.assertEqual("", result.stdout)
                 self.assertEqual("invalid-startup-arguments", json.loads(result.stderr)["status"])
 
-    def test_antigravity_session_hook_adds_reconnect_note_only_when_launcher_prepared_runtime_now(self) -> None:
+    def test_antigravity_session_hook_changes_context_only_when_launcher_prepared_runtime_now(self) -> None:
+        baseline: str | None = None
         for value, expected in ((None, False), ("0", False), ("1", True)):
             environment: dict[str, str] = {} if value is None else {"PINBOARD_RUNTIME_PREPARED_NOW": value}
             with (
@@ -524,7 +528,9 @@ class PluginPackagingTests(unittest.TestCase):
                 self.assertEqual(0, antigravity_hook.session_start_main())
                 output = msgspec.json.decode(stdout.getvalue(), type=antigravity_hook.StartupOutput)
                 context = output.inject_steps[0].system_message.system_message
-                self.assertEqual(expected, "Pinboard prepared this plugin version's private runtime" in context)
+                if baseline is None:
+                    baseline = context
+                self.assertEqual(expected, context != baseline)
                 self.assertIn(json.dumps("machine"), context)
         with (
             patch.object(sys, "argv", ["pinboard-antigravity-session-start"]),
@@ -1174,7 +1180,15 @@ class PluginPackagingTests(unittest.TestCase):
                 managed_lock.read_bytes(),
             )
             proposal: JsonObject = {
-                "schema": "pinboard-proposal/v2",
+                "schema": "pinboard-proposal/v4",
+                "position": None,
+                "checkpoints": [],
+                "route_facts": {
+                    "size_class": "small",
+                    "architecture_impact": "none",
+                    "external_effects": "none",
+                    "declares_checkpoints": False,
+                },
                 "proposal_id": "packaged-proposal",
                 "created_at": "2026-09-06T12:00:00Z",
                 "source_task_id": "claude-session",

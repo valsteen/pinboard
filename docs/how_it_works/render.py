@@ -107,9 +107,11 @@ Consolidation alone starts no agent and authorizes no merge. Once you start the 
 
 Before any code changes, the agent works through the material open questions with you and writes the result down as a brief.
 
+Each saved item records its size, architecture impact, external effects and whether it has checkpoints. A small change goes from its accepted brief to a worker and one separate candidate reviewer. Larger cross-boundary work retains source preparation and independent brief review. Later instructions follow the saved facts rather than asking the agent to classify the same work again.
+
 {_picture("ambiguity-closure", "A discussion becomes a shared brief for implementation and review; defects return for correction, while changes to the goal return to a human decision")}
 
-The brief is the single agreement both sides work from. The implementing agent builds against it, runs the checks it names, and submits the exact change with its evidence. A separate coding agent, one that did not write the change, then reviews that exact version against the same brief. For work that crosses architectural boundaries, another agent reviews the brief itself before implementation starts; local work skips that step.
+The brief is the single agreement both sides work from. The implementing agent builds against it, runs the checks it names, and submits the exact change with its evidence. A separate coding agent, one that did not write the change, then reviews that exact version against the same brief. For standard or campaign work that crosses architectural boundaries, another agent reviews the brief itself before implementation starts. Small and local work skip that step; every route retains separate review of the implemented change.
 
 When the reviewer finds an implementation defect, the work returns to the same attempt for correction and another review. When either agent discovers something that would change the product scope, the architecture or compatibility, it stops and brings that decision to you. If you change the agreement, Pinboard replaces the definition and brief before the affected work continues, so review always compares the change with what you actually asked for.
 

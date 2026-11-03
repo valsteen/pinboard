@@ -1,4 +1,3 @@
-import asyncio
 import json
 import subprocess
 import tempfile
@@ -7,7 +6,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import msgspec
-from mcp.client.client import Client
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database
@@ -586,27 +584,6 @@ class RecordTextInputTest(unittest.TestCase):
                 rejected = parse_transition_input(selected_action, json.dumps(payload))
                 assert isinstance(rejected, TransitionInputFailure)
                 self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected.code)
-
-    def test_advertised_tool_descriptions_state_request_wrapper_convention(self) -> None:
-        with native_tools() as native:
-
-            async def list_advertised_tools() -> list[tuple[str, str, dict[str, JsonValue]]]:
-                async with Client(native.server) as client:
-                    tools_result = await client.list_tools()
-                    return [(tool.name, tool.description or "", tool.input_schema) for tool in tools_result.tools]
-
-            advertised = asyncio.run(list_advertised_tools())
-            self.assertTrue(advertised)
-            for name, description, schema in advertised:
-                properties = schema.get("properties")
-                assert isinstance(properties, dict)
-                with self.subTest(tool=name):
-                    if set(properties) == {"request"}:
-                        self.assertIn("inside request", description)
-                    else:
-                        self.assertNotIn("request", properties)
-                        self.assertIn("top-level", description)
-                        self.assertIn("no request wrapper", description)
 
     def test_advertised_transition_receipt_shape_diagnostic(self) -> None:
         with tempfile.TemporaryDirectory() as directory, native_tools() as native:

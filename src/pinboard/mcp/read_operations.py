@@ -42,7 +42,7 @@ from pinboard.application import (
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.ports import WorkStore
 from pinboard.diagnostic_codes import ProducerOnlyCode
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, routing, work_models
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -63,7 +63,8 @@ from pinboard.domain.identifiers import (
     TaskId,
     WorkItemId,
 )
-from pinboard.mcp import common, contracts, execution, host_profiles, tool_names
+from pinboard.domain.ledger import LedgerSnapshot
+from pinboard.mcp import common, contracts, execution, host_profiles, instructions, tool_names
 from pinboard.mcp.contracts import JsonValue
 
 type IntegerBoundaryValue = bool | int | float | str | None
@@ -821,6 +822,16 @@ def _brief_review(  # noqa: C901, PLR0912 - strict inline/file publication and r
                 )
             token.checkpoint()
             checkpoint = selected.accepted_brief.brief.checkpoint
+            current_definition = queries.select_item_definition(
+                store, WorkItemId(selected.accepted_brief.brief.item_id)
+            )
+            if isinstance(current_definition, DecisionFailure):
+                return common._read_failure(
+                    schema,
+                    "BRIEF_INVALID",
+                    f"Cannot verify the brief against its current accepted definition: {current_definition.message}",
+                    current_definition.details,
+                )
             assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
             content: dict[str, JsonValue] = {
                 "schema": schema,
@@ -832,6 +843,7 @@ def _brief_review(  # noqa: C901, PLR0912 - strict inline/file publication and r
                 ).hexdigest(),
                 "brief": msgspec.to_builtins(selected.accepted_brief.brief),
                 "correction": correction,
+                "current_definition": msgspec.to_builtins(current_definition),
                 "state_changed": False,
                 "effect": "unchanged",
                 "retry": "safe-to-repeat",
@@ -1156,6 +1168,10 @@ def _action_failure_details(
     project_root: str,
     work_root: str,
 ) -> FailureDetails:
+    if failure.code in {DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED, DecisionFailureCode.ITEM_DEFINITION_INVALID}:
+        if failure.details is None:
+            raise RuntimeError("Route recovery requires the exact current definition facts.")
+        return failure.details
     observations = (
         FailureFact("role", role.value),
         FailureFact("lease_id", lease_id),
@@ -1225,14 +1241,29 @@ def _action_failure_details(
             raise RuntimeError(f"Unsupported action-discovery failure '{failure.code.value}'.")
 
 
+def _action_roots(request: contracts.ActionsRequest) -> DurableRoots:
+    """The intake advisory needs no saved board; all state-backed actions keep the initialized-root boundary."""
+    if (
+        isinstance(request, contracts.ProjectActionsRequest)
+        and request.action_id is not None
+        and request.action_id.kind == decision_models.ActionKind.CREATE_PROPOSAL
+        and request.action_id.subject == "ledger"
+    ):
+        resolve_source_checkout_root(Path(request.project_root))
+        work = Path(request.work_root).absolute()
+        return DurableRoots(work.parent, (work.name,))
+    return common._resolve_durable(request.project_root, request.work_root)
+
+
 def _read_actions(
     raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
+    profile: host_profiles.HostProfile,
 ) -> execution.OperationResult:
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.ActionsEnvelope, strict=True).request
-        durable = common._resolve_durable(request.project_root, request.work_root)
+        durable = _action_roots(request)
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return common._read_failure(
             "pinboard-mcp-actions-result/v1", "ACTIONS_INVALID", f"Cannot discover actions: {error}", None
@@ -1308,7 +1339,8 @@ def _read_actions(
         )
     token.checkpoint()
     projected_actions: list[JsonValue] = []
-    for action in selected:
+    instruction_reader = instructions.load_catalog()
+    for action in selected.actions:
         if selected_action is None and isinstance(action, decision_models.CompleteAction):
             continue
         projected = _mcp_action(
@@ -1318,6 +1350,10 @@ def _read_actions(
             request.work_root,
             focused=selected_action is not None,
             artifacts=ArtifactRepository(durable),
+            snapshot=selected.snapshot,
+            caller_role=selected_role,
+            profile=profile,
+            instruction_reader=instruction_reader,
         )
         if isinstance(projected, DecisionFailure):
             return common._read_failure(
@@ -1343,10 +1379,18 @@ def _mcp_action(
     work_root: str,
     *,
     focused: bool,
+    snapshot: LedgerSnapshot,
+    caller_role: decision_models.Role,
+    profile: host_profiles.HostProfile,
+    instruction_reader: instructions.InstructionReader,
     artifacts: ArtifactRepository | None = None,
 ) -> DecisionResult[dict[str, JsonValue]]:
     """Project a legal action; focused ending detail adds its current decision evidence."""
+    anchor = routing.action_definition(snapshot, action)
     projected = actions.project_action(action, include_input_contract=True)
+    procedure = instructions.action_instructions(
+        instruction_reader, action.kind, caller_role, profile, None if anchor is None else anchor.definition.route_facts
+    )
     if not isinstance(projected, action_models.ActionView):
         raise RuntimeError("MCP action discovery requires an inline input contract.")
     input_contract = projected.input_contract
@@ -1396,6 +1440,7 @@ def _mcp_action(
             projected.semantics,
             completion,
             contracts.action_invocation(projected, project_root, work_root),
+            procedure,
         )
     else:
         record = contracts.ActionView(
@@ -1408,6 +1453,7 @@ def _mcp_action(
             projected.semantics,
             input_contract,
             contracts.action_invocation(projected, project_root, work_root),
+            procedure,
         )
     content = msgspec.to_builtins(record)
     assert isinstance(content, dict)
@@ -1696,6 +1742,7 @@ def _attempt_inspection_success(
             "safe-to-repeat",
             (),
             _review_launch_invocations(project_root, work_root, continuation),
+            instructions.native_document("recovery-launch"),
         )
     content = msgspec.to_builtins(record)
     assert isinstance(content, dict)

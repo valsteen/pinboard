@@ -118,6 +118,7 @@ def definition_anchor(
                 ),
             ),
             (),
+            route_facts=None,
         ),
     )
 
@@ -170,6 +171,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 (),
                 (
                     "return-for-correction:target-1",
+                    "review-candidate:target-1",
                     "accept-checkpoint:target-1",
                     "accept-review-and-continue:target-1",
                     "complete:target-1",

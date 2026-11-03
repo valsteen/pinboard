@@ -16,7 +16,7 @@ from pinboard.application import (
     work_brief_models,
 )
 from pinboard.domain import authority_models, decision_models, history, work_models
-from pinboard.domain.errors import DescribedCode
+from pinboard.domain.errors import DecisionFailure, DescribedCode
 from pinboard.domain.identifiers import (
     ActionId,
     ArtifactRefId,
@@ -655,6 +655,7 @@ class AttemptContextItemFacts:
     state: NonterminalItemState
     current_definition_revision: int
     current_definition_digest: str
+    route_facts: work_models.RouteFacts | None
     unsatisfied_dependencies: tuple[work_models.Dependency, ...]
     current_replacement_revision: int | None
     replacement_resolved: bool
@@ -1810,111 +1811,22 @@ class ParallelPreviewView(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     excluded: tuple[ParallelItemView, ...]
 
 
-class WorkObligationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    obligation_id: str
-    statement: str
-    deferral_policy: work_models.ObligationDeferralPolicy
-
-
-class OriginWorkObligationView(WorkObligationView, frozen=True, forbid_unknown_fields=True):
-    origin: history.ObligationOriginPayload | None
-
-
-class WorkItemDefinitionView(
-    msgspec.Struct,
-    tag="pinboard-work-item-definition/v2",
-    tag_field="schema",
-    frozen=True,
-    forbid_unknown_fields=True,
-    omit_defaults=True,
-):
-    title: str
-    objective: str
-    hypothesis: str
-    evidence: tuple[str, ...]
-    scope: tuple[str, ...]
-    non_scope: tuple[str, ...]
-    acceptance_criteria: tuple[str, ...]
-    dependencies: tuple[history.DependencyPayload, ...]
-    effect: str
-    unlock: str
-    checkout_policy: work_models.CheckoutPolicy
-    obligations: tuple[WorkObligationView, ...]
-    checkpoints: tuple[str, ...] = ()
-
-
-class OriginWorkItemDefinitionView(
-    WorkItemDefinitionView,
-    tag="pinboard-work-item-definition/v3",
-    tag_field="schema",
-    frozen=True,
-    forbid_unknown_fields=True,
-    omit_defaults=True,
-):
-    obligations: tuple[OriginWorkObligationView, ...]
-
-
-type DefinitionView = (
-    WorkItemDefinitionView | OriginWorkItemDefinitionView | definition_compatibility.HistoricalDefinitionV1
-)
+type DefinitionView = history.DefinitionPayload | definition_compatibility.HistoricalDefinitionV1
 
 
 def project_definition(definition: stored_state.StoredDefinition) -> DefinitionView:
+    """Project validated stored facts through their canonical boundary shape.
+
+    Invalid internal definition facts violate the persistence invariant and retain their diagnosis.
+    """
     match definition:
         case definition_compatibility.HistoricalDefinitionV1():
             return definition
         case work_models.WorkItemDefinition():
-            checkpoints = tuple(str(value) for value in definition.checkpoints)
-            if any(isinstance(value, work_models.CarriedWorkObligation) for value in definition.obligations):
-                return OriginWorkItemDefinitionView(
-                    definition.title,
-                    definition.objective,
-                    definition.hypothesis,
-                    definition.evidence,
-                    definition.scope,
-                    definition.non_scope,
-                    definition.acceptance_criteria,
-                    tuple(history.dependency_payload(value) for value in definition.dependencies),
-                    definition.effect,
-                    definition.unlock,
-                    definition.checkout_policy,
-                    tuple(
-                        OriginWorkObligationView(
-                            value.obligation_id,
-                            value.statement,
-                            value.deferral_policy,
-                            history.ObligationOriginPayload(
-                                value.origin.item_id, value.origin.definition_revision, value.origin.obligation_id
-                            )
-                            if isinstance(value, work_models.CarriedWorkObligation)
-                            else None,
-                        )
-                        for value in definition.obligations
-                    ),
-                    checkpoints,
-                )
-            return WorkItemDefinitionView(
-                definition.title,
-                definition.objective,
-                definition.hypothesis,
-                definition.evidence,
-                definition.scope,
-                definition.non_scope,
-                definition.acceptance_criteria,
-                tuple(history.dependency_payload(value) for value in definition.dependencies),
-                definition.effect,
-                definition.unlock,
-                definition.checkout_policy,
-                tuple(
-                    WorkObligationView(
-                        obligation.obligation_id,
-                        obligation.statement,
-                        obligation.deferral_policy,
-                    )
-                    for obligation in definition.obligations
-                ),
-                checkpoints,
-            )
+            projected = history.work_item_definition_payload(definition)
+            if isinstance(projected, DecisionFailure):
+                raise ValueError(projected.message)
+            return projected
         case _ as unreachable:
             assert_never(unreachable)
 

@@ -180,6 +180,15 @@ def _render_item(
                 + checkpoint_details
             )
             policy_details = f"- Checkout policy: {accepted.checkout_policy.value}\n"
+            route = accepted.route_facts
+            policy_details += (
+                "- Route classification: required before route-dependent work\n"
+                if route is None
+                else f"- Size class: {route.size_class.value}\n"
+                f"- Architecture impact: {route.architecture_impact.value}\n"
+                f"- External effects: {route.external_effects.value}\n"
+                f"- Declares checkpoints: {'yes' if route.declares_checkpoints else 'no'}\n"
+            )
             format_details = ""
         case definition_compatibility.HistoricalDefinitionV1():
             execution_details = ""
@@ -539,6 +548,7 @@ class _BoardPageScope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     obligations: tuple[str, ...] | None
     evidence: tuple[str, ...]
     checkout_policy: str | None
+    route_facts: history.RouteFactsPayload | None
 
 
 class _BoardPageItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -774,10 +784,10 @@ def _list_field_label(field: query_models.DefinitionListField) -> str:
             assert_never(unreachable)
 
 
-def _obligation_text(value: work_models.DefinitionObligation | query_models.WorkObligationView) -> str:
+def _obligation_text(value: work_models.DefinitionObligation | history.WorkObligationPayload) -> str:
     origin = ""
     if (
-        isinstance(value, work_models.CarriedWorkObligation | query_models.OriginWorkObligationView)
+        isinstance(value, work_models.CarriedWorkObligation | history.OriginObligationPayload)
         and value.origin is not None
     ):
         origin = f" [origin: {value.origin.item_id}@{value.origin.definition_revision}/obligation/{value.origin.obligation_id}]"
@@ -814,7 +824,7 @@ def _scope_revision(value: query_models.BoardScopeRevision) -> _BoardPageScopeRe
 def _page_scope(item: query_models.BoardItem) -> _BoardPageScope:
     definition = item.definition
     match definition:
-        case query_models.WorkItemDefinitionView():
+        case history.WorkItemDefinitionPayload() | history.ClassifiedWorkItemDefinitionPayload():
             obligations: tuple[str, ...] | None = tuple(_obligation_text(value) for value in definition.obligations)
             checkout_policy: str | None = definition.checkout_policy.value
         case definition_compatibility.HistoricalDefinitionV1():
@@ -832,6 +842,7 @@ def _page_scope(item: query_models.BoardItem) -> _BoardPageScope:
         obligations,
         definition.evidence,
         checkout_policy,
+        definition.route_facts if isinstance(definition, history.ClassifiedWorkItemDefinitionPayload) else None,
     )
 
 
@@ -1306,6 +1317,12 @@ _BOARD_PAGE_TAIL = """</script>
     listSection("Obligations", scope.obligations);
     listSection("Evidence", scope.evidence);
     if (scope.checkout_policy !== null) { field(inner, "Checkout policy", scope.checkout_policy); }
+    if (scope.route_facts !== null) {
+      field(inner, "Size class", scope.route_facts.size_class);
+      field(inner, "Architecture impact", scope.route_facts.architecture_impact);
+      field(inner, "External effects", scope.route_facts.external_effects);
+      field(inner, "Declares checkpoints", scope.route_facts.declares_checkpoints ? "yes" : "no");
+    } else { field(inner, "Route classification", "required before route-dependent work"); }
   }
 
   function card(item) {

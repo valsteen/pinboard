@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import unittest
 from contextlib import closing, redirect_stdout
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -31,7 +32,7 @@ from pinboard.mcp import server as mcp_server
 from tests.decision_support import BOARD, project_decision_snapshot
 from tests.domain_support import expect_success
 from tests.native_support import call_advertised_tool
-from tests.support import SQLITE_NOW, LedgerOnlyStatusArtifacts
+from tests.support import SQLITE_NOW, TEST_ROUTE_FACTS, LedgerOnlyStatusArtifacts
 
 FIXTURES = (
     ("intake", "54630c601c4dea4a6647453d6a678dd51a516c1b034cb5257ab7ed7e19a99ff3"),
@@ -41,6 +42,39 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "released_v6"
 
 
 class ReleasedV6CompatibilityTest(unittest.TestCase):
+    def _classify_selected_definition(self, store: SQLiteWorkStore, item_id: str) -> None:
+        snapshot = project_decision_snapshot(store.validated_snapshot(), SQLITE_NOW)
+        current = snapshot.definition(WorkItemId(item_id))
+        assert current is not None
+        project = decision_models.ActorAuthority(
+            decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
+        )
+        action = next(
+            value
+            for value in expect_success(available_actions(snapshot, project))
+            if isinstance(value, decision_models.ReviseWorkItemAction) and value.capability.subject == item_id
+        )
+        expect_success(
+            service.decide_and_commit_transition(
+                store,
+                decision_models.ReviseWorkItemCommand(
+                    action,
+                    work_models.ReviseWorkItemDefinitionInput(
+                        current.revision,
+                        current.digest,
+                        TaskId("classification-owner"),
+                        "Record this fixture's explicitly selected standard route.",
+                        replace(current.definition, route_facts=TEST_ROUTE_FACTS),
+                    ),
+                ),
+                SQLITE_NOW,
+                read_authorization_time=lambda: SQLITE_NOW,
+                actor_task_id=TaskId("classification-owner"),
+                actor_host_id=HostId("local"),
+                dependency_brief_pins=(),
+            )
+        )
+
     def _copy_fixture(self, name: str, destination: Path) -> SQLiteWorkStore:
         shutil.copyfile(FIXTURE_ROOT / f"{name}.sqlite3", destination)
         assert migrate_v6_database(destination)
@@ -155,6 +189,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                 item_id = "intake-work" if name == "intake" else "work-c"
                 attempt_id = f"{item_id}-1"
                 raw_state = "intake" if name == "intake" else "ready"
+                self._classify_selected_definition(store, item_id)
                 before_counts = self._raw_counts(database)
                 prepared = expect_success(
                     service.start_preparation(
@@ -269,6 +304,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             database = Path(temporary) / "state.sqlite3"
             store = self._copy_fixture("ready", database)
+            self._classify_selected_definition(store, "zz-proposal-a")
             project_actor = decision_models.ActorAuthority(
                 decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
             )

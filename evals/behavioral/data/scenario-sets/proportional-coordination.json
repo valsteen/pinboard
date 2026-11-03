@@ -1,0 +1,26 @@
+{
+  "name": "proportional-coordination",
+  "scenarios": [
+    {
+      "id": "pilot-focused-question",
+      "sha256": "4b0051a146a302311047cdc3f8fda5a975606593d4a7de87a93729b2a07fe9cb"
+    },
+    {
+      "id": "pilot-small-saved-change",
+      "sha256": "a336200bb8d9b09f48ec99efd5c97bbfbb87d7a192f277c9eca9bc639197911f"
+    },
+    {
+      "id": "pilot-correction-recovery",
+      "sha256": "4d500955b1adaca33f73f409e56a5711553c7588af15572cf2ff12f19f20e3b6"
+    },
+    {
+      "id": "s17-paused-choice-recorded",
+      "sha256": "79aece4a4d3ccce26f511fd4ce88d0c1de1eff7d7f79e6aa5e83da218a723f5b"
+    },
+    {
+      "id": "s29-step-done-with-same-item-work",
+      "sha256": "13729b2623357c6f38cd977462e01d4f9d9fcd369f3ee84292773d786d668d10"
+    }
+  ],
+  "targeted_rules": ["P8", "P11", "N1"]
+}

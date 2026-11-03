@@ -9,7 +9,7 @@ from pinboard.adapters.sqlite import lifecycle
 from pinboard.adapters.sqlite import obligation_coverage as coverage_storage
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import project_export, query_models, stored_state
-from pinboard.domain import work_models
+from pinboard.domain import history, work_models
 from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
@@ -31,8 +31,15 @@ class ObligationCoverageTest(CheckpointPackageSupport):
         if source is not None:
             value.update(
                 {
-                    "schema": "pinboard-proposal/v3",
+                    "schema": "pinboard-proposal/v5",
                     "position": None,
+                    "checkpoints": [],
+                    "route_facts": {
+                        "size_class": "small",
+                        "architecture_impact": "none",
+                        "external_effects": "none",
+                        "declares_checkpoints": False,
+                    },
                     "relation": {
                         "kind": "planned-replacement",
                         "item": source,
@@ -66,9 +73,9 @@ class ObligationCoverageTest(CheckpointPackageSupport):
         definition: JsonObject = msgspec.to_builtins(current.definition)
         definition["obligations"] = list(obligations)
         definition["schema"] = (
-            "pinboard-work-item-definition/v3"
+            "pinboard-work-item-definition/v5"
             if any("origin" in value for value in obligations)
-            else "pinboard-work-item-definition/v2"
+            else "pinboard-work-item-definition/v4"
         )
         return self.transition_result(
             fixture,
@@ -199,7 +206,7 @@ class ObligationCoverageTest(CheckpointPackageSupport):
                 for value in exported.definition_revisions
                 if value.item_id == "replacement-work" and value.revision == 1
             )
-            assert isinstance(retained.definition, query_models.OriginWorkItemDefinitionView)
+            assert isinstance(retained.definition, history.ClassifiedOriginWorkItemDefinitionPayload)
             self.assertEqual(carries[0], msgspec.to_builtins(retained.definition.obligations[0]))
             view = (fixture.work / "views" / "items" / "replacement-work.md").read_text()
             self.assertIn("source-work@1/obligation/first", view)
@@ -228,6 +235,8 @@ class ObligationCoverageTest(CheckpointPackageSupport):
                     definition: JsonObject = msgspec.to_builtins(current.definition)
                     definition["dependencies"] = targets
                     definition["checkpoints"] = checkpoints
+                    route = self.json_object(definition["route_facts"])
+                    definition["route_facts"] = {**route, "declares_checkpoints": bool(checkpoints)}
                     return self.transition_result(
                         selected,
                         self.project_action(selected, f"revise-item:{item}"),

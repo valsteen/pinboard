@@ -14,6 +14,7 @@ from pinboard.application import (
     query_models,
     released_v6_compatibility,
     stored_state,
+    work_brief_models,
 )
 from pinboard.domain import decision_models, work_models
 from pinboard.domain import initiatives as initiative_models
@@ -299,7 +300,9 @@ class ProjectExportCrossBoundaryReviewBasis(
     reviewed_authority_set_sha256: str
 
 
-type ProjectExportReviewBasis = ProjectExportLocalReviewBasis | ProjectExportCrossBoundaryReviewBasis
+type ProjectExportReviewBasis = (
+    ProjectExportLocalReviewBasis | ProjectExportCrossBoundaryReviewBasis | work_brief_models.SmallWorkReviewBasis
+)
 
 
 class ProjectExportCheckpointPackageV3(

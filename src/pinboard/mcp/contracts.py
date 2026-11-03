@@ -23,6 +23,7 @@ from pinboard.application import (
 from pinboard.domain import authority_models, decision_models, ordering
 from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
 from pinboard.domain.history import DependencyPayload, Identity, RecordText
+from pinboard.mcp.instruction_models import ActionInstructions
 
 type JsonScalar = bool | int | float | str | None
 
@@ -209,6 +210,8 @@ class PrReviewSuccess(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     unreviewed_head: str | None
     close: pr_reviews.ReviewClose | None
     available_actions: tuple[Literal["start", "review-brief", "observe", "round", "close"], ...]
+    instructions: ActionInstructions
+    reviewer_startup_document: dispatch_models.NativeInstruction | None
     remote_freshness: Literal["unverified"]
     state_changed: bool
     effect: Literal["committed", "unchanged"]
@@ -1707,6 +1710,14 @@ class ActionUnavailable(RejectedReadResult, frozen=True):
     mismatches: tuple[FailureMismatch, ...]
 
 
+class ActionRouteClassificationRequired(RejectedReadResult, frozen=True):
+    schema: Literal["pinboard-mcp-actions-result/v1"]
+    code: Literal["ROUTE_CLASSIFICATION_REQUIRED"]
+    retry: Literal["correct-input"]
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
+    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
+
+
 class AttemptLeaseRequired(RejectedReadResult, frozen=True):
     schema: Literal["pinboard-mcp-actions-result/v1"]
     code: diagnostic_codes.AttemptLeaseRequiredCode
@@ -1873,6 +1884,12 @@ def action_invocation_tool(
             | decision_models.ActionKind.CONSOLIDATE
             | decision_models.ActionKind.CONTINUE
             | decision_models.ActionKind.INSPECT
+            | decision_models.ActionKind.PREPARE
+            | decision_models.ActionKind.CREATE_PROPOSAL
+            | decision_models.ActionKind.PREVIEW_PARALLEL
+            | decision_models.ActionKind.ORDER
+            | decision_models.ActionKind.INSPECT_INITIATIVE
+            | decision_models.ActionKind.REVIEW_CANDIDATE
             | decision_models.ActionKind.REPORT_BLOCKER
         ):
             return None
@@ -1952,6 +1969,7 @@ class ActionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     semantics: action_models.ActionSemanticsView
     input_contract: action_models.InputContractView
     invocation: ActionInvocation
+    instructions: ActionInstructions
 
     def __post_init__(self) -> None:
         identity = self.action_id
@@ -2164,6 +2182,7 @@ _ACTIVE_CONTINUATION_ACTION_KINDS = (
     decision_models.ActionKind.REVISE_ITEM,
 )
 _REVIEW_CONTINUATION_ACTION_KINDS = (
+    decision_models.ActionKind.REVIEW_CANDIDATE,
     decision_models.ActionKind.COMPLETE,
     decision_models.ActionKind.RETURN_FOR_CORRECTION,
     decision_models.ActionKind.ACCEPT_CHECKPOINT,
@@ -2432,6 +2451,12 @@ class NonterminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, froz
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
     review_launch: ReviewLaunchInvocations | None
+    launch_recovery: Annotated[
+        dispatch_models.NativeInstruction,
+        msgspec.Meta(
+            description="Read before native launch or launch-response recovery; host activity is not observed by Pinboard."
+        ),
+    ]
 
     def __post_init__(self) -> None:
         _require_fixed_state_changed(self)
@@ -2776,6 +2801,12 @@ def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tu
             decision_models.ActionKind.CONTINUE
             | decision_models.ActionKind.DISPATCH
             | decision_models.ActionKind.INSPECT
+            | decision_models.ActionKind.PREPARE
+            | decision_models.ActionKind.CREATE_PROPOSAL
+            | decision_models.ActionKind.PREVIEW_PARALLEL
+            | decision_models.ActionKind.ORDER
+            | decision_models.ActionKind.INSPECT_INITIATIVE
+            | decision_models.ActionKind.REVIEW_CANDIDATE
             | decision_models.ActionKind.REPORT_BLOCKER
         ):
             return ()
@@ -3301,6 +3332,7 @@ class BriefReviewStatusResult(_UnchangedResult, msgspec.Struct, frozen=True, for
     checkpoint_sha256: Sha256
     reviewed_authority_set_sha256: Sha256
     correction: BriefReviewCorrection
+    current_definition: query_models.ItemDefinition
     retry: Literal["safe-to-repeat"]
     state_changed: bool
     effect: Literal["unchanged"]
@@ -3397,6 +3429,12 @@ class PublishedJobReady(_VariableStateChangedResult, msgspec.Struct, frozen=True
     status: Literal["ready"]
     prompt_reference: dispatch_models.PromptReferenceView
     native_launch: dispatch_models.NativeLaunchEnvelope
+    launch_recovery: Annotated[
+        dispatch_models.NativeInstruction,
+        msgspec.Meta(
+            description="Read before native launch or launch-response recovery; host activity is not observed by Pinboard."
+        ),
+    ]
     state_changed: bool
     effect: Literal["unchanged", "committed"]
     retry: Literal["safe-to-repeat", "do-not-retry"]
@@ -3777,6 +3815,7 @@ ACTIONS_RESULT_TYPES = (
     CloseActionsSuccess,
     ActionsInvalid,
     ActionUnavailable,
+    ActionRouteClassificationRequired,
     AttemptLeaseRequired,
     ExecutorBusyResult,
 )

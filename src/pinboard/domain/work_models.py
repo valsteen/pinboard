@@ -88,6 +88,43 @@ class CheckoutSelection(Enum):
     ISOLATED = "isolated"
 
 
+class SizeClass(Enum):
+    SMALL = "small"
+    STANDARD = "standard"
+    CAMPAIGN = "campaign"
+
+    @property
+    def requires_cross_boundary_brief_review(self) -> bool:
+        match self:
+            case SizeClass.SMALL:
+                return False
+            case SizeClass.STANDARD | SizeClass.CAMPAIGN:
+                return True
+            case _ as unreachable:
+                assert_never(unreachable)
+
+
+class ArchitectureImpact(Enum):
+    NONE = "none"
+    ACKNOWLEDGED_LIMITATION = "acknowledged-limitation"
+    NEW_DECISION = "new-decision"
+
+
+class ExternalEffects(Enum):
+    NONE = "none"
+    PUBLISH = "publish"
+    MERGE = "merge"
+    EXTERNAL_SERVICE = "external-service"
+
+
+@dataclass(frozen=True, slots=True)
+class RouteFacts:
+    size_class: SizeClass
+    architecture_impact: ArchitectureImpact
+    external_effects: ExternalEffects
+    declares_checkpoints: bool
+
+
 class ObligationDeferralPolicy(Enum):
     ALLOWED = "allowed"
     FORBIDDEN = "forbidden"
@@ -447,6 +484,7 @@ class WorkItemDefinition:
     checkout_policy: CheckoutPolicy
     obligations: tuple[DefinitionObligation, ...]
     checkpoints: tuple[CheckpointId, ...]
+    route_facts: RouteFacts | None
 
 
 @dataclass(frozen=True, slots=True)

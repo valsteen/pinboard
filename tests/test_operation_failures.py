@@ -22,6 +22,7 @@ from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.errors import ChangedSurface, EffectDisposition, RetryDisposition
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, ReviewId
 from pinboard.mcp import execution as mcp_execution
+from pinboard.mcp import host_profiles
 from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import read_operations as mcp_reads
 from tests.decision_support import discover_actions
@@ -134,6 +135,7 @@ class OperationFailureTest(unittest.TestCase):
                         }
                     },
                     mcp_execution.CancellationToken(),
+                    profile=host_profiles.HostProfile.UNMEASURED,
                 ).content
             self.assertEqual("ATTEMPT_LEASE_REQUIRED", rejected["code"])
             self.assertEqual("reacquire-authority", rejected["retry"])

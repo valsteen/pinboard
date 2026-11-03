@@ -820,6 +820,10 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
     attempt = facts.attempt
     if not isinstance(attempt, query_models.NonterminalAttemptContextFacts):
         return unavailable
+    if attempt.work_item.route_facts is None:
+        return _review_job_failure(
+            f"Item '{attempt.work_item_id}' has no recorded route facts. Read its complete current definition and explicitly classify size_class, architecture_impact, external_effects and declares_checkpoints through revise-item before review; then follow ordinary stale-brief rebind. Historical evidence remains readable."
+        )
     reference = attempt.brief_reference
     brief_bytes = read_reference(work_root, reference)
     brief = work_briefs.decode_canonical_work_brief(brief_bytes)

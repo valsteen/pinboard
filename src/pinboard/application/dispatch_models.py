@@ -138,30 +138,40 @@ class AntigravityLaunchArguments(msgspec.Struct, frozen=True, forbid_unknown_fie
     prompt: Annotated[str, msgspec.Meta(min_length=1)]
 
 
+class NativeInstruction(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    path: Annotated[str, msgspec.Meta(min_length=1)]
+    sha256: Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
+    size_bytes: Annotated[int, msgspec.Meta(ge=1, le=46080)]
+    read: Literal["one-complete-native-read"]
+
+
 class CodexNativeLaunchEnvelope(
     msgspec.Struct, tag="codex", tag_field="runtime", frozen=True, forbid_unknown_fields=True
 ):
-    schema: Literal["pinboard-native-agent-launch/v2"]
+    schema: Literal["pinboard-native-agent-launch/v3"]
     tool: Literal["spawn_agent"]
     background: bool
+    startup_document: NativeInstruction
     arguments: CodexLaunchArguments
 
 
 class ClaudeNativeLaunchEnvelope(
     msgspec.Struct, tag="claude-code", tag_field="runtime", frozen=True, forbid_unknown_fields=True
 ):
-    schema: Literal["pinboard-native-agent-launch/v2"]
+    schema: Literal["pinboard-native-agent-launch/v3"]
     tool: Literal["Agent"]
     background: bool
+    startup_document: NativeInstruction
     arguments: ClaudeLaunchArguments
 
 
 class AntigravityNativeLaunchEnvelope(
     msgspec.Struct, tag="antigravity", tag_field="runtime", frozen=True, forbid_unknown_fields=True
 ):
-    schema: Literal["pinboard-native-agent-launch/v2"]
+    schema: Literal["pinboard-native-agent-launch/v3"]
     tool: Literal["invoke_subagent"]
     background: bool
+    startup_document: NativeInstruction
     arguments: AntigravityLaunchArguments
 
 

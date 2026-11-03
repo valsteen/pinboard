@@ -250,6 +250,12 @@ def action_input_model(kind: decision_models.ActionKind) -> InputModel | None:  
             | decision_models.ActionKind.CONTINUE
             | decision_models.ActionKind.DISPATCH
             | decision_models.ActionKind.INSPECT
+            | decision_models.ActionKind.PREPARE
+            | decision_models.ActionKind.CREATE_PROPOSAL
+            | decision_models.ActionKind.PREVIEW_PARALLEL
+            | decision_models.ActionKind.ORDER
+            | decision_models.ActionKind.INSPECT_INITIATIVE
+            | decision_models.ActionKind.REVIEW_CANDIDATE
             | decision_models.ActionKind.REPORT_BLOCKER
         ):
             return None
@@ -390,8 +396,15 @@ def _validate_action_view(
         if (subject_revision, lease_id, generation) != (None, None, None):
             raise ValueError("observer actions cannot carry mutation or lease authority")
     elif authorization == "project":
-        if subject_revision is None or lease_id is not None or generation is not None:
-            raise ValueError("project actions require a subject revision and no lease")
+        if (
+            lease_id is not None
+            or generation is not None
+            or (
+                subject_revision is None
+                and expected.lifecycle_effect != decision_models.LifecycleEffect.NO_LIFECYCLE_CHANGE
+            )
+        ):
+            raise ValueError("project mutations require a subject revision; project actions carry no lease")
     elif subject_revision is None or lease_id is None or generation is None:
         raise ValueError("leased actions require subject revision, lease id, and generation")
     if input_contract is not None and (input_contract.action_kind != kind or input_contract.semantics != semantics):

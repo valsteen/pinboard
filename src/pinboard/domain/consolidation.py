@@ -225,7 +225,13 @@ def _revision_changes(
 
 
 def _new_campaign(
-    plan: Plan, definition: work_models.WorkItemDefinition, digest: str, live_count: int, actor: TaskId, now: datetime
+    plan: Plan,
+    definition: work_models.WorkItemDefinition,
+    digest: str,
+    live_count: int,
+    actor: TaskId,
+    now: datetime,
+    route_facts: work_models.RouteFacts,
 ) -> proposal_models.ProposalCreationDecision:
     intake = proposal_models.ProposalIntake(
         ProposalId(plan.campaign_id),
@@ -243,6 +249,7 @@ def _new_campaign(
         definition.checkout_policy,
         definition.obligations,
         definition.checkpoints,
+        route_facts,
         live_count + 1,
     )
     return proposal_models.ProposalCreationDecision(
@@ -358,12 +365,19 @@ def decide(
     if isinstance(revisions, DecisionFailure):
         return revisions
     if plan.create:
+        route_facts = campaign_definition.route_facts
+        if route_facts is None:
+            return DecisionFailure(
+                DecisionFailureCode.ITEM_DEFINITION_INVALID,
+                "A new campaign definition requires explicit recorded route facts.",
+                None,
+            )
         if introduces_dependency_cycle(graph, plan.campaign_id, external_waits):
             return DecisionFailure(
                 DecisionFailureCode.ITEM_DEPENDENCY_CYCLE, "Campaign dependencies introduce a cycle.", None
             )
         campaign: proposal_models.ProposalCreationDecision | DefinitionRevisionDecision = _new_campaign(
-            plan, campaign_definition, digest, live_count, actor, now
+            plan, campaign_definition, digest, live_count, actor, now, route_facts
         )
         dependent_revisions = revisions
     else:

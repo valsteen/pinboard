@@ -151,6 +151,12 @@ def installed_code_catalog() -> CodeCatalogIndex:
     for action in decision_models.ActionKind:
         if action not in (
             decision_models.ActionKind.DISPATCH,
+            decision_models.ActionKind.PREPARE,
+            decision_models.ActionKind.CREATE_PROPOSAL,
+            decision_models.ActionKind.PREVIEW_PARALLEL,
+            decision_models.ActionKind.ORDER,
+            decision_models.ActionKind.INSPECT_INITIATIVE,
+            decision_models.ActionKind.REVIEW_CANDIDATE,
             decision_models.ActionKind.REPORT_BLOCKER,
         ):
             add(action.value, "transition receipt", "receipt-event", _receipt_meaning(action.value))

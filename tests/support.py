@@ -106,6 +106,14 @@ SQLITE_OBLIGATIONS = (
         work_models.ObligationDeferralPolicy.FORBIDDEN,
     ),
 )
+TEST_ROUTE_FACTS = work_models.RouteFacts(
+    work_models.SizeClass.STANDARD,
+    work_models.ArchitectureImpact.NONE,
+    work_models.ExternalEffects.NONE,
+    False,
+)
+
+
 SQLITE_DEFINITION = work_models.WorkItemDefinition(
     "Work work-a",
     "Make the state explicit.",
@@ -120,6 +128,7 @@ SQLITE_DEFINITION = work_models.WorkItemDefinition(
     work_models.CheckoutPolicy.COORDINATOR_SELECTED,
     SQLITE_OBLIGATIONS,
     (),
+    TEST_ROUTE_FACTS,
 )
 _SQLITE_DEFINITION_DIGEST = work_item_definition_digest(SQLITE_DEFINITION)
 assert isinstance(_SQLITE_DEFINITION_DIGEST, str)
@@ -157,6 +166,7 @@ def test_definition(item: WorkItemId) -> tuple[work_models.WorkItemDefinition, s
                 ),
             ),
             (),
+            route_facts=None,
         )
     else:
         definition = work_models.WorkItemDefinition(
@@ -173,6 +183,7 @@ def test_definition(item: WorkItemId) -> tuple[work_models.WorkItemDefinition, s
             SQLITE_DEFINITION.checkout_policy,
             SQLITE_DEFINITION.obligations,
             SQLITE_DEFINITION.checkpoints,
+            SQLITE_DEFINITION.route_facts,
         )
     digest = work_item_definition_digest(definition)
     assert isinstance(digest, str)

@@ -90,6 +90,14 @@ READ_ONLY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
 )
 
 
+def _client_profile(ctx: Context) -> host_profiles.HostProfile:
+    try:
+        client_params = ctx.request_context.session.client_params
+    except ValueError:
+        client_params = None
+    return host_profiles.select(client_params)
+
+
 async def _compact_json_text(ctx: ServerRequestContext[Any, Any], call_next: CallNext) -> HandlerResult:
     """Compact only an equivalent JSON companion, retaining the SDK's raw metadata."""
     result = await call_next(ctx)
@@ -132,7 +140,7 @@ async def _single_startup_representation(ctx: ServerRequestContext[Any, Any], ca
             assert_never(unreachable)
 
 
-def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registration
+def create_server(  # noqa: C901 - explicit installed SDK tool registration
     executor: execution.BoundedExecutor,
     diagnostics: execution.Diagnostics,
     capture: execution.SemanticCapture | execution.AutomaticCapture | None = None,
@@ -143,85 +151,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
         log_level="ERROR",
         middleware=[_compact_json_text, _single_startup_representation],
         instructions=(
-            "Pinboard coordinates local repository work: intake, canonical briefs, status, legal actions, "
-            "own leases, dispatch, independent review and recovery.\n\n"
-            "For another project's workflow, use advertised tools, verified artifacts and loaded public skills; "
-            "do not inspect installed Pinboard implementation or database internals to derive missing protocol values. "
-            "Stop the affected operation and report its exact missing input and known effects; use supported recovery. "
-            "Explicitly assigned Pinboard development or human-authorized investigation may inspect its source.\n\n"
-            "A project's saved work lives in its board at <project_root>/.pinboard. Before answering about or acting "
-            "on saved work, including quick read-only status and planning, load the complete pinboard main skill "
-            "through this runtime's native skill loader or native read_file when it delivers the complete body "
-            "through the final section (including ByteOffset=46080 continuation above 46,080 bytes in Antigravity); "
-            "otherwise, when native complete reading is unavailable or refused, use pinboard_startup_text file-start "
-            "with its actual resolved absolute SKILL.md path. Follow each exact continuation under request until null, one page per outer response without aggregation. EOF establishes delivery only. Then load only its reference for the requested phase; status uses status and "
-            "selection. Use exact item/attempt reads for known work. Use pinboard_overview for board-wide "
-            "discovery with max_items 25 and continuation null, following every continuation at one revision "
-            "before complete-board claims or priority changes. A partial page establishes no absence. "
-            "If no board exists, say that nothing was saved and offer "
-            "Pinboard setup instead of claiming to remember. Before reading or editing source for a saved item, load "
-            "the pinboard skill and follow its start, pause and review route; do not implement or commit a saved "
-            "item outside it unless the human chooses that. For a paused item, read pinboard_item_status operation "
-            "item and bring its pause_reason decision to the human before resuming. Call board work done only when "
-            "the board records it complete; a merge is not completion or review. Close through pinboard_close only "
-            "with the human's explicit decision in their own words as human_decision. Use done for eligible "
-            "unstarted work. An absorbed item with an unresolved current planned replacement to an existing "
-            "non-dropped item closes as superseded after all live dependents move to the replacement or its "
-            "declared checkpoints; this also permits closing its preserved paused or blocked attempt. "
-            "Active or review attempts cannot close, and superseded closure claims no successful completion. "
-            "Other accepted attempts retain their review path; successful completion requires a reviewer "
-            "commissioned through pinboard_review_job has its ready verdict recorded. Commission that review only when "
-            "the required commissioned evidence is missing or invalid; otherwise reuse the valid ready record "
-            "through fresh attempt inspection and the completion contract. Never pause or block work to "
-            "approximate a refused or denied close. Cancellation is separate: only an explicit human cancellation request permits pinboard_cancel preview, then stop for a separate explicit confirmation of that exact item and its shown consequences before confirm. All sharing clients must use a cancellation-aware build before first cancellation. Never infer cancellation from cleanup, completion, ambiguity or silence. "
-            "An active implementation request covers worker submission, separate candidate review and in-scope "
-            "correction through the loaded workflow without another general review approval. Explicit pauses, "
-            "scope changes, missing capabilities, mandated executors and runtime access, integration and terminal "
-            "completion retain their own authority. Recover a lost successful worker/reviewer launch response or "
-            "failed pre-verification launch through fresh launch-response recovery in preparation-and-dispatch: "
-            "inspect current bindings and native activity, recover exact accepted correction evidence if needed, "
-            "then request a fresh validated dispatch or review-job response and launch its new arguments exactly. "
-            "Never edit native arguments, resume an invalid launch, blindly replay committed effects or launch a "
-            "competing worker. After your own source change, report the result and ask only for genuinely missing "
-            "authority to integrate or complete; never use close to bypass successful-completion review. Reach board state only "
-            "through these tools, never through Bash, Python or .pinboard/state.sqlite3.\n\n"
-            "Before current-attempt review claims, read pinboard_item_status operation item and its review_verdict. "
-            "That verdict selects the nonterminal attempt; terminal none and overview omission do not deny "
-            "historical review. For what agreed work is left, read that attempt's current_checkpoint, whose "
-            "remaining_work is the current brief's exact recorded text. A checkpoint-accepted verdict names the last "
-            "accepted checkpoint: until a rebind or revised-brief resume both name that same checkpoint and only "
-            "remaining_work is left; afterwards current_checkpoint names the new, unaccepted one. For historical candidate or merged-commit coverage, verify selected available "
-            "evidence for that exact subject and time; retain verified coverage and qualify unavailable or "
-            "conflicting coverage. An informal favorable note cannot authorize ready recording or completion. "
-            "Preserve the effect of explicit human retention or deferral: product absence does not reopen it. "
-            "Distinguish unresolved landing from retained work and merged-unreviewed work from implementation "
-            "in flight. Before any worker claim, read "
-            "pinboard_attempt_authority operation status for the exact attempt. Preparation authority is a "
-            "different authority; its release or revocation never proves worker release or revocation. A rejected "
-            "or malformed read provides no observation: keep unavailable facts unknown. Every separate decision "
-            "asked of the human carries its own recommendation or default beside that question.\n\n"
-            "For intake or coordination, load the complete existing workflow skill before constructing "
-            "attributed calls: pinboard-intake for new work, or pinboard for coordination of existing work. "
-            "Use this runtime's advertised native skill loader or native read_file when it delivers the complete body "
-            "through the final section (including ByteOffset=46080 continuation above 46,080 bytes in Antigravity); "
-            "otherwise, when native complete reading is unavailable or refused, use pinboard_startup_text file-start "
-            "with that skill's actual resolved absolute SKILL.md path and follow pages as above. Follow that owner's sequencing and runtime identity instructions.\n\n"
-            "Runtime adapter guidance is the pinboard skill's references/runtime-adapters.md plus the current runtime's "
-            "own reference: references/runtime-codex.md for Codex, references/runtime-claude-code.md for Claude Code, "
-            "or references/runtime-antigravity.md for Antigravity. Request startup-text pages with max_batch_bytes "
-            '"host-profile"; the server sizes them for this host.\n\n'
-            "For deferred tools, find the required Pinboard operation in this host's actual announced tool "
-            "inventory. Select its full advertised callable name, including the connector prefix, not its "
-            "short wire name. Resolve each host's names independently. If the full name is unknown, use "
-            "supported native keyword discovery. If exact selection finds no match, reconcile the selected "
-            "name with the advertised inventory before declaring the tool unavailable.\n\n"
-            "Inspect the selected tool's negotiated strict schema and invoke that native callable with exact "
-            "project_root and work_root. When its sole top-level property is request, keep the selected leaf inside "
-            "that request object instead of flattening it; when its schema lists top-level fields without request, pass "
-            "those arguments directly at the top level without a request wrapper. These instructions grant no identity, authority or permissions. "
-            "A missing required MCP tool stops its operation; retired agent-workflow CLI commands are not "
-            "substitutes. Automatic trace preflight may return TRACE_PREFLIGHT_FAILED before the target callback; "
-            "read its exact resource, repair, target_ran and auxiliary-effect fields before retrying."
+            "Use the single native Pinboard coordinator core or the verified launch's role/runtime document. Connected tools, attribution and verified bytes grant no permission or authority."
         ),
     )
     request_ids = itertools.count(1)
@@ -313,29 +243,12 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
     @server.tool(
         name=STARTUP_TEXT_TOOL,
         description=(
-            "Read one exact accepted startup artifact or caller-selected absolute skill/reference path in verified UTF-8 pages. "
-            "Put all fields inside request. Use artifact-start with the producing response's exact artifact tuple, or file-start with the resolved path. "
-            "Each success binds complete source SHA-256/byte size and a character range. Follow continuation verbatim "
-            "under request until null; concatenate text in order. EOF establishes delivery only, never understanding, "
-            "readiness or authority. Every page rereads and verifies the complete selected input. max_batch_bytes "
-            '"host-profile" sizes pages for the connected host: a recognized host uses its page size in '
-            "~/.config/pinboard/hosts.config, and the host's first read seeds its missing key with the measured "
-            "default, as contributor-trace settings are seeded; that per-user settings write is the only write this "
-            "read-only tool makes. Any other client gets 8000 bytes. An integer is a ceiling under that size. The "
-            "budget prices the compact SDK tool "
-            "result as sent; arbitrary host wrappers and aggregation remain outside it. Pages and continuations report "
-            "the effective budget. Emit one page per outer response; never collect pages into one unbounded output. "
-            "Invalid input, an unusable host setting or a budget too small for metadata returns an explicit diagnosis. "
-            "No file discovery, source/ledger/artifact/trace-settings writes or optional invocation capture."
+            "Read one verified oversized evidence record in bounded UTF-8 pages; startup never uses this tool. Keep exact artifact/file identity, byte size, digest and contiguous character ranges and follow each returned continuation unchanged to null. Missing, changed or unreadable bytes reject with truthful unchanged effects and exact diagnosis. An evidence read grants no readiness, authority, permission or native launch."
         ),
         annotations=READ_ONLY_ANNOTATIONS,
     )
     async def startup_read(request: dict[str, JsonValue], ctx: Context) -> dict[str, JsonValue]:
-        try:
-            client_params = ctx.request_context.session.client_params
-        except ValueError:  # An in-process call outside a client connection has no initialize clientInfo.
-            client_params = None
-        profile = host_profiles.select(client_params)
+        profile = _client_profile(ctx)
         return await execution._run_request(
             executor,
             diagnostics,
@@ -350,17 +263,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
     @server.tool(
         name=FIXTURE_REVIEW_TOOL,
         description=(
-            "Read two exact SHA-256-bound JSON-string fixture envelopes as a decoded field-change view. "
-            "Put all fields inside request. Relative paths select from project_root; returned source identities and continuations use absolute paths. "
-            "Supply one repeat_text/repeat_count recipe; compact only its uniquely corresponding identical body, "
-            "retaining changed frames and surrounding text. Literal source data cannot act as a marker. "
-            "Pages (including exact continuation) and resource rejections fit usable max_batch_bytes (up to 16000). "
-            "An unusable budget or invalid request returns its diagnosis even when that budget cannot fit it. "
-            "Concatenate page text in order to read complete JSON Lines changes; character offsets preserve UTF-8. "
-            "Follow continuation verbatim under request. Sources are fully reverified on every page. "
-            "Whole inputs and the selected view remain materialized in memory. A projection is presentation only: "
-            "full-byte verification does not establish semantic review, readiness or lifecycle authority. "
-            "Never writes source, artifacts, ledger, settings or optional invocation traces."
+            "Read two exact SHA-256-bound JSON-string fixture envelopes as a decoded field-change view. Put all fields inside request. Relative paths select from project_root; returned source identities and continuations use absolute paths. Supply one repeat_text/repeat_count recipe; compact only its uniquely corresponding identical body, retaining changed frames and surrounding text. Literal source data cannot act as a marker. Pages (including exact continuation) and resource rejections fit usable max_batch_bytes (up to 16000). An unusable budget or invalid request returns its diagnosis even when that budget cannot fit it. Concatenate page text in order to read complete JSON Lines changes; character offsets preserve UTF-8. Follow continuation verbatim under request. Sources are fully reverified on every page. Whole inputs and the selected view remain materialized in memory. A projection is presentation only: full-byte verification does not establish semantic review, readiness or lifecycle authority. Never writes source, artifacts, ledger, settings or optional invocation traces."
         ),
         annotations=READ_ONLY_ANNOTATIONS,
     )
@@ -412,18 +315,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
     @server.tool(
         name=BRIEF_REVIEW_TOOL,
         description=(
-            "Publish independent needs-correction evidence, or read the verified accepted brief and latest findings. "
-            "Put all fields inside request. Status takes request:{operation:'status',project_root,work_root,brief_artifact_ref_id}. "
-            "Both successful status variants supply accepted_brief_sha256, checkpoint_sha256 and "
-            "reviewed_authority_set_sha256 from verified accepted bytes; copy these exact initial-review bindings. "
-            "Supply independent reviewer identity and judgments separately. Local checkpoints do not use brief review. "
-            "Missing fields or capability stop the affected review: report the exact subject, missing input and "
-            "known effects to the human/coordinator without inspecting installed implementation. "
-            "Corrupt accepted bytes return ARTIFACT_BYTES_INVALID and do-not-retry. "
-            "Status callback effects are unchanged; optional trace preflight/capture can write separately. "
-            "Neither findings nor their absence grants readiness, lifecycle change or authority."
-            " publish-file keeps roots and brief_artifact_ref_id inline and replaces review with exact review_path "
-            "and raw review_sha256, decoded as the same strict negative review."
+            "Publish independent needs-correction evidence, or read the verified accepted brief and latest findings. Put all fields inside request. Status takes request:{operation:'status',project_root,work_root,brief_artifact_ref_id}. Both successful status variants supply accepted_brief_sha256, checkpoint_sha256 and reviewed_authority_set_sha256 from verified accepted bytes; copy these exact initial-review bindings. Supply independent reviewer identity and judgments separately. Local checkpoints do not use brief review. Missing fields or capability stop the affected review: report the exact subject, missing input and known effects to the human/coordinator without inspecting installed implementation. Corrupt accepted bytes return ARTIFACT_BYTES_INVALID and do-not-retry. Status callback effects are unchanged; optional trace preflight/capture can write separately. Neither findings nor their absence grants readiness, lifecycle change or authority. publish-file keeps roots and brief_artifact_ref_id inline and replaces review with exact review_path and raw review_sha256, decoded as the same strict negative review."
         ),
     )
     async def brief_review(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -441,13 +333,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
     @server.tool(
         name=ITEM_STATUS_TOOL,
         description=(
-            "Read one current Pinboard item status, map an exact branch to the items and attempts that own it, "
-            "or check whether an item's reviewed change is present by content in a named local Git target. "
-            "Put all fields inside request. Use operation item and its review_verdict for current-attempt review claims; terminal none and overview "
-            "omission do not deny historical exact coverage. Qualify unavailable or conflicting historical evidence. "
-            "The item leaf's current_checkpoint names the current brief's checkpoint and its exact recorded "
-            "remaining_work; it matches a checkpoint-accepted verdict's checkpoint until a rebind or revised-brief "
-            "resume replaces the brief."
+            "Read one current Pinboard item status, map an exact branch to the items and attempts that own it, or check whether an item's reviewed change is present by content in a named local Git target. Put all fields inside request. Use operation item and its review_verdict for current-attempt review claims; terminal none and overview omission do not deny historical exact coverage. Qualify unavailable or conflicting historical evidence. The item leaf's current_checkpoint names the current brief's checkpoint and its exact recorded remaining_work; it matches a checkpoint-accepted verdict's checkpoint until a rebind or revised-brief resume replaces the brief."
         ),
     )
     async def item_status(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -466,7 +352,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
         name=PR_REVIEW_TOOL,
         description="Discover and record a human-owned PR review brief, observed heads, exact-head rounds, and human-directed closure without an implementation attempt. Put all fields inside request. File leaves start-file, review-brief-file and round-file retain the inline controls and replace only brief, brief_review or round with the matching <field>_path and <field>_sha256. Exact selected bytes are verified once and decoded into the same strict record before actor, independence and freshness checks.",
     )
-    async def pr_review(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    async def pr_review(request: dict[str, JsonValue], ctx: Context) -> dict[str, JsonValue]:
         arguments: dict[str, JsonValue] = {"request": request}
         return await execution._run_request(
             executor,
@@ -474,7 +360,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
             next(request_ids),
             PR_REVIEW_TOOL,
             str(request.get("project_root", "")),
-            partial(pr_review_operations.execute, arguments),
+            partial(pr_review_operations.execute, arguments, profile=_client_profile(ctx)),
             arguments=arguments,
             capture=capture,
         )
@@ -572,28 +458,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
     @server.tool(
         name=OVERVIEW_TOOL,
         description=(
-            "Read one compact discovery page in saved order without changing durable state. "
-            "Arguments are top-level project_root, work_root, max_items (1-25), and continuation (null to start), with no request wrapper. "
-            "Each complete SDK envelope is at most 8000 bytes, including duplicate text and metadata. "
-            "Follow returned continuation unchanged at the same revision until null for complete-board claims "
-            "or priority order; stale continuation requires restarting from null. Partial pages prove no absence. "
-            "Labels are prefixes of at most 160 characters; dependencies are counts. "
-            "Global next_unstarted names the first unstarted identity, even outside this page. "
-            "Known work uses exact item status/definition or attempt inspection directly. Item status supplies "
-            "full dependency targets/reasons, proposal origin, replacement warning, pauses and review; "
-            "item definition supplies the complete title, effect and unlock. Discovery grants no authority. "
-            "work_root is <project_root>/.pinboard unless the user named another board. "
-            "Files under .pinboard/views are generated copies, not authority. "
-            "Before answering, including quick read-only status, load the complete pinboard main skill through "
-            "a native loader or native read_file that delivers its complete body through the final section "
-            "(including ByteOffset=46080 continuation above 46,080 bytes in Antigravity), or otherwise (when native "
-            "complete reading is unavailable or refused) read its actual resolved SKILL.md completely through "
-            "pinboard_startup_text file-start paging, then its status-and-selection "
-            "reference. Overview omits review_verdict; preparation is not worker authority: read "
-            "pinboard_item_status operation item for current-attempt review claims; terminal none is not historical "
-            "denial. Verify selected historical coverage when needed, qualify unknowns and preserve settled "
-            "human retention decisions. Read pinboard_attempt_authority operation "
-            "status for worker claims. Use pinboard-intake to save new work."
+            "Read one same-revision discovery page; exact top-level roots, max_items 1-25, continuation:null to start. Follow continuations through null; stale traversal restarts. Partial pages prove no absence. Known work uses exact item status and definition."
         ),
         meta={"anthropic/alwaysLoad": True},
     )
@@ -623,14 +488,16 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
     )
     async def action_discovery(
         request: dict[str, JsonValue],
+        ctx: Context,
     ) -> dict[str, JsonValue]:
+        profile = _client_profile(ctx)
         return await execution._run_request(
             executor,
             diagnostics,
             next(request_ids),
             ACTIONS_TOOL,
             str(request.get("project_root", "")),
-            partial(read_operations._read_actions, {"request": request}),
+            partial(read_operations._read_actions, {"request": request}, profile=profile),
             arguments={"request": request},
             capture=capture,
         )
@@ -638,10 +505,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
     @server.tool(
         name=ATTEMPT_INSPECT_TOOL,
         description=(
-            "Inspect one exact Pinboard attempt, its accepted brief, evidence references, and continuation. "
-            "Arguments are top-level project_root, work_root, attempt_id and reconciliation (no request wrapper). "
-            "Supply reconciliation:null for ordinary inspection or exact outer-owned repository observations "
-            "for one resumed reviewed-work continuation."
+            "Inspect one exact Pinboard attempt, its accepted brief, evidence references, and continuation. Arguments are top-level project_root, work_root, attempt_id and reconciliation (no request wrapper). Supply reconciliation:null for ordinary inspection or exact outer-owned repository observations for one resumed reviewed-work continuation."
         ),
     )
     async def attempt_inspect(
@@ -725,9 +589,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
     @server.tool(
         name=BRIEF_LOOKUP_TOOL,
         description=(
-            "Recover the verified accepted brief receipt for the original exact attempt_id and artifact_revision. "
-            "Arguments are top-level project_root, work_root, attempt_id and artifact_revision (no request wrapper). "
-            "Read-only, including when optional tracing is enabled; does not publish, bind or certify readiness."
+            "Recover the verified accepted brief receipt for the original exact attempt_id and artifact_revision. Arguments are top-level project_root, work_root, attempt_id and artifact_revision (no request wrapper). Read-only, including when optional tracing is enabled; does not publish, bind or certify readiness."
         ),
         annotations=READ_ONLY_ANNOTATIONS,
     )
@@ -850,22 +712,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
     @server.tool(
         name=CLOSE_TOOL,
         description=(
-            "Close one unstarted Pinboard item as done, or an absorbed item with an unresolved planned replacement "
-            "as superseded, on the human's explicit decision. Superseded closure requires moving live dependents "
-            "to the replacement or its checkpoints first and also closes a preserved paused or blocked attempt. "
-            "To abandon work, use pinboard_cancel preview and separate exact-item human confirmation. Never close in "
-            "the same turn as your own source change for that item unless the human explicitly asked you to close "
-            "it; otherwise report the change and ask the human first. Claude Code v2.1.199 or later asks the human "
-            "to confirm every call; Codex and earlier Claude Code versions may not ask. Antigravity asks through "
-            "Pinboard's PreToolUse force_ask decision, so this tool is unavailable in headless agy runs; when that "
-            "hook does not run, Antigravity's own approval settings decide. "
-            "Arguments are top-level project_root, work_root, receipt, payload, actor_task_id "
-            "and actor_host_id (no request wrapper, no role). receipt contains ONLY action_id:{kind:'close',"
-            "subject:<item_id>} and subject_revision from the close action pinboard_actions returned. payload is "
-            "{outcome:'done'|'superseded', reason:<one line>, human_decision:<the human's explicit close decision in "
-            "their own words, one line>}. If you do not have the human's own words, ask the human and stop; never "
-            "write them yourself. If this call is denied, report that the human must confirm the close and seek no "
-            "other route: no shell or CLI close, pause, block, defer or other transition."
+            "Close one unstarted Pinboard item as done, or an absorbed item with an unresolved planned replacement as superseded, on the human's explicit decision. Superseded closure requires moving live dependents to the replacement or its checkpoints first and also closes a preserved paused or blocked attempt. To abandon work, use pinboard_cancel preview and separate exact-item human confirmation. Never close in the same turn as your own source change for that item unless the human explicitly asked you to close it; otherwise report the change and ask the human first. Claude Code v2.1.199 or later asks the human to confirm every call; Codex and earlier Claude Code versions may not ask. Antigravity asks through Pinboard's PreToolUse force_ask decision, so this tool is unavailable in headless agy runs; when that hook does not run, Antigravity's own approval settings decide. Arguments are top-level project_root, work_root, receipt, payload, actor_task_id and actor_host_id (no request wrapper, no role). receipt contains ONLY action_id:{kind:'close',subject:<item_id>} and subject_revision from the close action pinboard_actions returned. payload is {outcome:'done'|'superseded', reason:<one line>, human_decision:<the human's explicit close decision in their own words, one line>}. If you do not have the human's own words, ask the human and stop; never write them yourself. If this call is denied, report that the human must confirm the close and seek no other route: no shell or CLI close, pause, block, defer or other transition."
         ),
         meta={"anthropic/requiresUserInteraction": True},
     )
@@ -900,90 +747,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
     @server.tool(
         name=DISPATCH_TOOL,
         description=(
-            "Publish verified Pinboard worker launch instructions or independently assessed replacement-brief readiness; creates no worker or worker authority. "
-            "If compact host type metadata shows unknown, read the complete construction fields below; "
-            "do not guess unspecified inputs or infer missing capability or a regression from that display. "
-            "Action discovery omits payload_schema for dispatch because it has no lifecycle-transition payload. "
-            "Construct its separate launch request from the fields below.\n"
-            "Arguments are top-level project_root, work_root and dispatch (no request wrapper). Unknown fields reject.\n"
-            "The six worker-launch leaves require kind, receipt, checkpoint_id, environment and prompt; replacement-readiness has its distinct fields below. "
-            "receipt contains ONLY action_id:{kind:'dispatch',subject:<attempt_id>} and subject_revision "
-            "copied from the fresh project dispatch action returned by pinboard_actions, not the whole action. "
-            "checkpoint_id is the accepted brief's stable checkpoint ID. Use explicit prompt:null for "
-            "canonical prompt construction. A supplied prompt string must match the canonical prompt.\n"
-            "environment requires all ten fields: schema:'pinboard-dispatch/v2', runtime:'codex', "
-            "'claude-code' or 'antigravity', background:<boolean>, checkout:<exact source checkout>, branch:<recorded branch>, "
-            "starting_revision:<accepted attempt base>, host_id:<trusted "
-            "runtime host>, fresh_context:true, lease_ttl_seconds:<positive integer>, permissions:<array of "
-            "already-authorized 'repository-read', 'repository-write', 'network', 'external-write' or "
-            "'live-application' declarations>. Declarations grant no runtime access.\n"
-            "kind:'ordinary' has only those common fields; a cross-boundary checkpoint reuses its exact "
-            "accepted ready review. kind:'reviewed' additionally requires review_id "
-            "and brief_review:<complete independent ready WorkBriefReview>. kind:'correction' additionally "
-            "requires review_id, correction_history_id:<positive ID of the selected current canonical "
-            "return-for-correction/v1 receipt>, and brief_review:<CorrectionSourceReview>, not an initial review. "
-            "kind:'reuse-correction' takes the same correction fields with brief_review:<ReusedCoverageCorrectionReview> "
-            "only when the accepted brief, every reviewed source, and accepted ready review are unchanged. "
-            "kind:'local-correction' takes the same correction fields with "
-            "brief_review:<LocalCorrectionSourceReview> for a local checkpoint.\n"
-            "File counterparts are reviewed-file, correction-file, reuse-correction-file, local-correction-file, "
-            "candidate-correction-file and replacement-readiness-file. Replace only brief_review with "
-            "brief_review_path:<exact selected file> and brief_review_sha256:<raw SHA-256>; keep the corresponding "
-            "leaf's controls inline, including current_candidate for replacement-readiness-file. "
-            "candidate-correction-file contains the complete outer CurrentCorrectionReview, including boundary, "
-            "source_review and current_candidate, for either boundary variant. Selected bytes are verified once "
-            "before exact decoding and the same independent checks.\n"
-            "review_id is a caller-chosen label, not an ID that Pinboard issues or any context read returns: one path "
-            "component (nonempty; no '/', CR, LF or NUL; not '.' or '..'), for example 'correction-review-1'. It only "
-            "names the preserved rejected evidence when supplied review evidence differs from evidence already accepted "
-            "for the same review subject; first publication and byte-identical reuse ignore it. Retry identical evidence "
-            "with the same label. Differing evidence rejects as a do-not-retry review collision, preserves the later "
-            "evidence at the returned selector and changes no lifecycle; use a new label for each distinct submission.\n"
-            "kind:'replacement-readiness' requires ONLY kind, receipt, checkpoint_id, review_id, correction_history_id, "
-            "brief_review:<full CorrectionSourceReview>, and current_candidate:<assessed working-tree identity or clean commit>. "
-            "Select the latest returned round made historical by replacement/rebind; pinboard_return_context historical selection "
-            "supplies its original receipt and starting snapshot. Independently assess the current replacement brief and candidate. "
-            "Pass no environment or prompt. Success publishes proof and plain readiness only, with no worker launch, authority, "
-            "lifecycle change or implementation verdict; protect the current candidate and commission its complete review next.\n"
-            "WorkBriefReview requires schema:'pinboard-work-brief-review/v3', attempt_id, checkpoint_id, "
-            "accepted_brief_sha256, checkpoint_sha256, reviewed_authority_set_sha256, reviewer_task_id, status:'complete', "
-            "verdict:'ready', and nonempty coverage. Copy the three digest bindings from pinboard_brief_review "
-            "status for the exact accepted brief reference. Bind the current checkpoint and ordered reviewed "
-            "authority set; the reviewer must be independent. Every coverage record requires authority_id, "
-            "family, owner, verdict:'covered' and counterexample_result. owner is exactly one of "
-            "{disposition:'contract',contract_invariant:<text>}, {disposition:'acceptance',criterion:<positive "
-            "integer>}, {disposition:'deferred',deferral_id:<ID>} or {disposition:'not-applicable',reason:<text>}, "
-            "matching the brief's complete coverage. Needs-correction evidence is not ready evidence.\n"
-            "candidate-correction takes all worker-launch fields plus review_id, correction_history_id and "
-            "brief_review:{schema:'pinboard-current-correction-source-review/v1',boundary:'cross-boundary' or 'local',"
-            "source_review:<full CorrectionSourceReview or LocalCorrectionSourceReview>,current_candidate:{"
-            "candidate:<observed working-tree-state identity>,omitted_untracked_paths:<sorted exact omitted names>}}. "
-            "Read pinboard_return_context current-candidate selection and obtain fresh independent assessment first. "
-            "It permits reviewed tracked diff/path drift while preserving current return and returned branch/HEAD/base; "
-            "historical selection supplies provenance only for replacement readiness, never current correction authority.\n"
-            "CorrectionSourceReview requires schema:'pinboard-correction-source-review/v1', "
-            "contract_review:<current effective WorkBriefReview>, starting_candidate:<exact accepted "
-            "candidate identity>, correction_input:{reason:<exact selected correction reason>}, and "
-            "assessment:<nonempty JSON string containing independent prose assessment>. starting_candidate requires role:'candidate', "
-            "kind:'evidence', key, revision:<positive integer>, selector, content_sha256 and "
-            "size_bytes:<nonnegative integer>. Preserve candidate/history binding and fresh source review.\n"
-            "ReusedCoverageCorrectionReview requires schema:'pinboard-correction-source-review/v2', "
-            "accepted_brief_sha256:<exact accepted brief digest>, reviewer_task_id:<independent task>, "
-            "starting_candidate:<exact accepted candidate identity>, correction_input:{reason:<exact selected "
-            "correction reason>}, and assessment:<nonempty JSON string containing fresh independent candidate-bound prose>. "
-            "Changed or missing ready coverage requires kind:'correction' with a complete new contract review.\n"
-            "LocalCorrectionSourceReview requires schema:'pinboard-local-correction-source-review/v1', "
-            "accepted_brief_sha256:<exact accepted brief digest>, reviewer_task_id:<independent task>, "
-            "starting_candidate:<exact accepted candidate identity>, "
-            "correction_input:{reason:<exact selected correction reason>}, and assessment:<nonempty JSON string containing independent candidate-bound prose>.\n"
-            "The negotiated strict schema and decoder remain authoritative. Dispatch publication may "
-            "change immutable-artifact, accepted-artifact-reference and ledger surfaces, never lifecycle "
-            "or worker authority; honor returned effect/retry facts. On ready, call the exact returned "
-            "native_launch.tool with exactly native_launch.arguments. Do not add, remove or rewrite an "
-            "argument. prompt_reference remains independently required immutable provenance, not an "
-            "alternative launch input. Missing native launch capability stops execution; publication alone "
-            "is not a launch. A worker launched from other arguments is invalid: stop it and use a fresh "
-            "native launch from the returned recipe."
+            "Publish verified Pinboard worker launch instructions or independently assessed replacement-brief readiness; creates no worker or worker authority. If compact host type metadata shows unknown, read the complete construction fields below; do not guess unspecified inputs or infer missing capability or a regression from that display. Action discovery omits payload_schema for dispatch because it has no lifecycle-transition payload. Construct its separate launch request from the fields below.\nArguments are top-level project_root, work_root and dispatch (no request wrapper). Unknown fields reject.\nThe six worker-launch leaves require kind, receipt, checkpoint_id, environment and prompt; replacement-readiness has its distinct fields below. receipt contains ONLY action_id:{kind:'dispatch',subject:<attempt_id>} and subject_revision copied from the fresh project dispatch action returned by pinboard_actions, not the whole action. checkpoint_id is the accepted brief's stable checkpoint ID. Use explicit prompt:null for canonical prompt construction. A supplied prompt string must match the canonical prompt.\nenvironment requires all ten fields: schema:'pinboard-dispatch/v2', runtime:'codex', 'claude-code' or 'antigravity', background:<boolean>, checkout:<exact source checkout>, branch:<recorded branch>, starting_revision:<accepted attempt base>, host_id:<trusted runtime host>, fresh_context:true, lease_ttl_seconds:<positive integer>, permissions:<array of already-authorized 'repository-read', 'repository-write', 'network', 'external-write' or 'live-application' declarations>. Declarations grant no runtime access.\nkind:'ordinary' has only those common fields; a cross-boundary checkpoint reuses its exact accepted ready review. kind:'reviewed' additionally requires review_id and brief_review:<complete independent ready WorkBriefReview>. kind:'correction' additionally requires review_id, correction_history_id:<positive ID of the selected current canonical return-for-correction/v1 receipt>, and brief_review:<CorrectionSourceReview>, not an initial review. kind:'reuse-correction' takes the same correction fields with brief_review:<ReusedCoverageCorrectionReview> only when the accepted brief, every reviewed source, and accepted ready review are unchanged. kind:'local-correction' takes the same correction fields with brief_review:<LocalCorrectionSourceReview> for a local checkpoint.\nFile counterparts are reviewed-file, correction-file, reuse-correction-file, local-correction-file, candidate-correction-file and replacement-readiness-file. Replace only brief_review with brief_review_path:<exact selected file> and brief_review_sha256:<raw SHA-256>; keep the corresponding leaf's controls inline, including current_candidate for replacement-readiness-file. candidate-correction-file contains the complete outer CurrentCorrectionReview, including boundary, source_review and current_candidate, for either boundary variant. Selected bytes are verified once before exact decoding and the same independent checks.\nreview_id is a caller-chosen label, not an ID that Pinboard issues or any context read returns: one path component (nonempty; no '/', CR, LF or NUL; not '.' or '..'), for example 'correction-review-1'. It only names the preserved rejected evidence when supplied review evidence differs from evidence already accepted for the same review subject; first publication and byte-identical reuse ignore it. Retry identical evidence with the same label. Differing evidence rejects as a do-not-retry review collision, preserves the later evidence at the returned selector and changes no lifecycle; use a new label for each distinct submission.\nkind:'replacement-readiness' requires ONLY kind, receipt, checkpoint_id, review_id, correction_history_id, brief_review:<full CorrectionSourceReview>, and current_candidate:<assessed working-tree identity or clean commit>. Select the latest returned round made historical by replacement/rebind; pinboard_return_context historical selection supplies its original receipt and starting snapshot. Independently assess the current replacement brief and candidate. Pass no environment or prompt. Success publishes proof and plain readiness only, with no worker launch, authority, lifecycle change or implementation verdict; protect the current candidate and commission its complete review next.\nWorkBriefReview requires schema:'pinboard-work-brief-review/v3', attempt_id, checkpoint_id, accepted_brief_sha256, checkpoint_sha256, reviewed_authority_set_sha256, reviewer_task_id, status:'complete', verdict:'ready', and nonempty coverage. Copy the three digest bindings from pinboard_brief_review status for the exact accepted brief reference. Bind the current checkpoint and ordered reviewed authority set; the reviewer must be independent. Every coverage record requires authority_id, family, owner, verdict:'covered' and counterexample_result. owner is exactly one of {disposition:'contract',contract_invariant:<text>}, {disposition:'acceptance',criterion:<positive integer>}, {disposition:'deferred',deferral_id:<ID>} or {disposition:'not-applicable',reason:<text>}, matching the brief's complete coverage. Needs-correction evidence is not ready evidence.\ncandidate-correction takes all worker-launch fields plus review_id, correction_history_id and brief_review:{schema:'pinboard-current-correction-source-review/v1',boundary:'cross-boundary' or 'local',source_review:<full CorrectionSourceReview or LocalCorrectionSourceReview>,current_candidate:{candidate:<observed working-tree-state identity>,omitted_untracked_paths:<sorted exact omitted names>}}. Read pinboard_return_context current-candidate selection and obtain fresh independent assessment first. It permits reviewed tracked diff/path drift while preserving current return and returned branch/HEAD/base; historical selection supplies provenance only for replacement readiness, never current correction authority.\nCorrectionSourceReview requires schema:'pinboard-correction-source-review/v1', contract_review:<current effective WorkBriefReview>, starting_candidate:<exact accepted candidate identity>, correction_input:{reason:<exact selected correction reason>}, and assessment:<nonempty JSON string containing independent prose assessment>. starting_candidate requires role:'candidate', kind:'evidence', key, revision:<positive integer>, selector, content_sha256 and size_bytes:<nonnegative integer>. Preserve candidate/history binding and fresh source review.\nReusedCoverageCorrectionReview requires schema:'pinboard-correction-source-review/v2', accepted_brief_sha256:<exact accepted brief digest>, reviewer_task_id:<independent task>, starting_candidate:<exact accepted candidate identity>, correction_input:{reason:<exact selected correction reason>}, and assessment:<nonempty JSON string containing fresh independent candidate-bound prose>. Changed or missing ready coverage requires kind:'correction' with a complete new contract review.\nLocalCorrectionSourceReview requires schema:'pinboard-local-correction-source-review/v1', accepted_brief_sha256:<exact accepted brief digest>, reviewer_task_id:<independent task>, starting_candidate:<exact accepted candidate identity>, correction_input:{reason:<exact selected correction reason>}, and assessment:<nonempty JSON string containing independent candidate-bound prose>.\nThe negotiated strict schema and decoder remain authoritative. Dispatch publication may change immutable-artifact, accepted-artifact-reference and ledger surfaces, never lifecycle or worker authority; honor returned effect/retry facts. On ready, call the exact returned native_launch.tool with exactly native_launch.arguments. Do not add, remove or rewrite an argument. prompt_reference remains independently required immutable provenance, not an alternative launch input. Missing native launch capability stops execution; publication alone is not a launch. A worker launched from other arguments is invalid: stop it and use a fresh native launch from the returned recipe."
         ),
     )
     async def dispatch_job(project_root: str, work_root: str, dispatch: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -1040,15 +804,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
     @server.tool(
         name=REVIEW_JOB_TOOL,
         description=(
-            "Publish one candidate-bound reviewer launch with exact caller-selected historical evidence, or record "
-            "one exact favorable candidate review with kind:'record-ready'. Arguments are top-level project_root, work_root and review (no request wrapper). Launch leaves require runtime:'codex', "
-            "'claude-code' or 'antigravity' and background:<boolean>; record-ready takes neither and returns no native launch. "
-            "record-ready requires reviewer_prompt_sha256: the prompt_reference.sha256 that the launch for this exact "
-            "candidate and result returned, with the reviewer_task_id of the reviewer launched from it. Completion "
-            "requires that recorded review and the same reviewer_task_id. Run separate "
-            "full CLI validation before package reuse. On ready, call the exact returned native_launch.tool "
-            "with exactly native_launch.arguments; do not add, remove or rewrite an argument. A rejection "
-            "publishes no reviewer prompt: correct its precondition and never synthesize a substitute launch."
+            "Publish one candidate-bound reviewer launch with exact caller-selected historical evidence, or record one exact favorable candidate review with kind:'record-ready'. Arguments are top-level project_root, work_root and review (no request wrapper). Launch leaves require runtime:'codex', 'claude-code' or 'antigravity' and background:<boolean>; record-ready takes neither and returns no native launch. record-ready requires reviewer_prompt_sha256: the prompt_reference.sha256 that the launch for this exact candidate and result returned, with the reviewer_task_id of the reviewer launched from it. Completion requires that recorded review and the same reviewer_task_id. Run separate full CLI validation before package reuse. On ready, call the exact returned native_launch.tool with exactly native_launch.arguments; do not add, remove or rewrite an argument. A rejection publishes no reviewer prompt: correct its precondition and never synthesize a substitute launch."
         ),
     )
     async def review_job(project_root: str, work_root: str, review: dict[str, JsonValue]) -> dict[str, JsonValue]:

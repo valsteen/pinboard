@@ -5,7 +5,7 @@ from typing import Annotated, Literal, override
 import msgspec
 
 from pinboard.domain.errors import DecisionFailureCode, FailureDetails
-from pinboard.domain.history import DependencyPayload, OriginObligationPayload, WorkObligationPayload
+from pinboard.domain.history import DependencyPayload, OriginObligationPayload, RouteFactsPayload, WorkObligationPayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +102,7 @@ class _ProposalFields(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     urgency_evidence: ProposalText
     freshness_assumptions: tuple[ProposalText, ...]
     checkout_policy: Literal["main", "isolated", "coordinator-selected"]
+    route_facts: RouteFactsPayload
 
     def __post_init__(self) -> None:
         try:
@@ -122,36 +123,40 @@ class _ProposalFields(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
         return created_at.astimezone(UTC)
 
 
-def _validate_obligations(values: tuple[WorkObligationPayload, ...], checkpoints: tuple[ProposalIdentity, ...]) -> None:
+def _validate_obligations(
+    values: tuple[WorkObligationPayload, ...], checkpoints: tuple[ProposalIdentity, ...], route: RouteFactsPayload
+) -> None:
     obligation_ids = tuple(value.obligation_id for value in values)
     if len(obligation_ids) != len(set(obligation_ids)):
         raise ValueError("obligation identities must be ordered and unique.")
     if len(checkpoints) != len(set(checkpoints)):
         raise ValueError("checkpoints entries must be ordered and unique.")
+    if route.declares_checkpoints != bool(checkpoints):
+        raise ValueError("route_facts.declares_checkpoints must match the declared checkpoints.")
 
 
 class Proposal(
-    _ProposalFields, frozen=True, forbid_unknown_fields=True, tag="pinboard-proposal/v2", tag_field="schema"
+    _ProposalFields, frozen=True, forbid_unknown_fields=True, tag="pinboard-proposal/v4", tag_field="schema"
 ):
     obligations: Annotated[tuple[ProposalObligation, ...], msgspec.Meta(min_length=1)]
-    position: Annotated[int, msgspec.Meta(ge=1)] | None = None
-    checkpoints: tuple[ProposalIdentity, ...] = ()
+    position: Annotated[int, msgspec.Meta(ge=1)] | None
+    checkpoints: tuple[ProposalIdentity, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        _validate_obligations(self.obligations, self.checkpoints)
+        _validate_obligations(self.obligations, self.checkpoints, self.route_facts)
 
 
 class OriginProposal(
-    _ProposalFields, frozen=True, forbid_unknown_fields=True, tag="pinboard-proposal/v3", tag_field="schema"
+    _ProposalFields, frozen=True, forbid_unknown_fields=True, tag="pinboard-proposal/v5", tag_field="schema"
 ):
     position: Annotated[int, msgspec.Meta(ge=1)] | None
     obligations: Annotated[tuple[OriginObligationPayload, ...], msgspec.Meta(min_length=1)]
-    checkpoints: tuple[ProposalIdentity, ...] = ()
+    checkpoints: tuple[ProposalIdentity, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        _validate_obligations(self.obligations, self.checkpoints)
+        _validate_obligations(self.obligations, self.checkpoints, self.route_facts)
 
 
 type ProposalInput = Proposal | OriginProposal

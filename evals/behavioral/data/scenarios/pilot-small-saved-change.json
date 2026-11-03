@@ -1,0 +1,9 @@
+{
+  "id": "pilot-small-saved-change",
+  "title": "Complete a one-line saved documentation change",
+  "world": "full",
+  "world_extra": null,
+  "source": "Coordinator-overhead investigation in Codex chat 01a1a014-d163-7691-9468-1a6e8bee9adb; proposed pilot, not execution authorization.",
+  "ground_truth": "Create a new independent saved item and change only the first Markdown heading of the root README.md to '# Tally CLI' in an isolated checkout. The other ready and active items are unrelated. This changes no product behavior, independent consumer, stored or wire identity, architecture ownership or dependency direction, so the existing local checkpoint path applies. Preserve every other README byte except a necessary line ending at that heading. Complete the supported worker submission and separate candidate review without another general permission request. Leave the result outside main and the item nonterminal. No commit, push, merge, cleanup or terminal completion is authorized. Native evidence and the actual diff must establish delivery; a promised future action or favorable-sounding reply is insufficient.",
+  "turns": [{"human": "Use Pinboard to save and implement this small independent task now: change only the first Markdown heading in the root README.md to '# Tally CLI'. Use a new isolated worktree. Keep the rest of that file and the product unchanged. Run the relevant checks and separate candidate review, continuing through in-scope corrections without another nudge. Leave the reviewed result uncommitted in the worktree; do not push, merge, clean up, or complete the item. Do not start the other queued work.", "before": null}]
+}

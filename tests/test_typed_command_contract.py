@@ -233,6 +233,7 @@ class TypedTransitionContractTest(unittest.TestCase):
                             ),
                         ),
                         (),
+                        route_facts=None,
                     ),
                 ),
             ),

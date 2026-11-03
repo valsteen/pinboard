@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -44,10 +45,47 @@ from pinboard.mcp import server as mcp_server
 from tests import test_correction_source_review, test_dispatch
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import NativeTools, call_advertised_tool, native_tools
+from tests.support import JsonObject
 from tests.work_brief_support import CHECKPOINT_ID, ready_review
 
 
 class McpJobsTest(CheckpointPackageSupport):
+    def test_launch_recovery_is_delivered_by_jobs_and_inspection(self) -> None:
+        project, work, choice = self.dispatch_fixture()
+        worker = call_advertised_tool(
+            "pinboard_dispatch", {"project_root": str(project), "work_root": str(work), "dispatch": choice}
+        )
+        fixture = self.checkpoint_fixture()
+        reviewer = self.review_result(fixture, {"kind": "initial", "candidate_revision": fixture.candidate_revision})
+        inspection = fixture.call_advertised_tool(
+            "pinboard_attempt_inspect",
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": fixture.brief.attempt_id,
+                "reconciliation": None,
+            },
+        )
+        for result in (worker, reviewer, inspection):
+            with self.subTest(schema=result["schema"]):
+                recovery = msgspec.convert(result["launch_recovery"], type=dispatch_models.NativeInstruction)
+                path = Path(recovery.path)
+                body = path.read_bytes()
+                self.assertEqual((len(body), hashlib.sha256(body).hexdigest()), (recovery.size_bytes, recovery.sha256))
+                catalog = json.loads((path.parent.parent / "catalog.json").read_bytes())
+                self.assertEqual(["recovery.launch"], catalog["documents"]["recovery-launch"]["owners"])
+                self.assertEqual("documents/" + path.name, catalog["documents"]["recovery-launch"]["path"])
+        self.assertEqual(worker["launch_recovery"], inspection["launch_recovery"])
+
+    def assert_startup_document(self, launch: JsonObject, role: str, runtime: str) -> None:
+        document = msgspec.convert(launch["startup_document"], type=dispatch_models.NativeInstruction)
+        path = Path(document.path)
+        body = path.read_bytes()
+        self.assertEqual(f"{role}-{runtime}.md", path.name)
+        self.assertEqual(len(body), document.size_bytes)
+        self.assertEqual(hashlib.sha256(body).hexdigest(), document.sha256)
+        self.assertLessEqual(len(body), 46080)
+
     def test_authority_tools_describe_temporary_local_mutation_to_clients(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)
@@ -704,7 +742,8 @@ class McpJobsTest(CheckpointPackageSupport):
         outcome = mcp_jobs._dispatch_job(str(project), str(work), choice, mcp_execution.CancellationToken())
         self.assertEqual("ready", outcome.content["status"])
         launch = self.json_object(outcome.content["native_launch"])
-        self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
+        self.assertEqual("pinboard-native-agent-launch/v3", launch["schema"])
+        self.assert_startup_document(launch, "worker", "codex")
         self.assertEqual("codex", launch["runtime"])
         self.assertEqual("spawn_agent", launch["tool"])
         self.assertFalse(launch["background"])
@@ -720,7 +759,6 @@ class McpJobsTest(CheckpointPackageSupport):
         self.assertNotIn(published_prompt, message)
         self.assertIn(str(work / str(reference["selector"])), message)
         self.assertIn(str(reference["sha256"]), message)
-        self.assertIn("Do not return successful delivery before", message)
         matched = re.search(
             r"call `pinboard_attempt_authority` with (.*?), then `pinboard_actions` with (.*?)\. ", message
         )
@@ -749,7 +787,8 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertEqual("ready", outcome.content["status"])
                 contract_schemas.validate_result("pinboard_dispatch", outcome.content)
                 launch = self.json_object(outcome.content["native_launch"])
-                self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
+                self.assertEqual("pinboard-native-agent-launch/v3", launch["schema"])
+                self.assert_startup_document(launch, "worker", "claude-code")
                 self.assertEqual("claude-code", launch["runtime"])
                 self.assertEqual("Agent", launch["tool"])
                 self.assertEqual(background, launch["background"])
@@ -765,7 +804,6 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertNotIn(published_prompt, prompt)
                 self.assertIn(str(work / str(reference["selector"])), prompt)
                 self.assertIn(str(reference["sha256"]), prompt)
-                self.assertIn("Do not return successful delivery before", prompt)
 
     def test_antigravity_worker_launch_is_complete_fresh_context_and_cannot_request_another_checkout(self) -> None:
         for background in (False, True):
@@ -777,7 +815,8 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertEqual("ready", outcome.content["status"], outcome.content)
                 contract_schemas.validate_result("pinboard_dispatch", outcome.content)
                 launch = self.json_object(outcome.content["native_launch"])
-                self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
+                self.assertEqual("pinboard-native-agent-launch/v3", launch["schema"])
+                self.assert_startup_document(launch, "worker", "antigravity")
                 self.assertEqual("antigravity", launch["runtime"])
                 self.assertEqual("invoke_subagent", launch["tool"])
                 self.assertEqual(background, launch["background"])
@@ -791,7 +830,6 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertNotIn(published_prompt, prompt)
                 self.assertIn(str(work / str(reference["selector"])), prompt)
                 self.assertIn(str(reference["sha256"]), prompt)
-                self.assertIn("Do not return successful delivery before", prompt)
 
     def test_antigravity_review_job_launches_fresh_self_subagent_with_shared_message(self) -> None:
         fixture, _package_id, _correction_id = self.review_job_fixture()
@@ -861,7 +899,7 @@ class McpJobsTest(CheckpointPackageSupport):
                 outcome = native.call_advertised_tool(str(invocation["tool"]), arguments)
                 self.assertEqual("ready", outcome["status"], outcome)
                 launch = self.json_object(outcome["native_launch"])
-                self.assertEqual("pinboard-native-agent-launch/v2", launch["schema"])
+                self.assertEqual("pinboard-native-agent-launch/v3", launch["schema"])
                 self.assertEqual("claude-code", launch["runtime"])
                 self.assertEqual("Agent", launch["tool"])
                 self.assertEqual(background, launch["background"])

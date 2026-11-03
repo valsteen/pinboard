@@ -40,6 +40,7 @@ from pinboard.application import (
     action_models,
     actions,
     authority_operations,
+    dispatch_models,
     queries,
     query_models,
     stored_state,
@@ -68,7 +69,7 @@ from pinboard.domain.errors import (
 )
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HostId, LeaseId, TaskId, WorkItemId
 from pinboard.mcp import common as mcp_common
-from pinboard.mcp import contract_schemas, contracts, tool_names
+from pinboard.mcp import contract_schemas, contracts, host_profiles, instructions, tool_names
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import read_operations as mcp_reads
@@ -1622,7 +1623,7 @@ class McpTransportTest(unittest.TestCase):
             ...,
         ] = (
             (
-                mcp_reads._read_actions,
+                partial(mcp_reads._read_actions, profile=host_profiles.HostProfile.UNMEASURED),
                 {**roots, "role": "project"},
                 (
                     {"lease_id": None},
@@ -1630,7 +1631,7 @@ class McpTransportTest(unittest.TestCase):
                 ),
             ),
             (
-                mcp_reads._read_actions,
+                partial(mcp_reads._read_actions, profile=host_profiles.HostProfile.UNMEASURED),
                 {**roots, "role": "worker", "lease_id": "worker", "generation": 1},
                 (
                     {"generation": True},
@@ -1692,7 +1693,9 @@ class McpTransportTest(unittest.TestCase):
                 invalid.append({"request": inner})
             for raw in invalid:
                 with (
-                    self.subTest(handler=handler.__name__, raw=raw),
+                    self.subTest(
+                        handler=handler.func.__name__ if isinstance(handler, partial) else handler.__name__, raw=raw
+                    ),
                     patch.object(mcp_common, "_resolve_durable") as resolve,
                     patch.object(mcp_reads, "resolve_source_checkout_root") as read_source,
                     patch.object(mcp_mutations, "resolve_source_checkout_root") as mutation_source,
@@ -3254,6 +3257,10 @@ class McpTransportTest(unittest.TestCase):
                             str(_project),
                             str(roots.work_root),
                             focused=False,
+                            snapshot=SQLiteWorkStore(roots.database_path).read_current_action_snapshot(SQLITE_NOW),
+                            profile=host_profiles.HostProfile.UNMEASURED,
+                            caller_role=decision_models.Role.PROJECT,
+                            instruction_reader=instructions.load_catalog(),
                         )
                     ],
                     "state_changed": False,
@@ -3315,6 +3322,7 @@ class McpTransportTest(unittest.TestCase):
             "safe-to-repeat",
             (),
             None,
+            dispatch_models.NativeInstruction("/instructions/recovery.md", "c" * 64, 1, "one-complete-native-read"),
         )
         inspection_result = msgspec.json.decode(msgspec.json.encode(inspection))
         assert isinstance(inspection_result, dict)
@@ -3610,6 +3618,7 @@ class McpTransportTest(unittest.TestCase):
                         }
                     },
                     token,
+                    profile=host_profiles.HostProfile.UNMEASURED,
                 ).content
             )
         )
@@ -3930,13 +3939,17 @@ class McpTransportTest(unittest.TestCase):
             (
                 mcp_server.ACTIONS_TOOL,
                 mcp_reads._read_actions(
-                    {"request": {"project_root": common[0], "work_root": common[1], "role": "observer"}}, token
+                    {"request": {"project_root": common[0], "work_root": common[1], "role": "observer"}},
+                    token,
+                    profile=host_profiles.HostProfile.UNMEASURED,
                 ),
             ),
             (
                 mcp_server.ACTIONS_TOOL,
                 mcp_reads._read_actions(
-                    {"request": {"project_root": common[0], "work_root": common[1], "role": "project"}}, token
+                    {"request": {"project_root": common[0], "work_root": common[1], "role": "project"}},
+                    token,
+                    profile=host_profiles.HostProfile.UNMEASURED,
                 ),
             ),
             (
@@ -3953,6 +3966,7 @@ class McpTransportTest(unittest.TestCase):
                         }
                     },
                     token,
+                    profile=host_profiles.HostProfile.UNMEASURED,
                 ),
             ),
             (
@@ -3969,6 +3983,7 @@ class McpTransportTest(unittest.TestCase):
                         }
                     },
                     token,
+                    profile=host_profiles.HostProfile.UNMEASURED,
                 ),
             ),
             (
@@ -3985,6 +4000,7 @@ class McpTransportTest(unittest.TestCase):
                         }
                     },
                     token,
+                    profile=host_profiles.HostProfile.UNMEASURED,
                 ),
             ),
             (
@@ -3999,6 +4015,7 @@ class McpTransportTest(unittest.TestCase):
                         }
                     },
                     token,
+                    profile=host_profiles.HostProfile.UNMEASURED,
                 ),
             ),
             (

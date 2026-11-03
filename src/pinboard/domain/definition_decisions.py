@@ -65,6 +65,12 @@ def decide_definition_revision(
             "The expected definition revision and digest are stale.",
             None,
         )
+    if current.definition.route_facts is not None and value.definition.route_facts is None:
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_DEFINITION_INVALID,
+            "A current classified definition cannot discard its recorded route facts. Supply the complete explicit classification in the new definition.",
+            None,
+        )
     removed_checkpoints = tuple(
         str(checkpoint)
         for checkpoint in current.definition.checkpoints

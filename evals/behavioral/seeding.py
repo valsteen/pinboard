@@ -7,6 +7,7 @@ maintainer's and workers' repository actions. The seeded host id is the fixed sy
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import assert_never
 
 from evals.behavioral import processes
 from evals.behavioral.board import (
@@ -26,6 +27,7 @@ from evals.behavioral.board import (
     Brief,
     BriefPublish,
     Checkpoint,
+    CompatibilityProposalV2,
     Correspondence,
     CorrespondenceTarget,
     Criterion,
@@ -52,6 +54,7 @@ from evals.behavioral.board import (
     ReviewCommission,
     ReviewedCompletion,
     ReviewJob,
+    RouteFacts,
     Status,
     SubmitPayload,
     Verification,
@@ -70,33 +73,62 @@ class Seeder:
     def worktree(self, item: str) -> Path:
         return self.project.parent / f"wt-{item}"
 
-    async def propose(self, item: str, label: str, texts: tuple[str, str, str, str, str], follows: str | None) -> None:
+    async def propose(
+        self,
+        item: str,
+        label: str,
+        texts: tuple[str, str, str, str, str],
+        follows: str | None,
+        route: RouteFacts,
+        checkpoints: tuple[str, ...],
+    ) -> None:
         trigger, why, effect, unlock, statement = texts
-        request = ProposalCreate(
-            project_root=str(self.project),
-            work_root=str(self.work_root),
-            actor_task_id=self.owner,
-            actor_host_id=SEEDED_HOST_ID,
-            proposal=Proposal(
-                schema="pinboard-proposal/v2",
-                proposal_id=item,
-                created_at=SEEDED_AT,
-                source_task_id=self.owner,
-                user_label=label,
-                trigger=trigger,
-                evidence=["Observed in tally.sh at the initial commit"],
-                why_it_matters=why,
-                relation=Relation(kind="independent", item=None)
-                if follows is None
-                else Relation(kind="follow-up", item=follows),
-                effect=effect,
-                unlock=unlock,
-                urgency_evidence="none observed",
-                freshness_assumptions=["tally.sh is unchanged on main"],
-                checkout_policy="isolated",
-                obligations=[Obligation(obligation_id="outcome", statement=statement, deferral_policy="forbidden")],
-            ),
+        compatibility_proposal = CompatibilityProposalV2(
+            schema="pinboard-proposal/v2",
+            proposal_id=item,
+            created_at=SEEDED_AT,
+            source_task_id=self.owner,
+            user_label=label,
+            trigger=trigger,
+            evidence=["Observed in tally.sh at the initial commit"],
+            why_it_matters=why,
+            relation=Relation(kind="independent", item=None)
+            if follows is None
+            else Relation(kind="follow-up", item=follows),
+            effect=effect,
+            unlock=unlock,
+            urgency_evidence="none observed",
+            freshness_assumptions=["tally.sh is unchanged on main"],
+            checkout_policy="isolated",
+            obligations=[Obligation(obligation_id="outcome", statement=statement, deferral_policy="forbidden")],
         )
+        match self.board.proposal_format:
+            case "pinboard-proposal/v2":
+                selected: Proposal | CompatibilityProposalV2 = compatibility_proposal
+            case "pinboard-proposal/v4":
+                selected = Proposal(
+                    proposal_id=compatibility_proposal.proposal_id,
+                    created_at=compatibility_proposal.created_at,
+                    source_task_id=compatibility_proposal.source_task_id,
+                    user_label=compatibility_proposal.user_label,
+                    trigger=compatibility_proposal.trigger,
+                    evidence=compatibility_proposal.evidence,
+                    why_it_matters=compatibility_proposal.why_it_matters,
+                    relation=compatibility_proposal.relation,
+                    effect=compatibility_proposal.effect,
+                    unlock=compatibility_proposal.unlock,
+                    urgency_evidence=compatibility_proposal.urgency_evidence,
+                    freshness_assumptions=compatibility_proposal.freshness_assumptions,
+                    checkout_policy=compatibility_proposal.checkout_policy,
+                    obligations=compatibility_proposal.obligations,
+                    schema="pinboard-proposal/v4",
+                    route_facts=route,
+                    position=None,
+                    checkpoints=list(checkpoints),
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+        request = ProposalCreate(str(self.project), str(self.work_root), self.owner, SEEDED_HOST_ID, selected)
         result = await self.board.call("pinboard_proposal_create", request, Status)
         require(result.status, ("committed", "committed-with-warning"), f"propose {item}")
 

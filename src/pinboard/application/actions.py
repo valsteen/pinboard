@@ -1,5 +1,6 @@
 """Discover and describe currently legal actions from application-owned facts."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import assert_never
 
@@ -7,7 +8,7 @@ import msgspec
 
 from pinboard.application import action_models, ports, query_models, work_brief_models, work_briefs
 from pinboard.application.artifact_publication import ArtifactReader
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, routing, work_models
 from pinboard.domain.decisions import available_actions
 from pinboard.domain.errors import (
     DecisionFailure,
@@ -29,7 +30,8 @@ def action_subject_ids(
 
     match action:
         case (
-            decision_models.AcceptCheckpointAction(capability=capability)
+            decision_models.ReviewCandidateAction(capability=capability)
+            | decision_models.AcceptCheckpointAction(capability=capability)
             | decision_models.AcceptReviewAndContinueAction(capability=capability)
             | decision_models.BlockAttemptAction(capability=capability)
             | decision_models.CompleteAction(capability=capability)
@@ -44,6 +46,7 @@ def action_subject_ids(
             return (), (capability.subject,), ()
         case (
             decision_models.ActivateAction(capability=capability)
+            | decision_models.PrepareAction(capability=capability)
             | decision_models.BlockWorkItemAction(capability=capability)
             | decision_models.CancelAction(capability=capability)
             | decision_models.CloseAction(capability=capability)
@@ -60,7 +63,14 @@ def action_subject_ids(
             | decision_models.RejectProposalAction(capability=capability)
         ):
             return (), (), (capability.subject,)
-        case decision_models.InspectAction():
+        case (
+            decision_models.InspectAction()
+            | decision_models.CreateProposalAction()
+            | decision_models.PreviewParallelAction()
+            | decision_models.OrderAction()
+            | decision_models.InspectInitiativeAction()
+            | decision_models.ConsolidateAction()
+        ):
             return (), (), ()
         case _ as unreachable:
             assert_never(unreachable)
@@ -151,10 +161,12 @@ def select_current_actions(
     lease_id: LeaseId | None,
     generation: int | None,
     action_id: ActionId | None,
-) -> DecisionResult[tuple[decision_models.Action, ...]]:
+) -> DecisionResult[ActionSelection]:
     """Read the minimum current facts and select an optional exact legal action."""
 
-    if role == decision_models.Role.OBSERVER:
+    if role == decision_models.Role.OBSERVER or (
+        role == decision_models.Role.PROJECT and action_id == ActionId("create-proposal:ledger")
+    ):
         snapshot = LedgerSnapshot(
             "", (), accepted_checkpoints=frozenset(), dependency_facts=(), dropped_item_ids=frozenset()
         )
@@ -176,16 +188,28 @@ def select_current_actions(
             "", (), accepted_checkpoints=frozenset(), dependency_facts=(), dropped_item_ids=frozenset()
         )
     discovered = discover_current_actions(snapshot, role, lease_id=lease_id, generation=generation)
-    if isinstance(discovered, DecisionFailure) or action_id is None:
+    if isinstance(discovered, DecisionFailure):
         return discovered
+    if action_id is None:
+        return ActionSelection(
+            tuple(action for action in discovered if routing.validate_action_route(snapshot, action) is None), snapshot
+        )
     selected = tuple(action for action in discovered if decision_models.action_id(action) == action_id)
     if selected:
-        return selected
+        if (failure := routing.validate_action_route(snapshot, selected[0])) is not None:
+            return failure
+        return ActionSelection(selected, snapshot)
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
         f"Action '{action_id}' is not currently legal for this role and lease.",
         None,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ActionSelection:
+    actions: tuple[decision_models.Action, ...]
+    snapshot: LedgerSnapshot
 
 
 def completion_candidate_recovery(

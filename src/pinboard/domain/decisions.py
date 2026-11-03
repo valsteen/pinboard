@@ -2,7 +2,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import assert_never, overload
 
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, routing, work_models
 from pinboard.domain.definition_decisions import decide_definition_revision
 from pinboard.domain.errors import (
     DecisionFailure,
@@ -250,6 +250,19 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
                 )
             )
             if not stale and context.replacement_resolved:
+                if (
+                    context.attempt_record is not None
+                    and context.attempt_record.protected_candidate_revision is not None
+                ):
+                    attempt_actions.append(
+                        decision_models.ReviewCandidateAction(
+                            factory.make(
+                                context.attempt,
+                                f"Read candidate-review instructions for {context.work_item_id}",
+                                context.attempt_subject_revision,
+                            )
+                        )
+                    )
                 attempt_actions.append(
                     decision_models.AcceptCheckpointAction(
                         factory.make(
@@ -395,7 +408,7 @@ def _item_actions(
     )
     match item.state:
         case work_models.WorkState.READY:
-            return (
+            actions: tuple[decision_models.Action, ...] = (
                 decision_models.BlockWorkItemAction(
                     factory.make(item.work_item_id, f"Block unstarted work item {item.work_item_id}", subject_revision)
                 ),
@@ -406,6 +419,16 @@ def _item_actions(
                 ),
                 close,
             )
+            if not snapshot.unsatisfied_dependencies(item.depends_on) and _replacement_resolved(
+                snapshot, item.work_item_id
+            ):
+                return (
+                    decision_models.PrepareAction(
+                        factory.make(item.work_item_id, f"Prepare {item.work_item_id}", subject_revision)
+                    ),
+                    *actions,
+                )
+            return actions
         case work_models.WorkState.PAUSED | work_models.WorkState.BLOCKED:
             dependencies_unsatisfied = bool(snapshot.unsatisfied_dependencies(item.depends_on))
             if not dependencies_unsatisfied and _replacement_resolved(snapshot, item.work_item_id):
@@ -452,6 +475,44 @@ def _project_role_actions(
         if (group := attempt_groups.get(item.work_item_id)) is not None
         for action in group.attempt_actions
     ]
+    result.append(
+        decision_models.CreateProposalAction(
+            decision_models.ActionCapability(
+                LedgerId("ledger"), "Read the intake procedure", authorization=decision_models.AuthorizationKind.PROJECT
+            )
+        )
+    )
+    result.extend(
+        (
+            decision_models.PreviewParallelAction(
+                decision_models.ActionCapability(
+                    LedgerId("ledger"),
+                    "Read parallel-work instructions",
+                    authorization=decision_models.AuthorizationKind.PROJECT,
+                )
+            ),
+            decision_models.OrderAction(
+                decision_models.ActionCapability(
+                    LedgerId("ledger"),
+                    "Read priority-change instructions",
+                    authorization=decision_models.AuthorizationKind.PROJECT,
+                )
+            ),
+            decision_models.InspectInitiativeAction(
+                decision_models.ActionCapability(
+                    LedgerId("ledger"),
+                    "Read initiative instructions",
+                    authorization=decision_models.AuthorizationKind.PROJECT,
+                )
+            ),
+        )
+    )
+    if snapshot.revision:
+        result.append(
+            decision_models.ConsolidateAction(
+                factory.make(LedgerId("ledger"), "Read consolidation instructions", snapshot.revision)
+            )
+        )
     for item in snapshot.items:
         result.append(
             decision_models.CancelAction(
@@ -575,6 +636,8 @@ def validate_supplied_action(
 ) -> DecisionFailure | None:
     """Reject an action that no longer matches its current subject-scoped mutation authority."""
 
+    if (failure := routing.validate_action_route(snapshot, supplied)) is not None:
+        return failure
     available = available_actions(snapshot, actor)
     if isinstance(available, DecisionFailure):
         return available

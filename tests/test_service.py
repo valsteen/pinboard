@@ -58,6 +58,7 @@ from tests.domain_support import action, expect_transition_command
 from tests.support import (
     SQLITE_DIGEST,
     SQLITE_NOW,
+    TEST_ROUTE_FACTS,
     complete_sqlite_state,
     initialize_store,
     reject_table_deletes,
@@ -985,6 +986,7 @@ class ServiceTest(unittest.TestCase):
                 ),
             ),
             (),
+            route_facts=TEST_ROUTE_FACTS,
         )
 
         with reject_table_deletes("work_items"):
@@ -1051,6 +1053,7 @@ class ServiceTest(unittest.TestCase):
                 ),
             ),
             (),
+            TEST_ROUTE_FACTS,
             2,
         )
 
@@ -1115,6 +1118,7 @@ class ServiceTest(unittest.TestCase):
                 ),
             ),
             (),
+            route_facts=TEST_ROUTE_FACTS,
         )
 
         result = self._create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
@@ -1156,6 +1160,7 @@ class ServiceTest(unittest.TestCase):
                 ),
             ),
             (),
+            TEST_ROUTE_FACTS,
             6,
         )
         before = store.validated_snapshot()
@@ -1193,6 +1198,7 @@ class ServiceTest(unittest.TestCase):
                 ),
             ),
             (),
+            route_facts=TEST_ROUTE_FACTS,
         )
         before = store.validated_snapshot()
 

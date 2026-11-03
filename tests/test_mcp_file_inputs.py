@@ -18,6 +18,7 @@ from pinboard.mcp import (
     common,
     contract_schemas,
     execution,
+    host_profiles,
     job_operations,
     mutation_operations,
     pr_review_operations,
@@ -532,7 +533,9 @@ class McpFileInputsTest(CheckpointPackageSupport):
                     patch.object(file_io, "read_verified_input", side_effect=cancel_after_read),
                     self.assertRaises(execution.OperationCancelled),
                 ):
-                    pr_review_operations.execute({"request": cancellation_request}, token)
+                    pr_review_operations.execute(
+                        {"request": cancellation_request}, token, host_profiles.HostProfile.UNMEASURED
+                    )
                 self.assertEqual(before, store.validated_snapshot())
                 exercised_failures.add(operation)
             response = native.call_advertised_tool(tool, {"request": request})

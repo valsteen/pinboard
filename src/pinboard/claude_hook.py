@@ -104,16 +104,14 @@ def session_start_main() -> int:
     host = msgspec.json.encode(hostname).decode()
     context = (
         f"Pinboard native parent task_id: {identity}; host_id: {host}. "
-        "Use these current local values for parent attribution, not a Remote Control link or model-derived host. "
-        "They are attribution, not authority or authenticated credentials, and grant no permissions or lease. "
-        "A launched worker instead uses its own SubagentStart agent_id and verified dispatch host. "
-        "Claude Code procedures for Pinboard are in the pinboard skill's references/runtime-claude-code.md."
+        "Use these local values for parent attribution. A launched worker uses its own SubagentStart agent_id "
+        "and verified dispatch host. Attribution grants no authority or permission. Load only the single "
+        "role/runtime document selected by the Pinboard skill or verified envelope."
     )
     if os.environ.get("PINBOARD_RUNTIME_PREPARED_NOW") == "1":
         context += (
-            " Pinboard prepared this plugin version's private runtime during this session start. MCP startup can "
-            "also prepare and start the server automatically. Check whether Pinboard tools are available; if the "
-            "connection is unavailable, tell the user to reconnect it with /mcp or restart Claude Code."
+            " Pinboard prepared its private runtime this session. If tools remain unavailable, reconnect with "
+            "/mcp or restart Claude Code."
         )
     output = HookOutput(StartupContext("SessionStart", context))
     print(msgspec.json.encode(output).decode())

@@ -1,4 +1,5 @@
 import re
+import sys
 import tomllib
 from pathlib import Path
 from typing import Annotated, Final, Literal
@@ -32,7 +33,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 # agy plugin validate warns that skill bodies above this many bytes are truncated; these skills stay within it so a
-# host that loads them natively gets them whole. Antigravity agents still read every skill through paging.
+# host that loads them natively gets them whole. Startup documents also have enforced native-read budgets.
 ANTIGRAVITY_SKILL_BODY_BYTES: Final = 24000
 ANTIGRAVITY_CAPPED_SKILLS: Final = ("pinboard-deliver",)
 MARKDOWN_LINK: Final = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
@@ -531,6 +532,12 @@ def validate_capped_skill_sizes() -> None:
 
 
 def main() -> None:
+    sys.dont_write_bytecode = True
+    from instruction_catalog import (  # noqa: PLC0415 - read-only validation disables bytecode writes before loading its compiler
+        validate_generated,
+        validate_startup_composition,
+    )
+
     if (ROOT / "LICENSE").read_text(encoding="utf-8") != EXPECTED_LICENSE_TEXT:
         raise ValueError("repository license must exactly match the canonical MIT license text")
     validate_plugin()
@@ -549,6 +556,8 @@ def main() -> None:
     for path in skill_paths:
         validate_skill(path)
     validate_capped_skill_sizes()
+    validate_generated()
+    validate_startup_composition()
     validate_markdown_links((*sorted(ROOT.glob("*.md")), *sorted((ROOT / "skills").rglob("*.md"))))
     print(
         f"validated Codex, Claude and Antigravity plugins, Codex and Claude marketplaces, and {len(skill_paths)} skills"

@@ -28,6 +28,7 @@ from tests.decision_support import discover_actions, project_decision_snapshot
 from tests.domain_support import expect_success
 from tests.support import (
     SQLITE_NOW,
+    TEST_ROUTE_FACTS,
     complete_sqlite_state,
     initialize_store,
     loaded_board_history,
@@ -628,6 +629,7 @@ class PreparationAuthorityTest(unittest.TestCase):
                 ),
             ),
             (),
+            route_facts=TEST_ROUTE_FACTS,
         )
         before = store.validated_snapshot()
 
@@ -682,6 +684,7 @@ class PreparationAuthorityTest(unittest.TestCase):
                 ),
             ),
             (),
+            route_facts=TEST_ROUTE_FACTS,
         )
         before = store.validated_snapshot()
 

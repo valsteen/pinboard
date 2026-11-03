@@ -9,7 +9,7 @@ from msgspec.structs import replace as replace_struct
 
 from pinboard.application import proposal_models, proposals, query_models, work_brief_models
 from pinboard.application.work_briefs import validate_definition_brief_agreement
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.decisions import available_actions, decide
 from pinboard.domain.definition_decisions import decide_definition_revision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
@@ -46,6 +46,7 @@ def definition() -> work_models.WorkItemDefinition:
             ),
         ),
         checkpoints=(),
+        route_facts=None,
     )
 
 
@@ -147,23 +148,29 @@ class WorkItemDefinitionContractTest(unittest.TestCase):
         self.assertEqual(DecisionFailureCode.ITEM_DEFINITION_INVALID, rejected.code)
 
         empty_view = query_models.project_definition(definition())
-        assert isinstance(empty_view, query_models.WorkItemDefinitionView)
+        assert isinstance(empty_view, history.WorkItemDefinitionPayload)
         self.assertEqual((), empty_view.checkpoints)
         self.assertNotIn(b'"checkpoints"', msgspec.json.encode(empty_view))
 
         declared_view = query_models.project_definition(declared)
-        assert isinstance(declared_view, query_models.WorkItemDefinitionView)
+        assert isinstance(declared_view, history.WorkItemDefinitionPayload)
         self.assertEqual(("survey-routes", "build-bridges"), declared_view.checkpoints)
         self.assertIn(b'"checkpoints":["survey-routes","build-bridges"]', msgspec.json.encode(declared_view))
 
         carried_view = query_models.project_definition(carried)
-        assert isinstance(carried_view, query_models.OriginWorkItemDefinitionView)
+        assert isinstance(carried_view, history.OriginWorkItemDefinitionPayload)
         self.assertEqual(("survey-routes", "build-bridges"), carried_view.checkpoints)
         self.assertIn(b'"checkpoints":["survey-routes","build-bridges"]', msgspec.json.encode(carried_view))
 
     def test_proposal_checkpoints_convert_into_ready_definition_and_preserve_prerequisite_checkpoints(self) -> None:
         raw = proposal_payload()
         raw["checkpoints"] = ["phase-1", "phase-2"]
+        raw["route_facts"] = {
+            "size_class": "campaign",
+            "architecture_impact": "none",
+            "external_effects": "none",
+            "declares_checkpoints": True,
+        }
         converted = proposals.convert_proposal(msgspec.convert(raw, type=proposal_models.Proposal))
         self.assertEqual((CheckpointId("phase-1"), CheckpointId("phase-2")), converted.intake.checkpoints)
 

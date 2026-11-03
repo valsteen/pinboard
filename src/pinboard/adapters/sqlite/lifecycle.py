@@ -989,6 +989,9 @@ def read_attempt_context(
             item_state,
             definition.revision,
             definition.digest,
+            definition.definition.route_facts
+            if isinstance(definition.definition, work_models.WorkItemDefinition)
+            else None,
             tuple(
                 value.target
                 for value in dependencies

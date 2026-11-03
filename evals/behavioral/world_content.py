@@ -1,8 +1,10 @@
 """The seeded content of the full world, the scratch-board experiment and the single-item project extras."""
 
 from evals.behavioral import processes
-from evals.behavioral.board import ContinueDisposition, ReasonPayload, TerminalDisposition
+from evals.behavioral.board import ContinueDisposition, ReasonPayload, RouteFacts, TerminalDisposition
 from evals.behavioral.seeding import Seeder
+
+SMALL_LOCAL_ROUTE = RouteFacts("small", "none", "none", False)
 
 JSON_TALLY = """#!/bin/sh
 # Sum integers read from standard input, one per line.
@@ -110,6 +112,8 @@ async def seed_full_world(seeder: Seeder) -> None:
             "tally.sh --json prints the sum as a JSON object",
         ),
         None,
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
     )
     await seeder.prepare_activate(
         "json-output",
@@ -143,6 +147,8 @@ async def seed_full_world(seeder: Seeder) -> None:
             "tally.sh --sorted prints sorted inputs followed by the total",
         ),
         None,
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
     )
     await seeder.prepare_activate(
         "sort-flag",
@@ -171,6 +177,8 @@ async def seed_full_world(seeder: Seeder) -> None:
             "tally.sh rejects non-numeric lines with exit 2 while accepting signed integers",
         ),
         None,
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
     )
     await seeder.prepare_activate(
         "strict-parse",
@@ -210,6 +218,8 @@ async def seed_full_world(seeder: Seeder) -> None:
             "tally.sh handles invalid UTF-8 input according to the maintainer's chosen policy",
         ),
         None,
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
     )
     await seeder.prepare_activate(
         "unicode-input",
@@ -240,6 +250,8 @@ async def seed_full_world(seeder: Seeder) -> None:
             "tally.sh ignores leading and trailing spaces on each line",
         ),
         None,
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
     )
     await seeder.prepare_activate(
         "trim-whitespace",
@@ -268,6 +280,8 @@ async def seed_full_world(seeder: Seeder) -> None:
             "tally.sh --help prints a usage line and exits 0",
         ),
         None,
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
     )
     await seeder.prepare_activate(
         "help-text", "Add --help", "tally.sh --help prints usage and exits 0", "Handle --help in tally.sh", TERMINAL
@@ -288,6 +302,8 @@ async def seed_full_world(seeder: Seeder) -> None:
             "tally.sh --csv prints CSV; the header row and delimiter are still to be decided with the maintainer",
         ),
         None,
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
     )
 
     # config-file: ready but depends on csv-export.
@@ -302,6 +318,8 @@ async def seed_full_world(seeder: Seeder) -> None:
             "tally.sh reads default flags, including the CSV format, from .tallyrc",
         ),
         "csv-export",
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
     )
 
     # readme-pr-review: a person's pull request (branch sam/readme-example on origin) awaiting review.
@@ -327,6 +345,8 @@ async def seed_full_world(seeder: Seeder) -> None:
             "Review the pull request on branch sam/readme-example against tally's actual behavior",
         ),
         None,
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
     )
 
 
@@ -344,6 +364,8 @@ async def seed_skip_comments_experiment(seeder: Seeder) -> None:
             "tally.sh skips lines starting with '#' and docs/usage.md says so",
         ),
         None,
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
     )
     await seeder.prepare_activate(
         item,
@@ -386,6 +408,8 @@ async def seed_merge_change(seeder: Seeder, *, record_review: bool) -> None:
             "docs/usage.md includes a sorted-input example",
         ),
         None,
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
     )
     await seeder.prepare_activate(
         item,
@@ -426,6 +450,8 @@ async def seed_continue_checkpoint(seeder: Seeder) -> None:
             "docs/usage.md shows a worked blank-line example and documents tally's exit status",
         ),
         None,
+        route=RouteFacts("campaign", "none", "none", True),
+        checkpoints=("outcome",),
     )
     await seeder.prepare_activate(
         item,
@@ -475,6 +501,8 @@ async def seed_inherited_attempt(seeder: Seeder, *, live_lease: bool) -> None:
             "docs/usage.md documents tally's exit status and error output",
         ),
         None,
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
     )
     await seeder.prepare_activate(
         item,

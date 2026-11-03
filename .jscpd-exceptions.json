@@ -113,6 +113,118 @@
         "reviewed_pair_sha256": "6d9bd12919433ec17c4a01df653f9c5f212e56ed229bd5251e50c5c94600a934",
         "evidence_sha256": "de27099456f49fa3546b3e64cc927e7ea42868879518232de9ea0348be8d01e6"
       }
+    },
+    {
+      "identity": {
+        "id": "independent-action-input-and-committed-effects",
+        "format": "python",
+        "tokens": 62,
+        "lines": 12,
+        "occurrences": [
+          {
+            "endpoint": {
+              "name": "application/action_models.py",
+              "start": 250,
+              "end": 261,
+              "startLoc": {
+                "line": 250,
+                "column": 14,
+                "position": 9599
+              },
+              "endLoc": {
+                "line": 261,
+                "column": 18,
+                "position": 10148
+              }
+            },
+            "sha256": "bedf781de9845519e19c93c27c43626207d45ea29ae003fa9744f8cda1db4ea1"
+          },
+          {
+            "endpoint": {
+              "name": "mcp/contracts.py",
+              "start": 2795,
+              "end": 2806,
+              "startLoc": {
+                "line": 2795,
+                "column": 12,
+                "position": 104580
+              },
+              "endLoc": {
+                "line": 2806,
+                "column": 18,
+                "position": 105129
+              }
+            },
+            "sha256": "bedf781de9845519e19c93c27c43626207d45ea29ae003fa9744f8cda1db4ea1"
+          }
+        ],
+        "owners": [
+          "src/pinboard/application/action_models.py: action_input_model selects exact request payload records",
+          "src/pinboard/mcp/contracts.py: _committed_transition_surfaces validates committed MCP response surfaces and output schemas"
+        ],
+        "rationale": "Independent review: retain this exact pair. Request payload construction and committed MCP response surfaces are independent boundary decisions. COMPLETE has no generic action_input_model but permits committed ledger/artifact surface combinations; CANCEL and CONSOLIDATE likewise have no generic payload model yet permit ledger commits. A shared no-payload/no-effects classification would therefore be false. Sharing this negative-arm subset would couple independently owned contracts without assigning a repeated decision one clearer owner. Reopen if the supported protocol introduces one canonical classification that actually determines both payload construction and committed surfaces, or a focused counterexample shows repeated same-meaning policy. This certification covers only the present native pair and source bytes, not candidate acceptance. No tests, edits or lifecycle effects were performed by the reviewer."
+      },
+      "certification": {
+        "reviewer_task_id": "01a1a2a3-19f7-77f3-a3b0-36db3defe3af",
+        "reviewed_pair_sha256": "c9e3666572d464dda02920d06701468a4796dfc1c6807820122dd89ca4730213",
+        "evidence_sha256": "7d6fd0e7bc115043094f767ee4fb7cd3b82cffb31748a4ee894697601b7f121b"
+      }
+    },
+    {
+      "identity": {
+        "id": "independent-board-progress-and-terminal-closure",
+        "format": "python",
+        "tokens": 65,
+        "lines": 11,
+        "occurrences": [
+          {
+            "endpoint": {
+              "name": "application/queries.py",
+              "start": 1035,
+              "end": 1045,
+              "startLoc": {
+                "line": 1035,
+                "column": 12,
+                "position": 45538
+              },
+              "endLoc": {
+                "line": 1045,
+                "column": 41,
+                "position": 46092
+              }
+            },
+            "sha256": "127a80243427ea1552f459438af14a25fe98f00bf3d2c53437a15d1450b69029"
+          },
+          {
+            "endpoint": {
+              "name": "application/queries.py",
+              "start": 1501,
+              "end": 1511,
+              "startLoc": {
+                "line": 1501,
+                "column": 12,
+                "position": 67098
+              },
+              "endLoc": {
+                "line": 1511,
+                "column": 41,
+                "position": 67652
+              }
+            },
+            "sha256": "127a80243427ea1552f459438af14a25fe98f00bf3d2c53437a15d1450b69029"
+          }
+        ],
+        "owners": [
+          "src/pinboard/application/queries.py: _board_condition projects generic recorded-action progress",
+          "src/pinboard/application/queries.py: _closure_action classifies terminal receipt meaning"
+        ],
+        "rationale": "Independent review: retain this exact pair. Board progress and terminal receipt classification answer different questions. PAUSE and SUBMIT_REVIEW both have no closure, but board progress distinguishes a pause reason from submitted/ready review. COMPLETE and CANCEL are closing receipts while the board open-attempt condition owner does not assign their closure meaning. Sharing the identical negative-arm subset would couple those independent projections without a common product decision. Reopen if a real consumer needs both facts from one newly canonical receipt classification, or either function starts reconstructing the other's decision. This certification covers only the present native pair and source bytes, not candidate acceptance. No tests, edits or lifecycle effects were performed by the reviewer."
+      },
+      "certification": {
+        "reviewer_task_id": "01a1a2a3-19f7-77f3-a3b0-36db3defe3af",
+        "reviewed_pair_sha256": "c55da490d270a8d9bda8e25ab37ee7b893cbed578aca9fc2ce7b1873471239fd",
+        "evidence_sha256": "458e4ea0c021631fe23d8609ebcb7b716b5066f1c1904e08201fcf8e7b4cf694"
+      }
     }
   ]
 }

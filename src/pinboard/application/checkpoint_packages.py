@@ -157,6 +157,8 @@ def _review_basis(
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> work_brief_models.WorkBriefFailure | None:
     match brief.checkpoint, package.review_basis:
+        case work_brief_models.CrossBoundaryCheckpoint(), work_brief_models.SmallWorkReviewBasis():
+            return None
         case (
             work_brief_models.LocalCheckpoint() | work_brief_compatibility_models.HistoricalLocalCheckpoint(),
             work_brief_models.LocalReviewBasis(),

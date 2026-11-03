@@ -2,7 +2,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import assert_never
 
-from pinboard.domain import authority_models, work_models
+from pinboard.domain import authority_models, routing, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
@@ -405,6 +405,8 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                     f"Item '{item}' definition digest differs from the initial preparation request.",
                     None,
                 )
+            if isinstance(route := routing.require_route_facts(definition), DecisionFailure):
+                return route
             if counter != 0 or retained is not None:
                 return DecisionFailure(
                     DecisionFailureCode.LEASE_FENCED, "Initial preparation is already claimed.", None
@@ -477,6 +479,8 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
                 return DecisionFailure(
                     DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation cannot be transferred.", None
                 )
+            if isinstance(route := routing.require_route_facts(definition), DecisionFailure):
+                return route
             proposed_replacement = replace(
                 retained,
                 definition_revision=definition.revision,

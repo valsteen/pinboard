@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import msgspec
 from mcp.client.stdio import StdioServerParameters
-from mcp_types import CallToolResult
+from mcp_types import CallToolResult, ListToolsResult, Tool
 
 from evals.behavioral import (
     board,
@@ -1124,6 +1124,18 @@ class McpDeadlineTest(unittest.IsolatedAsyncioTestCase):
         session.__aenter__ = AsyncMock(return_value=session)
         session.__aexit__ = AsyncMock(return_value=False)
         session.initialize = AsyncMock()
+        session.list_tools = AsyncMock(
+            return_value=ListToolsResult(
+                tools=[
+                    Tool(
+                        name="pinboard_proposal_create",
+                        input_schema={
+                            "$defs": {"Proposal": {"properties": {"schema": {"enum": ["pinboard-proposal/v4"]}}}}
+                        },
+                    )
+                ]
+            )
+        )
         session.call_tool = AsyncMock(
             return_value=CallToolResult(content=[], structured_content={"status": "committed"}, is_error=False)
         )

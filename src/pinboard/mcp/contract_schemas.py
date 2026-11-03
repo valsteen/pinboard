@@ -14,6 +14,7 @@ from pinboard.mcp.contracts import (
     _BLOCKED_CONTINUATION_ACTION_KINDS,
     _PAUSED_CONTINUATION_ACTION_KINDS,
     _REVIEW_CONTINUATION_ACTION_KINDS,
+    ActionRouteClassificationRequired,
     ActionsEnvelope,
     ActionsInvalid,
     ActionsSuccess,
@@ -354,7 +355,7 @@ def _apply_action_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
         {
             "properties": {
                 "authorization": {"const": "project"},
-                "subject_revision": {"type": "string"},
+                "subject_revision": {"type": ["string", "null"]},
                 "lease_id": {"type": "null"},
                 "generation": {"type": "null"},
             }
@@ -423,6 +424,11 @@ def _apply_action_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
                 "then": {
                     "properties": {
                         "authorization": {"enum": [role_authorities[role] for role in semantics.permitted_roles]},
+                        "subject_revision": {
+                            "type": ["string", "null"]
+                            if semantics.lifecycle_effect == decision_models.LifecycleEffect.NO_LIFECYCLE_CHANGE
+                            else "string"
+                        },
                         "semantics": semantic_constraint,
                         "invocation": _action_invocation_constraint(kind),
                         "input_contract": {
@@ -604,6 +610,7 @@ def _apply_attempt_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
                 {"$ref": "#/$defs/ContinuationRepositoryCleanup"},
                 _action_continuation(decision_models.ActionKind.COMPLETE),
                 _action_continuation(decision_models.ActionKind.RETURN_FOR_CORRECTION),
+                _action_continuation(decision_models.ActionKind.REVIEW_CANDIDATE),
             ),
             _REVIEW_CONTINUATION_ACTION_KINDS,
         ),
@@ -1069,6 +1076,8 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         msgspec.convert(content, type=ActionsInvalid, strict=True)
     elif tool_name == "pinboard_actions" and code == "ATTEMPT_LEASE_REQUIRED":
         msgspec.convert(content, type=AttemptLeaseRequired, strict=True)
+    elif tool_name == "pinboard_actions" and code == "ROUTE_CLASSIFICATION_REQUIRED":
+        msgspec.convert(content, type=ActionRouteClassificationRequired, strict=True)
     elif tool_name == "pinboard_actions":
         msgspec.convert(content, type=ActionUnavailable, strict=True)
     elif tool_name == "pinboard_attempt_inspect" and code == "ATTEMPT_INSPECT_INVALID":

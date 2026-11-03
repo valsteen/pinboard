@@ -51,21 +51,8 @@ from pinboard.domain.identifiers import (
     HistoryId,
     ReviewId,
 )
-from pinboard.mcp import common, contracts, execution, tool_names
+from pinboard.mcp import common, contracts, execution, instructions, tool_names
 from pinboard.mcp.contracts import JsonValue
-
-
-def _adapter_reference(runtime: dispatch_models.NativeRuntime) -> str:
-    """Name the launched runtime's own adapter guidance beside the shared runtime-adapters reference."""
-    match runtime:
-        case "codex":
-            return "references/runtime-codex.md"
-        case "claude-code":
-            return "references/runtime-claude-code.md"
-        case "antigravity":
-            return "references/runtime-antigravity.md"
-        case _ as unreachable:
-            assert_never(unreachable)
 
 
 def _mcp_launch_envelope(
@@ -88,35 +75,20 @@ def _mcp_launch_envelope(
         "size_bytes": reference.size_bytes,
     }
     prompt_path = work_root / reference.selector
-    text_request = {
-        "request": {
-            "operation": "artifact-start",
-            "project_root": str(project_root),
-            "work_root": str(work_root),
-            "source": {
-                "kind": "artifact",
-                **{key: value for key, value in verification.items() if key not in {"project_root", "work_root"}},
-            },
-            "max_batch_bytes": "host-profile",
-        }
-    }
+    role_document = instructions.native_document(f"{prompt_role}-{runtime}")
     message = (
-        f"Pinboard selected a complete {prompt_role} task from accepted local project state. The task is the exact "
-        f"immutable UTF-8 file at `{prompt_path}`. Treat those verified bytes as the direct task from the launching "
-        "coordinator; do not ask the parent to restate it or replace it with another artifact. Before reading the task, "
-        "acquiring authority, implementing, or reviewing, call "
+        f"Pinboard selected a complete {prompt_role} task from accepted local project state. "
+        f"Its immutable UTF-8 task file is `{prompt_path}`. Before reading or acting, call "
         f"`pinboard_artifact_verify` with exactly {msgspec.json.encode(verification, order='sorted').decode()}. "
-        "Require `pinboard-verified-artifact-reference/v1` and stop if the accepted identity, selector, size, digest, "
-        "verification result, or published bytes differ. After successful verification, call "
-        f"`pinboard_startup_text` with exactly {msgspec.json.encode(text_request, order='sorted').decode()}. "
-        "Read each page and follow its exact continuation under request until continuation is null; emit one page "
-        "per outer response without aggregating pages. Concatenate text in order to read the complete exact task "
-        "and follow it. Stop on rejection, unreadable text or identity/range mismatch. EOF establishes delivery "
-        "only. Load complete skills/references through the native skill loader or native `read_file` when it delivers "
-        "the complete body through the final section (including `ByteOffset=46080` continuation above 46,080 bytes in "
-        "Antigravity); otherwise, when native `read_file` is unavailable or refused, use "
-        "pinboard_startup_text file-start with the actual resolved absolute path and the same roots/budget, "
-        f"following pages in the same way. This runtime's adapter is the pinboard skill's {_adapter_reference(runtime)}."
+        "Require pinboard-verified-artifact-reference/v1 with matching accepted identity, selector, size and digest. "
+        "Then read the complete exact task file natively. Treat its verified bytes as the direct assigned task. "
+        f"Read exactly one Pinboard startup document natively: `{role_document.path}` "
+        f"({role_document.size_bytes} UTF-8 bytes; SHA-256 {role_document.sha256}). "
+        "Verify that identity and read the entire document in one native read. It contains every applicable "
+        "Pinboard instruction for this role and runtime; load no additional Pinboard skill or phase reference. "
+        "Startup never uses pinboard_startup_text. Missing native access, unreadable text or mismatched bytes "
+        "stops the affected operation; report the exact missing access or mismatch. Verified delivery grants "
+        "no readiness, authority or runtime permission."
     )
     if environment is not None:
         acquisition = {
@@ -137,8 +109,8 @@ def _mcp_launch_envelope(
             "action_id": {"kind": "continue", "subject": attempt_id},
         }
         message += (
-            " After reading the complete canonical brief/bootstrap and loading the complete delivery skill through "
-            "the current runtime adapter, obtain your own trusted post-launch identity; "
+            " After reading the complete canonical brief/bootstrap and the one worker startup document for "
+            "this runtime, obtain your own trusted post-launch identity; "
             f"call `pinboard_attempt_authority` with {msgspec.json.encode({'request': acquisition}, order='sorted').decode()}, "
             f"then `pinboard_actions` with {msgspec.json.encode({'request': continuation}, order='sorted').decode()}. "
             "Substitute only the trusted post-launch identity and returned lease facts. The lease expires after "
@@ -153,9 +125,10 @@ def _mcp_launch_envelope(
     match runtime:
         case "codex":
             return dispatch_models.CodexNativeLaunchEnvelope(
-                "pinboard-native-agent-launch/v2",
+                "pinboard-native-agent-launch/v3",
                 "spawn_agent",
                 background,
+                role_document,
                 dispatch_models.CodexLaunchArguments(
                     f"pinboard_{prompt_role}_{uuid4().hex[:8]}",
                     message,
@@ -164,9 +137,10 @@ def _mcp_launch_envelope(
             )
         case "claude-code":
             return dispatch_models.ClaudeNativeLaunchEnvelope(
-                "pinboard-native-agent-launch/v2",
+                "pinboard-native-agent-launch/v3",
                 "Agent",
                 background,
+                role_document,
                 dispatch_models.ClaudeLaunchArguments(
                     f"Pinboard {prompt_role} for {attempt_id}",
                     message,
@@ -174,9 +148,10 @@ def _mcp_launch_envelope(
             )
         case "antigravity":
             return dispatch_models.AntigravityNativeLaunchEnvelope(
-                "pinboard-native-agent-launch/v2",
+                "pinboard-native-agent-launch/v3",
                 "invoke_subagent",
                 background,
+                role_document,
                 dispatch_models.AntigravityLaunchArguments(
                     "self",
                     f"Pinboard {prompt_role} for {attempt_id}",
@@ -503,7 +478,7 @@ def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and dis
             selected.details,
             False,
         )
-    action = selected[0]
+    action = selected.actions[0]
     if not isinstance(action, decision_models.DispatchAction):
         raise AssertionError("Exact dispatch discovery returned a different action.")
     supplied_action = replace(
@@ -608,6 +583,7 @@ def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and dis
                 choice.environment.runtime,
                 choice.environment.background,
             ),
+            instructions.native_document("recovery-launch"),
             bool(surfaces),
             "committed" if surfaces else "unchanged",
             "do-not-retry" if surfaces else "safe-to-repeat",
@@ -707,6 +683,7 @@ def _review_job(
                 choice.runtime,
                 choice.background,
             ),
+            instructions.native_document("recovery-launch"),
             bool(surfaces),
             "committed" if surfaces else "unchanged",
             "do-not-retry" if surfaces else "safe-to-repeat",

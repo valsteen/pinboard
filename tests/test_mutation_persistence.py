@@ -288,6 +288,7 @@ class MutationPersistenceTest(unittest.TestCase):
                 ),
             ),
             (),
+            route_facts=None,
         )
         current_digest = expect_success(work_item_definition_digest(current))
         state = replace(

@@ -59,7 +59,7 @@ from pinboard.application.work_briefs import (
     ready_review_key_sha256,
     validate_work_brief_review,
 )
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -403,7 +403,7 @@ def _portable(
 class _CheckpointContext:
     brief: work_brief_models.WorkBrief
     reference: BriefArtifactRef
-    review_reference: EvidenceArtifactRef | None
+    review_basis: work_brief_models.ReviewBasis
     identity: CurrentAttemptWorkBriefIdentity
 
 
@@ -435,6 +435,27 @@ def _read_current_attempt_brief(
     return brief
 
 
+def _small_work_review_basis(
+    current: stored_state.ItemDefinitionRevision | None,
+    scope: work_brief_models.AcceptedScope,
+) -> DecisionResult[work_brief_models.SmallWorkReviewBasis]:
+    if (
+        current is None
+        or current.revision != scope.revision
+        or current.digest != scope.digest
+        or not isinstance(current.definition, work_models.WorkItemDefinition)
+    ):
+        return _unchanged("Small checkpoint acceptance requires its exact accepted definition.", candidate=None)
+    definition = history.work_item_definition_payload(current.definition)
+    if isinstance(definition, DecisionFailure):
+        return definition
+    if not isinstance(
+        definition, (history.ClassifiedWorkItemDefinitionPayload, history.ClassifiedOriginWorkItemDefinitionPayload)
+    ):
+        return _unchanged("Small checkpoint acceptance requires a classified definition.", candidate=None)
+    return work_brief_models.SmallWorkReviewBasis(definition)
+
+
 def _checkpoint_context(
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
@@ -452,8 +473,23 @@ def _checkpoint_context(
         return _unchanged("Checkpoint acceptance requires a continue checkpoint disposition.", candidate=None)
     match brief.checkpoint:
         case work_brief_models.LocalCheckpoint():
-            review_reference = None
+            review_basis = work_brief_models.LocalReviewBasis()
         case work_brief_models.CrossBoundaryCheckpoint():
+            if (
+                context.work_item.route_facts is not None
+                and not context.work_item.route_facts.size_class.requires_cross_boundary_brief_review
+            ):
+                review_basis = _small_work_review_basis(
+                    store.read_item_definition(context.work_item_id).definition, brief.accepted_scope
+                )
+                if isinstance(review_basis, DecisionFailure):
+                    return review_basis
+                return _CheckpointContext(
+                    brief,
+                    context.brief_reference,
+                    review_basis,
+                    current_attempt_work_brief_identity(brief, context.brief_artifact_ref_id),
+                )
             stored_review = store.read_artifact_reference(
                 work_models.ArtifactKind.EVIDENCE,
                 f"{brief.attempt_id}-brief-review-{ready_review_key_sha256(brief)}",
@@ -466,13 +502,19 @@ def _checkpoint_context(
                 return _unchanged(f"The accepted ready brief review is invalid: {review.message}", candidate=None)
             if (failure := validate_work_brief_review(review, brief)) is not None:
                 return _unchanged(f"The accepted ready brief review is invalid: {failure.message}", candidate=None)
-            review_reference = _evidence_reference(stored_review)
+            review_basis = work_brief_models.CrossBoundaryReviewBasis(
+                _portable("brief-review", _evidence_reference(stored_review)),
+                hashlib.sha256(canonical_checkpoint_bytes(brief.checkpoint)).hexdigest(),
+                hashlib.sha256(
+                    canonical_reviewed_authority_set_bytes(brief.checkpoint.reviewed_authorities)
+                ).hexdigest(),
+            )
         case _ as unreachable:
             assert_never(unreachable)
     return _CheckpointContext(
         brief,
         context.brief_reference,
-        review_reference,
+        review_basis,
         current_attempt_work_brief_identity(brief, context.brief_artifact_ref_id),
     )
 
@@ -557,30 +599,6 @@ def _publish_checkpoint(
         implementation_review = _evidence_reference(review_publication.reference)
         checkpoint = context.brief.checkpoint
         checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
-        match checkpoint:
-            case work_brief_models.LocalCheckpoint():
-                review_basis = msgspec.convert(
-                    {"boundary": "local"},
-                    type=work_brief_models.ReviewBasis,
-                    strict=True,
-                )
-            case work_brief_models.CrossBoundaryCheckpoint():
-                if context.review_reference is None:
-                    raise AssertionError("Cross-boundary checkpoint context requires a ready review.")
-                review_basis = msgspec.convert(
-                    {
-                        "boundary": "cross-boundary",
-                        "brief_review": msgspec.to_builtins(_portable("brief-review", context.review_reference)),
-                        "checkpoint_sha256": checkpoint_sha256,
-                        "reviewed_authority_set_sha256": hashlib.sha256(
-                            canonical_reviewed_authority_set_bytes(checkpoint.reviewed_authorities)
-                        ).hexdigest(),
-                    },
-                    type=work_brief_models.ReviewBasis,
-                    strict=True,
-                )
-            case _ as unreachable:
-                assert_never(unreachable)
         package = msgspec.convert(
             {
                 "schema": "pinboard-checkpoint-review-package/v3",
@@ -595,7 +613,7 @@ def _publish_checkpoint(
                 "result": msgspec.to_builtins(_portable("result", result)),
                 "implementation_review": msgspec.to_builtins(_portable("implementation-review", implementation_review)),
                 "verdict": "ready",
-                "review_basis": msgspec.to_builtins(review_basis),
+                "review_basis": msgspec.to_builtins(context.review_basis),
             },
             type=work_brief_models.CheckpointReviewPackageV3,
             strict=True,

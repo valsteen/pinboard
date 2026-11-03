@@ -13,7 +13,7 @@ from pinboard.mcp import mutation_operations as mcp_mutations
 
 def proposal() -> dict[str, proposal_models.ProposalJsonValue]:
     return {
-        "schema": "pinboard-proposal/v2",
+        "schema": "pinboard-proposal/v4",
         "proposal_id": "proposal-1",
         "created_at": "2026-08-25T00:00:00Z",
         "source_task_id": "task",
@@ -27,6 +27,14 @@ def proposal() -> dict[str, proposal_models.ProposalJsonValue]:
         "urgency_evidence": "The installed command exercises this boundary.",
         "freshness_assumptions": ["SQLite remains authoritative."],
         "checkout_policy": "coordinator-selected",
+        "position": None,
+        "checkpoints": [],
+        "route_facts": {
+            "size_class": "standard",
+            "architecture_impact": "none",
+            "external_effects": "none",
+            "declares_checkpoints": False,
+        },
         "obligations": [
             {
                 "obligation_id": "sqlite-persistence",

@@ -21,7 +21,7 @@ Stop there. Do not reopen the full ownership question merely because durable gui
 
 When asked to onboard a project, evaluate its guidance, or recommend improvements, inspect the current authorities and real project evidence before proposing a baseline. Unless the user asks for edits, remain read-only.
 
-For a project using Pinboard, follow the main skill's [private adoption rule](../pinboard/SKILL.md#route-common-requests). Loaded skills own that workflow; its adoption needs no committed project route. Assess genuine project-specific guidance and explicit contributor-documentation requests on their own evidence and authority. This optional assessment does not initialize Pinboard or install guidance by itself.
+For a project using Pinboard, follow its [coordinator core](../pinboard/SKILL.md). Loaded skills own that workflow; its adoption needs no committed project route. Assess genuine project-specific guidance and explicit contributor-documentation requests on their own evidence and authority. This optional assessment does not initialize Pinboard or install guidance by itself.
 
 Look for the smallest evidence-supported set of guidance:
 

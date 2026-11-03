@@ -87,25 +87,14 @@ def session_start_main() -> int:
     host = msgspec.json.encode(hostname).decode()
     context = (
         f"Pinboard native task_id: {identity}; host_id: {host}. "
-        "A parent session uses both values for attribution. A worker or reviewer launched through invoke_subagent "
-        "uses this task_id as its own post-launch identity together with the host named in its verified dispatch "
-        "prompt, not this host_id. They are attribution, not authority or authenticated credentials, and grant no "
-        "permissions or lease. Do not substitute another conversation's identity or enumerate environment variables. "
-        "Antigravity lists each skill's name, SKILL.md path and description but not its body. Before following any "
-        "Pinboard skill (pinboard, pinboard-intake, pinboard-deliver or any other skill the plugin ships) or "
-        "reference, read the complete file from its actual resolved absolute path with native read_file first "
-        "(calling read_file again with ByteOffset=46080 when a file exceeds the 46,080-byte per-call limit so the "
-        "full file is loaded through the final section); fall back to pinboard_startup_text file-start paging with "
-        'max_batch_bytes "host-profile", following each continuation until it is null, only if native read_file is '
-        "unavailable or refused (such as in headless agy -p without a read_file allow rule). "
-        "Antigravity procedures for Pinboard are in the pinboard skill's references/runtime-antigravity.md."
+        "Parents use both; launched workers/reviewers use this own task_id with the verified dispatch host. "
+        "These are attribution, not permission or authority. Read only the native role/runtime document selected "
+        "by the Pinboard skill or verified envelope; unavailable reading stops startup, without paging."
     )
     if os.environ.get("PINBOARD_RUNTIME_PREPARED_NOW") == "1":
         context += (
-            " Pinboard prepared this plugin version's private runtime during this session start. MCP startup can "
-            "also prepare and start the server automatically. Check whether Pinboard tools are available; if the "
-            "connection is unavailable, tell the user to start a new agy session so Antigravity reconnects the "
-            "plugin's MCP server."
+            " Pinboard prepared its private runtime this session. If tools remain unavailable, start a new agy "
+            "session to reconnect."
         )
     output = StartupOutput((InjectedStep(SystemMessage(context)),))
     print(msgspec.json.encode(output).decode())

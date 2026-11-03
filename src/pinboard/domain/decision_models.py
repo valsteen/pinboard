@@ -50,6 +50,7 @@ class ActionSubjectKind(Enum):
 
 
 class ActionLifecyclePrecondition(Enum):
+    SELECTED_PROJECT_ROOT = "selected-project-root"
     ACTIVE_ATTEMPT = "active-attempt"
     ACTIVE_ATTEMPT_CURRENT_SCOPE = "active-attempt-current-scope"
     ACTIVE_OR_PAUSED_ATTEMPT = "active-or-paused-attempt"
@@ -74,9 +75,16 @@ class ActionSemantics:
     subject_kind: ActionSubjectKind
     lifecycle_precondition: ActionLifecyclePrecondition
     practical_result: str
+    requires_recorded_route: bool
 
 
 class ActionKind(Enum):
+    PREVIEW_PARALLEL = "preview-parallel"
+    ORDER = "order"
+    INSPECT_INITIATIVE = "inspect-initiative"
+    REVIEW_CANDIDATE = "review-candidate"
+    CREATE_PROPOSAL = "create-proposal"
+    PREPARE = "prepare"
     START_PR_REVIEW = "start-pr-review"
     REVIEW_PR_BRIEF = "review-pr-brief"
     OBSERVE_PR_HEAD = "observe-pr-head"
@@ -111,6 +119,66 @@ class ActionKind(Enum):
 
 def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR0912
     match kind:
+        case ActionKind.PREVIEW_PARALLEL:
+            return ActionSemantics(
+                "Compare explicitly selected work for a requested parallel run.",
+                LifecycleEffect.NO_LIFECYCLE_CHANGE,
+                (Role.PROJECT,),
+                ActionSubjectKind.LEDGER,
+                ActionLifecyclePrecondition.VALID_LEDGER,
+                "Return the applicable instructions without performing or authorizing their effects.",
+                requires_recorded_route=False,
+            )
+        case ActionKind.ORDER:
+            return ActionSemantics(
+                "Read the procedure for an explicitly requested priority change.",
+                LifecycleEffect.NO_LIFECYCLE_CHANGE,
+                (Role.PROJECT,),
+                ActionSubjectKind.LEDGER,
+                ActionLifecyclePrecondition.VALID_LEDGER,
+                "Return the applicable instructions without performing or authorizing their effects.",
+                requires_recorded_route=False,
+            )
+        case ActionKind.INSPECT_INITIATIVE:
+            return ActionSemantics(
+                "Read the procedure for an explicit initiative or roadmap request.",
+                LifecycleEffect.NO_LIFECYCLE_CHANGE,
+                (Role.PROJECT,),
+                ActionSubjectKind.LEDGER,
+                ActionLifecyclePrecondition.VALID_LEDGER,
+                "Return the applicable instructions without performing or authorizing their effects.",
+                requires_recorded_route=False,
+            )
+        case ActionKind.REVIEW_CANDIDATE:
+            return ActionSemantics(
+                "Read the procedure for commissioning a separate current-candidate review.",
+                LifecycleEffect.NO_LIFECYCLE_CHANGE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ATTEMPT,
+                ActionLifecyclePrecondition.REVIEW_ATTEMPT,
+                "Return the applicable instructions without performing or authorizing their effects.",
+                requires_recorded_route=True,
+            )
+        case ActionKind.CREATE_PROPOSAL:
+            return ActionSemantics(
+                "Read the intake procedure before constructing one explicitly requested proposal.",
+                LifecycleEffect.NO_LIFECYCLE_CHANGE,
+                (Role.PROJECT,),
+                ActionSubjectKind.LEDGER,
+                ActionLifecyclePrecondition.SELECTED_PROJECT_ROOT,
+                "Return intake instructions only; creation, human scope and attributed calls remain separate.",
+                requires_recorded_route=False,
+            )
+        case ActionKind.PREPARE:
+            return ActionSemantics(
+                "Read the current preparation procedure before acquiring authority or changing the checkout.",
+                LifecycleEffect.NO_LIFECYCLE_CHANGE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ITEM,
+                ActionLifecyclePrecondition.READY_ITEM,
+                "Return instructions only; preparation, activation and runtime permissions remain separate.",
+                requires_recorded_route=True,
+            )
         case ActionKind.CONSOLIDATE:
             return ActionSemantics(
                 "Consolidate selected live items after separate human confirmation.",
@@ -119,6 +187,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.VALID_LEDGER,
                 "Carry work and waits into a campaign atomically and end the sources as superseded.",
+                requires_recorded_route=False,
             )
         case ActionKind.CANCEL:
             return ActionSemantics(
@@ -128,6 +197,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.NONTERMINAL_ITEM,
                 "Drop the commitment while retaining history and unsatisfied dependency obligations.",
+                requires_recorded_route=False,
             )
         case ActionKind.START_PR_REVIEW:
             return ActionSemantics(
@@ -137,6 +207,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.READY_ITEM,
                 "Begin review without an implementation attempt or worker authority.",
+                requires_recorded_route=True,
             )
         case ActionKind.REVIEW_PR_BRIEF:
             return ActionSemantics(
@@ -146,6 +217,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.NONTERMINAL_ITEM,
                 "Record a separate review before a PR review round can begin.",
+                requires_recorded_route=True,
             )
         case ActionKind.RECORD_PR_ROUND:
             return ActionSemantics(
@@ -155,6 +227,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.NONTERMINAL_ITEM,
                 "Append a review round while retaining earlier rounds.",
+                requires_recorded_route=True,
             )
         case ActionKind.OBSERVE_PR_HEAD:
             return ActionSemantics(
@@ -164,6 +237,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.NONTERMINAL_ITEM,
                 "Make an unreviewed newer head visible until another round or human-directed close.",
+                requires_recorded_route=True,
             )
         case ActionKind.CLOSE_PR_REVIEW:
             return ActionSemantics(
@@ -173,6 +247,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.NONTERMINAL_ITEM,
                 "Preserve final dispositions and the last reviewed head.",
+                requires_recorded_route=False,
             )
         case ActionKind.ACCEPT_CHECKPOINT:
             return ActionSemantics(
@@ -182,6 +257,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.REVIEW_ATTEMPT,
                 "Archive the checkpoint evidence, pause the retained attempt, and fence its worker authority.",
+                requires_recorded_route=True,
             )
         case ActionKind.ACCEPT_REVIEW_AND_CONTINUE:
             return ActionSemantics(
@@ -191,6 +267,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.REVIEW_ATTEMPT,
                 "Record the accepted review, return the attempt to active, and fence its prior worker authority so remaining accepted work can proceed.",
+                requires_recorded_route=True,
             )
         case ActionKind.ACTIVATE:
             return ActionSemantics(
@@ -200,6 +277,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.READY_ITEM,
                 "Create and activate the item's attempt.",
+                requires_recorded_route=True,
             )
         case ActionKind.REPORT_BLOCKER:
             return ActionSemantics(
@@ -209,6 +287,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT,
                 "Prepare a blocker report without changing shared lifecycle state.",
+                requires_recorded_route=False,
             )
         case ActionKind.BLOCK:
             return ActionSemantics(
@@ -218,6 +297,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT,
                 "Move the item and attempt to blocked without changing accepted dependencies.",
+                requires_recorded_route=False,
             )
         case ActionKind.BLOCK_ITEM:
             return ActionSemantics(
@@ -227,6 +307,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.READY_ITEM,
                 "Move the item to blocked without changing accepted dependencies or creating an attempt.",
+                requires_recorded_route=False,
             )
         case ActionKind.COMPLETE:
             return ActionSemantics(
@@ -236,6 +317,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE,
                 "Record terminal completion and remove the item from live work. No later repository effect may remain.",
+                requires_recorded_route=True,
             )
         case ActionKind.CLOSE:
             return ActionSemantics(
@@ -247,6 +329,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 "Apply only through the dedicated human-confirmed close route, not the general lifecycle transition, "
                 "carrying the human's decision in their own words; remove the item from live work as done or "
                 "superseded, closing any preserved paused or blocked attempt without claiming completion.",
+                requires_recorded_route=False,
             )
         case ActionKind.CONTINUE:
             return ActionSemantics(
@@ -256,6 +339,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT,
                 "Continue the attempt without changing shared lifecycle state.",
+                requires_recorded_route=True,
             )
         case ActionKind.DEFER:
             return ActionSemantics(
@@ -265,6 +349,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.UNSTARTED_ITEM,
                 "Move the item to deferred and retain its reopen condition.",
+                requires_recorded_route=False,
             )
         case ActionKind.DISPATCH:
             return ActionSemantics(
@@ -274,6 +359,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT_CURRENT_SCOPE,
                 "Produce a canonical worker launch without changing lifecycle state.",
+                requires_recorded_route=True,
             )
         case ActionKind.INSPECT:
             return ActionSemantics(
@@ -283,6 +369,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.LEDGER,
                 ActionLifecyclePrecondition.VALID_LEDGER,
                 "Return current ledger facts without changing shared state.",
+                requires_recorded_route=False,
             )
         case ActionKind.MERGE_PROPOSAL:
             return ActionSemantics(
@@ -292,6 +379,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.PROPOSAL,
                 ActionLifecyclePrecondition.UNSTARTED_PROPOSAL,
                 "Record merged disposition and supersede its same-identity unstarted item for the existing target.",
+                requires_recorded_route=False,
             )
         case ActionKind.PAUSE:
             return ActionSemantics(
@@ -301,6 +389,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT,
                 "Move the item and attempt to paused for later resume.",
+                requires_recorded_route=False,
             )
         case ActionKind.REJECT_PROPOSAL:
             return ActionSemantics(
@@ -310,6 +399,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.PROPOSAL,
                 ActionLifecyclePrecondition.UNSTARTED_PROPOSAL,
                 "Record rejected disposition and drop its same-identity unstarted item from live work.",
+                requires_recorded_route=False,
             )
         case ActionKind.REOPEN:
             return ActionSemantics(
@@ -319,6 +409,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.DEFERRED_ITEM,
                 "Return deferred work to ready.",
+                requires_recorded_route=False,
             )
         case ActionKind.RECORD_REPLACEMENT:
             return ActionSemantics(
@@ -328,6 +419,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.NONTERMINAL_ITEM,
                 "Advance the exact replacement relation without changing work or attempt lifecycle state.",
+                requires_recorded_route=False,
             )
         case ActionKind.REBIND_ATTEMPT:
             return ActionSemantics(
@@ -337,6 +429,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_OR_PAUSED_ATTEMPT,
                 "Replace the accepted scope, branch, base revision, and brief while preserving lifecycle state and fencing prior worker authority.",
+                requires_recorded_route=True,
             )
         case ActionKind.RESUME:
             return ActionSemantics(
@@ -346,6 +439,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.PAUSED_OR_BLOCKED_ITEM_WITHOUT_LIVE_DEPENDENCIES,
                 "Return paused or blocked work to active when an attempt exists, otherwise ready.",
+                requires_recorded_route=True,
             )
         case ActionKind.RETURN_FOR_CORRECTION:
             return ActionSemantics(
@@ -355,6 +449,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.REVIEW_ATTEMPT,
                 "Return the same attempt to active and fence its prior worker authority.",
+                requires_recorded_route=True,
             )
         case ActionKind.RETAIN_TEMPORARILY:
             return ActionSemantics(
@@ -364,6 +459,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.NONTERMINAL_ITEM,
                 "Record the human rationale and accepted cost for the exact current relation revision.",
+                requires_recorded_route=False,
             )
         case ActionKind.REVISE_ITEM:
             return ActionSemantics(
@@ -373,6 +469,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.NONTERMINAL_ITEM,
                 "Append an immutable definition revision and atomically replace its dependencies.",
+                requires_recorded_route=False,
             )
         case ActionKind.SUBMIT_REVIEW:
             return ActionSemantics(
@@ -382,6 +479,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT_CURRENT_SCOPE,
                 "Move the item and attempt to review and protect the candidate.",
+                requires_recorded_route=True,
             )
         case _ as unreachable:
             assert_never(unreachable)
@@ -478,6 +576,48 @@ class DispatchAction:
 class InspectAction:
     capability: ActionCapability[LedgerId] | MutationActionCapability[LedgerId]
     kind: ActionKind = field(init=False, default=ActionKind.INSPECT)
+
+
+@dataclass(frozen=True, slots=True)
+class PreviewParallelAction:
+    capability: ActionCapability[LedgerId]
+    kind: ActionKind = field(init=False, default=ActionKind.PREVIEW_PARALLEL)
+
+
+@dataclass(frozen=True, slots=True)
+class OrderAction:
+    capability: ActionCapability[LedgerId]
+    kind: ActionKind = field(init=False, default=ActionKind.ORDER)
+
+
+@dataclass(frozen=True, slots=True)
+class InspectInitiativeAction:
+    capability: ActionCapability[LedgerId]
+    kind: ActionKind = field(init=False, default=ActionKind.INSPECT_INITIATIVE)
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewCandidateAction:
+    capability: MutationActionCapability[AttemptId]
+    kind: ActionKind = field(init=False, default=ActionKind.REVIEW_CANDIDATE)
+
+
+@dataclass(frozen=True, slots=True)
+class ConsolidateAction:
+    capability: MutationActionCapability[LedgerId]
+    kind: ActionKind = field(init=False, default=ActionKind.CONSOLIDATE)
+
+
+@dataclass(frozen=True, slots=True)
+class CreateProposalAction:
+    capability: ActionCapability[LedgerId]
+    kind: ActionKind = field(init=False, default=ActionKind.CREATE_PROPOSAL)
+
+
+@dataclass(frozen=True, slots=True)
+class PrepareAction:
+    capability: MutationActionCapability[WorkItemId]
+    kind: ActionKind = field(init=False, default=ActionKind.PREPARE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -594,7 +734,21 @@ type NonCheckpointTransitionAction = (
     | ReviseWorkItemAction
     | SubmitReviewAction
 )
-type Action = TransitionAction | CancelAction | ContinueAction | DispatchAction | InspectAction | ReportBlockerAction
+type Action = (
+    TransitionAction
+    | CancelAction
+    | ContinueAction
+    | DispatchAction
+    | InspectAction
+    | PrepareAction
+    | CreateProposalAction
+    | PreviewParallelAction
+    | OrderAction
+    | InspectInitiativeAction
+    | ReviewCandidateAction
+    | ConsolidateAction
+    | ReportBlockerAction
+)
 
 
 def action_id(action: Action) -> ActionId:

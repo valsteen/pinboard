@@ -188,7 +188,7 @@ def select_transition(
     )
     if isinstance(selected, DecisionFailure):
         return selected
-    action = selected[0]
+    action = selected.actions[0]
     capability = action.capability
     if not isinstance(capability, decision_models.MutationActionCapability):
         return DecisionFailure(

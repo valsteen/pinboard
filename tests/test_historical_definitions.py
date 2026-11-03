@@ -62,7 +62,11 @@ class HistoricalDefinitionTest(unittest.TestCase):
     def historical_payload(self, item_id: str) -> bytes:
         value = self.current(item_id)["definition"]
         assert isinstance(value, dict)
-        body = {key: field for key, field in value.items() if key not in {"checkout_policy", "obligations"}}
+        body = {
+            key: field
+            for key, field in value.items()
+            if key not in {"checkout_policy", "obligations", "route_facts", "checkpoints"}
+        }
         body["schema"] = "pinboard-work-item-definition/v1"
         return msgspec.json.encode(body, order="sorted") + b"\n"
 
@@ -222,6 +226,8 @@ class HistoricalDefinitionTest(unittest.TestCase):
         assert isinstance(historical, dict)
         del historical["checkout_policy"]
         del historical["obligations"]
+        del historical["route_facts"]
+        del historical["checkpoints"]
         historical["schema"] = "pinboard-work-item-definition/v1"
         self.replace_original("work-b", msgspec.json.encode(historical, order="sorted") + b"\n")
         with closing(sqlite3.connect(self.roots.database_path)) as connection, connection:

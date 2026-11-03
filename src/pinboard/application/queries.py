@@ -1036,6 +1036,12 @@ def _board_condition(facts: query_models.BoardAttemptFacts) -> query_models.Boar
             | decision_models.ActionKind.DEFER
             | decision_models.ActionKind.DISPATCH
             | decision_models.ActionKind.INSPECT
+            | decision_models.ActionKind.PREPARE
+            | decision_models.ActionKind.CREATE_PROPOSAL
+            | decision_models.ActionKind.PREVIEW_PARALLEL
+            | decision_models.ActionKind.ORDER
+            | decision_models.ActionKind.INSPECT_INITIATIVE
+            | decision_models.ActionKind.REVIEW_CANDIDATE
             | decision_models.ActionKind.MERGE_PROPOSAL
             | decision_models.ActionKind.REJECT_PROPOSAL
             | decision_models.ActionKind.REOPEN
@@ -1496,6 +1502,12 @@ def _closure_action(
             | decision_models.ActionKind.DEFER
             | decision_models.ActionKind.DISPATCH
             | decision_models.ActionKind.INSPECT
+            | decision_models.ActionKind.PREPARE
+            | decision_models.ActionKind.CREATE_PROPOSAL
+            | decision_models.ActionKind.PREVIEW_PARALLEL
+            | decision_models.ActionKind.ORDER
+            | decision_models.ActionKind.INSPECT_INITIATIVE
+            | decision_models.ActionKind.REVIEW_CANDIDATE
             | decision_models.ActionKind.PAUSE
             | decision_models.ActionKind.REJECT_PROPOSAL
             | decision_models.ActionKind.REOPEN

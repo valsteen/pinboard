@@ -39,7 +39,7 @@ from pinboard.application.artifacts import NewArtifact
 from pinboard.application.service import create_proposal
 from pinboard.cli import work_views
 from pinboard.cli.entrypoint import main
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, HistoryId, HostId, ProposalId, TaskId, WorkItemId
@@ -53,6 +53,7 @@ from tests.domain_support import expect_success
 from tests.native_support import call_advertised_tool, call_native_tool
 from tests.support import (
     SQLITE_NOW,
+    TEST_ROUTE_FACTS,
     JsonObject,
     board_reader,
     complete_sqlite_state,
@@ -237,6 +238,7 @@ def _prerequisite_intake() -> ProposalIntake:
             ),
         ),
         (),
+        route_facts=TEST_ROUTE_FACTS,
     )
 
 
@@ -860,7 +862,7 @@ class BoardProjectionTest(unittest.TestCase):
         )
         work_a = next(value for value in board.items if value.overview.item_id == "work-a")
         definition = work_a.definition
-        assert isinstance(definition, query_models.WorkItemDefinitionView)
+        assert isinstance(definition, history.ClassifiedWorkItemDefinitionPayload)
         retained = definition_compatibility.HistoricalDefinitionV1(
             definition.acceptance_criteria,
             tuple(value for value in definition.dependencies if isinstance(value, str)),

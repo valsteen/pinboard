@@ -3,8 +3,9 @@
 Requests are declared records sent to the exported revision's own ``scripts/pinboard --mcp`` through the declared
 ``mcp`` stdio client. Results are read through projections of only the fields the harness consumes; the harness
 owns no Pinboard format, so it validates exactly those fields and ignores the rest. A missing tool, a tool error,
-an unexpected status or a projection mismatch is a ``SeedFailure`` and is never repaired by compatibility code:
-an older revision whose MCP contract differs cannot be seeded by this harness.
+an unexpected status or a projection mismatch is a ``SeedFailure`` and is never retried after an effect.
+The maintained comparison's v2 proposal baseline and classified v4 candidate are selected from advertised
+metadata before submission; all other contract differences remain failures.
 """
 
 import os
@@ -46,8 +47,7 @@ class Obligation(Request, frozen=True):
     deferral_policy: Literal["forbidden"]
 
 
-class Proposal(Request, frozen=True):
-    schema: Literal["pinboard-proposal/v2"]
+class _ProposalFields(Request, frozen=True):
     proposal_id: str
     created_at: str
     source_task_id: str
@@ -64,12 +64,59 @@ class Proposal(Request, frozen=True):
     obligations: list[Obligation]
 
 
+class CompatibilityProposalV2(_ProposalFields, frozen=True, forbid_unknown_fields=True):
+    """Retained here because one client negotiates both comparison revisions before any effect.
+
+    Remove with the last maintained comparison against the unclassified proposal producer.
+    """
+
+    schema: Literal["pinboard-proposal/v2"]
+
+
+class RouteFacts(Request, frozen=True, forbid_unknown_fields=True):
+    size_class: Literal["small", "standard", "campaign"]
+    architecture_impact: Literal["none", "acknowledged-limitation", "new-decision"]
+    external_effects: Literal["none", "publish", "merge", "external-service"]
+    declares_checkpoints: bool
+
+
+class Proposal(_ProposalFields, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-proposal/v4"]
+    route_facts: RouteFacts
+    position: int | None
+    checkpoints: list[str]
+
+
 class ProposalCreate(Request, frozen=True):
     project_root: str
     work_root: str
     actor_task_id: str
     actor_host_id: str
-    proposal: Proposal
+    proposal: Proposal | CompatibilityProposalV2
+
+
+class _ProposalTag(Projection, frozen=True):
+    enum: tuple[Literal["pinboard-proposal/v2", "pinboard-proposal/v4"]]
+
+    def __post_init__(self) -> None:
+        if len(self.enum) != 1:
+            raise ValueError("proposal metadata must select one current schema")
+
+
+class _ProposalProperties(Projection, frozen=True):
+    schema: _ProposalTag
+
+
+class _ProposalSchema(Projection, frozen=True):
+    properties: _ProposalProperties
+
+
+class _ProposalDefinitions(Projection, frozen=True):
+    proposal: _ProposalSchema = msgspec.field(name="Proposal")
+
+
+class _ProposalInputSchema(Projection, frozen=True):
+    definitions: _ProposalDefinitions = msgspec.field(name="$defs")
 
 
 class PreparationStart(Request, frozen=True):
@@ -424,6 +471,7 @@ class ItemDependencies(Projection, frozen=True):
 class BoardClient:
     session: ClientSession
     window: processes.Window
+    proposal_format: Literal["pinboard-proposal/v2", "pinboard-proposal/v4"]
 
     async def call[T: Projection](self, tool: str, arguments: Request, projection: type[T]) -> T:
         with anyio.fail_after(self.window.timeout(300)):
@@ -451,9 +499,22 @@ async def connect(launcher: Path, log: Path, window: processes.Window) -> AsyncG
         with anyio.fail_after(operation_window.timeout(300)), log.open("a") as errlog:
             async with stdio_client(parameters, errlog=errlog) as streams, ClientSession(*streams) as session:
                 await session.initialize()
-                yield BoardClient(session, operation_window)
+                yield BoardClient(session, operation_window, await proposal_format(session))
     except OSError as error:
         raise SeedFailure(f"the evaluated launcher could not serve MCP: {error}") from error
+
+
+async def proposal_format(session: ClientSession) -> Literal["pinboard-proposal/v2", "pinboard-proposal/v4"]:
+    """Negotiate the one supported proposal request before submitting any effect."""
+    tools = await session.list_tools()
+    proposal_tool = next((tool for tool in tools.tools if tool.name == "pinboard_proposal_create"), None)
+    if proposal_tool is None:
+        raise SeedFailure("the evaluated revision does not advertise pinboard_proposal_create")
+    try:
+        schema = msgspec.convert(proposal_tool.input_schema, type=_ProposalInputSchema)
+    except (msgspec.ValidationError, ValueError) as error:
+        raise SeedFailure(f"the advertised proposal schema is unsupported: {error}") from error
+    return schema.definitions.proposal.properties.schema.enum[0]
 
 
 def require(status: str, accepted: tuple[str, ...], what: str) -> None:

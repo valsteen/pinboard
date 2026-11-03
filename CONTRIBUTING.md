@@ -30,7 +30,7 @@ uv run --locked python -m scripts.verify verify-all
 
 | Group | Checks |
 | --- | --- |
-| `verify-repo` | Generated visitor guide, formatting, lint, plugin and skill metadata, strict Claude manifest validation, and CI duplication enforcement |
+| `verify-repo` | Generated role/runtime startup freshness, generated visitor guide, formatting, lint, plugin and skill metadata, strict Claude manifest validation, and CI duplication enforcement |
 | `verify-types` | The complete `scripts/check-types` sequence |
 | `verify-tests` | The existing test runner with branch coverage |
 | `verify-package` | Build without workspace sources, then isolated wheel version/help/module checks and initialization in a temporary Git repository |
@@ -51,6 +51,8 @@ CI runs the same four groups as parallel jobs on macOS and Linux. Repository ver
 ty is a locked development dependency. Its configuration checks the same paths as Pyrefly, sets `all = "error"` with explicit `ignore` overrides for the optional `unsound-assignment`, `unsound-return-statement` and `unsound-yield` rules. The rationale, upstream references, commented opt-in values and reopening condition live beside those settings in `pyproject.toml`. Generic `type: ignore` suppression and ignore-file exclusions stay disabled within the checked paths; equality and generic narrowing remain conservative. `uv check` is experimental in the declared uv version. Diagnostics make the command fail; keep a failing strict baseline visible rather than suppressing errors or making CI advisory.
 
 A `No Python files matched patterns` result from `pyrefly check` is a misconfiguration, not a pass.
+
+Startup guidance is maintained in `skills/pinboard/startup/parts/`, the canonical coordinator phase references and role-scoped shared/runtime sources under `skills/pinboard/references/`, the canonical test-seam section in Slop Cleanup’s structural-consolidation reference, the bound developer-navigation and storytelling methods, the coordinator’s readiness-capability section, and Codex-only intake transport for coordinators and workers. `parts/intake.md` is canonical for coordinator intake and explicitly authorized worker nested intake; reviewer outputs exclude it. Instruction links retain their source-section identity after composition; a same-named heading in another source cannot satisfy a missing target. Scope markers select `all`, `coordinator`, `worker`, `reviewer`, `launched`, or `coordinator worker`; generated output contains none of those markers. After changing a source, run `uv run --locked python -m scripts.generate_startup`. `uv run --locked python -m scripts.generate_startup --check` checks without writing; `verify-repo` calls the same freshness function directly. Keep the nine generated role/runtime documents checked in. The entry skills, MCP initialization, hooks and native launch recipes select them under the plugin root, never the managed project root. Read each generated document completely, including every required native-read chunk; compilation and mechanical checks do not measure agent adherence.
 
 The repository uses `unittest`. The metadata validator is the supported check for plugin and skill discovery consistency. `HOW_IT_WORKS.md` and its diagrams are generated from `docs/how_it_works/`; update their sources and rerun the renderer instead of editing the generated guide directly.
 

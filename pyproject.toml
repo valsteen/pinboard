@@ -68,7 +68,7 @@ known-first-party = ["pinboard", "tests", "evals"]
 
 [tool.pyrefly]
 python-version = "3.14"
-project-includes = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py", "scripts/verify.py", "evals"]
+project-includes = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py", "scripts/verify.py", "scripts/generate_startup.py", "evals"]
 search-path = ["."]
 preset = "strict"
 min-severity = "warn"
@@ -94,7 +94,7 @@ unknown-variable-type = "warn"
 python-version = "3.14"
 
 [tool.ty.src]
-include = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py", "scripts/verify.py", "evals"]
+include = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py", "scripts/verify.py", "scripts/generate_startup.py", "evals"]
 respect-ignore-files = false
 
 [tool.ty.rules]

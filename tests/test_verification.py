@@ -13,6 +13,28 @@ from scripts import verify
 
 
 class VerificationTest(unittest.TestCase):
+    def test_repo_group_checks_startup_freshness_directly_before_external_checks(self) -> None:
+        root = Path.cwd()
+        stale = root / "skills/pinboard/startup/worker-codex.md"
+        for stream in (False, True):
+            with (
+                self.subTest(stream=stream),
+                patch.object(verify.generate_startup, "generate", return_value=(stale,)) as freshness,
+                patch.object(verify, "run_commands") as commands,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                log = io.StringIO()
+                self.assertEqual(1, verify.verify_group(verify.Group.REPO, root, log, stream, None))
+                freshness.assert_called_once_with(root, True)
+                commands.assert_not_called()
+                self.assertIn(stale.relative_to(root).as_posix(), log.getvalue())
+        with (
+            patch.object(verify.generate_startup, "generate", return_value=()),
+            patch.object(verify, "run_commands", return_value=7) as commands,
+        ):
+            self.assertEqual(7, verify.verify_group(verify.Group.REPO, root, io.StringIO(), False, None))
+            commands.assert_called_once()
+
     def test_entry_selects_focused_and_full_groups_and_preserves_test_workers(self) -> None:
         with patch.object(verify, "run", return_value=0) as run:
             self.assertEqual(0, verify.main(["verify-types"]))

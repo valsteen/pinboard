@@ -1,6 +1,6 @@
 # Work-item consolidation
 
-Load this phase only when the human requests combining saved work. The [main conversation core](../SKILL.md) owns decisions and replies. The preview below is read-only until separately approved.
+Use this section only when the human requests combining saved work. The [main conversation core](../startup/parts/common.md) owns decisions and replies. The preview below is read-only until separately approved.
 
 Prepare the complete technical map for the native operation, then explain the proposal in the human's work names: what comes together, what each checkpoint delivers, what waits, and what they need to decide. Keep obligation and origin inventories, placeholder or coverage terminology, action IDs, hashes and payload keys in preparation and application instructions. Include an exact locator in a human reply only when an existing concrete decision or their explicit request needs it.
 

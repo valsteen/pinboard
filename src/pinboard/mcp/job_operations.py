@@ -16,6 +16,7 @@ from pinboard.adapters import (
     candidate_evidence,
     dispatch_operations,
     review_operations,
+    startup_documents,
 )
 from pinboard.adapters.files import file_io
 from pinboard.adapters.files import root as git_root
@@ -55,23 +56,10 @@ from pinboard.mcp import common, contracts, execution, tool_names
 from pinboard.mcp.contracts import JsonValue
 
 
-def _adapter_reference(runtime: dispatch_models.NativeRuntime) -> str:
-    """Name the launched runtime's own adapter guidance beside the shared runtime-adapters reference."""
-    match runtime:
-        case "codex":
-            return "references/runtime-codex.md"
-        case "claude-code":
-            return "references/runtime-claude-code.md"
-        case "antigravity":
-            return "references/runtime-antigravity.md"
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
 def _mcp_launch_envelope(
     project_root: Path,
     work_root: Path,
-    prompt_role: str,
+    prompt_role: startup_documents.StartupRole,
     attempt_id: str,
     publication: dispatch_models.PublishedAgentPrompt,
     environment: dispatch_models.DispatchEnvironment | None,
@@ -112,11 +100,14 @@ def _mcp_launch_envelope(
         "Read each page and follow its exact continuation under request until continuation is null; emit one page "
         "per outer response without aggregating pages. Concatenate text in order to read the complete exact task "
         "and follow it. Stop on rejection, unreadable text or identity/range mismatch. EOF establishes delivery "
-        "only. Load complete skills/references through the native skill loader or native `read_file` when it delivers "
-        "the complete body through the final section (including `ByteOffset=46080` continuation above 46,080 bytes in "
-        "Antigravity); otherwise, when native `read_file` is unavailable or refused, use "
+        f"only. Your single startup reference is `{startup_documents.reference(prompt_role, runtime)}` under the "
+        "resolved Pinboard plugin root, not the managed project root. Read that complete document through native "
+        "loading or native `read_file` when it delivers "
+        "the complete body through the final section (in Antigravity, continue at `ByteOffset=46080` and later "
+        "46,080-byte offsets until complete); otherwise, when native `read_file` is unavailable or refused, use "
         "pinboard_startup_text file-start with the actual resolved absolute path and the same roots/budget, "
-        f"following pages in the same way. This runtime's adapter is the pinboard skill's {_adapter_reference(runtime)}."
+        "following pages in the same way. It includes this role's shared policy and runtime instructions inline; "
+        "do not load coordinator startup or navigate other startup instruction files."
     )
     if environment is not None:
         acquisition = {
@@ -137,8 +128,8 @@ def _mcp_launch_envelope(
             "action_id": {"kind": "continue", "subject": attempt_id},
         }
         message += (
-            " After reading the complete canonical brief/bootstrap and loading the complete delivery skill through "
-            "the current runtime adapter, obtain your own trusted post-launch identity; "
+            " After reading the complete canonical brief/bootstrap and the selected worker startup document, "
+            "obtain your own trusted post-launch identity; "
             f"call `pinboard_attempt_authority` with {msgspec.json.encode({'request': acquisition}, order='sorted').decode()}, "
             f"then `pinboard_actions` with {msgspec.json.encode({'request': continuation}, order='sorted').decode()}. "
             "Substitute only the trusted post-launch identity and returned lease facts. The lease expires after "

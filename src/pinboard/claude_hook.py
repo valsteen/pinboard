@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 
 import msgspec
 
+from pinboard.adapters import startup_documents
 from pinboard.hook_values import NativeIdentity, NativeText
 
 PINBOARD_SERVER = "mcp__plugin_pinboard_pinboard"
@@ -82,9 +83,12 @@ def main() -> int:
     identity = msgspec.json.encode(event.agent_id).decode()
     context = (
         f"Pinboard native worker task_id: {identity}. "
-        "Use this own post-launch identity for worker startup after verifying the launch prompt and canonical brief. "
-        "It is attribution, not authority or an authenticated credential; acquire your own exact attempt lease. "
-        "Do not substitute a parent/session identity or enumerate environment variables."
+        "Use this own post-launch identity for the role selected by the verified launch envelope after verifying "
+        "the launch prompt and canonical brief. It is attribution, not authority or an authenticated credential. "
+        "A worker acquires its own exact attempt lease; a reviewer remains candidate-read-only without worker authority. "
+        "Do not substitute a parent/session identity or enumerate environment variables. "
+        "Load the single role/runtime startup document selected by the verified launch envelope; "
+        "do not load coordinator startup in a launched role."
     )
     output = HookOutput(StartupContext("SubagentStart", context))
     print(msgspec.json.encode(output).decode())
@@ -107,7 +111,8 @@ def session_start_main() -> int:
         "Use these current local values for parent attribution, not a Remote Control link or model-derived host. "
         "They are attribution, not authority or authenticated credentials, and grant no permissions or lease. "
         "A launched worker instead uses its own SubagentStart agent_id and verified dispatch host. "
-        "Claude Code procedures for Pinboard are in the pinboard skill's references/runtime-claude-code.md."
+        f"A coordinator or intake caller reads {startup_documents.reference('coordinator', 'claude-code')} completely "
+        "under the resolved Pinboard plugin root as its single startup reference; runtime procedures are inline."
     )
     if os.environ.get("PINBOARD_RUNTIME_PREPARED_NOW") == "1":
         context += (

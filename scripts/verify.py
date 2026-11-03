@@ -16,6 +16,8 @@ from enum import Enum
 from pathlib import Path
 from typing import TextIO, assert_never
 
+from scripts import generate_startup
+
 
 class Group(Enum):
     REPO = "verify-repo"
@@ -65,6 +67,15 @@ def run_commands(commands: Sequence[Sequence[str]], root: Path, log: TextIO, str
 def verify_group(group: Group, root: Path, log: TextIO, stream: bool, jobs: int | None) -> int:
     match group:
         case Group.REPO:
+            if changed := generate_startup.generate(root, True):
+                diagnostic = (
+                    "Startup documents are missing or stale; run uv run --locked python -m scripts.generate_startup:\n"
+                )
+                diagnostic += "".join(f"{path.relative_to(root)}\n" for path in changed)
+                log.write(diagnostic)
+                if stream:
+                    print(diagnostic, end="", flush=True)
+                return 1
             return run_commands(
                 (
                     ("uv", "run", "--locked", "python", "-m", "docs.how_it_works.render", "--check"),

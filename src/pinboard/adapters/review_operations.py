@@ -882,6 +882,9 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
     prompt = (
         "Independently review this exact Pinboard candidate in a fresh context. The accepted immutable snapshot, "
         "not a mutable checkout, is authoritative.\n"
+        "Read the complete generated reviewer startup document selected by the verified native launch envelope "
+        "as your single startup reference; it includes review, shared policy and this runtime's instructions inline. "
+        "Do not load coordinator startup.\n"
         f"Candidate snapshot: {candidate.reference.selector}\n"
         f"Snapshot SHA-256: {candidate.reference.content_sha256}\n"
         f"Snapshot size: {candidate.reference.size_bytes}\n"

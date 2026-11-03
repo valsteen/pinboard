@@ -385,7 +385,7 @@ class DispatchTest(unittest.TestCase):
             )
         )
 
-        self.assertTrue(prompt.startswith("Use $pinboard-deliver for this repository attempt.\n"))
+        self.assertIn("`skills/pinboard/startup/worker-codex.md`", prompt)
         self.assertNotIn("$deliver", prompt)
         self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", prompt)
         self.assertIn(f"Canonical brief: {path}", prompt)

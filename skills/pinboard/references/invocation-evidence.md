@@ -1,6 +1,6 @@
 # Invocation evidence
 
-Load this phase when exact capture or a consequential Pinboard invocation anomaly needs investigation. The [main conversation core](../SKILL.md) owns concern disposition and the human picture. Capture is private evidence, never ledger authority.
+Use this section when exact capture or a consequential Pinboard invocation anomaly needs investigation. The [main conversation core](../startup/parts/common.md) owns concern disposition and the human picture. Capture is private evidence, never ledger authority.
 
 ### Capture and reconcile consequential invocation evidence
 

@@ -8,7 +8,7 @@ Use this workflow for requests such as:
 
 Do not use it merely because more than one item exists. Ordinary next-work selection uses [status and selection](status-and-selection.md).
 
-Use [the shared runtime adapters](runtime-adapters.md) and your own runtime's reference, [Codex](runtime-codex.md), [Claude Code](runtime-claude-code.md) or [Antigravity](runtime-antigravity.md), for native task, subagent, worktree, permission, and waiting operations. This reference owns only the shared selection and launch decisions.
+Use [the shared runtime adapters](runtime-adapters.md) and the selected runtime instructions inline, for native task, subagent, worktree, permission, and waiting operations. This reference owns only the shared selection and launch decisions.
 
 ## Build the preview
 
@@ -17,7 +17,7 @@ Use [the shared runtime adapters](runtime-adapters.md) and your own runtime's re
 3. Present the result in two compact groups:
    - **Ready together:** the unambiguous all-safe set.
    - **Not ready:** excluded items with the command's exact reason translated into ordinary language.
-4. Make every item label a native clickable link to its confirmed item view under the main Pinboard skill's readable-artifact rule.
+4. Make every item label a native clickable link to its confirmed item view under the shared policy’s readable-artifact rule.
 5. Add one execution-form recommendation to every launchable item:
    - Use a **Subagent** for bounded work that belongs to the current outcome and should return to its owning task. Keep design, refinement, new-authority, live-application, external-write, and likely user-input decisions in the owning task until the work has a complete accepted brief, an independently buildable checkpoint, and already-authorized permissions.
    - Use a **Separate task** only for a genuinely independent outcome that the human intends to follow in that task's own conversation. It is not a subordinate worker and does not return its result to the current task.
@@ -52,7 +52,7 @@ For a **Separate task**:
 
 1. Use the environment's native task creation capability. This is authorized by the user's exact batch request.
 2. Give it the repository root, item identity, confirmed item-view link when available, and fresh preview revision, with an instruction to use Pinboard to inspect the item and apply only its own legal transitions. When its checkout or worktree must be selected, use [preparation and dispatch](preparation-and-dispatch.md#checkout-and-baseline) for project-specific baseline inference and confirmation; do not assume that a local branch named `main` is current or that any fixed remote name is authoritative.
-3. Name that task as the one to follow for its outcome, as part of the main skill's [current-activity fact](../SKILL.md#keep-the-humans-picture-current). It reports and requests decisions there; do not use task-to-task messaging to return its result to the current task.
+3. Name that task as the one to follow for its outcome, as part of the shared policy’s [current-activity fact](../startup/parts/common.md#keep-the-humans-picture-current). It reports and requests decisions there; do not use task-to-task messaging to return its result to the current task.
 4. Do not replace it with a subagent when separate-task creation is unavailable, because the human selected a separate outcome and conversation.
 
 For a **Subagent**:
@@ -72,11 +72,11 @@ Keep the report compact and exact:
 | --- | --- | --- |
 | linked item label | separate task or subagent | created with task identifier, or not created with exact cause |
 
-Link each item under the main skill's readable-artifact rule. Say `batch launched` only when every authorized item was created. Otherwise say `partial launch`, identify what exists, name the first changed-state or transport failure, and state whether retry needs user action. Never count a prepared prompt, retained proposal, or attempted message as a created task.
+Link each item under the shared policy’s readable-artifact rule. Say `batch launched` only when every authorized item was created. Otherwise say `partial launch`, identify what exists, name the first changed-state or transport failure, and state whether retry needs user action. Never count a prepared prompt, retained proposal, or attempted message as a created task.
 
 ## Preview and launch independent work
 
-When the user asks what can run in parallel, asks to choose a batch, or explicitly asks to launch independent work, read `references/parallel-work.md` and follow it completely.
+When the user asks what can run in parallel, asks to choose a batch, or explicitly asks to launch independent work, follow this complete parallel-work section.
 
 Use `pinboard_parallel_preview` as read-only structural evidence through its exact selected or all-safe request leaf. It does not certify readiness, acquire authority, authorize task creation or decide product priority. Keep these outcomes distinct:
 

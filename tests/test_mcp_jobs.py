@@ -48,6 +48,62 @@ from tests.work_brief_support import CHECKPOINT_ID, ready_review
 
 
 class McpJobsTest(CheckpointPackageSupport):
+    def test_sdk_launches_select_one_shipped_startup_document_for_each_role_and_runtime(self) -> None:
+        native = self.enterContext(native_tools())
+        plugin = Path(__file__).resolve().parent.parent
+        for runtime, message_key in (("codex", "message"), ("claude-code", "prompt"), ("antigravity", "Prompt")):
+            for role in ("worker", "reviewer"):
+                with self.subTest(runtime=runtime, role=role):
+                    if role == "worker":
+                        project, work, choice = self.dispatch_fixture()
+                        choice["environment"] = self.json_object(choice["environment"]) | {"runtime": runtime}
+                        outcome = native.call_advertised_tool(
+                            "pinboard_dispatch",
+                            {"project_root": str(project), "work_root": str(work), "dispatch": choice},
+                        )
+                    else:
+                        fixture, _, _ = self.review_job_fixture()
+                        project, work = fixture.project, fixture.work
+                        outcome = native.call_advertised_tool(
+                            "pinboard_review_job",
+                            {
+                                "project_root": str(project),
+                                "work_root": str(work),
+                                "review": {
+                                    "kind": "initial",
+                                    "attempt_id": "work-a-1",
+                                    "candidate_revision": "b" * 40,
+                                    "runtime": runtime,
+                                    "background": False,
+                                },
+                            },
+                        )
+                    self.assertEqual("ready", outcome["status"], outcome)
+                    launch = self.json_object(outcome["native_launch"])
+                    arguments = self.json_object(launch["arguments"])
+                    message = arguments[message_key]
+                    assert isinstance(message, str)
+                    selected = re.findall(r"`(skills/pinboard/startup/[^`]+\.md)`", message)
+                    expected = f"skills/pinboard/startup/{role}-{runtime}.md"
+                    self.assertEqual([expected], selected)
+                    self.assertTrue((plugin / selected[0]).is_file())
+                    reference = self.json_object(outcome["prompt_reference"])
+                    verification = native.call_advertised_tool(
+                        "pinboard_artifact_verify",
+                        {
+                            "project_root": str(project),
+                            "work_root": str(work),
+                            "artifact_ref_id": reference["accepted_artifact_reference_id"],
+                            "selector": reference["selector"],
+                            "sha256": reference["sha256"],
+                            "size_bytes": reference["size_bytes"],
+                        },
+                    )
+                    self.assertTrue(verification["verified"])
+                    if role == "worker":
+                        prompt = (work / str(reference["selector"])).read_text()
+                        self.assertEqual([expected], re.findall(r"`(skills/pinboard/startup/[^`]+\.md)`", prompt))
+
     def test_authority_tools_describe_temporary_local_mutation_to_clients(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
         self.addCleanup(executor.shutdown)

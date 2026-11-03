@@ -297,6 +297,9 @@ class PluginPackagingTests(unittest.TestCase):
                     self.assertEqual("SessionStart", context["hookEventName"])
                     self.assertIn(json.dumps(event["session_id"]), context["additionalContext"])
                     self.assertIn(json.dumps(socket.gethostname()), context["additionalContext"])
+                    selected = "skills/pinboard/startup/coordinator-claude-code.md"
+                    self.assertIn(selected, context["additionalContext"])
+                    self.assertTrue((ROOT / selected).is_file())
                     self.assertEqual("", result.stderr)
                     outputs.append(result.stdout)
                 else:
@@ -485,6 +488,9 @@ class PluginPackagingTests(unittest.TestCase):
                     context = output.inject_steps[0].system_message.system_message
                     self.assertIn(json.dumps(event["conversationId"]), context)
                     self.assertIn(json.dumps(socket.gethostname()), context)
+                    selected = "skills/pinboard/startup/coordinator-antigravity.md"
+                    self.assertIn(selected, context)
+                    self.assertTrue((ROOT / selected).is_file())
                     outputs.append(result.stdout)
                 else:
                     self.assertEqual(1, result.returncode, result.stderr)
@@ -1154,6 +1160,10 @@ class PluginPackagingTests(unittest.TestCase):
             plugin_root = sandbox / "copied plugin"
             plugin_root.mkdir()
             copied_repository_payload(ROOT, plugin_root)
+            for role in ("coordinator", "worker", "reviewer"):
+                for runtime in ("codex", "claude-code", "antigravity"):
+                    relative = Path(f"skills/pinboard/startup/{role}-{runtime}.md")
+                    self.assertEqual((ROOT / relative).read_bytes(), (plugin_root / relative).read_bytes())
 
             project = sandbox / "project"
             project.mkdir()

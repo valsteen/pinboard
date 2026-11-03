@@ -15,6 +15,7 @@ from typing import Literal, assert_never, override
 
 import msgspec
 
+from pinboard.adapters import startup_documents
 from pinboard.adapters.files import root
 from pinboard.adapters.files.brief_sources import select_base_brief_source, select_checkout_brief_source
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
@@ -575,7 +576,8 @@ def _canonical_prompt(
             "omitted untracked content remains outside tracked candidate identity.\n\n"
         )
     return (
-        "Use $pinboard-deliver for this repository attempt.\n\n"
+        f"Use `{startup_documents.reference('worker', environment.runtime)}` under the resolved Pinboard plugin root "
+        "as your single startup reference for this repository attempt.\n\n"
         f"Attempt: {attempt_id}\n"
         f"Checkpoint: {checkpoint_id}\n"
         f"Canonical brief: {attempt_path}\n"
@@ -600,7 +602,8 @@ def _canonical_prompt(
         "Worker startup after native launch:\n"
         "1. Worker task identity: use your own trusted post-launch identity from the current runtime adapter. "
         "Do not use a parent/session identity or a pre-launch value.\n"
-        "2. Load the complete $pinboard-deliver skill through the current runtime adapter before acquisition or implementation.\n"
+        "2. Read that complete generated worker startup document before acquisition or implementation; "
+        "it includes delivery, shared policy and the selected runtime instructions inline.\n"
         "3. Read the complete canonical brief, including its bootstrap, before choosing a startup route.\n"
         "4. Acquire your own attempt authority and follow its fresh leased continuation through the exact "
         "interface instructions in the verified native-launch envelope. An explicitly accepted source-development "

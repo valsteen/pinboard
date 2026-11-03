@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 
 import msgspec
 
+from pinboard.adapters import startup_documents
 from pinboard.hook_values import NativeIdentity, NativeText
 
 # Antigravity routes every MCP call through call_mcp_tool and names a plugin server <plugin directory>_<server>.
@@ -91,14 +92,16 @@ def session_start_main() -> int:
         "uses this task_id as its own post-launch identity together with the host named in its verified dispatch "
         "prompt, not this host_id. They are attribution, not authority or authenticated credentials, and grant no "
         "permissions or lease. Do not substitute another conversation's identity or enumerate environment variables. "
-        "Antigravity lists each skill's name, SKILL.md path and description but not its body. Before following any "
-        "Pinboard skill (pinboard, pinboard-intake, pinboard-deliver or any other skill the plugin ships) or "
-        "reference, read the complete file from its actual resolved absolute path with native read_file first "
-        "(calling read_file again with ByteOffset=46080 when a file exceeds the 46,080-byte per-call limit so the "
-        "full file is loaded through the final section); fall back to pinboard_startup_text file-start paging with "
+        "For Pinboard startup, a launched role reads only the role/runtime document selected by its verified "
+        f"launch envelope; a coordinator or intake caller reads {startup_documents.reference('coordinator', 'antigravity')} "
+        "under the resolved plugin root. Runtime procedures and binding rules are inline. Antigravity lists skill "
+        "paths and descriptions, not bodies. Read the complete selected startup document, and any conditionally "
+        "required companion skill, from its actual resolved absolute path with native read_file first "
+        "(continuing at ByteOffset=46080 and later 46,080-byte offsets until the final section is loaded); "
+        "fall back to pinboard_startup_text file-start paging with "
         'max_batch_bytes "host-profile", following each continuation until it is null, only if native read_file is '
         "unavailable or refused (such as in headless agy -p without a read_file allow rule). "
-        "Antigravity procedures for Pinboard are in the pinboard skill's references/runtime-antigravity.md."
+        "A mention or partial read never establishes complete loading; unavailable complete content stops startup."
     )
     if os.environ.get("PINBOARD_RUNTIME_PREPARED_NOW") == "1":
         context += (

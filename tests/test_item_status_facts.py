@@ -244,6 +244,47 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
             call_advertised_tool=native.call_advertised_tool,
         )
 
+    def test_committed_transitions_return_current_subject_status(self) -> None:
+        for subject in ("attempt", "item"):
+            with self.subTest(subject=subject):
+                fixture = self.native_fixture(self.checkpoint_fixture())
+                if subject == "attempt":
+                    committed = self.transition(
+                        fixture, "return-for-correction:work-a-1", {"reason": "Rework the candidate."}
+                    )
+                    item_id = "work-a"
+                else:
+                    committed = self.transition(
+                        fixture,
+                        "defer:work-c",
+                        {"timing": "safe-to-defer", "reopen_condition": "The prerequisite is needed."},
+                    )
+                    item_id = "work-c"
+                self.assertEqual(self.item_leaf(fixture, item_id), committed["item_status"])
+                self.assertEqual(self.fresh_status(fixture, item_id), committed["item_status"])
+                self.assertEqual(
+                    str(committed["committed_revision"]), self.json_object(committed["item_status"])["revision"]
+                )
+
+    def test_status_read_failure_after_transition_preserves_commit_and_names_recovery(self) -> None:
+        fixture = self.native_fixture(self.checkpoint_fixture())
+        with patch.object(
+            SQLiteWorkStore, "read_item_status", side_effect=StorageError(StorageErrorCode.IO_ERROR, "read unavailable")
+        ):
+            committed = self.transition(fixture, "return-for-correction:work-a-1", {"reason": "Rework the candidate."})
+        self.assertEqual("committed-with-warning", committed["status"])
+        self.assertEqual("committed", committed["effect"])
+        self.assertEqual("do-not-retry", committed["retry"])
+        unavailable = self.json_object(committed["item_status"])
+        self.assertEqual("unavailable", unavailable["status"])
+        self.assertEqual("work-a", unavailable["item_id"])
+        self.assertEqual(str(fixture.work / "state.sqlite3"), unavailable["resource"])
+        self.assertIn("pinboard_item_status", str(unavailable["recovery"]))
+        self.assertIn("Do not replay", str(unavailable["recovery"]))
+        status = self.item_leaf(fixture)
+        self.assertEqual(str(committed["committed_revision"]), status["revision"])
+        self.assertEqual("returned-for-correction", self.json_object(status["review_verdict"])["kind"])
+
     def test_returned_verdict_survives_pause_block_resume_and_rebind_until_resubmission(self) -> None:
         reason = "Criterion 2 lacks behavior evidence."
         for route in ("pause", "block", "rebind"):

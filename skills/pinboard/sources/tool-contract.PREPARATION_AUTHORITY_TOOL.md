@@ -1,0 +1,1 @@
+Read or change one exact Pinboard preparation authority. Put all fields inside request.

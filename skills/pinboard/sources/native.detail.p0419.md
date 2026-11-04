@@ -1,0 +1,1 @@
+The root `hooks.json` registers two entries. Antigravity runs each hook with the plugin root as working directory:

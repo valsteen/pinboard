@@ -1,0 +1,1 @@
+Read exact selected or current-only all-safe structural parallel constraints. Put all fields inside request. Does not certify readiness, acquire authority or launch native tasks.

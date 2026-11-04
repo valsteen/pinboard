@@ -1,0 +1,1 @@
+A launched worker/reviewer uses its own current post-launch CODEX_THREAD_ID, never CODEX_SESSION_ID or an inherited/parent value, and the verified launch host.

@@ -1,0 +1,1 @@
+Inspect one exact Pinboard attempt, its accepted brief, evidence references, and continuation. Arguments are top-level project_root, work_root, attempt_id and reconciliation (no request wrapper). Supply reconciliation:null for ordinary inspection or exact outer-owned repository observations for one resumed reviewed-work continuation.

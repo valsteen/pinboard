@@ -1,0 +1,1 @@
+Read one same-revision discovery page; exact top-level roots, max_items 1-25, continuation:null to start. Follow continuations through null; stale traversal restarts. Partial pages prove no absence. Known work uses exact item status and definition.

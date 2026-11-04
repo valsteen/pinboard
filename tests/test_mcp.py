@@ -3428,6 +3428,21 @@ class McpTransportTest(unittest.TestCase):
         _run_async(advertised_schema_scenario())
 
     def test_committed_transition_results_correlate_mutating_actions_and_exact_surfaces(self) -> None:
+        temporary, project, roots = self._project()
+        self.addCleanup(temporary.cleanup)
+        item_status = mcp_reads._read_item_status(
+            {
+                "request": {
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                    "operation": "item",
+                    "item_id": "work-a",
+                }
+            },
+            mcp_execution.CancellationToken(),
+        ).content
+        item_status = msgspec.json.decode(msgspec.json.encode(item_status))
+
         def committed(kind: str, surfaces: list[str]) -> dict[str, contracts.JsonValue]:
             return {
                 "schema": "pinboard-mcp-transition-result/v1",
@@ -3441,6 +3456,7 @@ class McpTransportTest(unittest.TestCase):
                 "changed_surfaces": list[contracts.JsonValue](surfaces),
                 "continuation": "Inspect this attempt with pinboard_attempt_inspect and follow its next_operation; do not replay.",
                 "warning": None,
+                "item_status": item_status,
             }
 
         ledger = ["ledger"]
@@ -3454,7 +3470,21 @@ class McpTransportTest(unittest.TestCase):
             committed("complete", references),
             committed("complete", publication),
         )
-        invalid = (
+        unavailable: dict[str, contracts.JsonValue] = {
+            **valid[0],
+            "status": "committed-with-warning",
+            "warning": {"message": "Current status is unavailable.", "recovery": "Inspect the read failure."},
+            "item_status": {
+                "status": "unavailable",
+                "item_id": "work-a",
+                "resource": str(roots.database_path),
+                "code": "ITEM_STATUS_UNAVAILABLE",
+                "message": "The transition committed; the later read failed.",
+                "recovery": "Do not replay the committed transition; diagnose the read failure.",
+            },
+        }
+        valid = (*valid, unavailable)
+        invalid: tuple[dict[str, contracts.JsonValue], ...] = (
             *(committed(kind, ledger) for kind in ("continue", "dispatch", "inspect", "report-blocker")),
             committed("pause", ["immutable-artifact"]),
             committed("pause", publication),
@@ -3464,6 +3494,8 @@ class McpTransportTest(unittest.TestCase):
             committed("complete", ["immutable-artifact"]),
             committed("complete", ["accepted-artifact-reference"]),
             committed("complete", ["ledger", "accepted-artifact-reference"]),
+            dict[str, contracts.JsonValue](unavailable, changed_surfaces=["immutable-artifact"]),
+            dict[str, contracts.JsonValue](unavailable, status="committed", warning=None),
         )
         for content in valid:
             contract_schemas.validate_result(mcp_server.TRANSITION_TOOL, content)

@@ -1,0 +1,1 @@
+Use this parent's injected Pinboard native task_id and host_id. Missing injected context stops attribution; never borrow inherited conversation values, invent identity or enumerate environment.

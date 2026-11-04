@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 from typing import Literal
+from urllib.parse import unquote, urlsplit
 
 import msgspec
 
@@ -31,10 +32,11 @@ type Destination = Literal[
 
 
 class Owner(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    text: str
+    source: str
     consumers: tuple[str, ...]
     kind: Destination
     clauses: tuple[str, ...]
+    includes: tuple[str, ...]
 
 
 class Row(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -97,6 +99,7 @@ def _document_budget(key: str) -> int:
 
 def compile_documents(table: Classification) -> dict[str, tuple[bytes, tuple[str, ...]]]:
     """One owner supplies every copy; generated copies carry no independent policy."""
+    texts = {key: (ROOT / owner.source).read_text() for key, owner in table.surviving_owners.items()}
     selections = dict(table.composition.role_owners)
     core = tuple(key for key in table.surviving_owners if key.startswith("core."))
     for runtime in RUNTIMES:
@@ -134,7 +137,10 @@ def compile_documents(table: Classification) -> dict[str, tuple[bytes, tuple[str
                     ] = keys
     result: dict[str, tuple[bytes, tuple[str, ...]]] = {}
     for key, owners in selections.items():
-        body = ("\n\n".join(table.surviving_owners[owner].text for owner in owners) + "\n").encode()
+        owners = tuple(
+            dict.fromkeys(included for owner in owners for included in (owner, *table.surviving_owners[owner].includes))
+        )
+        body = ("\n\n".join(texts[owner] for owner in owners) + "\n").encode()
         budget = _document_budget(key)
         if len(body) > budget:
             raise ValueError(f"{key}: {len(body)} bytes exceeds {budget}")
@@ -187,7 +193,7 @@ def expected_files() -> dict[Path, bytes]:
     )
     files[ROOT / "skills/pinboard/references/runtime-adapters.md"] = (
         "# Runtime recovery\n\n## Source-worktree setup recovery\n\n"
-        + table.surviving_owners["shared.setup-recovery"].text
+        + (ROOT / table.surviving_owners["shared.setup-recovery"].source).read_text()
         + "\n"
     ).encode()
     return files
@@ -237,6 +243,15 @@ def _validate_test_links(table: Classification) -> None:
             raise ValueError(f"Implementing-test selector does not resolve: {selector}")
 
 
+def _validate_document_links(path: Path, body: bytes) -> None:
+    for selected in re.findall(r"\]\(([^)]+)\)", body.decode()):
+        target = urlsplit(selected)
+        if target.scheme or not target.path:
+            continue
+        if not (path.parent / unquote(target.path)).is_file():
+            raise ValueError(f"Generated instruction document has an unresolved link: {path}: {selected}")
+
+
 def validate_generated() -> None:
     table = source()
     _validate_test_links(table)
@@ -251,12 +266,15 @@ def validate_generated() -> None:
                     key = "tool-contract." + ast.unparse(keywords["name"])
                     if (
                         key in table.surviving_owners
-                        and ast.literal_eval(keywords["description"]) != table.surviving_owners[key].text
+                        and ast.literal_eval(keywords["description"])
+                        != (ROOT / table.surviving_owners[key].source).read_text()
                     ):
                         raise ValueError(f"Tool description differs from its canonical owner: {key}")
     for path, expected in expected_files().items():
         if not path.is_file() or path.read_bytes() != expected:
             raise ValueError(f"Generated instruction document is stale: {path}; run scripts/generate-instructions.py")
+        if path.suffix == ".md":
+            _validate_document_links(path, expected)
 
 
 def _startup_reads(path: Path, runtime: str, seen: set[Path]) -> int:

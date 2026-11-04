@@ -1,0 +1,1 @@
+Codex's explicit root `mcp-codex.json` declares `sh ./scripts/pinboard --mcp` with `cwd: "."`, resolved under the plugin root. It starts the shared `pinboard-mcp` entry through the same runtime owner as the other runtimes. Codex loads no Pinboard hook: Codex discovers default plugin hooks only at `hooks/hooks.json`, which Pinboard does not supply.

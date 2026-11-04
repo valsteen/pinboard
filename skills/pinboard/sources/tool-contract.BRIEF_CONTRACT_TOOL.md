@@ -1,0 +1,1 @@
+Construct the strict work-brief contract or unresolved local/cross-boundary starter; no project facts or authority. Put all fields inside request. Structural construction is not readiness review or activation. Follow the Pinboard coordination Skill for preparation.

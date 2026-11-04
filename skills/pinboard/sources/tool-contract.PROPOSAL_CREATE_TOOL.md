@@ -1,0 +1,1 @@
+Create one durable Pinboard proposal from its canonical structured input. Arguments are top-level project_root, work_root, proposal, actor_task_id and actor_host_id (no request wrapper).

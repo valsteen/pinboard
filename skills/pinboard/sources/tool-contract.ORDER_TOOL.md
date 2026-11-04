@@ -1,0 +1,1 @@
+Save an explicitly human-authorized complete priority permutation against the current live order; fresh overview reconciles state, not caller commitment. Put all fields inside request. Never grants launch authority.

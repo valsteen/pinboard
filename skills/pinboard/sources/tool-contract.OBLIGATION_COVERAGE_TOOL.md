@@ -1,0 +1,1 @@
+Read exact current obligation coverage for a named pair (source_item, replacement_item) or an item's planned-replacement. Lists every source obligation and all exact carrying obligations or uncovered. Put all fields inside request. Does not infer equivalence or authorize ending work.

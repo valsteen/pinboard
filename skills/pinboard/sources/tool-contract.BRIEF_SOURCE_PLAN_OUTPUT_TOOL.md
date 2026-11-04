@@ -1,0 +1,1 @@
+Publish one immutable source plan to an explicit destination; writes only that destination. Put all fields inside request.

@@ -1,0 +1,1 @@
+Use this coordinator's own current CODEX_THREAD_ID from its native execution environment, never an inherited chat value or CODEX_SESSION_ID, with the trusted current runtime host. Read only the named identity, never enumerate environment variables.

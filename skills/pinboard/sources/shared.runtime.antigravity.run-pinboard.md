@@ -1,0 +1,1 @@
+Discover the connected `pinboard_pinboard` tools and call each through `call_mcp_tool` with exact roots in its `Arguments`. For CLI-only operations, `<launcher-root>` is the directory two levels above the skill directory whose absolute `SKILL.md` path the skill catalog names; run `PINBOARD_RUNTIME=antigravity "<launcher-root>/scripts/pinboard" ...`.

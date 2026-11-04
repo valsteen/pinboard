@@ -1,0 +1,1 @@
+When Antigravity needs lazy MCP schemas, read the actual named schema files natively and batch independent schema/result reads. Missing or unreadable schema stops that operation with its exact resource; never guess fields. No phase instruction reference is required.

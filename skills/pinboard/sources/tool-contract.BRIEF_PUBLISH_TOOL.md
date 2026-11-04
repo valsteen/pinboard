@@ -1,0 +1,1 @@
+Publish one canonical Pinboard work brief and accept its artifact reference. Arguments are top-level project_root, work_root and brief (no request wrapper). Publication is not readiness review or activation. Follow the Pinboard coordination Skill for preparation.

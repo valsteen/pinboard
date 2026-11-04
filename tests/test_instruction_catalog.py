@@ -9,6 +9,21 @@ from scripts import instruction_catalog
 
 
 class StartupCompositionTest(unittest.TestCase):
+    def test_generated_documents_reject_unresolvable_relative_links(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in ("worker-codex.md", "documents/action.md"):
+                with self.subTest(document=relative):
+                    document = root / relative
+                    document.parent.mkdir(parents=True, exist_ok=True)
+                    body = b"Follow [recovery](missing.md#recovery).\n"
+                    document.write_bytes(body)
+                    with (
+                        patch.object(instruction_catalog, "expected_files", return_value={document: body}),
+                        self.assertRaisesRegex(ValueError, "missing.md"),
+                    ):
+                        instruction_catalog.validate_generated()
+
     def test_intake_and_transitive_reads_count_toward_each_runtime_budget(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

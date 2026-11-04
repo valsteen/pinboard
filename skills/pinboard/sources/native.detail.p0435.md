@@ -1,0 +1,1 @@
+Do not enable Claude agent teams, open another session, create another worktree, or widen permissions merely to mimic a Codex transport. Messaging reduces latency; it never gates persistence, ownership, review, or completion.

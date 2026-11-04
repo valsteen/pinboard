@@ -1,0 +1,1 @@
+Discover the connected Pinboard MCP tools and pass exact roots. For CLI-only operations, use the substituted absolute `${CLAUDE_PLUGIN_ROOT}` as `<launcher-root>` and run `PINBOARD_RUNTIME=claude "${CLAUDE_PLUGIN_ROOT}/scripts/pinboard" ...`.

@@ -1,0 +1,1 @@
+For that single diagnosed permission retry, use the current runtime's native permission request for that invocation when available. Do not invent a permission API or treat a dispatch declaration as an execution grant.

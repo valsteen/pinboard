@@ -1,0 +1,1 @@
+A launched worker/reviewer uses its own SessionStart-injected task_id and the host from its verified launch prompt, never the child-injected host_id or parent identity. Missing own context stops its operation; never invent identity or enumerate environment.

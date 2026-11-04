@@ -1,0 +1,1 @@
+For oversized completed briefs or reviews, use only the connected advertised verified-file inputs with the exact selected path and raw SHA-256; retain inline controls and all independent checks. Missing capability still stops its operation.

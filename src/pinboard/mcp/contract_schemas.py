@@ -132,6 +132,7 @@ from pinboard.mcp.contracts import (
     TerminalAttemptInspectionSuccess,
     TracePreflightResult,
     TransitionCommitted,
+    TransitionCommittedStatusUnavailable,
     TransitionFailedAfterPublication,
     TransitionRejected,
     TransitionRequest,
@@ -495,10 +496,7 @@ def _action_invocation_constraint(kind: decision_models.ActionKind) -> JsonSchem
 
 
 def _apply_transition_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
-    definition = definitions.get("TransitionCommitted")
-    if not isinstance(definition, dict):
-        return
-    definition["oneOf"] = [
+    alternatives: list[JsonSchemaValue] = [
         {
             "properties": {
                 "action_id": {"properties": {"kind": {"const": kind.value}}},
@@ -513,6 +511,10 @@ def _apply_transition_constraints(definitions: dict[str, JsonSchemaValue]) -> No
         for kind in decision_models.ActionKind
         for surfaces in _committed_transition_surfaces(kind)
     ]
+    for name in ("TransitionCommitted", "TransitionCommittedStatusUnavailable"):
+        definition = definitions.get(name)
+        if isinstance(definition, dict):
+            definition["oneOf"] = alternatives
 
 
 def _relative_action(kind: decision_models.ActionKind) -> dict[str, JsonSchemaValue]:
@@ -1014,7 +1016,12 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
         msgspec.convert(content, type=result_type, strict=True)
     elif tool_name in {"pinboard_transition", "pinboard_close"}:
         if status in {"committed", "committed-with-warning"}:
-            result_type = TransitionCommitted
+            item_status = content.get("item_status")
+            result_type = (
+                TransitionCommittedStatusUnavailable
+                if isinstance(item_status, dict) and item_status.get("status") == "unavailable"
+                else TransitionCommitted
+            )
         elif status == "failed-after-publication":
             result_type = TransitionFailedAfterPublication
         else:

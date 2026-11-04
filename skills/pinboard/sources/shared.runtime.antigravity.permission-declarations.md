@@ -1,0 +1,1 @@
+Map already authorized access into the dispatch record and Antigravity's approval settings. Pinboard tools need the user's allow rule above. File edits and commands follow Antigravity's own permission mode, and headless runs deny anything they cannot prompt for. Pinboard records declarations but neither grants nor enforces them, and never edits `~/.gemini` settings.

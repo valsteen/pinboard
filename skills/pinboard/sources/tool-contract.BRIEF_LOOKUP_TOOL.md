@@ -1,0 +1,1 @@
+Recover the verified accepted brief receipt for the original exact attempt_id and artifact_revision. Arguments are top-level project_root, work_root, attempt_id and artifact_revision (no request wrapper). Read-only, including when optional tracing is enabled; does not publish, bind or certify readiness.

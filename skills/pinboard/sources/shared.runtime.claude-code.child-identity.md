@@ -1,0 +1,1 @@
+A launched worker/reviewer uses actual agent_id from its own installed SubagentStart hook and verified launch host, never parent session or sampled parent-machine attribution. Missing own trusted context stops its operation; never invent identity or enumerate environment.

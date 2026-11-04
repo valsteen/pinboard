@@ -28,7 +28,7 @@ On `SQLITE_READONLY`, use the structured database path, operation, retry disposi
 
 Discover the connected Pinboard MCP tools and pass exact roots. For CLI-only operations, resolve `../../scripts/pinboard` relative to the active skill; its directory two levels above is `<launcher-root>`.
 
-For oversized completed briefs or reviews, use only the connected [declared file inputs](runtime-adapters.md#verified-record-file-inputs) with the exact selected path and raw SHA-256; retain inline controls and all independent checks. Missing capability still stops its operation.
+For oversized completed briefs or reviews, use only the connected advertised verified-file inputs with the exact selected path and raw SHA-256; retain inline controls and all independent checks. Missing capability still stops its operation.
 
 Use the assigned checkout or Codex worktree selected by the owning task. When a selected Codex-managed worktree is detached, create a bounded local branch in that same checkout before brief construction; do not create a second worktree merely to obtain a branch name. Continue to use the exact shared work root.
 

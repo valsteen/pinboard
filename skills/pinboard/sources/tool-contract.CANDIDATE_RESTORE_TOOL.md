@@ -1,0 +1,1 @@
+Restore exact verified accepted candidate bytes into a caller-selected exact clean checkout. Arguments are top-level project_root, work_root, attempt_id and candidate (no request wrapper). Changes only source checkout; no lifecycle, authority or automatic launch.

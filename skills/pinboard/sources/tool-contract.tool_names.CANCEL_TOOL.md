@@ -1,0 +1,1 @@
+Preview one live item's cancellation without effects, then confirm only after a separate explicit human confirmation for the exact shown item and consequences. Put all fields inside request. Never initiate cancellation or infer it from cleanup, completion, ambiguity or silence. Every sharing client must use a cancellation-aware build before first cancellation.

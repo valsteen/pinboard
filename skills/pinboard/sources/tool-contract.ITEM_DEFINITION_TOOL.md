@@ -1,0 +1,1 @@
+Read one full accepted Pinboard item definition or bounded descending definition history. Put all fields inside request.

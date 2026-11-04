@@ -1,0 +1,1 @@
+Use only the currently exposed and permitted Claude native question capability; otherwise ask in ordinary chat under the inlined shared question rules.

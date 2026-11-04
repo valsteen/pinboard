@@ -1,0 +1,1 @@
+Read or change one exact Pinboard attempt authority. Put all fields inside request. Use operation status before worker claims; preparation release or revocation says nothing about this worker authority.

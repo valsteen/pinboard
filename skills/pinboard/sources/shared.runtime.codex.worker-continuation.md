@@ -1,0 +1,1 @@
+Continue the same launched worker through its actual returned native task handle and supported follow-up operation only for direction already covered by its accepted brief.

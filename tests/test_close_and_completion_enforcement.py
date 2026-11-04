@@ -116,6 +116,13 @@ class HumanConfirmedCloseTest(NativeFixtureSupport):
         self.assertEqual("committed", committed["status"], committed)
         self.assertEqual({"kind": "close", "subject": "work-c"}, committed["action_id"])
         self.assertEqual(["ledger"], committed["changed_surfaces"])
+        self.assertEqual(
+            committed["item_status"],
+            fixture.call_advertised_tool(
+                mcp_server.ITEM_STATUS_TOOL,
+                {"request": {**self.roots(fixture), "operation": "item", "item_id": "work-c"}},
+            ),
+        )
 
         ((schema, stored),) = self.close_receipts(fixture)
         self.assertEqual("pinboard-close-decision/v1", schema)

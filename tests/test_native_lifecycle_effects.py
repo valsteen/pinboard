@@ -752,6 +752,23 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                 action = self.project_action(fixture, f"{kind}:zz-proposal-a")
                 result = self.transition_result(fixture, action, payload)
                 self.assertEqual("committed", result["status"])
+                returned_status = self.json_object(result["item_status"])
+                self.assertEqual("pinboard-item-status/v5", returned_status["schema"])
+                self.assertEqual("zz-proposal-a", returned_status["item_id"])
+                self.assertEqual(
+                    returned_status,
+                    fixture.call_advertised_tool(
+                        mcp_server.ITEM_STATUS_TOOL,
+                        {
+                            "request": {
+                                "project_root": str(fixture.project),
+                                "work_root": str(fixture.work),
+                                "operation": "item",
+                                "item_id": "zz-proposal-a",
+                            }
+                        },
+                    ),
+                )
                 partial = item_view.read_bytes()
                 rebuilt, stdout, stderr = self.run_cli(*fixture.common, "views", "rebuild")
                 self.assertEqual(0, rebuilt, f"{stdout}\n{stderr}")

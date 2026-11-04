@@ -1,0 +1,1 @@
+Codex may trim any tool result before compaction, including a recovery read such as `pinboard_brief_lookup`. Pinboard cannot prevent that client behavior. After compaction, repeat the same read if its result was also lost; retain the original roots, attempt and revision so recovery remains possible.

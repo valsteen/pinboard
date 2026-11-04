@@ -1,0 +1,1 @@
+Unavailable. Antigravity has no supported Pinboard intake delivery route: keep the saved ledger result, report delivery as unavailable, and do not ask the human to relay it or mimic another client's transport.

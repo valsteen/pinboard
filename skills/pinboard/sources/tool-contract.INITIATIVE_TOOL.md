@@ -1,0 +1,1 @@
+Read or revise ledger-owned initiatives, dated membership episodes, human decisions and goal assessments; read the global offline roadmap. Put all fields inside request. Initiative membership and dependency waves grant no execution authority.

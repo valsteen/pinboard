@@ -1,0 +1,1 @@
+Use the assigned checkout or Codex worktree selected by the owning task. When a selected Codex-managed worktree is detached, create a bounded local branch in that same checkout before brief construction; do not create a second worktree merely to obtain a branch name. Continue to use the exact shared work root.

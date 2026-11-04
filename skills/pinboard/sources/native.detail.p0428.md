@@ -1,0 +1,1 @@
+For that single diagnosed permission retry, use Antigravity's native command permission prompt for that invocation when available. Do not add a `permissions.allow` rule for it; a headless run that cannot prompt stops setup.

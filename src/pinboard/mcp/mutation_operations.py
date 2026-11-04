@@ -13,10 +13,12 @@ import msgspec
 from pinboard.adapters import (
     lifecycle_artifacts,
     lifecycle_operations,
+    review_operations,
 )
 from pinboard.adapters.dependency_operations import resolve_dependency_brief_pins
-from pinboard.adapters.files import file_io
+from pinboard.adapters.files import file_io, views
 from pinboard.adapters.files.artifacts import ArtifactRepository
+from pinboard.adapters.files.errors import ArtifactError, FileIOError
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewWarning
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
@@ -26,6 +28,7 @@ from pinboard.application import (
     ports,
     proposal_models,
     proposals,
+    queries,
     query_models,
     service,
     work_brief_models,
@@ -390,7 +393,7 @@ def _transition_rejected(
             continuation = (
                 _COMMISSIONED_REVIEW_ROUTE
                 if failure.code == DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED
-                else _transition_current_state_route(action_id.kind)
+                else _transition_current_state_route(action_id.kind, item_status_returned=False)
             )
         case _ as unreachable:
             assert_never(unreachable)
@@ -455,13 +458,17 @@ def _close_route_rejected(
     )
 
 
-def _transition_current_state_route(kind: decision_models.ActionKind) -> str:
+def _transition_current_state_route(kind: decision_models.ActionKind, *, item_status_returned: bool) -> str:
     match decision_models.action_semantics(kind).subject_kind:
         case decision_models.ActionSubjectKind.ATTEMPT:
             return "Inspect this attempt with pinboard_attempt_inspect and follow its next_operation; do not replay."
         case decision_models.ActionSubjectKind.ITEM:
+            if item_status_returned:
+                return "Use the returned item_status for current item facts, then discover its current action through pinboard_actions; do not replay."
             return "Read this item with pinboard_item_status operation item, then discover its current action; do not replay."
         case decision_models.ActionSubjectKind.PROPOSAL:
+            if item_status_returned:
+                return "Use the returned item_status for the same-identity proposal item, then discover its current action through pinboard_actions; do not replay."
             return "Read the exact proposal's same-identity item through pinboard_item_status operation item before another action; do not replay."
         case decision_models.ActionSubjectKind.LEDGER:
             return "Read pinboard_overview with the same roots, max_items:25 and continuation:null, then follow continuation for complete coverage before another action; do not replay."
@@ -754,7 +761,7 @@ def _apply_transition(
                 "message": committed.message,
                 "state_changed": True,
                 **details,
-                "continuation": _transition_current_state_route(identity.kind),
+                "continuation": _transition_current_state_route(identity.kind, item_status_returned=False),
             },
             "failed-after-publication",
             None,
@@ -771,7 +778,7 @@ def _apply_transition(
                     "message": committed.message,
                     "state_changed": True,
                     **details,
-                    "continuation": _transition_current_state_route(identity.kind),
+                    "continuation": _transition_current_state_route(identity.kind, item_status_returned=False),
                 },
                 "failed-after-publication",
                 None,
@@ -802,6 +809,18 @@ def _apply_transition(
         datetime.now(UTC),
     )
     warning = refreshed.warning
+    item_id = committed_effect.receipt.transition.work_item_id
+    if isinstance(selected.command, (decision_models.MergeProposalCommand, decision_models.RejectProposalCommand)):
+        item_id = WorkItemId(selected.command.action.capability.subject)
+    assert item_id is not None
+    item_status = _committed_item_status(durable, store, item_id, datetime.now(UTC))
+    continuation = _transition_current_state_route(identity.kind, item_status_returned=True)
+    if isinstance(item_status, contracts.TransitionItemStatusUnavailable):
+        continuation = item_status.recovery
+        warning = ViewWarning(
+            item_status.message if warning is None else f"{warning.message} {item_status.message}",
+            item_status.recovery if warning is None else f"{warning.repair} {item_status.recovery}",
+        )
     return execution.OperationResult(
         {
             "schema": "pinboard-mcp-transition-result/v1",
@@ -813,11 +832,42 @@ def _apply_transition(
             "effect": EffectDisposition.COMMITTED.value,
             "retry": RetryDisposition.DO_NOT_RETRY.value,
             "changed_surfaces": changed_surfaces,
-            "continuation": _transition_current_state_route(identity.kind),
+            "continuation": continuation,
             "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
+            "item_status": msgspec.to_builtins(item_status),
         },
         "committed" if warning is None else "committed-warning",
         str(committed_effect.receipt.project_revision),
+    )
+
+
+def _committed_item_status(
+    durable: DurableRoots, store: ports.WorkStore, item_id: WorkItemId, now: datetime
+) -> query_models.ItemStatus | contracts.TransitionItemStatusUnavailable:
+    """Read only the committed subject; a failed read cannot undo or invite replay of its commit."""
+    try:
+        status = queries.project_item_status(
+            store,
+            review_operations.AttemptStatusArtifactReader(durable, store),
+            item_id,
+            now,
+            views.board_pages(durable.work_root),
+        )
+    except (ports.WorkStoreError, ArtifactError, FileIOError, OSError) as error:
+        code, message = "ITEM_STATUS_UNAVAILABLE", str(error)
+    else:
+        if isinstance(status, DecisionFailure):
+            code, message = status.code.value, status.message
+        elif isinstance(status, query_models.DamagedTransitionReceipt):
+            code, message = "TRANSITION_RECEIPT_DAMAGED", queries.damaged_receipt_message(status)
+        else:
+            return status
+    return contracts.TransitionItemStatusUnavailable(
+        str(item_id),
+        str(durable.database_path),
+        code,
+        f"The transition committed, but current status for item '{item_id}' is unavailable: {message}",
+        f"Do not replay the committed transition. Diagnose the named read failure, then read pinboard_item_status with operation:'item', item_id:'{item_id}', project_root and work_root from this call before another consequential action.",
     )
 
 

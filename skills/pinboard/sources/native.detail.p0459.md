@@ -1,0 +1,1 @@
+Codex ignores the `anthropic/requiresUserInteraction` metadata on `pinboard_close` and applies its own approval settings. The human's own close decision in `human_decision` remains required.

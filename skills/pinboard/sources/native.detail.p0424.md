@@ -1,0 +1,1 @@
+Antigravity asks the human before `pinboard_close` because Pinboard's PreToolUse hook answers `force_ask` for it, which an allow rule does not skip; headless `agy -p` runs cannot show that prompt and deny the close. When that hook does not run, Antigravity's own approval settings decide, as Codex's do.

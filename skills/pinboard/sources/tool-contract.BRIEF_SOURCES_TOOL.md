@@ -1,0 +1,1 @@
+Read a selected-checkout source plan or one complete bounded verified inline/saved-plan batch; never writes output or work state. Put all fields inside request.

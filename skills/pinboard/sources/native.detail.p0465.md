@@ -1,0 +1,1 @@
+For that single diagnosed permission retry, use the execution tool's `sandbox_permissions: "require_escalated"` with a justification naming the observed restriction and the authorized setup command. Request only that invocation; do not add a persistent approval rule.

@@ -1,0 +1,1 @@
+Use the existing recovery below for this refusal; do not relocate attempt evidence, edit saved permission policy, remove the checkout, or retry through another path.

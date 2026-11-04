@@ -1,0 +1,1 @@
+Verify an exact accepted Pinboard artifact reference and its immutable bytes. Arguments are top-level project_root, work_root, artifact_ref_id, selector, sha256 and size_bytes (no request wrapper).

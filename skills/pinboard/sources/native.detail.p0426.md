@@ -1,0 +1,1 @@
+In Antigravity, ask in ordinary chat whenever the main policy selects it; its `ask_question` tool may carry a short, bounded choice when its current instructions permit. A headless `agy -p` run has no human to answer, so stop and report the question instead.

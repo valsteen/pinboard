@@ -1,0 +1,1 @@
+Map already authorized access into the dispatch record and the runtime's actual sandbox or approval controls. Pinboard records declarations but neither grants nor enforces them.

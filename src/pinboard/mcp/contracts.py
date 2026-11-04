@@ -2851,7 +2851,17 @@ def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tu
             assert_never(unreachable)
 
 
-class TransitionCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class TransitionItemStatusUnavailable(
+    msgspec.Struct, tag="unavailable", tag_field="status", frozen=True, forbid_unknown_fields=True
+):
+    item_id: NonEmptyText
+    resource: NonEmptyText
+    code: NonEmptyText
+    message: NonEmptyText
+    recovery: NonEmptyText
+
+
+class CommittedTransitionResult(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-transition-result/v1"]
     status: Literal["committed", "committed-with-warning"]
     action_id: ActionIdentity
@@ -2873,6 +2883,16 @@ class TransitionCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_un
             raise ValueError("committed-with-warning must carry one warning")
         if self.changed_surfaces not in _committed_transition_surfaces(self.action_id.kind):
             raise ValueError("committed transition must pair a mutating action with its exact supported surfaces")
+
+
+class TransitionCommitted(CommittedTransitionResult, frozen=True):
+    item_status: query_models.ItemStatus
+
+
+class TransitionCommittedStatusUnavailable(CommittedTransitionResult, frozen=True):
+    status: Literal["committed-with-warning"]
+    warning: WarningResult
+    item_status: TransitionItemStatusUnavailable
 
 
 class TransitionRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -3882,6 +3902,7 @@ ATTEMPT_AUTHORITY_RESULT_TYPES = (
 )
 TRANSITION_RESULT_TYPES = (
     TransitionCommitted,
+    TransitionCommittedStatusUnavailable,
     TransitionRejected,
     TransitionFailedAfterPublication,
     ExecutorBusyResult,

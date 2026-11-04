@@ -1,0 +1,1 @@
+Discover the connected Pinboard MCP tools and pass exact roots. For CLI-only operations, resolve `../../scripts/pinboard` relative to the active skill; its directory two levels above is `<launcher-root>`.

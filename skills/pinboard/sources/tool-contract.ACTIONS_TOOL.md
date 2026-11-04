@@ -1,0 +1,1 @@
+Discover exact current legal Pinboard actions and their strict payload contracts. Put all fields inside request.

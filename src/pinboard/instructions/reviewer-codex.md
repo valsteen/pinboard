@@ -30,7 +30,10 @@ Discover the connected Pinboard MCP tools and pass exact roots. For CLI-only ope
 
 For oversized completed briefs or reviews, use only the connected advertised verified-file inputs with the exact selected path and raw SHA-256; retain inline controls and all independent checks. Missing capability still stops its operation.
 
-Use the assigned checkout or Codex worktree selected by the owning task. When a selected Codex-managed worktree is detached, create a bounded local branch in that same checkout before brief construction; do not create a second worktree merely to obtain a branch name. Continue to use the exact shared work root.
+Use the assigned checkout or the owner’s selected Codex worktree. If the Codex worktree is detached, create a bounded local branch there before drafting the brief. Keep the exact shared work root.
+
+For authorized Codex cleanup, after the pre-removal checks, run `git worktree remove <path>` from the main checkout, then `git branch -d <branch>`. Apply this to every worktree the item used, including the chat’s own checkout.
+
 
 Map already authorized access into the dispatch record and the runtime's actual sandbox or approval controls. Pinboard records declarations but neither grants nor enforces them.
 

@@ -153,8 +153,8 @@
     },
     "coordinator-codex": {
       "path": "coordinator-codex.md",
-      "sha256": "54d154a9a51a9af293d9e18de0cd030632e53856e44f0daedb590391b875231b",
-      "size_bytes": 14589,
+      "sha256": "96c7b009bb5d9c8471b71cd02686f6e68b2cc9ea8638bd3b85b8103f387d8e42",
+      "size_bytes": 14483,
       "owners": [
         "core.route",
         "core.authority",
@@ -177,8 +177,8 @@
     },
     "coordinator-claude-code": {
       "path": "coordinator-claude-code.md",
-      "sha256": "54d154a9a51a9af293d9e18de0cd030632e53856e44f0daedb590391b875231b",
-      "size_bytes": 14589,
+      "sha256": "96c7b009bb5d9c8471b71cd02686f6e68b2cc9ea8638bd3b85b8103f387d8e42",
+      "size_bytes": 14483,
       "owners": [
         "core.route",
         "core.authority",
@@ -201,8 +201,8 @@
     },
     "coordinator-antigravity": {
       "path": "coordinator-antigravity.md",
-      "sha256": "54d154a9a51a9af293d9e18de0cd030632e53856e44f0daedb590391b875231b",
-      "size_bytes": 14589,
+      "sha256": "96c7b009bb5d9c8471b71cd02686f6e68b2cc9ea8638bd3b85b8103f387d8e42",
+      "size_bytes": 14483,
       "owners": [
         "core.route",
         "core.authority",

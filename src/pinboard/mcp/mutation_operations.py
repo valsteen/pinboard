@@ -365,38 +365,12 @@ _ATTEMPT_LEASE_CODES = frozenset(
 def _transition_rejected(
     action_id: contracts.ActionIdentity,
     failure: DecisionFailure,
+    *,
+    continuation: str | None,
 ) -> execution.OperationResult:
     details = common._details_json(failure.details)
     retry = _rejection_retry(failure)
     details["retry"] = retry.value
-    match retry:
-        case RetryDisposition.CORRECT_INPUT:
-            continuation = (
-                "Use the current pinboard-reviewed-completion/v3 input with the human's explicit whole-item "
-                "completion decision in their own words as human_decision. Reuse their prior exact authorization "
-                "only after its stated boundary is satisfied. If it is missing, ask the human and stop; never "
-                "invent it. Then discover this exact current action through pinboard_actions."
-                if action_id.kind == decision_models.ActionKind.COMPLETE
-                else "Correct the reported input, then discover this exact current action through pinboard_actions."
-            )
-        case RetryDisposition.REFRESH_ACTION | RetryDisposition.RETRY_SAME_INPUT:
-            continuation = "Discover this exact current action through pinboard_actions before another transition."
-        case RetryDisposition.REACQUIRE_AUTHORITY:
-            if failure.code in _ATTEMPT_LEASE_CODES:
-                continuation = common.ATTEMPT_LEASE_RECOVERY
-            else:
-                continuation = (
-                    "Check the relevant authority status, reacquire only if permitted, "
-                    "then discover this action through pinboard_actions."
-                )
-        case RetryDisposition.DO_NOT_RETRY:
-            continuation = (
-                _COMMISSIONED_REVIEW_ROUTE
-                if failure.code == DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED
-                else _transition_current_state_route(action_id.kind, item_status_returned=False)
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
     return execution.OperationResult(
         {
             "schema": "pinboard-mcp-transition-result/v1",
@@ -406,11 +380,47 @@ def _transition_rejected(
             "message": failure.message,
             "state_changed": False,
             **details,
-            "continuation": continuation,
+            "continuation": (
+                _transition_rejection_continuation(action_id.kind, failure.code, retry)
+                if continuation is None
+                else continuation
+            ),
         },
         "rejected",
         None,
     )
+
+
+def _transition_rejection_continuation(
+    kind: decision_models.ActionKind, code: DecisionFailureCode, retry: RetryDisposition
+) -> str:
+    match retry:
+        case RetryDisposition.CORRECT_INPUT:
+            return (
+                "Use the current pinboard-reviewed-completion/v3 input with the human's explicit whole-item "
+                "completion decision in their own words as human_decision. Reuse their prior exact authorization "
+                "only after its stated boundary is satisfied. If it is missing, ask the human and stop; never "
+                "invent it. Then discover this exact current action through pinboard_actions."
+                if kind == decision_models.ActionKind.COMPLETE
+                else "Correct the reported input, then discover this exact current action through pinboard_actions."
+            )
+        case RetryDisposition.REFRESH_ACTION | RetryDisposition.RETRY_SAME_INPUT:
+            return "Discover this exact current action through pinboard_actions before another transition."
+        case RetryDisposition.REACQUIRE_AUTHORITY:
+            if code in _ATTEMPT_LEASE_CODES:
+                return common.ATTEMPT_LEASE_RECOVERY
+            return (
+                "Check the relevant authority status, reacquire only if permitted, "
+                "then discover this action through pinboard_actions."
+            )
+        case RetryDisposition.DO_NOT_RETRY:
+            return (
+                _COMMISSIONED_REVIEW_ROUTE
+                if code == DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED
+                else _transition_current_state_route(kind, item_status_returned=False)
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 _COMMISSIONED_REVIEW_ROUTE = (
@@ -602,6 +612,7 @@ def _transition(
                 f"Cannot decode transition request: {error}",
                 _transition_decode_details(inner, identity_decoded=identity_decoded),
             ),
+            continuation=None,
         )
     match request:
         case contracts.ProjectTransitionRequest(actor_task_id=task_id, actor_host_id=host_id):
@@ -727,6 +738,7 @@ def _apply_transition(
         return _transition_rejected(
             identity,
             _with_completion_reinspection(selected, identity, project_root, work_root),
+            continuation=None,
         )
     token.checkpoint()
     if isinstance(
@@ -766,6 +778,8 @@ def _apply_transition(
             "failed-after-publication",
             None,
         )
+    if isinstance(committed, lifecycle_artifacts.LandingRejection):
+        return _transition_rejected(identity, committed.failure, continuation=committed.continuation)
     if isinstance(committed, DecisionFailure):
         if committed.details is not None and committed.details.effect == EffectDisposition.COMMITTED:
             details = common._details_json(committed.details)
@@ -786,10 +800,19 @@ def _apply_transition(
         return _transition_rejected(
             identity,
             _with_completion_reinspection(committed, identity, project_root, work_root),
+            continuation=None,
         )
     changed_surfaces: list[JsonValue]
+    cleanup: dict[str, JsonValue] = {}
+    cleanup_continuation = ""
     if isinstance(committed, lifecycle_artifacts.ArtifactTransitionSuccess):
         committed_effect = committed.effect
+        if committed.local_cleanup is not None:
+            cleanup["local_cleanup"] = {
+                "branch": committed.local_cleanup.branch,
+                "disposition": "retain" if committed.local_cleanup.retain_local_resources else "remove",
+            }
+            cleanup_continuation = "Apply local_cleanup in this close turn using the native Git procedure. "
         changed_surfaces = [
             *([ChangedSurface.IMMUTABLE_ARTIFACT.value] if committed.published_selectors else []),
             ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE.value,
@@ -832,9 +855,10 @@ def _apply_transition(
             "effect": EffectDisposition.COMMITTED.value,
             "retry": RetryDisposition.DO_NOT_RETRY.value,
             "changed_surfaces": changed_surfaces,
-            "continuation": continuation,
+            "continuation": cleanup_continuation + continuation,
             "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
             "item_status": msgspec.to_builtins(item_status),
+            **cleanup,
         },
         "committed" if warning is None else "committed-warning",
         str(committed_effect.receipt.project_revision),

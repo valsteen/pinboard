@@ -875,6 +875,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "a" * 64,
                     "b" * 64,
                     (),
+                    None,
                 ),
             ),
             NOW,
@@ -1017,6 +1018,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     HistoryId(7), "c" * 64, work_models.CompletionPackageDisposition.REVALIDATED, "rechecked"
                 ),
             ),
+            None,
         )
 
         direct_with_history = decision_outcome(
@@ -1088,6 +1090,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "a" * 64,
                     "b" * 64,
                     (),
+                    None,
                 ),
             ),
             NOW,

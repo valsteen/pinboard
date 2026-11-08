@@ -69,11 +69,13 @@ Treat a limitation as an implemented constraint or operating assumption with a p
 - An **existing limitation** is already present. Preserve its current architecture entry and prior acknowledgement without interrupting the human again unless this change materially alters its consequence, affected boundary, or reopening condition.
 - An **introduced or widened limitation** is created or made materially more restrictive by the proposed change. Evaluate it before implementation, even when the requested feature itself is already authorized.
 - A **defect** violates accepted behavior, an invariant, or a supported contract. Fix or report it as a defect; do not relabel broken behavior as a deliberate limitation to obtain acceptance.
-- A **speculative risk** has no evidence-backed effect on a supported path. Keep it out of current architecture and mandatory work unless an observable trigger turns it into a real decision.
+- A **speculative risk** has no evidence-backed effect on a supported path. A case constructed in a disposable fixture and never observed in a supported layout stays speculative even when it reproduces. Keep it out of current architecture and mandatory work unless an observable trigger turns it into a real decision.
 
 A limitation is material when its consequence meaningfully changes supported scale, resource growth, correctness, durability, compatibility, deployment, platform support, trust, or the cost of removing a foundational constraint later. Use concrete evidence and the supported product boundary; do not invent numerical thresholds or adversarial scenarios.
 
 Before choosing a local remedy, trace the proposed change to the foundation that creates the pressure. A patch that preserves, masks, or deepens an unacknowledged material limitation still requires the architecture decision even if its own diff is small. For example, avoiding one unnecessary file timestamp change does not settle a command whose underlying state read and publication boundary remains project-wide. A genuinely bounded local correction that leaves the foundation and its consequences unchanged proceeds without a checkpoint.
+
+A guard against a scenario outside the supported boundary widens the product obligation. Bring it to the human for the same architecture decision as acknowledging a material limitation before adding the guard.
 
 When a proposed change would introduce, widen, preserve, mask, or deepen an unacknowledged material limitation, the task that owns the outcome pauses before implementation and presents the decision in this order:
 

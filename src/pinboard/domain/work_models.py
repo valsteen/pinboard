@@ -411,6 +411,12 @@ class CoveredCompletionPackageInput:
 
 
 @dataclass(frozen=True, slots=True)
+class LandedCompletionInput:
+    target: str
+    retain_local_resources: bool
+
+
+@dataclass(frozen=True, slots=True)
 class CoveredCompleteInput:
     human_decision: str
     candidate: CandidateId
@@ -419,6 +425,7 @@ class CoveredCompleteInput:
     result_sha256: str
     review_sha256: str
     packages: tuple[CoveredCompletionPackageInput, ...]
+    landed: LandedCompletionInput | None
 
 
 @dataclass(frozen=True, slots=True)

@@ -46,10 +46,6 @@ type RuntimeIdentity = Annotated[
         pattern=r"\A(?!\s)(?!\.{1,2}\z)[^/\r\n\x00]*[^\s/\r\n\x00]\z",
     ),
 ]
-type IntegrationTarget = Annotated[
-    str,
-    msgspec.Meta(min_length=1, pattern=r"\A[^\r\n\x00" "\u2028\u2029" r"-][^\r\n\x00" "\u2028\u2029" r"]*\z"),
-]
 type Empty = tuple[()]
 type LedgerSurface = tuple[Literal["ledger"]]
 type ArtifactSurface = tuple[Literal["immutable-artifact"]]
@@ -301,7 +297,7 @@ class ItemStatusIntegrationRequest(
     project_root: RootPath
     work_root: RootPath
     item_id: PathComponent
-    target: IntegrationTarget
+    target: action_models.IntegrationTarget
     """A local branch, remote-tracking ref, tag, or full commit id; Pinboard never fetches it."""
 
 
@@ -2861,6 +2857,11 @@ class TransitionItemStatusUnavailable(
     recovery: NonEmptyText
 
 
+class LocalCleanupPlanView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    branch: NonEmptyText
+    disposition: Literal["remove", "retain"]
+
+
 class CommittedTransitionResult(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-transition-result/v1"]
     status: Literal["committed", "committed-with-warning"]
@@ -2876,6 +2877,7 @@ class CommittedTransitionResult(_ChangedResult, msgspec.Struct, frozen=True, for
     ]
     continuation: NonEmptyText
     warning: WarningResult | None
+    local_cleanup: LocalCleanupPlanView | msgspec.UnsetType = msgspec.UNSET
 
     def __post_init__(self) -> None:
         _require_fixed_state_changed(self)
@@ -2883,13 +2885,15 @@ class CommittedTransitionResult(_ChangedResult, msgspec.Struct, frozen=True, for
             raise ValueError("committed-with-warning must carry one warning")
         if self.changed_surfaces not in _committed_transition_surfaces(self.action_id.kind):
             raise ValueError("committed transition must pair a mutating action with its exact supported surfaces")
+        if self.local_cleanup is not msgspec.UNSET and self.action_id.kind != decision_models.ActionKind.COMPLETE:
+            raise ValueError("local cleanup requires a committed completion")
 
 
-class TransitionCommitted(CommittedTransitionResult, frozen=True):
+class TransitionCommitted(CommittedTransitionResult, frozen=True, kw_only=True):
     item_status: query_models.ItemStatus
 
 
-class TransitionCommittedStatusUnavailable(CommittedTransitionResult, frozen=True):
+class TransitionCommittedStatusUnavailable(CommittedTransitionResult, frozen=True, kw_only=True):
     status: Literal["committed-with-warning"]
     warning: WarningResult
     item_status: TransitionItemStatusUnavailable

@@ -12,9 +12,9 @@ Before touching code, the agent says in one sentence what it will produce and wh
 
 If you want a pull request, the agent pushes the branch and opens it as a draft, and keeps it a draft until review and checks are done. You merge it, then come back:
 
-> Ok it's merged, you can close it and clean up.
+> It's merged. You can close it.
 
-The agent checks that the reviewed change really is in `main`, even after a squash or rebase, removes the worktree and branch, and closes the item: "Closed on the board, and the fix is in `main`." With an agent alone, a week later you'd be reading `git log` to work out what actually landed. Here the board tells you.
+Pinboard checks that the reviewed change is in `main`, including after a squash or rebase, and marks the item done. In the same turn, the agent asks Git to remove the worktree, then deletes the local branch if its tip matches its origin-tracking tip. The agent reports each outcome and keeps the chat open. If Git refuses removal, the item stays done. You can ask to keep both resources when you close.
 
 ## Write it down and keep going
 

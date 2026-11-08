@@ -167,7 +167,7 @@ def _completion_input(
 ) -> work_brief_models.WorkBriefResult[
     work_brief_compatibility_models.HistoricalCoveredCompletionInput
     | work_brief_compatibility_models.HistoricalReviewedCompletionInputV2
-    | action_models.ReviewedCompleteInputPayload
+    | action_models.ReviewedCompletionReceiptPayload
 ]:
     match receipt.input_schema:
         case "pinboard-covered-completion/v1":
@@ -175,7 +175,7 @@ def _completion_input(
         case "pinboard-reviewed-completion/v2":
             model = work_brief_compatibility_models.HistoricalReviewedCompletionInputV2
         case "pinboard-reviewed-completion/v3":
-            model = action_models.ReviewedCompleteInputPayload
+            model = action_models.ReviewedCompletionReceiptPayload
         case _:
             return _package_provenance_failure(
                 f"Completion history {int(receipt.history_id)} has unsupported completion input."
@@ -196,7 +196,7 @@ def _completion_input(
 def _completion_input_matches_package(
     value: work_brief_compatibility_models.HistoricalCoveredCompletionInput
     | work_brief_compatibility_models.HistoricalReviewedCompletionInputV2
-    | action_models.ReviewedCompleteInputPayload,
+    | action_models.ReviewedCompletionReceiptPayload,
     package: work_brief_compatibility_models.HistoricalCompletionReviewPackage,
 ) -> bool:
     return (

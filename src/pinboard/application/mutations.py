@@ -2,7 +2,7 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.application import decision_batches, stored_state
+from pinboard.application import action_models, decision_batches, stored_state
 from pinboard.application.artifacts import (
     ArtifactRef,
     CheckpointArtifacts,
@@ -415,24 +415,21 @@ def project_completion_acceptance_mutation(
     )
     input_payload = work_models.CanonicalJson(
         msgspec.json.encode(
-            {
-                "schema": "pinboard-reviewed-completion/v3",
-                "human_decision": value.human_decision,
-                "candidate": str(value.candidate),
-                "evidence": value.evidence,
-                "reviewer_task_id": str(value.reviewer_task_id),
-                "result_sha256": value.result_sha256,
-                "review_sha256": value.review_sha256,
-                "packages": [
-                    {
-                        "history_id": int(row.history_id),
-                        "package_sha256": row.package_sha256,
-                        "disposition": row.disposition.value,
-                        "evidence": row.evidence,
-                    }
+            action_models.ReviewedCompletionReceiptPayload(
+                "pinboard-reviewed-completion/v3",
+                value.human_decision,
+                str(value.candidate),
+                value.evidence,
+                str(value.reviewer_task_id),
+                value.result_sha256,
+                value.review_sha256,
+                tuple(
+                    action_models.CoveredCompletionPackageInputPayload(
+                        int(row.history_id), row.package_sha256, row.disposition.value, row.evidence
+                    )
                     for row in value.packages
-                ],
-            },
+                ),
+            ),
             order="sorted",
         )
     )

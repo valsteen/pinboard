@@ -332,7 +332,7 @@ class PortableSchemaPatternTest(unittest.TestCase):
                 rf"\A{name}(?:/{name})*\z",
             ),
             (
-                contracts.IntegrationTarget.__value__.__metadata__[0].pattern,
+                action_models.IntegrationTarget.__value__.__metadata__[0].pattern,
                 r"\A[^\r\n\x00\u2028\u2029-][^\r\n\x00\u2028\u2029]*\z",
             ),
             (task_id["pattern"], trimmed),

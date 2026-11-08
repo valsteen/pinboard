@@ -17,6 +17,10 @@ type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\n]+
 type Identity = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
 type Sha256 = Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
 type PositiveInt = Annotated[int, msgspec.Meta(ge=1)]
+type IntegrationTarget = Annotated[
+    str,
+    msgspec.Meta(min_length=1, pattern=r"\A[^\r\n\x00" "\u2028\u2029" r"-][^\r\n\x00" "\u2028\u2029" r"]*\z"),
+]
 type JsonSchema = dict[str, Any]
 type ActionAuthorization = Literal["observer", "project", "attempt", "preparation"]
 # Excluded path characters; U+2028 and U+2029 stay literal because RE2 rejects \u escapes in advertised patterns.
@@ -91,8 +95,13 @@ class CoveredCompletionPackageInputPayload(msgspec.Struct, frozen=True, forbid_u
     evidence: NonEmptyLine
 
 
-class ReviewedCompleteInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Current completion and stored receipt; human words are attribution, not authentication."""
+class LandedCompletionPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True, omit_defaults=True):
+    target: IntegrationTarget
+    retain_local_resources: bool = False
+
+
+class ReviewedCompletionReceiptPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Canonical v3 receipt input shared by every reviewed completion."""
 
     schema: Literal["pinboard-reviewed-completion/v3"]
     human_decision: RecordText
@@ -107,6 +116,12 @@ class ReviewedCompleteInputPayload(msgspec.Struct, frozen=True, forbid_unknown_f
         history_ids = tuple(row.history_id for row in self.packages)
         if history_ids != tuple(sorted(set(history_ids))):
             raise ValueError("packages must be unique and strictly ascending by history_id")
+
+
+class ReviewedCompleteInputPayload(ReviewedCompletionReceiptPayload, frozen=True, forbid_unknown_fields=True):
+    """Current request with optional landing intent for this invocation."""
+
+    landed: LandedCompletionPayload | msgspec.UnsetType = msgspec.UNSET
 
 
 class AcceptCheckpointInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

@@ -583,7 +583,7 @@ def _candidate_review_required(
     )
 
 
-def commissioned_review_failure(
+def commissioned_review_snapshot(
     store: ports.WorkStore,
     artifacts: dispatch_models.DispatchArtifactPort,
     *,
@@ -592,8 +592,8 @@ def commissioned_review_failure(
     result_sha256: str,
     review_sha256: str,
     reviewer_task_id: str,
-) -> DecisionFailure | None:
-    """Require a ready v2 review of the protected candidate by this reviewer under a Pinboard-published prompt."""
+) -> DecisionResult[query_models.CandidateSnapshotContextFacts]:
+    """Select the protected snapshot reviewed by this reviewer under a Pinboard-published prompt."""
 
     candidate = attempt.candidate_revision
     snapshot = (
@@ -648,7 +648,7 @@ def commissioned_review_failure(
             recorded.reviewer_task_id,
             (),
         )
-    return None
+    return snapshot
 
 
 def _candidate_reconstruction(

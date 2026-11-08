@@ -16,9 +16,13 @@ from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
     DifferentHeadCandidate,
     DirtyHeadCandidate,
+    ReviewedDiffAbsent,
+    ReviewedDiffPresent,
     RootError,
+    TargetUnresolved,
     WorkingTreeCandidate,
     observe_checkout_identity,
+    observe_reviewed_diff_at_target,
     read_current_head_candidate,
     read_untracked_paths,
     read_working_tree_candidate,
@@ -83,12 +87,27 @@ class PublishedTransitionFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class LocalCleanupPlan:
+    branch: str
+    retain_local_resources: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LandingRejection:
+    failure: DecisionFailure
+    continuation: str
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactTransitionSuccess:
     effect: CommittedEffect
     published_selectors: tuple[str, ...]
+    local_cleanup: LocalCleanupPlan | None
 
 
-type ArtifactTransitionResult = DecisionResult[ArtifactTransitionSuccess] | PublishedTransitionFailure
+type ArtifactTransitionResult = (
+    DecisionResult[ArtifactTransitionSuccess] | PublishedTransitionFailure | LandingRejection
+)
 
 
 def _unchanged(message: str, *, candidate: str | None) -> DecisionFailure:
@@ -185,6 +204,7 @@ def _publish_artifact(
 def _publication_terminal_result(
     result: DecisionResult[CommittedEffect] | StorageError,
     created: tuple[str, ...],
+    local_cleanup: LocalCleanupPlan | None,
 ) -> ArtifactTransitionResult:
     """Classify the terminal commit against this invocation's exact new selectors."""
 
@@ -194,7 +214,7 @@ def _publication_terminal_result(
         return _published_failure(result.code.value, str(result), created, storage_error=result)
     if isinstance(result, DecisionFailure):
         return _committed_decision_failure(result, created) if created else result
-    return ArtifactTransitionSuccess(result, created)
+    return ArtifactTransitionSuccess(result, created, local_cleanup)
 
 
 def _verify_review_exclusions(
@@ -366,8 +386,8 @@ def _submit_review(
     except StorageError as error:
         if error.invariant_violation:
             raise
-        return _publication_terminal_result(error, (reference.selector,) if publication.created else ())
-    return _publication_terminal_result(result, (reference.selector,) if publication.created else ())
+        return _publication_terminal_result(error, (reference.selector,) if publication.created else (), None)
+    return _publication_terminal_result(result, (reference.selector,) if publication.created else (), None)
 
 
 def _evidence_reference(reference: stored_state.ArtifactReference | ArtifactRef) -> EvidenceArtifactRef:
@@ -682,8 +702,8 @@ def _accept_checkpoint(
     except StorageError as error:
         if error.invariant_violation:
             raise
-        return _publication_terminal_result(error, created)
-    return _publication_terminal_result(result, created)
+        return _publication_terminal_result(error, created, None)
+    return _publication_terminal_result(result, created, None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -692,6 +712,7 @@ class _CompletionContext:
     reference: BriefArtifactRef
     checkpoint_coverage: tuple[work_brief_models.CompletionCheckpointCoverage, ...]
     identity: CurrentAttemptWorkBriefIdentity
+    snapshot: query_models.CandidateSnapshotContextFacts
 
 
 def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure validation boundary
@@ -771,23 +792,23 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
                 supplied.evidence,
             )
         )
-    if (
-        failure := review_operations.commissioned_review_failure(
-            store,
-            artifacts,
-            attempt=attempt,
-            brief=brief,
-            result_sha256=command.value.result_sha256,
-            review_sha256=command.value.review_sha256,
-            reviewer_task_id=str(command.value.reviewer_task_id),
-        )
-    ) is not None:
-        return failure
+    snapshot = review_operations.commissioned_review_snapshot(
+        store,
+        artifacts,
+        attempt=attempt,
+        brief=brief,
+        result_sha256=command.value.result_sha256,
+        review_sha256=command.value.review_sha256,
+        reviewer_task_id=str(command.value.reviewer_task_id),
+    )
+    if isinstance(snapshot, DecisionFailure):
+        return snapshot
     return _CompletionContext(
         brief,
         attempt.brief_reference,
         tuple(coverage),
         current_attempt_work_brief_identity(brief, attempt.brief_artifact_ref_id),
+        snapshot,
     )
 
 
@@ -911,7 +932,86 @@ def _publish_completion(
     )
 
 
+def _landed_cleanup_plan(
+    source_checkout: Path,
+    work_root: Path,
+    snapshot: query_models.CandidateSnapshotContextFacts,
+    candidate: str,
+    landed: work_models.LandedCompletionInput,
+) -> LocalCleanupPlan | LandingRejection:
+    evidence = candidate_evidence.read_candidate_evidence_from_context(work_root, snapshot, candidate)
+    if isinstance(evidence, DecisionFailure):
+        return _landing_rejected(
+            f"Cannot verify the protected candidate for attempt '{snapshot.attempt_id}': {evidence.message}",
+            f"Inspect attempt '{snapshot.attempt_id}' with pinboard_attempt_inspect using the same roots and "
+            "reconciliation:null to diagnose the protected evidence before another completion.",
+            candidate=candidate,
+            target=landed.target,
+            retry=RetryDisposition.DO_NOT_RETRY,
+        )
+    diff = evidence.snapshot.diff
+    if not diff:
+        return _landing_rejected(
+            f"The reviewed diff is empty and cannot establish a landing at '{landed.target}'.",
+            "Leave landed completion pending and ask the human how to close the item. "
+            "An empty protected diff cannot establish a landing at any target.",
+            candidate=candidate,
+            target=landed.target,
+            retry=RetryDisposition.DO_NOT_RETRY,
+        )
+    try:
+        observation = observe_reviewed_diff_at_target(source_checkout, landed.target, diff)
+    except RootError as error:
+        return _landing_rejected(
+            f"Cannot read the reviewed landing at local target '{landed.target}': {error}",
+            "Resolve the reported local Git read failure before checking the reviewed landing again.",
+            candidate=candidate,
+            target=landed.target,
+            retry=RetryDisposition.DO_NOT_RETRY,
+        )
+    match observation:
+        case ReviewedDiffPresent():
+            return LocalCleanupPlan(snapshot.branch, landed.retain_local_resources)
+        case ReviewedDiffAbsent(target_revision=revision):
+            message = f"The reviewed diff is absent from local target '{landed.target}' at {revision}."
+        case TargetUnresolved():
+            message = f"Cannot resolve local target '{landed.target}' to a commit."
+        case _ as unreachable:
+            assert_never(unreachable)
+    return _landing_rejected(
+        message,
+        "Establish the intended local target and confirm that it contains the reviewed diff. "
+        f"Use pinboard_item_status with operation:'integration', item_id:'{snapshot.work_item_id}', the confirmed "
+        "target and the same roots. Once it reports content-present for this candidate, discover completion "
+        "through pinboard_actions and supply the confirmed target.",
+        candidate=candidate,
+        target=landed.target,
+        retry=RetryDisposition.CORRECT_INPUT,
+    )
+
+
+def _landing_rejected(
+    message: str, continuation: str, *, candidate: str, target: str, retry: RetryDisposition
+) -> LandingRejection:
+    return LandingRejection(
+        DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            message,
+            FailureDetails(
+                observed=(FailureFact("candidate_revision", candidate), FailureFact("target", target)),
+                mismatches=(),
+                retry=retry,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        ),
+        continuation,
+    )
+
+
 def _complete(
+    source_checkout: Path,
     work_root: Path,
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
@@ -938,6 +1038,13 @@ def _complete(
         )
     ) is not None:
         return failure
+    local_cleanup = None
+    if command.value.landed is not None:
+        local_cleanup = _landed_cleanup_plan(
+            source_checkout, work_root, context.snapshot, str(command.value.candidate), command.value.landed
+        )
+        if isinstance(local_cleanup, LandingRejection):
+            return local_cleanup
     published = _publish_completion(work_root, artifacts, command, context)
     if isinstance(published, (DecisionFailure, PublishedTransitionFailure)):
         return published
@@ -956,8 +1063,8 @@ def _complete(
     except StorageError as error:
         if error.invariant_violation:
             raise
-        return _publication_terminal_result(error, created)
-    return _publication_terminal_result(result, created)
+        return _publication_terminal_result(error, created, None)
+    return _publication_terminal_result(result, created, local_cleanup)
 
 
 def execute_artifact_transition(
@@ -977,6 +1084,8 @@ def execute_artifact_transition(
                 work_root, store, artifacts, selected, command, operation_time, read_authorization_time
             )
         case decision_models.CoveredCompleteCommand() as command:
-            return _complete(work_root, store, artifacts, selected, command, operation_time, read_authorization_time)
+            return _complete(
+                source_checkout, work_root, store, artifacts, selected, command, operation_time, read_authorization_time
+            )
         case _:
             raise ValueError("The selected transition is not artifact-sensitive.")

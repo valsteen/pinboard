@@ -23,7 +23,7 @@ from pinboard.adapters.files.errors import RootError, RootErrorCode
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import work_brief_models
+from pinboard.application import action_models, work_brief_models
 from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import execution as mcp_execution
@@ -307,25 +307,27 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
             },
         )
 
-    def complete(self, fixture: CheckpointFixture) -> None:
+    def prepare_completion(self, fixture: CheckpointFixture) -> tuple[CheckpointFixture, JsonObject]:
         fixture = self.terminalize_brief(fixture)
         self.record_ready(fixture)
         attempt_root = fixture.work / "attempts" / "work-a-1"
+        return fixture, {
+            "schema": "pinboard-reviewed-completion/v3",
+            "human_decision": "Complete this item with its reviewed outcome.",
+            "candidate": fixture.candidate_revision,
+            "evidence": "Accepted by the maintainer.",
+            "reviewer_task_id": "independent-reviewer",
+            "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
+            "review_sha256": hashlib.sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+            "packages": [],
+        }
+
+    def complete(self, fixture: CheckpointFixture, payload: JsonObject) -> JsonObject:
+        action = self.project_action(fixture, "complete:work-a-1")
         with patch("pinboard.mcp.mutation_operations.datetime") as clock:
             clock.now.return_value = COMPLETED_AT
-            self.transition(
-                fixture,
-                "complete:work-a-1",
-                {
-                    "schema": "pinboard-reviewed-completion/v3",
-                    "human_decision": "Complete this item with its reviewed outcome.",
-                    "candidate": fixture.candidate_revision,
-                    "evidence": "Accepted by the maintainer.",
-                    "reviewer_task_id": "independent-reviewer",
-                    "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
-                    "review_sha256": hashlib.sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
-                    "packages": [],
-                },
+            return fixture.call_advertised_tool(
+                mcp_server.TRANSITION_TOOL, self.native_transition_request(fixture, action, payload)
             )
 
     def test_protected_working_tree_candidate_is_found_after_squash_merge(self) -> None:
@@ -434,8 +436,10 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         self.assertEqual(expected, self.source(self.presence(fixture, "main", "content-present")))
 
     def test_completion_source_is_the_closing_candidate(self) -> None:
-        fixture = self.native_fixture(self.checkpoint_fixture())
-        self.complete(fixture)
+        fixture, payload = self.prepare_completion(self.native_fixture(self.checkpoint_fixture()))
+        result = self.complete(fixture, payload)
+        self.assertEqual("committed", result["status"], result)
+        self.assertNotIn("local_cleanup", result)
         target = self.target_worktree(fixture, fixture.brief.base_revision)
         completed = self.presence(fixture, "main", "content-not-present")
         self.assertEqual(
@@ -465,6 +469,93 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
             {"item_id": "work-a", "item_state": "done", "attempt_id": "work-a-1", "reason": "pre-snapshot-candidate"},
             self.rejection(self.integration(fixture, "main"), "INTEGRATION_CANDIDATE_UNAVAILABLE"),
         )
+
+    def test_landed_completion_returns_local_disposition_after_squash_and_fresh_reload(self) -> None:
+        for retain in (False, True):
+            with self.subTest(retain=retain):
+                fixture, payload = self.prepare_completion(
+                    self.native_fixture(self.checkpoint_fixture(candidate_form="current-head"))
+                )
+                target = self.target_worktree(fixture, fixture.brief.base_revision)
+                git(target, "merge", "--quiet", "--squash", fixture.brief.branch)
+                self.assertNotEqual(fixture.candidate_revision, commit(target, "squash the reviewed commit"))
+                landed: JsonObject = {"target": "main"}
+                if retain:
+                    landed["retain_local_resources"] = True
+                payload.update(human_decision="It's merged. Close it.", landed=landed)
+
+                result = self.complete(fixture, payload)
+                self.assertEqual("committed", result["status"], result)
+                self.assertEqual(
+                    {"branch": fixture.brief.branch, "disposition": "retain" if retain else "remove"},
+                    result["local_cleanup"],
+                )
+                self.assertEqual(fixture.candidate_revision, git(fixture.project, "rev-parse", fixture.brief.branch))
+                fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+                item = next(item for item in fresh.lifecycle.work_items if item.item_id == "work-a")
+                self.assertEqual("done", item.state.value)
+                receipt = fresh.transition_receipts[-1]
+                self.assertEqual(result["history_id"], int(receipt.history_id))
+                self.assertEqual("pinboard-reviewed-completion/v3", receipt.input_schema)
+                receipt_bytes = bytes(receipt.input_payload)
+                plain_payload = {key: value for key, value in payload.items() if key != "landed"}
+                self.assertEqual(msgspec.json.encode(plain_payload, order="sorted"), receipt_bytes)
+                decoded = msgspec.json.decode(receipt_bytes, type=action_models.ReviewedCompletionReceiptPayload)
+                self.assertEqual(receipt_bytes, msgspec.json.encode(decoded, order="sorted"))
+                self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+
+    def test_landed_completion_refuses_wrong_candidate_or_target_and_reports_recovery(self) -> None:
+        fixture, payload = self.prepare_completion(self.native_fixture(self.checkpoint_fixture()))
+        target = self.target_worktree(fixture, fixture.brief.base_revision)
+        before = fixture.store.validated_snapshot()
+        cases: tuple[tuple[JsonObject, str, str, str], ...] = (
+            ({"landed": {"target": "main"}}, "reviewed diff is absent", "correct-input", "pinboard_item_status"),
+            (
+                {"landed": {"target": "missing-target"}},
+                "Cannot resolve local target",
+                "correct-input",
+                "pinboard_item_status",
+            ),
+            (
+                {"landed": {"target": "main"}, "candidate": fixture.brief.base_revision},
+                "protected candidate",
+                "refresh-action",
+                "pinboard_actions",
+            ),
+        )
+        for changed, reason, retry, continuation in cases:
+            with self.subTest(changed=changed):
+                result = self.complete(fixture, payload | changed)
+                self.assertEqual(("rejected", "unchanged"), (result["status"], result["effect"]), result)
+                self.assertIn(reason, str(result["message"]))
+                self.assertEqual(retry, result["retry"], result)
+                self.assertIn(continuation, str(result["continuation"]))
+                self.assertNotIn("local_cleanup", result)
+                self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+
+        (target / "tracked.txt").write_text("candidate\n", encoding="utf-8")
+        commit(target, "squash the reviewed change")
+        recovered = self.presence(fixture, "main", "content-present")
+        self.assertEqual(fixture.candidate_revision, self.source(recovered)["candidate_revision"])
+        result = self.complete(fixture, payload | {"landed": {"target": "main"}})
+        self.assertEqual("committed", result["status"], result)
+        self.assertEqual({"branch": fixture.brief.branch, "disposition": "remove"}, result["local_cleanup"])
+
+    def test_landed_completion_requires_a_nonempty_reviewed_diff(self) -> None:
+        fixture = self.native_fixture(self.checkpoint_fixture())
+        self.return_for_review(fixture)
+        (fixture.project / "tracked.txt").write_text("base\n", encoding="utf-8")
+        candidate = self.submit_working_tree(fixture, "worker-empty")
+        fixture, payload = self.prepare_completion(dataclasses.replace(fixture, candidate_revision=candidate))
+        git(fixture.project, "branch", "main", fixture.brief.base_revision)
+        before = fixture.store.validated_snapshot()
+        result = self.complete(fixture, payload | {"landed": {"target": "main"}})
+        self.assertEqual(("rejected", "unchanged"), (result["status"], result["effect"]), result)
+        self.assertIn("reviewed diff is empty", str(result["message"]))
+        self.assertEqual("do-not-retry", result["retry"], result)
+        self.assertIn("empty protected diff cannot establish a landing", str(result["continuation"]))
+        self.assertNotIn("local_cleanup", result)
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
 
     def test_empty_recorded_diff_is_no_change_without_a_content_check(self) -> None:
         fixture = self.native_fixture(self.checkpoint_fixture())

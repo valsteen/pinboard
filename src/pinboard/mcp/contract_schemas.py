@@ -506,6 +506,7 @@ def _apply_transition_constraints(definitions: dict[str, JsonSchemaValue]) -> No
                     "minItems": len(surfaces),
                     "maxItems": len(surfaces),
                 },
+                **({"local_cleanup": False} if kind != decision_models.ActionKind.COMPLETE else {}),
             }
         }
         for kind in decision_models.ActionKind

@@ -157,6 +157,11 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                             )
                             for row in payload.packages
                         ),
+                        None
+                        if payload.landed is msgspec.UNSET
+                        else work_models.LandedCompletionInput(
+                            payload.landed.target, payload.landed.retain_local_resources
+                        ),
                     ),
                 )
             if isinstance(payload := _decode(data, transition_models.EvidenceInputPayload), TransitionInputFailure):

@@ -5,6 +5,7 @@ terminal effects without changing lifecycle, authority or launching an agent.
 """
 
 import hashlib
+import stat
 from dataclasses import dataclass
 from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime
@@ -27,7 +28,12 @@ from pinboard.application import (
     work_brief_models,
 )
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
-from pinboard.application.brief_source_models import BriefSourceFailure, authority_selector
+from pinboard.application.brief_source_models import (
+    AuthoritySelector,
+    BriefSourceErrorCode,
+    BriefSourceFailure,
+    authority_selector,
+)
 from pinboard.application.candidate_identity import candidate_diffs_match, working_tree_identity
 from pinboard.application.dispatch import (
     find_dispatch_review,
@@ -247,6 +253,12 @@ class CorrectionContext:
     correction_history_id: HistoryId
     reuse_eligible: bool
     reuse_blockers: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectionSources:
+    brief: work_brief_models.WorkBrief
+    removed_selectors: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -807,10 +819,10 @@ def _replacement_readiness_context(
         failure := validate_executable_work_brief(store, brief, root.classify_checkout(source_checkout_root))
     ) is not None:
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, None)
-    current_sources = _effective_correction_brief(source_checkout_root, brief)
+    current_sources = _observe_correction_sources(source_checkout_root, brief, allow_deleted=False)
     if isinstance(current_sources, DispatchFailure):
         return current_sources
-    if canonical_work_brief_bytes(current_sources) != canonical_work_brief_bytes(brief):
+    if current_sources.brief != brief:
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
             "Current sources differ from the canonical replacement brief. Review and bind the exact current authorities.",
@@ -1388,9 +1400,10 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
         failure := validate_executable_work_brief(store, brief, root.classify_checkout(source_checkout_root))
     ) is not None:
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, None)
-    effective_brief = _effective_correction_brief(source_checkout_root, brief)
-    if isinstance(effective_brief, DispatchFailure):
-        return effective_brief
+    sources = _observe_correction_sources(source_checkout_root, brief, allow_deleted=True)
+    if isinstance(sources, DispatchFailure):
+        return sources
+    effective_brief = sources.brief
     reference = facts.returned_candidate_snapshot.reference
     identity = _starting_candidate_identity(reference)
     match start:
@@ -1421,7 +1434,7 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
     if isinstance(snapshot, DispatchFailure):
         return snapshot
     if isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
-        ready = _read_reusable_ready_review(store, artifacts, brief, effective_brief)
+        ready = _read_reusable_ready_review(store, artifacts, brief, sources)
         reuse_blockers = (ready.message,) if isinstance(ready, DispatchFailure) else ()
     else:
         reuse_blockers = ("Local checkpoints use the local correction review.",)
@@ -1478,36 +1491,107 @@ def _correction_review_subject(
     ).hexdigest()
 
 
-def _effective_correction_brief(
+def _source_file_missing(source_checkout_root: Path, selector: AuthoritySelector) -> bool:
+    try:
+        return stat.S_ISDIR((source_checkout_root / selector.relative_path).lstat().st_mode)
+    except FileNotFoundError, NotADirectoryError:
+        return True
+    except OSError:
+        return False
+
+
+def _correction_source_unreadable(authority: work_brief_models.ReviewedAuthority, reason: str) -> DispatchFailure:
+    return DispatchFailure(
+        DispatchErrorCode.DISPATCH_AUTHORITY_UNREADABLE,
+        f"Cannot verify reviewed authority '{authority.authority_id}' at '{authority.selector}': {reason}",
+        _fresh_review_details((FailureFact("authority_selector", authority.selector),), ()),
+    )
+
+
+def _verify_removed_authorities(
+    source_checkout_root: Path,
+    base_revision: str,
+    missing: list[tuple[work_brief_models.ReviewedAuthority, AuthoritySelector]],
+) -> DispatchFailure | None:
+    paths = tuple(dict.fromkeys(selector.relative_path.as_posix() for _, selector in missing))
+    try:
+        deleted = root.read_deleted_candidate_paths(source_checkout_root, base_revision, paths)
+    except (root.RootError, OSError) as error:
+        return _correction_source_unreadable(missing[0][0], str(error))
+    for authority, selector in missing:
+        if selector.relative_path.as_posix() not in deleted:
+            return _correction_source_unreadable(
+                authority, "The missing path is outside the tracked candidate removals."
+            )
+        base_source = select_base_brief_source(source_checkout_root, base_revision, selector, True)
+        if isinstance(base_source, BriefSourceFailure):
+            return _correction_source_unreadable(authority, base_source.message)
+        base_digest = hashlib.sha256(base_source.content).hexdigest()
+        if base_digest != authority.reviewed_sha256:
+            return _stale_authority_failure(
+                authority.authority_id,
+                authority.reviewed_sha256,
+                base_digest,
+                f"Reviewed authority '{authority.authority_id}' differs from '{authority.selector}' at accepted base "
+                f"'{base_revision}'. Inspect the accepted brief and base with pinboard_attempt_inspect.",
+            )
+    return None
+
+
+def _observe_correction_sources(
     source_checkout_root: Path,
     brief: work_brief_models.WorkBrief,
-) -> DispatchResult[work_brief_models.WorkBrief]:
+    *,
+    allow_deleted: bool,
+) -> DispatchResult[CorrectionSources]:
     checkpoint = brief.checkpoint
     if isinstance(checkpoint, work_brief_models.LocalCheckpoint):
-        return brief
+        return CorrectionSources(brief, ())
     refreshed: list[work_brief_models.ReviewedAuthority] = []
+    missing: list[tuple[work_brief_models.ReviewedAuthority, AuthoritySelector]] = []
     for authority in checkpoint.reviewed_authorities:
-        selected = select_checkout_brief_source(source_checkout_root, authority_selector(authority.selector), True)
+        selector = authority_selector(authority.selector)
+        selected = select_checkout_brief_source(source_checkout_root, selector, True)
         if isinstance(selected, BriefSourceFailure):
-            return DispatchFailure(
-                DispatchErrorCode.DISPATCH_AUTHORITY_UNREADABLE,
-                f"Cannot read reviewed authority '{authority.authority_id}': {selected.message} "
-                "Restore that source before the full cross-boundary correction review.",
-                None,
+            if (
+                not allow_deleted
+                or selected.code != BriefSourceErrorCode.SOURCE_UNREADABLE
+                or not _source_file_missing(source_checkout_root, selector)
+            ):
+                return _correction_source_unreadable(authority, selected.message)
+            missing.append((authority, selector))
+            refreshed.append(authority)
+        else:
+            refreshed.append(
+                msgspec.structs.replace(authority, reviewed_sha256=hashlib.sha256(selected.content).hexdigest())
             )
-        refreshed.append(
-            msgspec.structs.replace(authority, reviewed_sha256=hashlib.sha256(selected.content).hexdigest())
-        )
+    if (
+        missing
+        and (failure := _verify_removed_authorities(source_checkout_root, brief.base_revision, missing)) is not None
+    ):
+        return failure
     effective_checkpoint = msgspec.structs.replace(checkpoint, reviewed_authorities=tuple(refreshed))
-    return msgspec.structs.replace(brief, checkpoint=effective_checkpoint)
+    return CorrectionSources(
+        msgspec.structs.replace(brief, checkpoint=effective_checkpoint),
+        tuple(dict.fromkeys(authority.selector for authority, _ in missing)),
+    )
 
 
 def _read_reusable_ready_review(
     store: WorkStore,
     artifacts: DispatchArtifactPort,
     accepted_brief: work_brief_models.WorkBrief,
-    effective_brief: work_brief_models.WorkBrief,
+    sources: CorrectionSources,
 ) -> DispatchResult[bytes]:
+    if sources.removed_selectors:
+        removed = ", ".join(sources.removed_selectors)
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+            f"Candidate removed reviewed sources ({removed}). Their accepted-base bytes were verified. "
+            "Use the full cross-boundary correction review to assess the removals against this candidate.",
+            _fresh_review_details((FailureFact("removed_authority_selectors", removed),), ()),
+        )
+    effective_brief = sources.brief
     if canonical_work_brief_bytes(accepted_brief) != canonical_work_brief_bytes(effective_brief):
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
@@ -1544,6 +1628,48 @@ def _read_reusable_ready_review(
             failure.details,
         )
     return ready_bytes
+
+
+def _recheck_correction_sources(
+    source_checkout_root: Path,
+    accepted_brief: work_brief_models.WorkBrief,
+    expected: CorrectionSources,
+) -> DispatchFailure | None:
+    current = _observe_correction_sources(source_checkout_root, accepted_brief, allow_deleted=True)
+    if isinstance(current, DispatchFailure):
+        return current
+    if current.removed_selectors != expected.removed_selectors:
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_AUTHORITY_STALE,
+            "Tracked removals of reviewed authorities changed during correction dispatch. Inspect the current return "
+            "and any published evidence before commissioning another review.",
+            _fresh_review_details(
+                (),
+                (
+                    FailureMismatch(
+                        "removed_authority_selectors",
+                        ", ".join(expected.removed_selectors),
+                        ", ".join(current.removed_selectors),
+                    ),
+                ),
+            ),
+        )
+    checkpoint = expected.brief.checkpoint
+    if isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+        observed_checkpoint = current.brief.checkpoint
+        assert isinstance(observed_checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        for before, after in zip(
+            checkpoint.reviewed_authorities, observed_checkpoint.reviewed_authorities, strict=True
+        ):
+            if before.reviewed_sha256 != after.reviewed_sha256:
+                return _stale_authority_failure(
+                    before.authority_id,
+                    before.reviewed_sha256,
+                    after.reviewed_sha256,
+                    f"Reviewed authority '{before.authority_id}' changed during correction dispatch. "
+                    "Inspect the current return and any published evidence before commissioning another review.",
+                )
+    return None
 
 
 def _select_dispatch_review(  # noqa: C901, PLR0912 - exact checkpoint and dispatch-family choices
@@ -1740,6 +1866,8 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
     ) is not None:
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, None)
     reusable_ready_bytes: bytes | None = None
+    accepted_source_brief = validated_brief
+    correction_sources: CorrectionSources | None = None
     if isinstance(choice, (CorrectionDispatch, CurrentCandidateCorrectionDispatch)):
         if (
             failure := _validate_correction_history(
@@ -1750,13 +1878,13 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             )
         ) is not None:
             return failure
-        accepted_source_brief = validated_brief
-        effective_brief = _effective_correction_brief(source_checkout_root, validated_brief)
-        if isinstance(effective_brief, DispatchFailure):
-            return effective_brief
-        validated_brief = effective_brief
+        observed = _observe_correction_sources(source_checkout_root, accepted_source_brief, allow_deleted=True)
+        if isinstance(observed, DispatchFailure):
+            return observed
+        correction_sources = observed
+        validated_brief = observed.brief
         if isinstance(choice.review, work_brief_models.ReusedCoverageCorrectionReview):
-            reusable = _read_reusable_ready_review(store, artifacts, accepted_source_brief, effective_brief)
+            reusable = _read_reusable_ready_review(store, artifacts, accepted_source_brief, observed)
             if isinstance(reusable, DispatchFailure):
                 return reusable
             reusable_ready_bytes = reusable
@@ -1846,7 +1974,6 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
                 review_selector_facts,
             )
         assert accepted_review_bytes == _correction_review_bytes(choice)
-        checkpoint_value = validated_brief.checkpoint
         if isinstance(choice.review, work_brief_models.LocalCorrectionSourceReview):
             if (failure := validate_local_correction_source_review(choice.review, validated_brief)) is not None:
                 mapped = (
@@ -1862,7 +1989,6 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
                     review_selector_facts,
                 )
             accepted_review_bytes = None
-            failure = None
         else:
             accepted_review_bytes = (
                 reusable_ready_bytes
@@ -1870,42 +1996,17 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
                 else canonical_work_brief_review_bytes(choice.review.contract_review)
             )
             assert accepted_review_bytes is not None
-            assert isinstance(checkpoint_value, work_brief_models.CrossBoundaryCheckpoint)
-            failure = validate_reviewed_authority_digests(
-                partial(select_checkout_brief_source, source_checkout_root),
-                checkpoint_value.reviewed_authorities,
-            )
-        match failure:
-            case None:
-                pass
-            case work_brief_models.ReviewedAuthoritySelectionFailure(authority_id=authority_id, reason=reason):
+            assert correction_sources is not None
+            if (
+                failure := _recheck_correction_sources(source_checkout_root, accepted_source_brief, correction_sources)
+            ) is not None:
                 return _after_publication_failure(
-                    DispatchErrorCode.DISPATCH_AUTHORITY_UNREADABLE,
-                    f"Cannot read reviewed authority '{authority_id}': {reason}",
+                    failure.code,
+                    failure.message,
                     review_publication_surfaces,
-                    None,
+                    failure.details,
                     review_selector_facts,
                 )
-            case work_brief_models.ReviewedAuthorityDigestMismatch(
-                authority_id=authority_id,
-                expected_sha256=provided_sha256,
-                observed_sha256=current_sha256,
-            ):
-                stale = _stale_authority_failure(
-                    authority_id,
-                    provided_sha256,
-                    current_sha256,
-                    f"Reviewed authority '{authority_id}' changed during correction dispatch.",
-                )
-                return _after_publication_failure(
-                    stale.code,
-                    stale.message,
-                    review_publication_surfaces,
-                    stale.details,
-                    review_selector_facts,
-                )
-            case _ as unreachable:
-                assert_never(unreachable)
     rendered_prompt = _render_dispatch_prompt(
         validated_brief,
         accepted_brief_bytes,
@@ -2036,23 +2137,23 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
                 _fresh_review_details((), ()),
                 invocation_selector_facts,
             )
-        current_sources = _effective_correction_brief(source_checkout_root, validated_brief)
-        if isinstance(current_sources, DispatchFailure):
-            return _after_publication_failure(
-                current_sources.code,
-                current_sources.message,
-                invocation_surfaces,
-                current_sources.details,
-                invocation_selector_facts,
-            )
-        if current_brief_bytes != accepted_brief_bytes or canonical_work_brief_bytes(
-            current_sources
-        ) != canonical_work_brief_bytes(validated_brief):
+        if current_brief_bytes != accepted_brief_bytes:
             return _after_publication_failure(
                 DispatchErrorCode.DISPATCH_AUTHORITY_STALE,
-                "Correction brief or reviewed sources changed during prompt publication; inspect the committed evidence before continuing.",
+                "Correction brief changed during prompt publication. Inspect the committed evidence before continuing.",
                 invocation_surfaces,
                 _fresh_review_details((), ()),
+                invocation_selector_facts,
+            )
+        assert correction_sources is not None
+        if (
+            failure := _recheck_correction_sources(source_checkout_root, accepted_source_brief, correction_sources)
+        ) is not None:
+            return _after_publication_failure(
+                failure.code,
+                failure.message,
+                invocation_surfaces,
+                failure.details,
                 invocation_selector_facts,
             )
         checked_start = _read_correction_start(store, artifacts, source_checkout_root, validated_brief, choice)

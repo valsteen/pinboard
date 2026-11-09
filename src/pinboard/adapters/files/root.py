@@ -230,6 +230,28 @@ def read_commit_file(cwd: Path, revision: str, relative_path: str) -> bytes:
     )
 
 
+def read_deleted_candidate_paths(cwd: Path, base_revision: str, relative_paths: tuple[str, ...]) -> frozenset[str]:
+    """Observe selected tracked paths removed relative to base, including rename origins."""
+    paths = _git_bytes(
+        cwd,
+        "--no-optional-locks",
+        "--literal-pathspecs",
+        "-c",
+        "diff.autoRefreshIndex=false",
+        "diff",
+        "--no-ext-diff",
+        "--no-renames",
+        "--diff-filter=D",
+        "--name-only",
+        "-z",
+        base_revision,
+        "--",
+        *relative_paths,
+        unavailable_message=f"Cannot compare missing reviewed paths with accepted base '{base_revision}'.",
+    )
+    return frozenset(os.fsdecode(path) for path in paths.split(b"\0") if path)
+
+
 def observe_checkout_identity(cwd: Path) -> tuple[str, str]:
     """Return the exact current branch and HEAD revision for one selected checkout."""
 

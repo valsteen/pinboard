@@ -10,15 +10,44 @@ ready_marker="$runtime_root/.pinboard-ready"
 diagnostics="$runtime_root/.preparation-output"
 preparation_lock="$runtime_root/.preparing"
 preparation_action='{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["uv and write access to launcher-root .pinboard-runtime"]}'
-# Executable, hook event label, and post-install diagnostic label, in readiness order.
-runtime_entries='pinboard||
-pinboard-mcp||MCP
-pinboard-claude-subagent-start|Claude SubagentStart|Claude startup
-pinboard-claude-session-start|Claude SessionStart|Claude parent startup
-pinboard-claude-pre-tool-use|Claude PreToolUse|Claude permission
-pinboard-antigravity-session-start|Antigravity SessionStart|Antigravity startup
-pinboard-antigravity-pre-tool-use|Antigravity PreToolUse|Antigravity permission'
 export PYTHONDONTWRITEBYTECODE=1
+
+# Scan executable, hook event label, and post-install diagnostic label in readiness order without temporary files.
+check_runtime_entries() {
+    runtime_check=$1
+    requested_hook=${2:-}
+    set -- \
+        'pinboard||' \
+        'pinboard-mcp||MCP' \
+        'pinboard-claude-subagent-start|Claude SubagentStart|Claude startup' \
+        'pinboard-claude-session-start|Claude SessionStart|Claude parent startup' \
+        'pinboard-claude-pre-tool-use|Claude PreToolUse|Claude permission' \
+        'pinboard-antigravity-session-start|Antigravity SessionStart|Antigravity startup' \
+        'pinboard-antigravity-pre-tool-use|Antigravity PreToolUse|Antigravity permission'
+    for runtime_row; do
+        runtime_entry=${runtime_row%%|*}
+        runtime_labels=${runtime_row#*|}
+        hook_label=${runtime_labels%%|*}
+        readiness_label=${runtime_labels#*|}
+        case "$runtime_check" in
+            startup)
+                [ -n "$hook_label" ] || continue
+                hook_flag="--${runtime_entry#pinboard-}"
+                if [ "$requested_hook" = "$hook_flag" ]; then
+                    return 0
+                fi
+                ;;
+            ready|installed)
+                if [ "$runtime_check" = installed ] && [ -z "$readiness_label" ]; then
+                    continue
+                fi
+                runtime_entry_path="$runtime_environment/bin/$runtime_entry"
+                [ -x "$runtime_entry_path" ] || return 1
+                ;;
+        esac
+    done
+    [ "$runtime_check" = ready ] || [ "$runtime_check" = installed ]
+}
 
 launcher_result() {
     printf '{"schema":"pinboard-launcher-result/v1","status":"%s","pinboard_started":false,"runtime_location":{"base":"launcher-root","relative":".pinboard-runtime"},"observations":%s,"upstream_exit_code":%s,"retry_disposition":"%s","effect_disposition":"%s","changed_surfaces":%s,"next_action":%s}\n' \
@@ -261,24 +290,18 @@ if [ "$#" -ge 1 ] && [ "$1" = "--mcp" ]; then
 elif capture_flag_present "$@"; then
     invalid_capture_arguments 'Choose the complete supported CLI or MCP capture declaration; do not mix capture flags into an ordinary invocation.'
 fi
-while IFS='|' read -r runtime_entry hook_label _; do
-    hook_flag="--${runtime_entry#pinboard-}"
-    if [ -n "$hook_label" ] && [ "${1:-}" = "$hook_flag" ]; then
-        entry_name=$runtime_entry
-        result_output_fd=2
-        shift
-        if [ "$#" -ne 0 ]; then
-            launcher_result \
-                "invalid-startup-arguments" \
-                "[\"$hook_label startup accepts only scripts/pinboard $hook_flag.\"]" \
-                "null" "correct-environment" "unchanged" '[]' "null"
-            exit 64
-        fi
-        break
+if check_runtime_entries startup "${1:-}"; then
+    entry_name=$runtime_entry
+    result_output_fd=2
+    shift
+    if [ "$#" -ne 0 ]; then
+        launcher_result \
+            "invalid-startup-arguments" \
+            "[\"$hook_label startup accepts only scripts/pinboard $hook_flag.\"]" \
+            "null" "correct-environment" "unchanged" '[]' "null"
+        exit 64
     fi
-done <<EOF
-$runtime_entries
-EOF
+fi
 runtime_executable="$runtime_environment/bin/$entry_name"
 
 runtime_write_failure() {
@@ -307,16 +330,19 @@ release_preparation_lock() {
     fi
 }
 
-runtime_entries_ready() {
-    while IFS='|' read -r runtime_entry _; do
-        [ -x "$runtime_environment/bin/$runtime_entry" ] || return 1
-    done <<EOF
-$runtime_entries
-EOF
+runtime_entry_not_executable() {
+    printf 'prepared %s entry point is not executable: %s\n' "$readiness_label" "$runtime_entry_path" >&2
+    rm -f "$diagnostics"
+    launcher_result \
+        "runtime-entrypoint-invalid" \
+        "[\"The locked private runtime $readiness_label entry point is missing or not executable.\"]" \
+        "1" "correct-environment" "potentially-changed" '[".pinboard-runtime"]' \
+        '{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["a valid locked runtime"]}'
+    exit 78
 }
 
 if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
-    if [ -f "$ready_marker" ] && runtime_entries_ready; then
+    if [ -f "$ready_marker" ] && check_runtime_entries ready; then
         launcher_result \
             "runtime-already-ready" \
             '["The launcher-root private runtime is already ready."]' \
@@ -404,22 +430,7 @@ if [ "$#" -eq 1 ] && [ "$1" = "--prepare-runtime" ]; then
             '{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["a valid locked runtime"]}'
         exit 78
     fi
-    while IFS='|' read -r runtime_entry _ readiness_label; do
-        [ -n "$readiness_label" ] || continue
-        runtime_entry_path="$runtime_environment/bin/$runtime_entry"
-        if [ ! -x "$runtime_entry_path" ]; then
-            printf 'prepared %s entry point is not executable: %s\n' "$readiness_label" "$runtime_entry_path" >&2
-            rm -f "$diagnostics"
-            launcher_result \
-                "runtime-entrypoint-invalid" \
-                "[\"The locked private runtime $readiness_label entry point is missing or not executable.\"]" \
-                "1" "correct-environment" "potentially-changed" '[".pinboard-runtime"]' \
-                '{"launcher":"self","arguments":["--prepare-runtime"],"display_command":"scripts/pinboard --prepare-runtime","requires":["a valid locked runtime"]}'
-            exit 78
-        fi
-    done <<EOF
-$runtime_entries
-EOF
+    check_runtime_entries installed || runtime_entry_not_executable
     if rm -f "$diagnostics" && (: > "$ready_marker"); then
         launcher_result \
             "runtime-ready" \

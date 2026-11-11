@@ -3,12 +3,15 @@
 from datetime import UTC, datetime
 from typing import Literal, assert_never
 
+import msgspec
+
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.database import SCHEMA_VERSION
-from pinboard.adapters.sqlite.schema_ownership_v8 import inspect_current_schema_migration
-from pinboard.adapters.sqlite.schema_procedure import (
+from pinboard.adapters.sqlite.migration.schema_ownership_v8 import inspect_current_schema_migration
+from pinboard.adapters.sqlite.migration.schema_procedure import (
     AppliedSchema,
     PlannedSchema,
+    SchemaPlan,
     SchemaProcedureFailure,
     apply_schema,
     preview_schema,
@@ -18,7 +21,6 @@ from pinboard.application.ports import WorkStoreError
 from pinboard.cli import cli_commands, work_views
 from pinboard.cli.cli_output import write_json
 from pinboard.cli.errors import CommandFailure, CommandResult
-from pinboard.cli.work_state_models import SchemaMigrationView
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailureCode,
@@ -27,6 +29,20 @@ from pinboard.domain.errors import (
     FailureFact,
     RetryDisposition,
 )
+
+
+class SchemaMigrationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-schema-migration/v2"]
+    status: Literal["planned", "migrated", "reversed", "unchanged"]
+    plan_id: str
+    plan: SchemaPlan | None
+    database_path: str
+    authority: Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9", "sqlite-v10", "sqlite-v11"]
+    state_changed: bool
+    effect: Literal["committed", "unchanged"]
+    retry: Literal["do-not-retry", "safe-to-repeat"]
+    changed_surfaces: tuple[str, ...]
+    warning: str | None
 
 
 def _failure(failure: SchemaProcedureFailure, database_path: str, plan_id: str, recovery: str) -> CommandFailure:

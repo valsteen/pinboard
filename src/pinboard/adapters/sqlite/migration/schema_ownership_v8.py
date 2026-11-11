@@ -15,13 +15,13 @@ from pinboard.adapters.files.artifacts import read_reference
 from pinboard.adapters.sqlite import database
 from pinboard.adapters.sqlite.artifact_ownership import accept_ownership
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.migration import database as migration_database
+from pinboard.adapters.sqlite.migration.schema_decisions_v10 import _upgrade_v10_connection
+from pinboard.adapters.sqlite.migration.schema_dependencies_v9 import _upgrade_v9_connection
 from pinboard.adapters.sqlite.models import OpenMode
-from pinboard.adapters.sqlite.schema_decisions_v10 import _upgrade_v10_connection
-from pinboard.adapters.sqlite.schema_dependencies_v9 import _upgrade_v9_connection
 from pinboard.adapters.sqlite.state import read_state
 from pinboard.application import (
     artifact_identity,
-    artifact_ownership_compatibility_v8,
     candidate_snapshots,
     history_archives,
     lifecycle_packages,
@@ -29,6 +29,7 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
+from pinboard.application.migration import artifact_ownership_compatibility_v8
 from pinboard.domain import history, work_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CheckpointId
 
@@ -289,7 +290,10 @@ def _upgrade_v8_connection(connection: sqlite3.Connection, work_root: Path, expe
         backfill_ownership(connection, work_root)
         database._verify_v9_schema(connection)
         database.verify_database_integrity(connection)
-        if expected_postimage is not None and database.schema_logical_digest(connection) != expected_postimage:
+        if (
+            expected_postimage is not None
+            and migration_database.schema_logical_digest(connection) != expected_postimage
+        ):
             raise StorageError(
                 StorageErrorCode.INVALID_STATE,
                 "Ownership migration differs from the previewed postimage; the predecessor remains authoritative.",
@@ -307,7 +311,7 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
             database._configure_connection(connection)
             version = database._read_pinboard_schema_version(connection)
             if version == 6:
-                return database.inspect_schema_migration(path)
+                return migration_database.inspect_schema_migration(path)
             if version == database.SCHEMA_VERSION:
                 database._verify_current_schema(connection)
                 database.verify_database_integrity(connection)
@@ -335,8 +339,8 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
                 elif version == 8:
                     _upgrade_v8_connection(simulation, path.parent, None)
                 else:
-                    database._upgrade_v7_connection(simulation)
-                return version, source, database.schema_logical_digest(simulation)
+                    migration_database._upgrade_v7_connection(simulation)
+                return version, source, migration_database.schema_logical_digest(simulation)
     except OSError as error:
         raise StorageError(
             StorageErrorCode.IO_ERROR, "The current schema migration could not read the database."
@@ -346,5 +350,5 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
 
 
 def migrate_v8_database(path: Path, expected_postimage: str) -> bool:
-    with database.migration_connection(path) as connection:
+    with migration_database.migration_connection(path) as connection:
         return _upgrade_v8_connection(connection, path.parent, expected_postimage)

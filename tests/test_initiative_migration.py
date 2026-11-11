@@ -5,8 +5,9 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
-from pinboard.adapters.sqlite import database, schema_procedure
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.migration import database as migration_database
+from pinboard.adapters.sqlite.migration import schema_procedure
 from tests import test_initiatives, test_storage_migration
 from tests.checkpoint_support import CheckpointPackageSupport
 
@@ -136,7 +137,7 @@ class InitiativeMigrationTest(CheckpointPackageSupport):
         self.assertIsInstance(schema_procedure.apply_schema(path, legacy.plan_id), schema_procedure.AppliedSchema)
         legacy_plan_path = fixture.work / "migration" / f"{legacy.plan_id}.json"
         legacy_bytes = legacy_plan_path.read_bytes()
-        self.assertEqual(7, database.inspect_schema_migration(path)[0])
+        self.assertEqual(7, migration_database.inspect_schema_migration(path)[0])
         advance = schema_procedure.preview_schema(path)
         assert isinstance(advance, schema_procedure.PlannedSchema)
         self.assertIsInstance(schema_procedure.apply_schema(path, advance.plan_id), schema_procedure.AppliedSchema)

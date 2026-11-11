@@ -8,7 +8,7 @@ from unittest.mock import patch
 from pinboard.adapters.files import contributor_traces, git_config
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
-from pinboard.adapters.sqlite.schema_procedure import SchemaProcedureFailure
+from pinboard.adapters.sqlite.migration.schema_procedure import SchemaProcedureFailure
 from pinboard.application import query_models
 from pinboard.cli import entrypoint
 from pinboard.domain.identifiers import AttemptId
@@ -163,7 +163,7 @@ class ActionableOutcomeTest(CheckpointPackageSupport):
         ):
             with (
                 self.subTest(arguments=arguments),
-                patch("pinboard.cli.schema_migration.preview_schema", return_value=failure),
+                patch("pinboard.cli.migration.schema_migration.preview_schema", return_value=failure),
             ):
                 status, output, _ = self.run_cli(*fixture.common, "migrate-schema", *arguments, "--json")
                 self.assertEqual(11, status)

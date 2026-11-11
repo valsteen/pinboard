@@ -212,14 +212,15 @@ class ArchitectureDependencyTest(unittest.TestCase):
 
         tree = ast.parse(entrypoint.read_text(encoding="utf-8"), filename=str(entrypoint))
         dispatch = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_dispatch")
+        migration_guard = ast.parse(
+            "isinstance(invocation.command, (cli_commands.MigrateSchemaPreviewCommand, "
+            "cli_commands.MigrateSchemaApplyCommand, cli_commands.MigrateSchemaReverseCommand))",
+            mode="eval",
+        ).body
         routes = [
-            node
-            for node in dispatch.body
-            if isinstance(node, ast.If)
-            and {part.attr for part in ast.walk(node.test) if isinstance(part, ast.Attribute)}
-            == {"command", "MigrateSchemaPreviewCommand", "MigrateSchemaApplyCommand", "MigrateSchemaReverseCommand"}
+            node for node in dispatch.body if isinstance(node, ast.If) and ast.compare(node.test, migration_guard)
         ]
-        self.assertEqual(1, len(routes))
+        self.assertEqual(1, len(routes), "expected the exact migrate-schema guard in CLI dispatch")
         routes[0].body.clear()
         self.assertEqual(
             (),

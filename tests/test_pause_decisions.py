@@ -8,10 +8,11 @@ from unittest.mock import patch
 
 from mcp.server.mcpserver.exceptions import UnexpectedToolError
 
-from pinboard.adapters.sqlite import database, schema_procedure
+from pinboard.adapters.sqlite import database
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.decision_batches import read_decision_batches
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.migration import schema_procedure
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state

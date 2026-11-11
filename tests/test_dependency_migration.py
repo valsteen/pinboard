@@ -11,8 +11,10 @@ from unittest.mock import patch
 import msgspec
 
 from pinboard.adapters.files.file_io import resolve_durable_roots
-from pinboard.adapters.sqlite import database, schema_procedure
+from pinboard.adapters.sqlite import database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.migration import database as migration_database
+from pinboard.adapters.sqlite.migration import schema_procedure
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.domain.history import encode_checkpoint_acceptance_outcome, work_item_definition_bytes
 from pinboard.domain.identifiers import WorkItemId
@@ -37,7 +39,7 @@ class DependencyMigrationTest(unittest.TestCase):
         assert isinstance(result, schema_procedure.AppliedSchema), result
         self.assertEqual((10, "unchanged", ()), (result.resulting_version, result.direction, result.changed_surfaces))
         self.assertEqual(original, path.read_bytes())
-        with database.migration_connection(path) as connection:
+        with migration_database.migration_connection(path) as connection:
             database._verify_v10_schema(connection)
         next_step = schema_procedure.preview_schema(path)
         assert isinstance(next_step, schema_procedure.PlannedSchema), next_step
@@ -47,7 +49,7 @@ class DependencyMigrationTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         path = Path(directory.name).resolve() / "state.sqlite3"
-        schema = Path(database.__file__).with_name("schema_compatibility_v9.sql").read_text()
+        schema = Path(database.__file__).with_name("migration").joinpath("schema_compatibility_v9.sql").read_text()
         timestamp = SQLITE_NOW.isoformat()
         with closing(sqlite3.connect(path)) as connection, connection:
             connection.executescript(schema)
@@ -124,7 +126,7 @@ class DependencyMigrationTest(unittest.TestCase):
         assert isinstance(result, schema_procedure.AppliedSchema), result
         self.assertEqual(10, result.resulting_version)
         self.assertEqual(original, (path.parent / "migration" / f"{plan.plan_id}.v9").read_bytes())
-        with database.migration_connection(path) as connection:
+        with migration_database.migration_connection(path) as connection:
             database._verify_v10_schema(connection)
             self.assertEqual(
                 receipts,

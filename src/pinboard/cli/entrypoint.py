@@ -24,7 +24,6 @@ from pinboard.cli import (
     cli_parser,
     code_catalog,
     project_export,
-    schema_migration,
     tool_contract,
     transitions,
     work_inspection,
@@ -73,6 +72,8 @@ def _dispatch(  # noqa: C901, PLR0912 - keep the installed command routes visibl
             cli_commands.MigrateSchemaReverseCommand,
         ),
     ):
+        from pinboard.cli.migration import schema_migration  # noqa: PLC0415 - load migration only on its command route
+
         return schema_migration.migrate_schema(durable, store, invocation.command)
     match invocation.command:
         case cli_commands.ValidateCommand() as command:

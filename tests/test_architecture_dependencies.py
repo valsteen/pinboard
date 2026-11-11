@@ -22,6 +22,10 @@ def _package(path: Path, source_root: Path) -> str:
 
 def _imports(path: Path, source_root: Path = SOURCE_ROOT) -> tuple[str, ...]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return _imported_modules(tree, path, source_root)
+
+
+def _imported_modules(tree: ast.AST, path: Path, source_root: Path) -> tuple[str, ...]:
     modules: list[str] = []
     for node in ast.walk(tree):
         match node:
@@ -59,7 +63,9 @@ def _violations(source_root: Path) -> list[str]:
 def _package_cycles(package: str, source_root: Path = SOURCE_ROOT) -> tuple[tuple[str, ...], ...]:
     package_root = source_root / package
     modules = {
-        f"pinboard.{package}.{path.stem}": path for path in package_root.glob("*.py") if path.name != "__init__.py"
+        f"{_package(path, source_root)}.{path.stem}": path
+        for path in package_root.rglob("*.py")
+        if path.name != "__init__.py"
     }
     edges = {
         module: tuple(sorted(value for value in _imports(path, source_root) if value in modules))
@@ -176,19 +182,53 @@ class ArchitectureDependencyTest(unittest.TestCase):
     def test_cli_and_mcp_are_independent_sibling_boundaries(self) -> None:
         cli_imports = tuple(
             imported
-            for path in (SOURCE_ROOT / "cli").glob("*.py")
+            for path in (SOURCE_ROOT / "cli").rglob("*.py")
             for imported in _imports(path)
             if imported.startswith("pinboard.mcp")
         )
         mcp_imports = tuple(
             imported
-            for path in (SOURCE_ROOT / "mcp").glob("*.py")
+            for path in (SOURCE_ROOT / "mcp").rglob("*.py")
             for imported in _imports(path)
             if imported.startswith("pinboard.cli")
         )
         self.assertEqual((), cli_imports)
         self.assertEqual((), mcp_imports)
         self.assertEqual((), _package_cycles("mcp"))
+
+    def test_only_migrate_schema_route_imports_migration_packages(self) -> None:
+        packages = tuple(
+            SOURCE_ROOT / package for package in ("adapters/sqlite/migration", "application/migration", "cli/migration")
+        )
+        prefixes = tuple(f"{_package(package / '__init__.py', SOURCE_ROOT)}." for package in packages)
+        entrypoint = SOURCE_ROOT / "cli/entrypoint.py"
+        importers = {
+            path.relative_to(SOURCE_ROOT)
+            for path in SOURCE_ROOT.rglob("*.py")
+            if not any(path.is_relative_to(package) for package in packages)
+            if any(f"{imported}.".startswith(prefixes) for imported in _imports(path))
+        }
+        self.assertEqual({entrypoint.relative_to(SOURCE_ROOT)}, importers)
+
+        tree = ast.parse(entrypoint.read_text(encoding="utf-8"), filename=str(entrypoint))
+        dispatch = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_dispatch")
+        routes = [
+            node
+            for node in dispatch.body
+            if isinstance(node, ast.If)
+            and {part.attr for part in ast.walk(node.test) if isinstance(part, ast.Attribute)}
+            == {"command", "MigrateSchemaPreviewCommand", "MigrateSchemaApplyCommand", "MigrateSchemaReverseCommand"}
+        ]
+        self.assertEqual(1, len(routes))
+        routes[0].body.clear()
+        self.assertEqual(
+            (),
+            tuple(
+                imported
+                for imported in _imported_modules(tree, entrypoint, SOURCE_ROOT)
+                if f"{imported}.".startswith(prefixes)
+            ),
+        )
 
     def test_sqlite_location_and_store_composition_have_one_explicit_owner(self) -> None:
         self.assertEqual((Path("adapters/files/file_io.py"),), _database_location_literals())

@@ -20,16 +20,16 @@ import msgspec
 
 from pinboard.adapters.files.errors import ArtifactError, FileIOError, ImmutableFilePublishedError
 from pinboard.adapters.files.file_io import atomic_replace, create_immutable, ensure_child_directory
-from pinboard.adapters.sqlite.database import (
+from pinboard.adapters.sqlite.errors import StorageError
+from pinboard.adapters.sqlite.migration.database import (
     current_schema_logical_digest,
     inspect_schema_migration,
     migrate_v6_database,
     migrate_v7_database,
 )
-from pinboard.adapters.sqlite.errors import StorageError
-from pinboard.adapters.sqlite.schema_decisions_v10 import migrate_v10_database
-from pinboard.adapters.sqlite.schema_dependencies_v9 import migrate_v9_database
-from pinboard.adapters.sqlite.schema_ownership_v8 import inspect_current_schema_migration, migrate_v8_database
+from pinboard.adapters.sqlite.migration.schema_decisions_v10 import migrate_v10_database
+from pinboard.adapters.sqlite.migration.schema_dependencies_v9 import migrate_v9_database
+from pinboard.adapters.sqlite.migration.schema_ownership_v8 import inspect_current_schema_migration, migrate_v8_database
 
 
 class CompatibilityForwardPlan(

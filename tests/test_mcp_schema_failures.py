@@ -31,7 +31,10 @@ class NativeSchemaFailureTest(unittest.TestCase):
         (project / ".git/info/exclude").write_text("/.pinboard/\n")
         with closing(sqlite3.connect(work / "state.sqlite3")) as connection, connection:
             connection.executescript(
-                Path(database.__file__).with_name(f"schema_compatibility_v{version}.sql").read_text()
+                Path(database.__file__)
+                .with_name("migration")
+                .joinpath(f"schema_compatibility_v{version}.sql")
+                .read_text()
             )
             timestamp = SQLITE_NOW.isoformat()
             connection.execute(

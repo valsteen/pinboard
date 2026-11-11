@@ -7,6 +7,7 @@ import msgspec
 
 from pinboard.adapters.sqlite import database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.migration import database as migration_database
 from pinboard.domain.history import CheckpointAcceptanceOutcome
 from pinboard.domain.identifiers import HistoryId, WorkItemId
 
@@ -85,7 +86,10 @@ def _upgrade_v9_connection(connection: sqlite3.Connection, expected_postimage: s
         _backfill_checkpoint_acceptances(connection)
         database._verify_v10_schema(connection)
         database.verify_database_integrity(connection)
-        if expected_postimage is not None and database.schema_logical_digest(connection) != expected_postimage:
+        if (
+            expected_postimage is not None
+            and migration_database.schema_logical_digest(connection) != expected_postimage
+        ):
             raise StorageError(
                 StorageErrorCode.INVALID_STATE,
                 "Dependency migration differs from the previewed postimage; the predecessor remains authoritative.",
@@ -94,5 +98,5 @@ def _upgrade_v9_connection(connection: sqlite3.Connection, expected_postimage: s
 
 
 def migrate_v9_database(path: Path, expected_postimage: str) -> bool:
-    with database.migration_connection(path) as connection:
+    with migration_database.migration_connection(path) as connection:
         return _upgrade_v9_connection(connection, expected_postimage)

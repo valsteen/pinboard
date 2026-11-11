@@ -13,13 +13,12 @@ from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
-from pinboard.adapters.sqlite.database import (
-    SCHEMA_VERSION,
+from pinboard.adapters.sqlite.database import SCHEMA_VERSION, read_schema_bytes
+from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.migration.database import (
     migrate_v6_database,
     migrate_v7_database,
-    read_schema_bytes,
 )
-from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import queries, query_models, service, stored_state
 from pinboard.application.artifacts import WorkBriefIdentity

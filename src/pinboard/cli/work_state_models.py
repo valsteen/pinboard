@@ -5,7 +5,6 @@ from typing import Literal
 
 import msgspec
 
-from pinboard.adapters.sqlite.schema_procedure import SchemaPlan
 from pinboard.domain.errors import DescribedCode
 
 
@@ -84,17 +83,3 @@ class InitializationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True
     resumed: bool
     optional_next_skills: tuple[str, ...]
     configuration_recommendation: str | None
-
-
-class SchemaMigrationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-schema-migration/v2"]
-    status: Literal["planned", "migrated", "reversed", "unchanged"]
-    plan_id: str
-    plan: SchemaPlan | None
-    database_path: str
-    authority: Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9", "sqlite-v10", "sqlite-v11"]
-    state_changed: bool
-    effect: Literal["committed", "unchanged"]
-    retry: Literal["do-not-retry", "safe-to-repeat"]
-    changed_surfaces: tuple[str, ...]
-    warning: str | None

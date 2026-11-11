@@ -114,7 +114,7 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(original, path.read_bytes())
             plan_id = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
             with patch(
-                "pinboard.adapters.sqlite.schema_procedure.migrate_v8_database",
+                "pinboard.adapters.sqlite.migration.schema_procedure.migrate_v8_database",
                 side_effect=StorageError(StorageErrorCode.IO_ERROR, "controlled interruption"),
             ):
                 code, failed = self.run_cli(project, "migrate-schema", "--apply", plan_id)
@@ -220,7 +220,7 @@ class StorageMigrationTests(unittest.TestCase):
             plan_id = str(preview["plan_id"])
             with (
                 patch(
-                    "pinboard.adapters.sqlite.schema_procedure.migrate_v6_database",
+                    "pinboard.adapters.sqlite.migration.schema_procedure.migrate_v6_database",
                     side_effect=StorageError(StorageErrorCode.INVALID_STATE, "forced verification failure"),
                 ),
             ):
@@ -263,7 +263,7 @@ class StorageMigrationTests(unittest.TestCase):
             self.downgrade_schema(path)
             plan_id = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
             with patch(
-                "pinboard.cli.schema_migration.inspect_current_schema_migration",
+                "pinboard.cli.migration.schema_migration.inspect_current_schema_migration",
                 side_effect=StorageError(StorageErrorCode.IO_ERROR, "post-commit read denied"),
             ):
                 code, result = self.run_cli(project, "migrate-schema", "--apply", plan_id)
@@ -356,7 +356,9 @@ class StorageMigrationTests(unittest.TestCase):
                     )
                 return published
 
-            with patch("pinboard.adapters.sqlite.schema_procedure.create_immutable", side_effect=publish_then_fail):
+            with patch(
+                "pinboard.adapters.sqlite.migration.schema_procedure.create_immutable", side_effect=publish_then_fail
+            ):
                 code, failure = self.run_cli(project, "migrate-schema", "--apply", plan_id)
             self.assertEqual(11, code, failure)
             changed = failure["changed_surfaces"]

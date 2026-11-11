@@ -11,7 +11,8 @@ from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import resolve_durable_roots
-from pinboard.adapters.sqlite import artifact_ownership, schema_procedure
+from pinboard.adapters.sqlite import artifact_ownership
+from pinboard.adapters.sqlite.migration import schema_procedure
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     artifact_identity,

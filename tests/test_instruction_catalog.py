@@ -1,11 +1,30 @@
-"""Startup accounting follows each supported entry and its native instruction reads."""
+"""Instruction metadata checks startup composition and implementing-test links."""
 
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from msgspec.structs import replace
 from scripts import instruction_catalog
+
+
+class GuidanceMetadataTest(unittest.TestCase):
+    def test_mechanized_owner_requires_a_resolvable_implementing_test(self) -> None:
+        table = instruction_catalog.source()
+        key, owner = next((key, owner) for key, owner in table.owners.items() if owner.kind == "tool-returns")
+        unresolved = "tests/test_instruction_catalog.py::GuidanceMetadataTest.missing_test"
+        for links, diagnostic in (
+            ((), "Mechanized owner has no implementing-test link"),
+            ((unresolved,), "Implementing-test selector does not resolve"),
+        ):
+            changed = replace(table, owners=table.owners | {key: replace(owner, implementing_tests=links)})
+            with (
+                self.subTest(links=links),
+                patch.object(instruction_catalog, "source", return_value=changed),
+                self.assertRaisesRegex(ValueError, diagnostic),
+            ):
+                instruction_catalog.validate_generated()
 
 
 class StartupCompositionTest(unittest.TestCase):

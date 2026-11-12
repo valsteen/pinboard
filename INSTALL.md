@@ -28,15 +28,15 @@ Start a Codex task in the repository where you want to use Pinboard and ask:
 
 The plugin manifest selects `mcp-codex.json` at the plugin root. Codex resolves its `cwd` to that root and starts `sh ./scripts/pinboard --mcp`. The connected Pinboard tools take explicit project and work roots for each request; they do not use the client's current directory as a board selection.
 
+On the first connection for an unprepared installed version, when uv is available, the launcher runs `<launcher-root>/scripts/pinboard --prepare-runtime`, which owns the version-local preparation lock, and starts Pinboard only after the ready marker and entry point are valid. Request write access only to that version's `.pinboard-runtime` when needed. If uv is missing or another preparation is in progress, the launcher writes an unchanged `pinboard-launcher-result/v1` recovery result to stderr; if preparation starts and fails, the result reports the runtime as potentially changed. In both cases MCP stdout stays empty and the result names the same `--prepare-runtime` retry. After preparation succeeds, reconnect through the client's supported MCP reconnect mechanism if the connection remains unavailable. Codex does not use plugin data or a SessionStart hook for this boundary; those alternatives remain outside this contract.
+
+Closing a saved item runs through `pinboard_close`, which requires your close decision in your own words; an agent without them should ask you instead of closing. Codex ignores the Claude Code metadata that makes Claude Code v2.1.199 or later confirm each close, so Codex adds no extra close prompt: your Codex approval settings decide whether that call runs without asking.
+
 ### Use Investigation Focus
 
 In a Codex task, invoke `$investigation-focus` for a substantial investigation. For a clear bounded request, name the result, sources, audience and output format; the skill begins without requiring an inquiry home or a different outcome. For a diffuse question, it offers a few evidence-grounded results so you can choose the direction.
 
 For an inquiry that needs later sessions, choose a local home outside the evidence-source repositories. The skill maintains a human-readable note there, and a later task reads it before revising direction or producing another audience output. The note is optional for a bounded request. Keep original sources and private locators under your control.
-
-On the first connection for an unprepared installed version, when uv is available, the launcher runs `<launcher-root>/scripts/pinboard --prepare-runtime`, which owns the version-local preparation lock, and starts Pinboard only after the ready marker and entry point are valid. Request write access only to that version's `.pinboard-runtime` when needed. If uv is missing or another preparation is in progress, the launcher writes an unchanged `pinboard-launcher-result/v1` recovery result to stderr; if preparation starts and fails, the result reports the runtime as potentially changed. In both cases MCP stdout stays empty and the result names the same `--prepare-runtime` retry. After preparation succeeds, reconnect through the client's supported MCP reconnect mechanism if the connection remains unavailable. Codex does not use plugin data or a SessionStart hook for this boundary; those alternatives remain outside this contract.
-
-Closing a saved item runs through `pinboard_close`, which requires your close decision in your own words; an agent without them should ask you instead of closing. Codex ignores the Claude Code metadata that makes Claude Code v2.1.199 or later confirm each close, so Codex adds no extra close prompt: your Codex approval settings decide whether that call runs without asking.
 
 ### Optionally pre-approve Pinboard tools
 
@@ -198,7 +198,7 @@ The free Claude chat plan and Claude Code access are separate product surfaces. 
 
 ## Antigravity
 
-Antigravity CLI (`agy`; observed with version 1.4.7) loads the same repository as a native Antigravity plugin. Install it from a local clone:
+Antigravity CLI (`agy`) loads the same repository as a native Antigravity plugin. Install it from a local clone:
 
 ```sh
 git clone https://github.com/valsteen/pinboard.git
@@ -280,7 +280,7 @@ Each install is a fresh copy and is prepared again on its first session. Uninsta
 
 By default, Pinboard keeps project decisions and evidence in the managed repository's ignored `.pinboard` directory, created by the [first setup](#first-setup). Primary and linked worktrees share that location; [Linked worktrees and custom data locations](#linked-worktrees-and-custom-data-locations) explains how to find and authorize it. Explicit data locations remain at the selected path under the ordinary root rules.
 
-MCP startup advertises the same input and output schemas for every installation. Field patterns use JavaScript-compatible syntax, including constraints for identifiers, paths, text, and digests. Pinboard still validates requests and results against its canonical typed records. The former `[mcp] omitRegexLookarounds` setting is ignored; existing user configuration files are left as they are.
+MCP startup advertises the same input and output schemas for every installation. Field patterns use JavaScript-compatible syntax, including constraints for identifiers, paths, text, and digests. Pinboard validates requests and results against its canonical typed records.
 
 Contributor traces use `contributor-traces.config` in the selected work root. The default shared `.pinboard` location is ignored by Git; an explicit work root uses its own setting and trace directory, so authorize writes only to that exact root. On first eligible use, Pinboard creates the file privately at mode `0600`, writes `[pinboard "unsafe_persist_exact_pinboard_traces"] mode = off` as one key, and reads the stored mode. An existing file missing that key gets the same write without losing item overrides. The setting, secret risk, retention, and diagnosis procedure are in [Diagnose Pinboard invocations during contributor work](CONTRIBUTING.md#diagnose-pinboard-invocations-during-contributor-work).
 
@@ -290,7 +290,9 @@ An installed plugin keeps its private Python environment at `<launcher-root>/.pi
 
 ## Startup page size per host
 
-Agents read verified Pinboard launch prompts—and Pinboard skills and references when a host cannot load the complete file directly through its native skill loader or native `read_file`—in pages through the `pinboard_startup_text` tool. On Claude Code and Codex each page is sized so the host shows it to the model whole rather than saving it to a file or cutting it. Antigravity saves any result above about 4 KB to a file and shows only its path, so there each page is sized to spill into one file that the agent reads whole with a single `read_file` call, which takes fewer calls than many 4 KB pages; a short page still shows inline. Pinboard recognizes the host by the client name it sends when it connects, and keeps one page size per recognized host, for every version of that host, in `~/.config/pinboard/hosts.config`:
+For startup, agents read the complete selected Pinboard instruction document once with the host's native file reader. The `pinboard_startup_text` tool reads verified oversized evidence in bounded UTF-8 pages. The `startup-page-bytes` setting sizes those evidence pages.
+
+The default page sizes for Claude Code and Codex fit within each host's default tool output limit. Antigravity saves text blocks above about 4 KB to a file and shows its path. Each spilled page fits in one native `read_file` call at the default size. Pinboard recognizes the host by the client name it sends when it connects and keeps one page size per recognized host across versions in `~/.config/pinboard/hosts.config`.
 
 ```ini
 [host "claude-code"]
@@ -315,7 +317,7 @@ If you lowered a host's output limit, lower its page size to match; if you raise
 git config --file ~/.config/pinboard/hosts.config host.codex.startup-page-bytes 12000
 ```
 
-Remove a key to have Pinboard write the measured default again. A malformed or out-of-range value, an unreadable file, or a failed first write stops page reads with a diagnostic that names the file and key and gives one next step; Pinboard does not fall back to another size. Antigravity sends the same client version for every agy release, so if a new agy release changes how much it shows inline or how much `read_file` returns per call, adjust the `antigravity` value yourself. A stored `antigravity` value between about 8400 and 92000, such as 16000, still works but makes every page spill into a smaller file, so reading a prompt or reference takes more calls; remove the key to have Pinboard write the measured default.
+Remove a key to have Pinboard write the measured default again. A malformed or out-of-range value, an unreadable file, or a failed first write stops page reads with a diagnostic that names the file and key and gives one next step; Pinboard does not fall back to another size. Antigravity sends the same client version for every agy release, so if a new agy release changes how much it shows inline or how much `read_file` returns per call, adjust the `antigravity` value yourself. A stored `antigravity` value between about 8400 and 92000, such as 16000, still works but makes every page spill into a smaller file, so reading the evidence takes more calls; remove the key to have Pinboard write the measured default.
 
 ## Upgrade an installed plugin
 
@@ -323,14 +325,14 @@ Refresh the installed code through the client's supported plugin update or reloa
 
 Each newly installed version needs its own [runtime preparation](#the-launcher-says-runtime-preparation-is-required). If Pinboard remains unavailable afterward, reconnect or restart the MCP service from an existing installed plugin directory. A fresh manifest version identifies a release; it does not guarantee uninterrupted service. A reported missing working directory does not establish what removed it.
 
-Updating plugin code does not migrate project data. Update every client sharing an upgraded board before v11 access. For a separately authorized project migration, stop every Pinboard process using that ledger before preview or apply. Use the same exact selected project and work roots for both commands:
+Updating plugin code does not migrate project data. Update every client sharing an upgraded board before accessing it. For a separately authorized project migration, stop every Pinboard process using that ledger before preview or apply. Use the same exact selected project and work roots for both commands:
 
 ```sh
 <launcher-root>/scripts/pinboard --project-root <managed-project> --work-root <selected-work-root> migrate-schema --json
 <launcher-root>/scripts/pinboard --project-root <managed-project> --work-root <selected-work-root> migrate-schema --apply <plan-id> --json
 ```
 
-Preview returns a read-only plan and ID. Apply retains the exact predecessor backup before the atomic schema change. Current plans advance exact v10 to v11 and add indexed latest decision-batch references. Retained steps advance v6 to v7, v7 to v8, v8 to v9, and v9 to v10; request a fresh preview after each step. The v8 ownership step verifies original evidence without rewriting accepted artifacts or history. Preserve the plan and backup; inspect reported effects before resuming an interrupted apply with the same ID. A committed schema change with a view warning needs view repair, not migration replay. The refusal names the supported schema-recovery operation and exact selected plan; preserve those inputs for predecessor advancement and unchanged-state reversal.
+Preview returns a read-only plan and ID. Apply retains the exact predecessor backup before the atomic schema change. Request a fresh preview after each step. Preserve the plan and backup and inspect reported effects before resuming an interrupted apply with the same ID. If the schema change commits with a view warning, run view repair. An apply refusal names the supported schema-recovery operation and exact selected plan. Preserve those inputs for predecessor advancement and unchanged-state reversal.
 
 ## Direct CLI use from a source checkout
 

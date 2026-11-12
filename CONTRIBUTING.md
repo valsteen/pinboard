@@ -4,7 +4,7 @@ This guide covers the supported development environment, repository checks, test
 
 ## Prepare the Pinboard source-development environment
 
-The repository pins Python 3.14.10 and uv 0.13.6. Every uv command in this guide is a Pinboard source-development operation run from `<pinboard-source>`. `uv sync` and `uv run` create or use `<pinboard-source>/.venv`; `uv build` may use uv's isolated build environment. None of these commands prepares Pinboard's installed private runtime at `<launcher-root>/.pinboard-runtime/environment` or uses an environment or dependency file from a `<managed-project>` repository. msgspec provides immutable records and strict JSON decoding at repository boundaries.
+The repository pins [Python in `.python-version`](.python-version) and [uv in `pyproject.toml`](pyproject.toml). Every uv command in this guide is a Pinboard source-development operation run from `<pinboard-source>`. `uv sync` and `uv run` create or use `<pinboard-source>/.venv`; `uv build` may use uv's isolated build environment. None of these commands prepares Pinboard's installed private runtime at `<launcher-root>/.pinboard-runtime/environment` or uses an environment or dependency file from a `<managed-project>` repository. msgspec provides immutable records and strict JSON decoding at repository boundaries.
 
 After cloning the repository or creating a new implementation worktree, prepare both locked development environments:
 
@@ -12,7 +12,7 @@ After cloning the repository or creating a new implementation worktree, prepare 
 scripts/prepare-worktree
 ```
 
-The command runs `uv sync --locked` and `npm ci --prefer-offline --no-audit --no-fund` from the selected `<pinboard-source>` checkout. Each checkout keeps its own ignored `.venv/` and `node_modules/` directories while uv and npm may reuse their package caches. The checked-in locks make setup repeatable. jscpd 5.4.1 is the sole non-Python development dependency; it requires Node.js 18 or newer and npm, but no global installation.
+The command runs `uv sync --locked` and `npm ci --prefer-offline --no-audit --no-fund` from the selected `<pinboard-source>` checkout. Each checkout keeps its own ignored `.venv/` and `node_modules/` directories while uv and npm may reuse their package caches. The checked-in locks make setup repeatable. jscpd is the sole non-Python development dependency. Setup installs it locally with npm. See [the jscpd pin and Node.js requirement in `package.json`](package.json).
 
 This setup is a shell command, so Pinboard MCP pre-approval does not cover it. Cache access or dependency downloads can need filesystem or network approval beyond the selected checkout. Inspect the exact diagnostic first: a missing prerequisite or locked-install failure needs a different remedy from a sandbox denial.
 
@@ -20,20 +20,13 @@ For a diagnosed Codex sandbox restriction during already-authorized setup, reque
 
 ## Run the checks
 
-After preparation, run all four verification groups in parallel:
+After preparation, run all verification groups in parallel.
 
 ```sh
 uv run --locked python -m scripts.verify verify-all
 ```
 
-`scripts.verify` is development-only orchestration. It uses the Pinboard package and tools installed in `<pinboard-source>/.venv`, and each group can run independently:
-
-| Group | Checks |
-| --- | --- |
-| `verify-repo` | Generated visitor guide, formatting, lint, plugin and skill metadata, strict Claude manifest validation, and CI duplication enforcement |
-| `verify-types` | The complete `scripts/check-types` sequence |
-| `verify-tests` | The existing test runner with branch coverage |
-| `verify-package` | Build without workspace sources, then isolated wheel version/help/module checks and initialization in a temporary Git repository |
+[`scripts/verify.py`](scripts/verify.py) defines the verification groups and their checks. It uses the Pinboard package and tools installed in `<pinboard-source>/.venv`, and each group can run independently.
 
 Select one group for focused work, or stream all groups in order when debugging:
 
@@ -44,7 +37,7 @@ uv run --locked python -m scripts.verify verify-all --sequential
 
 `--jobs` passes the test worker count to `tests.runner`; omitting it retains that runner's default. Individual groups stream their output. Parallel verification records each group's complete combined output in a separate log within one per-run system temporary directory, prints the paths, and shows failed output with a final result for every group. Sequential verification streams the same output and keeps the same logs. Independent groups finish even when another fails; a failed command stops dependent work within its group, including wheel smoke checks after a failed build. Launch or log failures also fail verification. Temporary logs remain until OS cleanup; no retention duration is guaranteed.
 
-CI runs the same four groups as parallel jobs on macOS and Linux. Repository verification gets full Git history for comparison with `origin/main`, and CI displays the raw native duplication report even on failure. The sensitive advisory duplication scan remains available separately below. Complete verification can need network access for the existing Claude manifest validation and isolated uv operations; it does not promise offline execution.
+CI runs the same groups as parallel jobs on macOS and Linux. Repository verification gets full Git history for comparison with `origin/main`, and CI displays the raw native duplication report even on failure. The sensitive advisory duplication scan remains available separately below. Complete verification can need network access for the existing Claude manifest validation and isolated uv operations; it does not promise offline execution.
 
 `scripts/check-types` runs strict Pyrefly, its 100% strict production type coverage check, and `uv check --locked` in that order. CI uses the same entry on macOS and Linux. The entry stops on the first failed check; run the later commands separately when diagnosing an earlier failure. It is a developer command; worktree preparation only installs dependencies.
 
@@ -118,7 +111,7 @@ npm run duplication
 npm run duplication:ci
 ```
 
-The local scan uses four-line and 40-token limits. It is intentionally sensitive: matches are prompts for judgment, not defects to eliminate mechanically. The CI profile uses eight-line and 60-token limits, rejects clones that are new relative to `origin/main`, and enforces a 0.3% ceiling; the current nonexempt scan reports 0.0%. The checker uses inclusive native line counts and deducts only separately reviewed, byte-certified exact pairs; raw reports retain every match. Lower the ceiling after accepted cleanup reduces the baseline; do not raise it merely to admit new duplication.
+The intentionally sensitive local scan uses the limits in [`package.json`](package.json). Treat matches as prompts for judgment. The [CI checker](scripts/check_duplication.py) defines the CI scan limits and ceiling and rejects new clones relative to `origin/main`. The checker uses inclusive native line counts and deducts only separately reviewed, byte-certified exact pairs. Raw reports retain every match. Lower the ceiling after accepted cleanup reduces the baseline; do not raise it merely to admit new duplication.
 
 Every pull request and main-branch update runs the supported checks on macOS and Linux, including plugin and skill validation.
 
@@ -126,19 +119,7 @@ Every pull request and main-branch update runs the supported checks on macOS and
 
 Each change to the guidance that shapes how agents talk to people records a drift estimate in its brief or pull request: which replies it targets, what a miss or an over-application would cost, and which neighboring rules it could crowd, contradict or reorder. When the estimate finds a plausible effect on authority, lifecycle, review, safety or other correctness-relevant behavior, or the change rewrites or reorders existing rules, it recommends measuring the change with the behavioral evaluation harness in `evals/behavioral/`; unit tests never measure guidance behavior. Otherwise the recorded estimate and a review of the edited guidance against its neighbors accept the change.
 
-Before recommending or running a paid comparison, match the drift estimate's targeted replies and checklist rules to the shipped delivery scenario sets in `evals/behavioral/data/scenario-sets/` (see the full scenario-by-scenario table in [evals/behavioral/README.md](evals/behavioral/README.md#shipped-delivery-scenario-sets-and-coverage-boundaries)):
-
-- **General regression sets (`targeted_rules: []`):**
-  - `s13-s17.json` (`s13-opportunity-separate-script`, `s14-motivating-replay`, `s15-quick-status-update`, `s16-reviewed-not-shipped`, `s17-paused-choice-recorded`): full-world single-item opportunity coaching against a conflicting saved definition (`s13`, `P8`/`P12`), minimal-world + `skip-comments-experiment` scratch-board adoption and `merge-experiment` post-merge review provenance (`s14`, `P4`–`P8`), full-world busy-board status synthesis (`s15`, `P3`–`P5`, `P9`, `P11`, `N1`), full-world presupposition correction and authorized merge/closure (`s16`, `P2`, `P4`, `P5`, `P7`, `P8`), and full-world paused-decision recording without starting code (`s17`, `P2`, `P4`, `P8`–`P10`, `N1`). Leaves `targeted_rules` empty and does not measure multi-item shared-search or shared-resource autonomous-phase planning, checkpoint continuation, inherited sessions, or source-review batching.
-  - `codex-s13-s15-s17.json` (`s13`, `s15`, `s17`): historical three-scenario full-world Codex subset that omits `s14` and `s16` cross-worktree Git merges and pushes.
-  - `all.json` (`s01`–`s17` plus `s18-opportunity-tuning`): 18-scenario development and calibration superset (`full` and `minimal` worlds); mixes tuning and held-out scenarios and is never a held-out acceptance check.
-- **Targeted scenario sets (predeclared `targeted_rules`):**
-  - `review-after-merge.json` (`s24`–`s27`, `targeted_rules: ["P5", "P11"]`): minimal world with `reviewed-change` (`s24`, `s25`, `s27`) or `unreviewed-change` (`s26`) and `rebase-saved-change` / `squash-merge-saved-change` hooks; tests content-preserving integration (`content-present`) when commit SHAs change, missing-review refusal, and status-only reporting.
-  - `bounded-local-closure.json` (`s35`–`s39`, `targeted_rules: ["P8", "P11", "N1"]`): minimal world with `squash-merge-saved-change` hook on `reviewed-change` (`s35`–`s37`, `s39`) or `unreviewed-change` (`s38`); tests bounded post-merge worktree/branch cleanup, narrowed turn-2 instructions, between-turn waiting while the human is still typing (`s37`, not mid-turn stream cancellation), and missing-review boundaries.
-  - `human-terminal-authority.json` (`s28`–`s32`, `targeted_rules: ["P8", "P11"]`): minimal world with `reviewed-change` (`s28`, `s30` with `squash-merge-saved-change` on turn 2, `s31`), `continue-checkpoint-review` (`s29`), and `unreviewed-change` (`s32`); tests inspection-only vs terminal authority, accepting a `continue` checkpoint without completing or splitting remaining work, conditional completion authority, isolated-branch completion, and missing-review refusal.
-  - `inherited-session.json` (`s40`–`s42`, `targeted_rules: ["P8", "P11"]`): minimal world with `inherited-attempt` (`s40`, `s41`) and `inherited-attempt-live-lease` (`s42`); tests crashed-session continuation, active dual-session contention refusal, and asking before revoking a live worker lease.
-  - `source-review.json` (`s23-read-only-source-review`, `targeted_rules: ["P8"]`): full-world read-only `pinboard_brief_sources` planning without publishing a brief plan or mutating state (tool-call order itself requires `startup-pilot` rollout capture because `ScorerInput` contains only final replies and `world.snapshot`).
-  - `audit-guidance-heldout.json` (`audit-guidance-heldout-settings`, `audit-guidance-heldout-evidence`, `audit-guidance-heldout-origin`, `targeted_rules: ["P7", "P8", "P11", "P12"]`) and `audit-guidance-tuning.json` (`audit-guidance-tuning-settings`, `audit-guidance-tuning-evidence`, `audit-guidance-tuning-origin`, `targeted_rules: ["P7", "P8", "P11", "P12"]`): minimal-world prompt-supplied analytical reasoning for `$slop-cleanup`, `$repository-readiness`, and `$pinboard` (held-out vs tuning).
+Before recommending or running a paid comparison, match the drift estimate's targeted replies and checklist rules to the [shipped delivery scenario sets and coverage boundaries](evals/behavioral/README.md#shipped-delivery-scenario-sets-and-coverage-boundaries).
 
 The harness exports a skills revision, runs a registered scenario set against a Claude Code, Codex, or Antigravity agent, blind-scores every reply with a frozen checklist, compares a baseline with a candidate per checklist rule, deciding on the total and the rules the scenario set declares as targeted, and totals the spend:
 
@@ -150,7 +131,7 @@ uv run --locked python -m evals.behavioral compare --out <out> --scenario-set <s
 uv run --locked python -m evals.behavioral spend --out <out>
 ```
 
-A behavioral comparison supports a product or landing decision only when the registered scenario set directly exercises the drift estimate's target behavior, predeclares the expected `targeted_rules`, meets the run-count and full-dollar accounting rules in [CRITERIA.md](evals/behavioral/CRITERIA.md#decision-weight-vs-diagnostic-only-evidence), and rests on facts observable in `ScorerInput` (`replies`, `world.snapshot`, and `hooks_log`). When a comparison uses an untargeted regression set (`targeted_rules: []`) that does not trigger the target behavior—as in `coach-autonomy-shaped-planning-1`, which ran `s13-s17.json` (`inconclusive` overall: `4.23` vs `4.93` failures per run, difference `+0.70`, two-standard-error interval `[-0.85, +2.25]` exceeding the `+2.0` total no-worse margin, while all 13 untargeted individual rules stayed within the `0.75` advisory margin) where `s13` tests single-script extraction (`csv.sh` vs `tally.sh`) rather than multi-item shared-search/shared-resource autonomous-phase planning, and where bounded repeat re-scoring with `claude-opus-5-5` and `gemini-4-argon` (`score --model gemini-4-argon`) confirmed that advisory `P8`/`P12` movements mixed genuine coaching omissions with contrasting-example judge flip noise—the result is diagnostic only (inconclusive on `s13-s17`, targeted coaching benefit unmeasured). Preserve a bounded no-change conclusion in that case rather than running more paid sessions on an untargeted set, editing `evals/behavioral/data/checklist.md`, or tuning skill wording against held-out scenarios.
+A behavioral comparison supports a product or landing decision only when the registered scenario set directly exercises the drift estimate's target behavior, predeclares the expected `targeted_rules`, meets the run-count and full-dollar accounting rules in [CRITERIA.md](evals/behavioral/CRITERIA.md#decision-weight-vs-diagnostic-only-evidence), and rests on facts observable in `ScorerInput` (`replies`, `world.snapshot`, and `hooks_log`). A result from an untargeted regression set (`targeted_rules: []`) that misses the target behavior provides diagnostic evidence only. Preserve a bounded no-change conclusion in that case. Avoid running more paid sessions on the untargeted set, editing `evals/behavioral/data/checklist.md`, or tuning skill wording against held-out scenarios.
 
 [The harness guide](evals/behavioral/README.md) covers Codex and Antigravity runs, the isolation probe, the `ScorerInput` evidence boundary, and the substance assessment. [CRITERIA.md](evals/behavioral/CRITERIA.md) sets the run count per scenario, the improved, no worse or inconclusive decision rule, contrasting-example judge accuracy limits, and the expected cost of one comparison; cite both by path and revision when a guidance change uses them as its acceptance check. Live runs call paid models and are verified on macOS. CI and the default checks only lint, type-check and unit-test the harness.
 

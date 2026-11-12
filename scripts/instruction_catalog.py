@@ -2,7 +2,6 @@
 
 import ast
 import hashlib
-import json
 import re
 from pathlib import Path
 from typing import Literal
@@ -20,13 +19,7 @@ ROLE_BUDGETS = {"coordinator": 16000, "worker": 36000, "reviewer": 18000}
 COORDINATOR_ENTRIES = ("pinboard", "pinboard-intake", "pinboard-deliver")
 
 
-class Inventory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    paragraphs: int
-    sha256: str
-    encoding: str
-
-
-type Destination = Literal[
+type OwnerKind = Literal[
     "host-core", "tool-refuses", "tool-returns", "action-attached", "launched-role", "delete-or-fold"
 ]
 
@@ -34,17 +27,9 @@ type Destination = Literal[
 class Owner(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     source: str
     consumers: tuple[str, ...]
-    kind: Destination
+    kind: OwnerKind
     clauses: tuple[str, ...]
     includes: tuple[str, ...]
-
-
-class Row(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    id: str
-    source: str
-    source_sha256: str
-    destination: Destination
-    surviving_owners: tuple[str, ...]
     implementing_tests: tuple[str, ...]
 
 
@@ -60,13 +45,9 @@ class Composition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     activity_owners: dict[str, tuple[str, ...]]
 
 
-class Classification(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-guidance-classification/v1"]
-    baseline_revision: str
-    paragraph_definition: str
-    baseline_inventory: Inventory
-    surviving_owners: dict[str, Owner]
-    rows: tuple[Row, ...]
+class InstructionSources(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-guidance-classification/v2"]
+    owners: dict[str, Owner]
     composition: Composition
 
 
@@ -84,8 +65,10 @@ class Catalog(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     documents: dict[str, Document]
 
 
-def source() -> Classification:
-    return msgspec.json.decode((ROOT / "docs/pinboard-guidance-classification.json").read_bytes(), type=Classification)
+def source() -> InstructionSources:
+    return msgspec.json.decode(
+        (ROOT / "docs/pinboard-guidance-classification.json").read_bytes(), type=InstructionSources
+    )
 
 
 def _document_budget(key: str) -> int:
@@ -97,11 +80,11 @@ def _document_budget(key: str) -> int:
     return NATIVE_READ_BYTES
 
 
-def compile_documents(table: Classification) -> dict[str, tuple[bytes, tuple[str, ...]]]:
+def compile_documents(table: InstructionSources) -> dict[str, tuple[bytes, tuple[str, ...]]]:
     """One owner supplies every copy; generated copies carry no independent policy."""
-    texts = {key: (ROOT / owner.source).read_text() for key, owner in table.surviving_owners.items()}
+    texts = {key: (ROOT / owner.source).read_text() for key, owner in table.owners.items()}
     selections = dict(table.composition.role_owners)
-    core = tuple(key for key in table.surviving_owners if key.startswith("core."))
+    core = tuple(key for key in table.owners if key.startswith("core."))
     for runtime in RUNTIMES:
         selections[f"coordinator-{runtime}"] = core
     selections.update(table.composition.activity_owners)
@@ -111,7 +94,7 @@ def compile_documents(table: Classification) -> dict[str, tuple[bytes, tuple[str
             for key in table.composition.activity_owners[f"brief-author-{runtime}"]
             if key != "procedure.brief"
             and not key.endswith(".brief-sources")
-            and not any("source-plan" in consumer for consumer in table.surviving_owners[key].consumers)
+            and not any("source-plan" in consumer for consumer in table.owners[key].consumers)
         )
     # Action consumers are explicit in the reviewed table. Produce bounded files rather than a phase index.
     for runtime in RUNTIMES:
@@ -124,7 +107,7 @@ def compile_documents(table: Classification) -> dict[str, tuple[bytes, tuple[str
                 for checkpoints in (False, True):
                     keys = tuple(
                         key
-                        for key, owner in table.surviving_owners.items()
+                        for key, owner in table.owners.items()
                         if owner.kind not in ("tool-refuses", "tool-returns", "host-core")
                         and any(_applies(c, phase, runtime, small, checkpoints) for c in owner.consumers)
                     )
@@ -138,7 +121,7 @@ def compile_documents(table: Classification) -> dict[str, tuple[bytes, tuple[str
     result: dict[str, tuple[bytes, tuple[str, ...]]] = {}
     for key, owners in selections.items():
         owners = tuple(
-            dict.fromkeys(included for owner in owners for included in (owner, *table.surviving_owners[owner].includes))
+            dict.fromkeys(included for owner in owners for included in (owner, *table.owners[owner].includes))
         )
         body = ("\n\n".join(texts[owner] for owner in owners) + "\n").encode()
         budget = _document_budget(key)
@@ -171,10 +154,6 @@ def _applies(consumer: str, phase: str, runtime: str, small: bool, checkpoints: 
 
 def expected_files() -> dict[Path, bytes]:
     table = source()
-    inventory = [{"selector": row.source, "sha256": row.source_sha256} for row in table.rows]
-    digest = hashlib.sha256(json.dumps(inventory, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    if len(table.rows) != table.baseline_inventory.paragraphs or digest != table.baseline_inventory.sha256:
-        raise ValueError("Reviewed paragraph inventory differs from its recorded fingerprint")
     compiled = compile_documents(table)
     documents: dict[str, Document] = {}
     files: dict[Path, bytes] = {}
@@ -193,7 +172,7 @@ def expected_files() -> dict[Path, bytes]:
     )
     files[ROOT / "skills/pinboard/references/runtime-adapters.md"] = (
         "# Runtime recovery\n\n## Source-worktree setup recovery\n\n"
-        + (ROOT / table.surviving_owners["shared.setup-recovery"].source).read_text()
+        + (ROOT / table.owners["shared.setup-recovery"].source).read_text()
         + "\n"
     ).encode()
     return files
@@ -220,12 +199,12 @@ def _hook_instruction_bytes(runtime: str) -> int:
     return count
 
 
-def _validate_test_links(table: Classification) -> None:
+def _validate_test_links(table: InstructionSources) -> None:
     selectors: set[str] = set()
-    for row in table.rows:
-        if row.destination in ("tool-refuses", "tool-returns") and not row.implementing_tests:
-            raise ValueError(f"Mechanized paragraph has no implementing-test link: {row.id}")
-        selectors.update(row.implementing_tests)
+    for key, owner in table.owners.items():
+        if owner.kind in ("tool-refuses", "tool-returns") and not owner.implementing_tests:
+            raise ValueError(f"Mechanized owner has no implementing-test link: {key}")
+        selectors.update(owner.implementing_tests)
     files: dict[str, set[str]] = {}
     for selector in selectors:
         relative, separator, target = selector.partition("::")
@@ -255,9 +234,6 @@ def _validate_document_links(path: Path, body: bytes) -> None:
 def validate_generated() -> None:
     table = source()
     _validate_test_links(table)
-    for row in table.rows:
-        if any(owner not in table.surviving_owners for owner in row.surviving_owners):
-            raise ValueError(f"Unresolved surviving owner in {row.id}")
     for relative in ("server.py", "cancellation_operations.py", "consolidation_operations.py"):
         for node in ast.walk(ast.parse((ROOT / "src/pinboard/mcp" / relative).read_text())):
             if isinstance(node, ast.Call):
@@ -265,9 +241,8 @@ def validate_generated() -> None:
                 if "name" in keywords and "description" in keywords:
                     key = "tool-contract." + ast.unparse(keywords["name"])
                     if (
-                        key in table.surviving_owners
-                        and ast.literal_eval(keywords["description"])
-                        != (ROOT / table.surviving_owners[key].source).read_text()
+                        key in table.owners
+                        and ast.literal_eval(keywords["description"]) != (ROOT / table.owners[key].source).read_text()
                     ):
                         raise ValueError(f"Tool description differs from its canonical owner: {key}")
     for path, expected in expected_files().items():

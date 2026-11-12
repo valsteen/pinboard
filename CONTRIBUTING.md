@@ -54,7 +54,7 @@ A `No Python files matched patterns` result from `pyrefly check` is a misconfigu
 
 The repository uses `unittest`. The metadata validator is the supported check for plugin and skill discovery consistency. `HOW_IT_WORKS.md` and its diagrams are generated from `docs/how_it_works/`; update their sources and rerun the renderer instead of editing the generated guide directly.
 
-To change an instruction rule, edit its Markdown owner in `skills/pinboard/sources/`; the classification table maps baseline paragraphs to these sources and their consumers. Run `uv run --locked python scripts/generate-instructions.py`, then `uv run --locked python scripts/validate-metadata.py`. Review the owner diff and affected generated documents; edit the table only when classification or consumer relationships change.
+To change an instruction rule, edit its Markdown owner in `skills/pinboard/sources/`. Update [the instruction source map](docs/pinboard-guidance-classification.json) when owner references, consumer relationships or implementing-test links change. Run `uv run --locked python scripts/generate-instructions.py`, then `uv run --locked python scripts/validate-metadata.py`. Review the owner diff and affected generated documents.
 
 ### Use the locked ty in PyCharm
 

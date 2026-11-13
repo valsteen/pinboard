@@ -2623,21 +2623,21 @@ class ArtifactVerified(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unk
             raise ValueError("verified must be true for a verified artifact result.")
 
 
+type MigrationPreviewArguments = tuple[
+    Literal["--project-root"],
+    RootPath,
+    Literal["--work-root"],
+    RootPath,
+    Literal["migrate-schema"],
+    Literal["--json"],
+]
+
+
 class SchemaMismatch(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     database_path: RootPath
     observed_schema: NonEmptyText
     required_schema: NonEmptyText
-    preview_arguments: (
-        tuple[
-            Literal["--project-root"],
-            RootPath,
-            Literal["--work-root"],
-            RootPath,
-            Literal["migrate-schema"],
-            Literal["--json"],
-        ]
-        | None
-    )
+    preview_arguments: MigrationPreviewArguments | None
 
 
 class TracePreflightEffects(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2743,10 +2743,15 @@ class OrderRecovery(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     meaning: Literal["current-state-only-not-caller-commit-proof"]
 
 
-class OrderRejected(RejectedReadResult, frozen=True):
+class OrderRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-order-result/v1"]
+    status: Literal["rejected"]
     code: diagnostic_codes.OrderRejectedCode
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
     retry: Literal["correct-input"]
+    changed_surfaces: Empty
     observed: tuple[FailureObservation, ...]
     mismatches: tuple[FailureMismatch, ...]
     recovery: OrderRecovery | None
@@ -2755,20 +2760,23 @@ class OrderRejected(RejectedReadResult, frozen=True):
 class OrderCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-order-result/v1"]
     order: tuple[ordering.OrderWorkItemId, ...]
+    status: Literal["committed", "committed-with-warning"]
     committed_revision: PositiveInt
     history_id: PositiveInt
-    recovery: OrderRecovery
-    status: Literal["committed", "committed-with-warning"]
-    warning: WarningResult | None
-    changed_surfaces: LedgerSurface
+    state_changed: bool
     effect: Literal["committed"]
     retry: Literal["do-not-retry"]
-    state_changed: bool
+    changed_surfaces: LedgerSurface
+    warning: WarningResult | None
+    recovery: OrderRecovery
 
     def __post_init__(self) -> None:
         _require_fixed_state_changed(self)
         if (self.status == "committed-with-warning") != (self.warning is not None):
             raise ValueError("Order terminal status must agree with its view-repair warning.")
+
+
+type OrderResult = OrderCommitted | OrderRejected
 
 
 class ParallelPreviewRejected(RejectedReadResult, frozen=True):
@@ -3831,7 +3839,6 @@ ITEM_STATUS_RESULT_TYPES = (
     ExecutorBusyResult,
 )
 OVERVIEW_RESULT_TYPES = (query_models.DiscoveryPage, OverviewRejected, ExecutorBusyResult)
-ORDER_RESULT_TYPES = (OrderCommitted, OrderRejected, ExecutorBusyResult)
 PARALLEL_PREVIEW_RESULT_TYPES = (ParallelPreviewSuccess, ParallelPreviewRejected, ExecutorBusyResult)
 ACTIONS_RESULT_TYPES = (
     ActionsSuccess,

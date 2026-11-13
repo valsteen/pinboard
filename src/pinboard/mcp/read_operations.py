@@ -41,7 +41,7 @@ from pinboard.application import (
 )
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
 from pinboard.application.ports import WorkStore
-from pinboard.diagnostic_codes import ProducerOnlyCode
+from pinboard.diagnostic_codes import OrderRejectedCode, ProducerOnlyCode
 from pinboard.domain import decision_models, routing, work_models
 from pinboard.domain.errors import (
     DecisionFailure,
@@ -1019,36 +1019,83 @@ def _read_overview(raw: Mapping[str, JsonValue], token: execution.CancellationTo
         items = items[:-1]
 
 
-def _order(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def _order_rejected_code(code: DecisionFailureCode) -> OrderRejectedCode:
+    """Name the order rejection for each code service.reorder returns; other codes are defects in that owner."""
+    match code:
+        case DecisionFailureCode.ACTION_NOT_AVAILABLE:
+            return "ACTION_NOT_AVAILABLE"
+        case DecisionFailureCode.TRANSITION_INPUT_INVALID:
+            return "TRANSITION_INPUT_INVALID"
+        case (
+            DecisionFailureCode.ACTION_NOT_MUTATING
+            | DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED
+            | DecisionFailureCode.ATTEMPT_LEASE_REQUIRED
+            | DecisionFailureCode.ATTEMPT_LEASE_EXPIRED
+            | DecisionFailureCode.ATTEMPT_NOT_FOUND
+            | DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED
+            | DecisionFailureCode.DEPENDENCY_NOT_SATISFIED
+            | DecisionFailureCode.HISTORY_RECORD_EXISTS
+            | DecisionFailureCode.ITEM_ALREADY_EXISTS
+            | DecisionFailureCode.ITEM_DEFINITION_INVALID
+            | DecisionFailureCode.ITEM_DEFINITION_STALE
+            | DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED
+            | DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID
+            | DecisionFailureCode.ITEM_DEPENDENCY_CYCLE
+            | DecisionFailureCode.ITEM_NOT_FOUND
+            | DecisionFailureCode.ITEM_STATUS_INCONSISTENT
+            | DecisionFailureCode.LIVE_DEPENDENTS
+            | DecisionFailureCode.LEASE_FENCED
+            | DecisionFailureCode.PROPOSAL_NOT_FOUND
+            | DecisionFailureCode.PROPOSAL_ALREADY_EXISTS
+            | DecisionFailureCode.PROPOSAL_INVALID
+            | DecisionFailureCode.REPLACEMENT_INVALID
+            | DecisionFailureCode.REPLACEMENT_STALE
+            | DecisionFailureCode.REVIEWER_PROMPT_NOT_COMMISSIONED
+            | DecisionFailureCode.SCHEMA_MIGRATION_INVALID
+            | DecisionFailureCode.SCHEMA_MIGRATION_FAILED
+        ):
+            raise ValueError(f"Live-order reordering cannot return failure code {code.value}.")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _order_rejected(
+    code: OrderRejectedCode, message: str, recovery: contracts.OrderRecovery | None
+) -> execution.TypedOperationResult[contracts.OrderResult]:
+    return execution.TypedOperationResult(
+        contracts.OrderRejected(
+            "pinboard-mcp-order-result/v1",
+            "rejected",
+            code,
+            message,
+            False,
+            "unchanged",
+            "correct-input",
+            (),
+            (),
+            (),
+            recovery,
+        ),
+        "rejected",
+        None,
+    )
+
+
+def _order(
+    raw: Mapping[str, JsonValue], token: execution.CancellationToken
+) -> execution.TypedOperationResult[contracts.OrderResult]:
     """Decode human-authorized order, commit under the shared lock, then refresh selected views."""
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.OrderEnvelope, strict=True).request
         durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
-        return execution.OperationResult(
-            {
-                "schema": "pinboard-mcp-order-result/v1",
-                "status": "rejected",
-                "code": "ORDER_INVALID",
-                "message": f"Cannot decode order request: {error}",
-                "state_changed": False,
-                **common._details_json(None),
-                "recovery": None,
-            },
-            "rejected",
-            None,
-        )
-    recovery: dict[str, JsonValue] = {
-        "tool": tool_names.OVERVIEW_TOOL,
-        "arguments": {
-            "project_root": request.project_root,
-            "work_root": request.work_root,
-            "max_items": 25,
-            "continuation": None,
-        },
-        "meaning": "current-state-only-not-caller-commit-proof",
-    }
+        return _order_rejected("ORDER_INVALID", f"Cannot decode order request: {error}", None)
+    recovery = contracts.OrderRecovery(
+        "pinboard_overview",
+        contracts.OverviewRequest(request.project_root, request.work_root, 25, None),
+        "current-state-only-not-caller-commit-proof",
+    )
     store = common.compose_store(durable)
     now = datetime.now(UTC)
     token.checkpoint()
@@ -1061,35 +1108,21 @@ def _order(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> 
         now,
     )
     if isinstance(committed, DecisionFailure):
-        return execution.OperationResult(
-            {
-                "schema": "pinboard-mcp-order-result/v1",
-                "status": "rejected",
-                "code": committed.code.value,
-                "message": committed.message,
-                "state_changed": False,
-                **common._details_json(committed.details),
-                "recovery": recovery,
-            },
-            "rejected",
-            None,
-        )
+        if committed.details is not None:
+            raise ValueError("Live-order reordering returned failure details that an order rejection cannot carry.")
+        return _order_rejected(_order_rejected_code(committed.code), committed.message, recovery)
     refreshed = common._refresh_affected_views(
         durable,
         store,
         AffectedViews(committed.work_item_ids, committed.attempt_ids, (committed.receipt.history_id,)),
         now,
     )
-    content: dict[str, JsonValue] = {
-        "schema": "pinboard-mcp-order-result/v1",
-        "order": list[JsonValue](request.order.requested_order),
-        **common._committed_authority_fields(committed, refreshed.warning),
-        "recovery": recovery,
-    }
-    if refreshed.warning is not None:
-        content["warning"] = {
-            "message": refreshed.warning.message,
-            "recovery": shlex.join(
+    warning = (
+        None
+        if refreshed.warning is None
+        else contracts.WarningResult(
+            refreshed.warning.message,
+            shlex.join(
                 (
                     "pinboard",
                     "--project-root",
@@ -1100,10 +1133,23 @@ def _order(raw: Mapping[str, JsonValue], token: execution.CancellationToken) -> 
                     "rebuild",
                 )
             ),
-        }
-    return execution.OperationResult(
-        content,
-        "committed" if refreshed.warning is None else "committed-warning",
+        )
+    )
+    return execution.TypedOperationResult(
+        contracts.OrderCommitted(
+            "pinboard-mcp-order-result/v1",
+            request.order.requested_order,
+            "committed" if warning is None else "committed-with-warning",
+            committed.receipt.project_revision,
+            int(committed.receipt.history_id),
+            True,
+            "committed",
+            "do-not-retry",
+            ("ledger",),
+            warning,
+            recovery,
+        ),
+        "committed" if warning is None else "committed-warning",
         str(committed.receipt.project_revision),
     )
 

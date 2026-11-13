@@ -1,8 +1,10 @@
 """Generate negotiated MCP schemas and validate emitted transport results."""
 
-from typing import assert_never, get_args
+from types import UnionType
+from typing import TypeAliasType, assert_never, get_args
 
 import msgspec
+from typing_extensions import TypeForm
 
 from pinboard.adapters import dispatch_operations
 from pinboard.application import action_models, brief_source_models, dispatch_models, query_models
@@ -101,8 +103,6 @@ from pinboard.mcp.contracts import (
     NoPayloadInputContract,
     ObligationCoverageRejected,
     ObligationCoverageSuccess,
-    OrderCommitted,
-    OrderRejected,
     OverviewRejected,
     ParallelPreviewRejected,
     ParallelPreviewSuccess,
@@ -790,6 +790,15 @@ def union_schema_for(boundary_types: tuple[type[msgspec.Struct], ...]) -> dict[s
     return {"type": "object", "anyOf": list[JsonSchemaValue](schemas), "$defs": definitions}
 
 
+def typed_result_schema(results: TypeForm[msgspec.Struct]) -> dict[str, JsonSchemaValue]:
+    """Advertise a typed tool's result union, declared as a `type` alias, followed by the shared envelopes."""
+    if not isinstance(results, TypeAliasType):
+        raise TypeError("A typed tool's results must be the `type` alias that names its result union.")
+    value = results.__value__
+    members = get_args(value) if isinstance(value, UnionType) else (value,)
+    return union_schema_for((*members, ExecutorBusyResult))
+
+
 BRIEF_CONTRACT_RESULT_TYPES = (
     WorkBriefContractResult,
     WorkBriefStarterContractResult,
@@ -830,12 +839,6 @@ def validate_brief_preparation_result(content: dict[str, JsonValue]) -> dict[str
                 msgspec.convert(content, type=BriefSourcesPublishedFailure, strict=True)
             else:
                 msgspec.convert(content, type=BriefSourcesRejected, strict=True)
-        case "pinboard-mcp-execution-result/v1":
-            msgspec.convert(
-                content,
-                type=TracePreflightResult if content.get("status") == "rejected" else ExecutorBusyResult,
-                strict=True,
-            )
         case unexpected:
             raise ValueError(f"Unsupported brief preparation result schema: {unexpected}")
     return content
@@ -872,18 +875,17 @@ def _validate_actions_result(content: dict[str, JsonValue]) -> None:
 
 
 def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, JsonValue]:  # noqa: C901, PLR0912, PLR0915
-    """Validate one emitted result against the exact alternative it claims."""
+    """Validate one untyped operation result against the alternative its tool name and strings select.
+
+    Typed records, including every shared execution envelope, are emitted by mcp.execution without revalidation.
+    """
     if tool_name in {"pinboard_brief_contract", "pinboard_brief_sources", "pinboard_brief_source_plan_output"}:
         return validate_brief_preparation_result(content)
     schema = content.get("schema")
     status = content.get("status")
     code = content.get("code")
     surfaces = content.get("changed_surfaces")
-    if schema == "pinboard-mcp-schema-result/v1":
-        msgspec.convert(content, type=SchemaUnsupportedResult, strict=True)
-    elif schema == "pinboard-mcp-execution-result/v1":
-        msgspec.convert(content, type=TracePreflightResult if status == "rejected" else ExecutorBusyResult, strict=True)
-    elif tool_name == "pinboard_startup_text":
+    if tool_name == "pinboard_startup_text":
         msgspec.convert(
             content,
             type=StartupTextPage
@@ -927,8 +929,6 @@ def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, 
             else CancellationCommitted,
             strict=True,
         )
-    elif tool_name == "pinboard_order":
-        msgspec.convert(content, type=OrderRejected if status == "rejected" else OrderCommitted, strict=True)
     elif tool_name == "pinboard_pr_review":
         msgspec.convert(content, type=PrReviewRejected if status == "rejected" else PrReviewSuccess, strict=True)
     elif tool_name == "pinboard_parallel_preview":

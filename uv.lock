@@ -331,6 +331,7 @@ dependencies = [
     { name = "anyio" },
     { name = "mcp" },
     { name = "msgspec" },
+    { name = "typing-extensions" },
 ]
 
 [package.dev-dependencies]
@@ -348,6 +349,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.15.1" },
     { name = "mcp", specifier = "==2.2.0" },
     { name = "msgspec", specifier = ">=0.21.1" },
+    { name = "typing-extensions", specifier = ">=4.16.0" },
 ]
 
 [package.metadata.requires-dev]

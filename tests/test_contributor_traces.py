@@ -28,7 +28,7 @@ from pinboard.adapters.files.setting_resolution import SettingResolutionError
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.cli import entrypoint
-from pinboard.mcp import common, execution, server
+from pinboard.mcp import common, contracts, execution, server
 from pinboard.mcp.contracts import JsonValue
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
 
@@ -1322,8 +1322,8 @@ class ContributorTraceTest(unittest.TestCase):
                 self.assertEqual(enabled, selected.capture is not None)
             self.settings(primary, "off", {"work-a": "invalid"})
             rejected = capture.resolve(str(worktree), {"work_root": str(work_root), "item_id": "work-a"})
-            assert isinstance(rejected, execution.OperationResult)
-            self.assertEqual("TRACE_PREFLIGHT_FAILED", rejected.content["code"])
+            assert isinstance(rejected, contracts.TracePreflightResult)
+            self.assertEqual("TRACE_PREFLIGHT_FAILED", rejected.code)
 
     def test_mcp_startup_uses_automatic_mode_unless_manual_capture_was_declared(self) -> None:
         async def no_transport() -> None:

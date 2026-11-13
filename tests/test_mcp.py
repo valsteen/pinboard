@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import os
 import shlex
 import subprocess
@@ -519,9 +520,8 @@ class McpTransportTest(unittest.TestCase):
             )
             for request in invalid_orders:
                 with self.subTest(order=request):
-                    result = mcp_reads._order({"request": request}, mcp_execution.CancellationToken())
-                    self.assertEqual("ORDER_INVALID", result.content["code"])
-                    contract_schemas.validate_result(mcp_server.ORDER_TOOL, result.content)
+                    rejected = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).record
+                    self.assertEqual("ORDER_INVALID", mcp_execution.wire_content(rejected)["code"])
             invalid_previews: tuple[dict[str, contracts.JsonValue], ...] = (
                 {**selected, "item_ids": []},
                 {**selected, "item_ids": ["work-a", "work-a"]},
@@ -593,11 +593,12 @@ class McpTransportTest(unittest.TestCase):
                 return result
 
             with patch.object(mcp_reads.service, "reorder", commit_then_cancel):
-                committed = mcp_reads._order({"request": request}, entered).content
-            contract_schemas.validate_result(mcp_server.ORDER_TOOL, committed)
+                committed = mcp_reads._order({"request": request}, entered).record
+            assert isinstance(committed, contracts.OrderCommitted)
+            committed_content = mcp_execution.wire_content(committed)
             self.assertEqual(
                 ("committed", ["ledger"], "do-not-retry"),
-                (committed["status"], committed["changed_surfaces"], committed["retry"]),
+                (committed_content["status"], committed_content["changed_surfaces"], committed_content["retry"]),
             )
             fresh = SQLiteWorkStore(roots.database_path)
             after = fresh.validated_snapshot()
@@ -611,20 +612,19 @@ class McpTransportTest(unittest.TestCase):
             self.assertEqual(before.lifecycle.definition_revisions, after.lifecycle.definition_revisions)
             receipt = after.transition_receipts[-1]
             self.assertEqual(
-                ("priority-owner", "priority-host", committed["history_id"]),
+                ("priority-owner", "priority-host", committed.history_id),
                 (receipt.actor_task_id, receipt.actor_host_id, int(receipt.history_id)),
             )
-            stale = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).content
-            self.assertEqual("ACTION_NOT_AVAILABLE", stale["code"])
+            stale = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).record
+            self.assertEqual("ACTION_NOT_AVAILABLE", mcp_execution.wire_content(stale)["code"])
             self.assertEqual(after, fresh.validated_snapshot())
             request["order"] = {
                 "schema": "pinboard-live-order/v1",
                 "expected_order": list[contracts.JsonValue](requested),
                 "requested_order": list[contracts.JsonValue](requested[:-1]),
             }
-            invalid = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).content
-            self.assertEqual("TRANSITION_INPUT_INVALID", invalid["code"])
-            contract_schemas.validate_result(mcp_server.ORDER_TOOL, invalid)
+            invalid = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).record
+            self.assertEqual("TRANSITION_INPUT_INVALID", mcp_execution.wire_content(invalid)["code"])
             self.assertEqual(after, fresh.validated_snapshot())
             request["order"] = {
                 "schema": "pinboard-live-order/v1",
@@ -637,16 +637,15 @@ class McpTransportTest(unittest.TestCase):
                 "pinboard.adapters.files.views.atomic_replace",
                 side_effect=FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "injected view failure"),
             ):
-                warning = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).content
-            contract_schemas.validate_result(mcp_server.ORDER_TOOL, warning)
-            self.assertEqual("committed-with-warning", warning["status"])
-            warning_view = msgspec.convert(warning, type=contracts.OrderCommitted)
+                warning_view = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).record
+            assert isinstance(warning_view, contracts.OrderCommitted)
+            self.assertEqual("committed-with-warning", warning_view.status)
             self.assertEqual("current-state-only-not-caller-commit-proof", warning_view.recovery.meaning)
             self.assertEqual(
                 prior_overview.items,
                 fresh.read_overview_page(0, 25).items,
             )
-            self.assertNotEqual(committed["history_id"], warning["history_id"])
+            self.assertNotEqual(committed.history_id, warning_view.history_id)
             assert warning_view.warning is not None
             self.assertIn(str(roots.work_root), warning_view.warning.recovery)
 
@@ -660,7 +659,7 @@ class McpTransportTest(unittest.TestCase):
                 "pinboard.adapters.files.views.atomic_replace",
                 side_effect=FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "injected view failure"),
             ):
-                result = mcp_reads._order(
+                view = mcp_reads._order(
                     {
                         "request": {
                             "project_root": str(project),
@@ -671,8 +670,8 @@ class McpTransportTest(unittest.TestCase):
                         }
                     },
                     mcp_execution.CancellationToken(),
-                ).content
-            view = msgspec.convert(result, type=contracts.OrderCommitted)
+                ).record
+            assert isinstance(view, contracts.OrderCommitted)
             self.assertEqual("committed-with-warning", view.status)
             assert view.warning is not None
             store = SQLiteWorkStore(roots.database_path)
@@ -888,7 +887,9 @@ class McpTransportTest(unittest.TestCase):
                 }
             }
 
-        def contender(token: mcp_execution.CancellationToken) -> mcp_execution.OperationResult:
+        def contender(
+            token: mcp_execution.CancellationToken,
+        ) -> mcp_execution.TypedOperationResult[contracts.OrderResult]:
             contender_started.set()
             return mcp_reads._order(request_for((*current[1:], current[0])), token)
 
@@ -897,8 +898,10 @@ class McpTransportTest(unittest.TestCase):
             await _wait_for(locked)
             loser = executor.submit(contender)
             results = await asyncio.gather(winner.result(), loser.result())
-            self.assertEqual(("committed", "rejected"), tuple(result.content["status"] for result in results))
-            self.assertEqual("ACTION_NOT_AVAILABLE", results[1].content["code"])
+            self.assertEqual(("committed", "rejected"), tuple(result.record.status for result in results))
+            loser_record = results[1].record
+            assert isinstance(loser_record, contracts.OrderRejected)
+            self.assertEqual("ACTION_NOT_AVAILABLE", loser_record.code)
 
         with (
             patch.object(mcp_reads.service, "decide_order", controlled_decision),
@@ -911,7 +914,7 @@ class McpTransportTest(unittest.TestCase):
             subprocess.run(("git", "init", "--quiet", str(empty)), check=True)
             empty_roots = resolve_durable_roots(empty)
             initialize_database(empty_roots, SQLITE_NOW)
-            result = mcp_reads._order(
+            committed = mcp_reads._order(
                 {
                     "request": {
                         "project_root": str(empty),
@@ -922,8 +925,8 @@ class McpTransportTest(unittest.TestCase):
                     }
                 },
                 mcp_execution.CancellationToken(),
-            ).content
-            committed = msgspec.convert(result, type=contracts.OrderCommitted)
+            ).record
+            assert isinstance(committed, contracts.OrderCommitted)
             fresh = SQLiteWorkStore(empty_roots.database_path).validated_snapshot()
             self.assertEqual((), committed.order)
             self.assertEqual(
@@ -5103,6 +5106,81 @@ class McpTransportTest(unittest.TestCase):
                 )
         finally:
             executor.shutdown()
+
+    def test_typed_results_reject_contradictions_at_construction_and_classify_encoding_defects(self) -> None:
+        recovery = contracts.OrderRecovery(
+            "pinboard_overview",
+            contracts.OverviewRequest("/project", "/work", 25, None),
+            "current-state-only-not-caller-commit-proof",
+        )
+        committed = contracts.OrderCommitted(
+            "pinboard-mcp-order-result/v1",
+            (WorkItemId("work-a"),),
+            "committed",
+            3,
+            2,
+            True,
+            "committed",
+            "do-not-retry",
+            ("ledger",),
+            None,
+            recovery,
+        )
+        with self.assertRaisesRegex(ValueError, "view-repair warning"):
+            msgspec.structs.replace(committed, status="committed-with-warning")
+        with self.assertRaisesRegex(ValueError, "view-repair warning"):
+            msgspec.structs.replace(committed, warning=contracts.WarningResult("Views are stale.", "pinboard views"))
+        with self.assertRaisesRegex(ValueError, "state_changed must be false"):
+            contracts.ExecutorBusyResult(
+                "pinboard-mcp-execution-result/v1",
+                "busy",
+                "EXECUTOR_BUSY",
+                "Busy.",
+                True,
+                "unchanged",
+                "retry-same-input",
+                (),
+                (),
+                (),
+            )
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        diagnostics = mcp_execution.Diagnostics(io.StringIO(), event_limit=8, line_limit=256)
+        arguments: dict[str, contracts.JsonValue] = {"request": {"project_root": "/project"}}
+
+        def run(record: contracts.OrderResult, directory: str) -> dict[str, contracts.JsonValue]:
+            return _run_async(
+                mcp_execution._run_request(
+                    executor,
+                    diagnostics,
+                    1,
+                    mcp_server.ORDER.name,
+                    "/project",
+                    lambda _token: mcp_execution.TypedOperationResult(record, "committed", "3"),
+                    arguments=arguments,
+                    capture=mcp_execution.SemanticCapture(Path(directory)),
+                )
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            content = run(committed, directory)
+            self.assertEqual(["work-a"], content["order"])
+            self.assertEqual(committed, msgspec.convert(content, type=contracts.OrderCommitted, strict=True))
+            [published] = Path(directory).glob("pinboard-mcp-*.json")
+            self.assertEqual(content, json.loads(published.read_bytes())["result"]["value"])
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(TypeError):
+                run(msgspec.structs.replace(committed, order=(object(),)), directory)
+            [published] = Path(directory).glob("pinboard-mcp-*.json")
+            self.assertEqual(
+                {
+                    "availability": "unavailable",
+                    "reason": "callback-error",
+                    "classification": "error",
+                    "commit_reference": None,
+                },
+                json.loads(published.read_bytes())["result"],
+            )
 
     def test_fixed_result_classification_rejects_contradictory_runtime_values(self) -> None:
         empty_json_list: list[contracts.JsonValue] = []

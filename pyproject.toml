@@ -144,4 +144,5 @@ dev = [
     "pyrefly>=1.4.0",
     "ruff>=0.16.3",
     "ty>=0.0.90",
+    "markdown-it-py>=4.3.0",
 ]

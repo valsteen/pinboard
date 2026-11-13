@@ -220,7 +220,7 @@ Reader attention is finite. When adding durable documentation, first identify th
 
 In visitor-facing prose, dialogue, and diagrams, describe goals, saved changes, review results, and choices in ordinary language. Use workflow terminology only where an exact technical distinction needs it.
 
-Net growth is justified only when a genuinely new reader need has no existing owner. An exhaustive hybrid document such as the architecture map or this design method preserves every operative semantic distinction, not every paragraph accumulated while discovering it. Semantic completeness may require detail; it does not require repeated rationale, delivery history, or locally complete inventories at each consumer. Do not impose a rigid word or line quota, because compression is not evidence that a contract survived.
+Net growth is justified only when a genuinely new reader need has no existing owner. An exhaustive hybrid document such as the architecture map or this design method preserves every operative semantic distinction, not every paragraph accumulated while discovering it. Semantic completeness may require detail; it does not require repeated rationale, delivery history, or locally complete inventories at each consumer. The document's length follows what its readers need. When `verify-repo` flags a long paragraph in a hand-written top-level guide, split the paragraph and preserve every operative distinction.
 
 Stop when the reader can make the supported decision from one authoritative account and further removal would hide a necessary distinction. Reopen the document when behavior, audience, ownership, evidence, or a material limitation changes; ordinary desire to add context is not enough.
 

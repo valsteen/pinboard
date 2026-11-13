@@ -13,6 +13,125 @@ from scripts import verify
 
 
 class VerificationTest(unittest.TestCase):
+    def verify_repo_with_readme(self, markdown: str) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in verify.GUIDE_FILENAMES:
+                (root / name).write_text("# Guide\n", encoding="utf-8")
+            (root / "README.md").write_text(markdown, encoding="utf-8")
+            output = io.StringIO()
+            with (
+                patch.object(verify, "__file__", str(root / "scripts/verify.py")),
+                patch.object(verify.tempfile, "mkdtemp", return_value=directory),
+                patch.object(verify, "run_command", return_value=0),
+                contextlib.redirect_stdout(output),
+            ):
+                status = verify.main(["verify-repo"])
+            return status, output.getvalue()
+
+    def test_repo_verification_reports_the_start_and_size_of_a_wrapped_overlong_paragraph(self) -> None:
+        first_line = " ".join(["word"] * 150)
+        second_line = " ".join(["word"] * 151)
+        for marker, indent in (("", ""), ("- ", "  ")):
+            with self.subTest(marker=marker):
+                status, output = self.verify_repo_with_readme(
+                    f"# Guide\n\n{marker}{first_line}\n{indent}{second_line}\n"
+                )
+                self.assertEqual(1, status, output)
+                self.assertIn("[FAIL] verify-repo (exit 1)", output)
+                self.assertIn("README.md:3: paragraph has 301 words (limit 300)", output)
+
+    def test_repo_verification_keeps_a_numeric_prose_continuation(self) -> None:
+        line = " ".join(["word"] * 150)
+        status, output = self.verify_repo_with_readme(f"{line}\n2026. {line}\n")
+        self.assertEqual(1, status)
+        self.assertIn("README.md:1: paragraph has 301 words (limit 300)", output)
+        status, output = self.verify_repo_with_readme(f"{line}\n1. {line}\n2. {line}\n")
+        self.assertEqual(0, status, output)
+
+    def test_repo_verification_resumes_prose_after_an_unclosed_quoted_fence(self) -> None:
+        long_line = " ".join(["word"] * 301)
+        for quote, outer_quote in (("> ", ""), ("> > ", "> ")):
+            with self.subTest(quote=quote):
+                status, output = self.verify_repo_with_readme(
+                    f"{quote}```text\n{quote}> {long_line}\n{outer_quote.rstrip()}\n{outer_quote}{long_line}\n"
+                )
+                self.assertEqual(1, status)
+                self.assertIn("README.md:4: paragraph has 301 words (limit 300)", output)
+                self.assertNotIn("README.md:2:", output)
+
+    def test_repo_verification_excludes_fenced_code_inside_list_items(self) -> None:
+        long_line = " ".join(["word"] * 301)
+        for marker in ("- ", "1. "):
+            with self.subTest(marker=marker):
+                indent = " " * len(marker)
+                status, output = self.verify_repo_with_readme(f"{marker}```text\n{indent}{long_line}\n{indent}```\n")
+                self.assertEqual(0, status, output)
+                status, output = self.verify_repo_with_readme(f"{marker}```text\n{indent}{long_line}\n\n{long_line}\n")
+                self.assertEqual(1, status)
+                self.assertIn("README.md:4: paragraph has 301 words (limit 300)", output)
+                self.assertNotIn("README.md:2:", output)
+
+    def test_repo_verification_resumes_prose_after_an_unclosed_list_continuation_fence(self) -> None:
+        long_line = " ".join(["word"] * 301)
+        for marker in ("- ", "1. "):
+            with self.subTest(marker=marker):
+                indent = " " * len(marker)
+                status, output = self.verify_repo_with_readme(
+                    f"{marker}Item text\n\n{indent}```text\n{indent}{long_line}\n\n{long_line}\n"
+                )
+                self.assertEqual(1, status, output)
+                self.assertIn("[FAIL] verify-repo (exit 1)", output)
+                self.assertIn("README.md:6: paragraph has 301 words (limit 300)", output)
+                self.assertNotIn("README.md:4:", output)
+
+    def test_repo_verification_excludes_a_top_level_fence_after_a_list(self) -> None:
+        long_line = " ".join(["word"] * 301)
+        status, output = self.verify_repo_with_readme(f"- Item text\n\n```text\n{long_line}\n```\n")
+        self.assertEqual(0, status, output)
+
+    def test_repo_verification_respects_code_fence_indentation(self) -> None:
+        long_line = " ".join(["word"] * 301)
+        status, output = self.verify_repo_with_readme(f"```text\n    ```\n{long_line}\n```\n")
+        self.assertEqual(0, status, output)
+        status, output = self.verify_repo_with_readme(f"    ```\n\n{long_line}\n")
+        self.assertEqual(1, status, output)
+        self.assertIn("README.md:3: paragraph has 301 words (limit 300)", output)
+
+    def test_repo_verification_counts_lazy_quote_continuation_in_the_quoted_paragraph(self) -> None:
+        quoted_line = " ".join(["word"] * 150)
+        continuation = " ".join(["word"] * 151)
+        status, output = self.verify_repo_with_readme(f"> {quoted_line}\n{continuation}\n")
+        self.assertEqual(1, status, output)
+        self.assertIn("README.md:1: paragraph has 301 words (limit 300)", output)
+
+    def test_repo_verification_excludes_a_table_body_row_without_a_pipe(self) -> None:
+        long_line = " ".join(["word"] * 301)
+        status, output = self.verify_repo_with_readme(f"Column A | Column B\n--- | ---\n{long_line}\n")
+        self.assertEqual(0, status, output)
+
+    def test_repo_verification_checks_prose_with_a_pipe_when_there_is_no_matching_table_header(self) -> None:
+        over_limit = "word " * 300 + "word|word"
+        for divider in ("\n---", "--- | --- | ---"):
+            with self.subTest(divider=divider):
+                status, output = self.verify_repo_with_readme(f"{over_limit}\n{divider}\n")
+                self.assertEqual(1, status)
+                self.assertIn("README.md:1: paragraph has", output)
+
+    def test_repo_verification_keeps_adjacent_markdown_blocks_separate(self) -> None:
+        at_limit = " ".join(["word"] * 300)
+        over_limit = at_limit + " word"
+        status, output = self.verify_repo_with_readme(
+            f"{at_limit}\n# Heading\n{at_limit}\n"
+            f"- {at_limit}\n"
+            f"- {at_limit}\n\n> {at_limit}\n\n"
+            f"````text\n```\n{over_limit}\n````\n"
+            f"Column A | Column B\n--- | ---\n{over_limit} | cell\n\n"
+            f"| Column A | Column B |\n| --- | --- |\n| {over_limit} | cell |\n"
+        )
+        self.assertEqual(0, status, output)
+        self.assertIn("[PASS] verify-repo (exit 0)", output)
+
     def test_entry_selects_focused_and_full_groups_and_preserves_test_workers(self) -> None:
         with patch.object(verify, "run", return_value=0) as run:
             self.assertEqual(0, verify.main(["verify-types"]))

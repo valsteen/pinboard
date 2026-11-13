@@ -9,12 +9,18 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
+from itertools import pairwise
 from pathlib import Path
 from typing import TextIO, assert_never
+
+from markdown_it import MarkdownIt
+
+GUIDE_PARAGRAPH_WORD_LIMIT = 300
+GUIDE_FILENAMES = ("ARCHITECTURE.md", "CONTRIBUTING.md", "DESIGN_PRINCIPLES.md", "GUIDE.md", "INSTALL.md", "README.md")
 
 
 class Group(Enum):
@@ -62,10 +68,37 @@ def run_commands(commands: Sequence[Sequence[str]], root: Path, log: TextIO, str
     return 0
 
 
+def guide_paragraphs(parser: MarkdownIt, markdown: str) -> Iterator[tuple[int, int]]:
+    """Yield the starting line and whitespace-delimited word count of guide prose blocks."""
+    for opening, inline in pairwise(parser.parse(markdown)):
+        if opening.type == "paragraph_open":
+            assert opening.map is not None and inline.type == "inline"
+            yield opening.map[0] + 1, len(inline.content.split())
+
+
+def check_guide_paragraphs(root: Path, log: TextIO, stream: bool) -> int:
+    parser = MarkdownIt("commonmark").enable("table")
+    failed = False
+    for filename in GUIDE_FILENAMES:
+        for line, count in guide_paragraphs(parser, (root / filename).read_text(encoding="utf-8")):
+            if count <= GUIDE_PARAGRAPH_WORD_LIMIT:
+                continue
+            message = (
+                f"{filename}:{line}: paragraph has {count} words (limit {GUIDE_PARAGRAPH_WORD_LIMIT}). "
+                "Split it into shorter paragraphs."
+            )
+            log.write(f"{message}\n")
+            if stream:
+                print(message, flush=True)
+            failed = True
+    return int(failed)
+
+
 def verify_group(group: Group, root: Path, log: TextIO, stream: bool, jobs: int | None) -> int:
     match group:
         case Group.REPO:
-            return run_commands(
+            paragraph_status = check_guide_paragraphs(root, log, stream)
+            status = run_commands(
                 (
                     ("uv", "run", "--locked", "python", "-m", "docs.how_it_works.render", "--check"),
                     ("uv", "run", "--locked", "ruff", "format", "--check", "."),
@@ -87,6 +120,7 @@ def verify_group(group: Group, root: Path, log: TextIO, stream: bool, jobs: int 
                 log,
                 stream,
             )
+            return status or paragraph_status
         case Group.TYPES:
             return run_command(("scripts/check-types",), root, log, stream)
         case Group.TESTS:

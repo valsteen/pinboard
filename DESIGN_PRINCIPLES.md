@@ -1,32 +1,8 @@
 # Design principles
 
-This is the reusable design method for maintainers and coding agents evolving Pinboard. Use it to keep decisions visible, place effects and conversions, choose a typed control-flow shape, and know when structural work is finished. [The architecture map](ARCHITECTURE.md) owns the concrete package and runtime responsibilities; this document owns the constraints used to shape and change them.
+This is the reusable design method for maintainers and coding agents evolving Pinboard. Use it to keep decisions visible, place effects and conversions, choose a typed control-flow shape, and know when structural work is finished. The coding rules come first, then the rules for when to stop, then the method for checking decisions and evidence. [The architecture map](ARCHITECTURE.md) owns the concrete package and runtime responsibilities; this document owns the constraints used to shape and change them.
 
-## Decisions and evidence
-
-### Validate the premise before changing the rule
-
-When a rule blocks apparently valid work, first verify that the information reaching it accurately represents the situation. Trace what changed, what the decision considers, and what relevant information was omitted or lost.
-
-When a consequential constraint or surprising change footprint shapes the explanation, establish its provenance before proposing a larger remedy. Use the smallest source, invocation, history, or observation that can settle the relevant relationship:
-
-- Identify the actually selected value, executing invocation, resource, and scope: one operation, one turn, or the whole workflow may have different constraints.
-- Locate the owner that enforces the constraint and trace how the selected value reaches that effect. A declared setting or instruction alone does not establish actual enforcement.
-- Recover where the policy was introduced. Reused execution components do not make a wrapper's added policy inherited; Git addition status and equal values do not establish origin either.
-- Identify the accepted human, project, or runtime authority for that policy. Apply the same check to human and agent decisions; an earlier summary is a claim to verify, not substitute authority.
-- Separate the configured constraint from its observed consequence. A process exit near a timer is correlation until causal evidence connects them. A prepared patch or packaged candidate establishes no change to the executing destination until application is verified.
-
-Keep unavailable origin, authority, enforcement, or cause unknown. Once the premise is corrected, use existing authority for the supported next step and surface only a remaining consequential choice, such as an unapproved cutoff that would truncate the agreed outcome. Stop tracing when the evidence settles that decision; this is not a general history inventory or runtime-tracing requirement.
-
-Correct an incomplete or misleading representation at its owner. Change the rule only when the accurately represented situation demonstrates that the rule itself is wrong.
-
-Include the information needed for the decision—not everything indiscriminately. A checksum, label, or status is evidence about what it represents, not proof that the representation is sufficient.
-
-Before relying on an identity, summary, label, or status to authorize an effect or establish equivalence, name the decision it supports and the distinctions that decision requires.
-
-Challenge the representation with two valid situations that produce the same represented value but require different decisions. Vary relevant surrounding context, not only the information already included in the representation. If such a pair exists, correct the representation or make the missing relationship explicit at its owner before relying on it.
-
-For an enforceable invariant, retain the counterexample as a behavioral regression test. Derive the expected decision from the supported contract, independently of the representation being tested. Keep the challenge focused on the changed decision boundary; it does not require an exhaustive search of unrelated states.
+## Boundaries and data flow
 
 ### Optimize for visible decisions
 
@@ -36,62 +12,7 @@ Preserve independent conditions on neighboring behavior unless accepted scope ch
 
 Keep correlated facts with the type or decision that makes them true. A schema constraint, effect flag, retry rule, or surface classification may be projected from that owner, but must not depend on a second class-name inventory that developers must update in parallel. Preserve genuinely variable correlations as explicit alternatives instead of forcing them into the fixed classification.
 
-File size and total lines are separate signals, not objectives. A reduction helps only when it concentrates real alternatives or removes repetition without hiding control flow.
-
-Use a module cohesion budget as a review trigger, not a pass/fail metric. At 1,500 source lines or 24 direct imports, inventory the module's top-level responsibilities and import neighborhoods. Split it when two groups can name independent product effects or verbs and each can depend on fewer collaborators. Keep a larger declarative catalog or one closed decision family together when extraction would add re-exports, translation, cycles, or scattered branching. Stop when every remaining module has one thematic owner and another move would increase dependency fan-out.
-
 Agent-facing schemas, values, and entry points are product surfaces when agents can use them to steer work. Unless a public API or CLI already makes the contract obvious, keep the consumer, semantic effect or deliberate non-effect, and owner discoverable from the definition or direct entry point. Remove a surface that survives only because a schema can carry it. Procedural complexity may sit on the agent side when the human surface stays simple and safe.
-
-Check a representative native success and expected rejection as a fresh agent would: identify the entry preconditions, what the result observed, whether anything committed, the retry or authority limit, and one supported next action or exact current-action lookup. Confirm those claims from the advertised result and a focused behavior check. Use a fresh-agent scenario only when deterministic evidence leaves a real route ambiguity; do not turn one gap into a command-wide rewrite.
-
-When context must survive several reasoning stages, prefer a strict semantic scaffold. Give outcome, provenance, scope, non-goals, acceptance criteria, reviewed sources, verification, and remaining work stable places when those distinctions matter. Validate shape, references, identity, and canonical bytes without claiming that structure proves semantic truth.
-
-Use that context to propose affected code, documentation, architecture, and principles. Reviewed authorities and coverage should reveal likely owners without an exhaustive repository scan; read outward when changed meaning exposes another owner. This mapping remains judgment, confirmed by human acceptance and independent review. Add a hard-coded impact map only for a repository-owned deterministic contract, never as a second source of truth.
-
-### Keep one supported reality and canonical name
-
-Machinery is supported only when it traces to a current product root and a real producer and consumer, supported persisted data or an external protocol, or one explicit retained exception. A declaration, textual reference, test, serializer, schema, comment, shared word, duplicated vocabulary, or line count is evidence to inspect, not proof that the machinery belongs or is defective.
-
-Give one durable concept one canonical owner and name. Preserve different complete names for genuinely different product roles, including source and target, affected and replacement, supplied and resolved, observed and locked, current and historical, or input and accepted output. When an independently required wire, storage, presentation, or compatibility shape uses another spelling, keep one named exhaustive conversion at that boundary rather than spreading the duplicate vocabulary through the domain.
-
-Trace a candidate to its supported root, actual producer and consumer, retained data or protocol responsibility, accepted authority, and cheapest falsifying observation. Keep relational roles and nominal identities distinct when their consumers need them. Remove repeated enforcement only when an earlier owner guarantees the same fact; checks combining independent sources or current state have a separate responsibility. Slop Cleanup's [semantic audit](skills/slop-cleanup/references/semantic-audit.md) owns the applied cleanup inventory and dispositions.
-
-Tests may consume canonical settings as inputs while deriving expected effects independently. Construct threshold cases from the selected setting and calculate the outcome from the supported contract; do not call the implementation under test to manufacture its expectation. Independently owned scientific, spending, external, historical and deliberate fixture contracts retain their authority. Equal values are leads, not proof of shared meaning.
-
-For change amplification, trace one supported value from entry to effect and simulate one sibling or setting change. Record discover-and-edit sites, repeated decisions and independently required conversions separately from imports and source size. Remove a repeat only when one owner already carries its meaning. The cheapest falsifier is a concrete consumer or boundary that still needs the distinction; stop when another fold would erase it or add more conversion machinery than it removes.
-
-A retained exception names its present responsibility and falsifiable reopening condition. An independently required translation, supported retained data, independently changing external consumer or protocol, or accepted product or assurance obligation with a current consequence can justify it. Historical intent, possible future use, analyzer limits and test-only reachability cannot. Keep consequential unresolved decisions open; finish an audit only after its fresh declared-root inventory has no new in-scope selectors and every candidate has a supported disposition.
-
-### Make architectural limitations explicit
-
-Treat a limitation as an implemented constraint or operating assumption with a practical consequence, not as a synonym for every tradeoff or possible improvement. Classify the condition before deciding what to do:
-
-- An **existing limitation** is already present. Preserve its current architecture entry and prior acknowledgement without interrupting the human again unless this change materially alters its consequence, affected boundary, or reopening condition.
-- An **introduced or widened limitation** is created or made materially more restrictive by the proposed change. Evaluate it before implementation, even when the requested feature itself is already authorized.
-- A **defect** violates accepted behavior, an invariant, or a supported contract. Fix or report it as a defect; do not relabel broken behavior as a deliberate limitation to obtain acceptance.
-- A **speculative risk** has no evidence-backed effect on a supported path. A case constructed in a disposable fixture and never observed in a supported layout stays speculative even when it reproduces. Keep it out of current architecture and mandatory work unless an observable trigger turns it into a real decision.
-
-A limitation is material when its consequence meaningfully changes supported scale, resource growth, correctness, durability, compatibility, deployment, platform support, trust, or the cost of removing a foundational constraint later. Use concrete evidence and the supported product boundary; do not invent numerical thresholds or adversarial scenarios.
-
-Before choosing a local remedy, trace the proposed change to the foundation that creates the pressure. A patch that preserves, masks, or deepens an unacknowledged material limitation still requires the architecture decision even if its own diff is small. For example, avoiding one unnecessary file timestamp change does not settle a command whose underlying state read and publication boundary remains project-wide. A genuinely bounded local correction that leaves the foundation and its consequences unchanged proceeds without a checkpoint.
-
-A guard against a scenario outside the supported boundary widens the product obligation. Bring it to the human for the same architecture decision as acknowledging a material limitation before adding the guard.
-
-When a proposed change would introduce, widen, preserve, mask, or deepen an unacknowledged material limitation, the task that owns the outcome pauses before implementation and presents the decision in this order:
-
-**Architecture checkpoint**
-
-1. State the concrete current and proposed behavior, affected supported paths, operational or maintenance consequences, and observable reopening condition.
-2. Distinguish what the decision enables from what remains outside accepted scope.
-3. Give a recommendation and its evidence.
-
-**Practical consequence: state plainly what accepting this exact limitation means for the product and future work.**
-
-Ask a familiar approval question about that exact decision, such as “Do you want me to proceed with this limitation?” An ordinary explicit answer is sufficient; never require the human to repeat a legalistic acknowledgement phrase. Silence or generic authority for the surrounding task is not acceptance. Approval covers only the stated limitation and does not authorize adjacent features, hardening, or cleanup.
-
-Once accepted, record the limitation as current truth in `ARCHITECTURE.md` in the same candidate that implements or preserves it, including its consequence and reopening condition. Keep the reusable method here and automatic routing in `AGENTS.md`; do not duplicate the limitations inventory or full procedure in those layers. Reopen an accepted limitation only when its recorded consequence or trigger changes materially.
-
-## Boundaries and data flow
 
 ### Separate decisions, conversions, and effects
 
@@ -101,21 +22,25 @@ A conversion changes representation without changing meaning. Prefer a plain typ
 
 An effect reads or changes an explicitly supplied resource. Its signature names that resource and every value that influences the effect. A thematic SQLite function, for example, receives an existing connection and supplied time; it does not secretly open a database or read the clock.
 
+A helper that takes bread and cheese may return a sandwich. It must not also collect the mail, call another service, or decide whether the meal was authorized.
+
 Do not combine these roles merely to save a call. Do not separate them when the new boundary would add more translation machinery than the distinction removes.
 
 ### Preserve typed observations and effect provenance
 
 Translate an external protocol into operation-specific typed observations at its owning boundary. Carry the selected resource and operation with each observation so a consumer need not reconstruct provenance. Consumers should receive the distinctions needed for their decisions without interpreting process status, byte framing, SDK objects, or SQL cursors. Preserve missing versus invalid data, duplicate values when cardinality matters, and confirmed effects separately from uncertain effects. A successful write acknowledgment is not proof of durable storage or a verified value; claim the value only after the required readback succeeds.
 
-MCP decodes strict request records and correlates typed results before application use. The Git-config adapter turns Git process and NUL-framed output into typed reads and write acknowledgment; each setting owner validates its values and reports its path and first-use effects. SQLite adapters convert rows and stale-write observations into operation-specific values. An effect-boundary exception becomes a typed use-case failure where a caller assigns effect, retry, recovery, or stable diagnostic meaning. These boundaries need their own useful shapes, not one generic result wrapper.
+MCP decodes strict request records and correlates typed results before application use. The Git-config adapter turns Git process and NUL-framed output into typed reads and write acknowledgment; each setting owner validates its values and reports its path and first-use effects. SQLite adapters convert rows and stale-write observations into operation-specific values. These boundaries need their own useful shapes, not one generic result wrapper.
 
 ### Leave evidence an agent can diagnose from
 
 Treat logs and diagnostics as agent-facing interfaces when designing or changing an operation. Use stable event codes, a correlation identifier across participating processes, before and after identities, effect and retry disposition, and a short human message. Keep the code catalog at one owner; guidance refers to those codes rather than depending on message wording.
 
-During feature implementation and review, assess each supported caller-visible outcome on the changed path from the context available to its caller. Include success, expected refusal, malformed input, warnings, interruption and uncertain effects where they exist. Establish what happened to the named subject, which values came from the caller or a prior result, and whether the outcome ends the request or needs another step. A continuation names a supported action or exact discovery read whose arguments the caller can obtain; unavailable capability or authority requires a precise permission request or human diagnosis. Preserve effect and retry limits, especially after possible committed work. This review stays within accepted scope and does not authorize new recovery behavior or a repository-wide audit.
+During feature implementation and review, assess each supported caller-visible outcome on the changed path as a fresh agent would, from the context available to its caller. Include success, expected refusal, malformed input, warnings, interruption and uncertain effects where they exist. Establish what happened to the named subject, which values came from the caller or a prior result, whether anything committed, and whether the outcome ends the request or needs another step; for a representative native success and expected rejection, also identify the entry preconditions, the retry or authority limit, and one supported next action or exact current-action lookup. A continuation names a supported action or exact discovery read whose arguments the caller can obtain; unavailable capability or authority requires a precise permission request or human diagnosis. When adding an agent-facing expected failure, make its installed result name the failed resource or condition, truthful effect and retry disposition, and one safe executable next step, exact permission request, or plain human diagnosis. Put that follow-up at the earliest boundary that has the facts. Preserve effect and retry limits, especially after possible committed work, and never suggest replay after a possible committed effect.
 
-Trace the outcome from its decision or effect owner through the installed presentation. Verify that causes, resource identities, repair instructions and argument provenance survive that projection; a useful inner record alone does not prove a useful response. For native tools, exercise the advertised operation through the real SDK client and its output-schema validation, including an affected preflight as well as the target callback. When a schema change retains supported predecessors, include an exact predecessor that ordinary operations must refuse, and verify the caller receives its schema identities, truthful effects and supported explicit recovery or diagnosis without automatic migration. For new or changed follow-ups, construct and check the advertised next call using only original caller context, advertised results and public contracts. Fixture setup may use internal helpers; consumer request construction must not use them to manufacture otherwise unavailable inputs.
+Confirm these claims from the advertised result and a focused behavior check. Trace the outcome from its decision or effect owner through the installed presentation. Verify that causes, resource identities, repair instructions and argument provenance survive that projection; a useful inner record alone does not prove a useful response. For native tools, exercise the advertised operation through the real SDK client and its output-schema validation, including an affected preflight as well as the target callback. When a schema change retains supported predecessors, include an exact predecessor that ordinary operations must refuse, and verify the caller receives its schema identities, truthful effects and supported explicit recovery or diagnosis without automatic migration. For new or changed follow-ups, construct and check the advertised next call using only original caller context, advertised results and public contracts. Fixture setup may use internal helpers; consumer request construction must not use them to manufacture otherwise unavailable inputs. Use a fresh-agent scenario only when this deterministic evidence leaves a real route ambiguity.
+
+This review stays within accepted scope. It does not authorize new recovery behavior, a repository-wide audit, or a command-wide rewrite to close one gap.
 
 Provide one diagnostic read that explains selected mode and configuration, versions, unfinished procedures, and recent events. Keep full validation distinct from ordinary reads. Recovery uses ordinary, previewable operations rather than hand-editing storage. Explain which state Pinboard owns and can recover, and which adjacent state it can only warn about or require the human to address first.
 
@@ -138,15 +63,13 @@ When an optional diagnostic or setting resolver runs before every core operation
 
 Every internal parameter must serve current behavior, validation, conversion, or a required interface. When a parameter has no such consumer, remove it and any transport-only arguments or resource sampling left in its caller chain. A no-op assignment or explanatory comment cannot justify keeping it.
 
-A helper that takes bread and cheese may return a sandwich. It must not also collect the mail, call another service, or decide whether the meal was authorized.
-
 ### Make multi-step procedures previewable, resumable, and explainable
 
 When designing or changing an operation spanning several steps, processes, or machines, return a plan before effects and execute only that exact plan. Bind the plan to its observed identities so changed preconditions reject rather than silently selecting a different procedure.
 
 Give the procedure one commit point. Interruption before it leaves the prior authority valid and usable; interruption after it requires completion. Never leave two authorities, or none, accepting writes without a recorded step explaining the authority state. Durably record each step's produced identity and the next step, and make steps idempotent so a fresh agent can discover where execution stopped and continue safely.
 
-Retain predecessors read-only until a separate human deletion decision. Back up before migration, and perform reversal through the same previewable procedure. A procedure does not destroy retained data as an intermediate step. Keep the plan, commit point, durable progress, and recovery together at the operation's effect owner; do not create a framework for an ordinary atomic effect.
+Back up before migration. Keep predecessor data and its backups read-only until a separate human deletion decision, and perform reversal through the same previewable procedure. A procedure does not destroy retained data as an intermediate step. This rule governs data: retiring a migrator or compatibility reader under the compatibility rule in [AGENTS.md](AGENTS.md) removes code, never the predecessor data or backups it produced. Keep the plan, commit point, durable progress, and recovery together at the operation's effect owner; do not create a framework for an ordinary atomic effect.
 
 ### Keep resource work proportional to the result
 
@@ -157,30 +80,6 @@ A result that intentionally describes the current portfolio or complete project 
 Do not make one hot file, hidden cache, log, or projection accumulate without a product-owned retention or segmentation decision. Immutable evidence and normalized rows may grow when provenance is the product requirement, but ordinary work must reach them through keys, bounded pages, or explicit whole-project operations. Tests should grow unrelated retained data and observe that focused operations neither read, rewrite, nor republish it.
 
 For SQLite-backed operations, bound statement count as selected records and relationships grow. Read selected keys with set queries or fixed-size batches, and check query plans separately from statement counts and returned-row scope. A keyed query repeated once per selected record is still unbounded work; an indexed batch that fetches unrelated retained rows is still too broad.
-
-### Make code and guide tell the same story
-
-Make production code and tests readable by the next coding agent. Names, structure, and local contracts must expose purpose, input provenance, decisions, effects, expected failures, important constraints, and the next owner without author coaching or delivery history. Leave established findings at their owning code or contract, not only in an audit or conversation.
-
-Describe the current supported contract in production code, comments, and product documentation. Explain what happens now in terms a new reader can use without knowing a removed workflow or the change that introduced the current one. Keep historical explanation only at a named supported compatibility or migration boundary, decision record, or evidence artifact with a real reader; identify the retained responsibility and its removal condition where one applies.
-
-Repair misleading names and hidden control flow before adding prose. Comments are for verified invariants or reasons structure cannot express. Dynamic dispatch, selection tables, callbacks, and exceptions must reveal their wiring, supported alternatives, and exits at the responsible owner; preserve a genuinely open boundary. Consequential unresolved intent stays a human question, not a documented guess.
-
-Reviewers trace the changed path's purpose, decisions, effects, and exits from local implementation and named authorities. Tests name the observable guarantee and violating regression. Prefer fixed inputs and behavioral outcomes; interaction counts require a supported requirement that depends on those interactions and must not preserve obsolete production work.
-
-The product overview and one representative implementation path should tell the same ordered story to a computer-literate reader. Use verbs for work and provenance nouns for values. For a state-changing path, the diagnostic grammar is: decode an exact command, observe context, resolve supplied claims into a requested change, reread locked state, decide legality, project the accepted change, commit it, refresh replaceable views, and present the result. Omit absent stages and combine stages one owner genuinely performs.
-
-Keep distinctions that answer different questions visible. An observed snapshot is not locked state; a supplied claim is not resolved authority; an accepted decision is not a durable commit; a failed view refresh does not undo authority; expected rejection and infrastructure failure leave differently. Names, composition, and resource boundaries should reveal these facts before comments or type inspection.
-
-Names are behavioral promises about provenance, timing, success, durability, authority, and demonstrated capability. Change misleading internal names directly. Stable public, wire, schema, storage, history, or compatibility spellings require truthful boundary translation or an explicit migration or versioning decision. Product and personal identities require human disposition. Keep a naming problem and its reading cost visible until disposition and safe reopening are explicit.
-
-Use named arguments and role-specific names when same-shaped values cross a meaningful boundary. Split a multi-stage function only where the pieces own clear verbs, inputs, effects, and exits; do not manufacture a workflow framework merely to regularize the sequence. Function length, smell categories, duplication counts, and split-by-default style are weak prompts. Restructure when sequence, effect boundary, or next ownership becomes easier to predict, and keep a cohesive longer function when splitting would scatter one responsibility. Never trade clear layer ownership for a smaller function or lower duplication count.
-
-Review guide and code in both directions. Change whichever tells the less accurate story until vocabulary, order, effects, and exits agree. A fresh reader should be able to trace one real path from the overview; if not, repair the earliest misleading owner: code first, current-story documentation second, recurring contributor guidance last.
-
-Ordinary delivery uses one representative path. Repository Readiness offers the stronger repository-wide lens only when explicitly selected: enumerate every supported runtime, agent, documentation, tooling, packaging, CI, and test-evidence surface; derive each distinct narrative shape; reconcile code and documentation; give each shape a plain-language trace and sibling simulation; close its eight semantic receipt categories; then repeat the inventory once. A repository-wide claim requires that fresh pass to find no new candidate.
-
-Story ambiguity does not authorize behavior change. Check accepted requirements, observable tests, and consumers; when intent remains unresolved, name the product question and prefer behavior-preserving structure or vocabulary. Stop ordinary work when the representative path is coherent, matching siblings use the same grammar, and another refactor would only restate a distinction or add ceremony. Use the complete-surface fixed point only for an explicitly selected repository-wide pass.
 
 ### Put glue at the outer owner
 
@@ -210,13 +109,13 @@ Keep the production dependency graph mechanically checkable. Move uninstalled ex
 
 ### Make expected exits explicit
 
-Use a typed result for outcomes a caller can act on: rejected command, proposal, or dispatch input; unavailable action; missing selected work; stale compare-and-set; or rejected lifecycle transition.
+Use a typed result for outcomes a caller can act on: rejected command, proposal, or dispatch input; unavailable action; missing selected work; stale compare-and-set; or rejected lifecycle transition. Command, proposal, dispatch, domain, and state-machine rejection families are typed results, never exceptions, even when parsing observed them first.
 
-A decoder may raise while data is still an untyped external representation. If invalid input is an advertised outcome, the boundary owner catches that exact parser failure and returns the use case's typed failure. A command, proposal, dispatch, or domain rejection does not become exceptional merely because parsing observed it first.
+Parsing, deserialization, and structural or canonical validation after deserialization may raise typed exceptions locally while values remain boundary representations. If invalid input is an advertised outcome, the boundary owner catches that exact parser failure and returns the use case's typed failure.
 
-Keep an exception when the nearest contract has no supported recovery or diagnostic decision and execution cannot proceed as designed. Unreadable accepted internal files outside an advertised rejection contract, corrupt persistence, and programming-contract violations may retain their traceback. SQLite I/O, locking, and filesystem failures can originate as adapter exceptions; convert them at the receiving use case when it assigns effect, retry, recovery, or stable diagnostic meaning. Transaction ownership rolls back both returned failures and exceptions.
+Keep an exception when the nearest contract has no supported recovery or diagnostic decision and execution cannot proceed as designed. Unreadable accepted internal files outside an advertised rejection contract, corrupt persistence, unclassified effects, genuine invariant defects, and programming-contract violations may retain their traceback. Effect-boundary failures such as SQLite I/O, locking, and filesystem failures can originate as adapter exceptions; convert them to a typed use-case failure at the receiving use case when it assigns effect, retry, recovery, or stable diagnostic meaning. Transaction ownership rolls back both returned failures and exceptions.
 
-A custom exception's nearest contract must name its decoding, effect, persisted-invariant, programming-contract, or transaction boundary and explain why an exception is needed there. If the immediate caller would catch it only to reconstruct the same returned failure, return that frozen failure directly in the result alias. A partial publication with known effects returns a typed failure to a caller that classifies those effects. Use ordinary early returns, not fluent result APIs, decorators, or boolean chains.
+Define a custom exception only where the custom-exception gate in [AGENTS.md](AGENTS.md) admits it, and explain in its nearest contract why an exception is needed at that boundary; the conditions above for keeping a traceback do not widen that gate. If the immediate caller would catch it only to reconstruct the same returned failure, return that frozen failure directly in the result alias. A partial publication with known effects returns a typed failure to a caller that classifies those effects. Use ordinary early returns, not fluent result APIs, decorators, or boolean chains.
 
 ### Make impossible states unrepresentable
 
@@ -226,7 +125,7 @@ A clean strict type check proves only invariants expressed by those types. Do no
 
 Collection contracts follow the owner of construction. Keep `list`, `dict`, and `set` while a local operation builds or mutates them. At a read-only borrowed input, use `Sequence` for ordered access, `Mapping` for keyed lookup, and `Set` for membership. At an owned stable handoff, use `tuple` for order, `frozenset` for membership, and `MappingProxyType` over a private finished dictionary for keyed lookup. Convert once where construction ends; do not copy a borrowed collection merely to give it a read-only annotation. Exact JSON, schema, CLI, MCP, and SQLite representations may retain mutable built-ins where their boundary must construct, validate, or serialize that shape. Do not let those representation types grant mutation authority to a separate decision owner.
 
-Never fabricate required persistence in a read fallback. Absence is valid only when the owning contract says so; otherwise the reader rejects the missing invariant. The schema initializer owns every row required for a valid empty database and seeds it in the same transaction. Prove new seed invariants from fresh initialization, not populated fixtures.
+Never fabricate required persistence in a read fallback. Absence is valid only when the owning contract says so; otherwise the reader rejects the missing invariant. The schema initializer owns every row required for a valid empty database and seeds it in the same transaction; prove a new seed invariant from fresh initialization, not from populated fixtures.
 
 Validate structured input once in the record that deserializes or converts it. Annotations own field and shape constraints; post-init validation owns same-record cross-field invariants that cannot be declarative. Consumers trust successful conversion. Validate later only when combining independent sources or current external state such as database identity, revision, time, filesystem state, or artifact agreement. Production decodes strict boundary records and converts them to plain domain or application values; it does not reuse direct boundary construction as an internal DTO path.
 
@@ -244,25 +143,27 @@ Use each tool only for its guarantee. Pyrefly checks the types expressed after t
 
 ### Prefer closed, direct Python
 
-For a closed family, use concrete records or flat unions, exhaustive `match` statements, and direct function calls. The source should reveal which variant calls which effect.
+For a closed family, use concrete records or flat unions, exhaustive `match` statements, and direct function calls. The source should reveal which variant calls which effect. Choose the dispatch shape by [ownership and failure mode](#choose-dispatch-by-ownership-and-failure-mode).
 
 When a module owns a coherent vocabulary, import the module and qualify its members at use sites. This keeps the owner visible and prevents long member-import lists from disguising cross-module coupling.
 
-Do not replace a closed decision or boundary conversion with a handler registry, reflective attribute access, inheritance-based dispatch, or a callback pipeline merely to shorten the branch. Dynamic dispatch is appropriate when behavior is genuinely open at runtime or the caller should not know the concrete implementation. Generics and protocols are useful when they preserve exact types across a real reusable boundary; they are not reasons to create one.
+Generics and protocols are useful when they preserve exact types across a real reusable boundary; they are not reasons to create one.
 
 ### Make exhaustive sites earn their place
 
 Exhaustiveness belongs at an owner that must distinguish a real closed family or convert an independently required wire, storage, or presentation shape. It is not a quota for every layer traversed by that family. After one owner has selected a concrete alternative, pass that typed value directly until another owner has a different decision or representation to own.
 
-Stress-test navigation whenever a command or variant family crosses several production owners. Trace one representative value from its supported entry point to its effect, then simulate adding one sibling. Record every place a developer must discover and every place they must edit. A site earns retention when it adds validation, policy, protocol conversion, presentation, or an effect; a route enum, conversion table, wrapper variant, or exhaustive branch that only restates an already selected fact is duplicate ownership.
+To measure change amplification, and whenever a command or variant family crosses several production owners, trace one representative supported value from its supported entry point to its effect, then simulate adding one sibling or changing one setting. Record every place a developer must discover and every place they must edit, and record repeated decisions and independently required conversions separately from imports and source size. A site earns retention when it adds validation, policy, protocol conversion, presentation, or an effect; a route enum, conversion table, wrapper variant, or exhaustive branch that only restates an already selected fact is duplicate ownership. Remove a repeat only when one owner already carries its meaning; the cheapest falsifier is a concrete consumer or boundary that still needs the distinction.
 
-Use that result to collapse same-meaning remaps and improve names and direct call paths. Do not introduce reflection, registries, callbacks, or polymorphism merely to reduce the number of exhaustive matches. The target is a navigable closed design: each necessary distinction is explicit once per owner, and a developer can predict the next owner without reconstructing a parallel routing system.
+Use that result to collapse same-meaning remaps and improve names and direct call paths, and stop at the [fixed point](#collapse-to-a-fixed-point). The target is a navigable closed design: each necessary distinction is explicit once per owner, and a developer can predict the next owner without reconstructing a parallel routing system.
 
 Apply the same ownership test to read paths. When neighboring projections repeatedly scan one collection by the same key to reconstruct the same relationship, build one local explicit index and reuse it for that operation. Keep separate traversals when they answer different questions or when sharing the index would give it a broader lifetime or owner than the operation requires.
 
 ### Choose dispatch by ownership and failure mode
 
 The primary hazard is implicit fallback, not dynamic dispatch by itself. For every dispatch site, ask whether the alternatives are closed, whether this owner must distinguish them, where a new alternative should force an edit, and what happens for an unsupported value. Reject catch-all `else` branches, mapping `.get()` defaults, optional handlers, inherited default implementations, and generic registrations that silently accept an unknown alternative.
+
+Do not replace a closed decision or boundary conversion with a handler registry, reflective attribute access, inheritance-based dispatch, callbacks, polymorphism, or a callback pipeline merely to shorten the branch or reduce the number of exhaustive matches. Dynamic dispatch is appropriate when behavior is genuinely open at runtime or the caller should not know the concrete implementation.
 
 Name a known empty or absent outcome in the closed owner's arm. Return a typed rejection for an expected invalid request. When persisted or independently combined facts contradict the selected operation's invariant, reject them at the owning boundary with the operation, subject, expected and observed relationship, and effect context. Use `case _ as unreachable:` with `assert_never` only after every supported typed alternative is named; the central coverage rule excludes that statically impossible arm from line and branch coverage, while tests exercise invalid states reachable through real boundaries.
 
@@ -287,6 +188,32 @@ Symmetry is a navigation aid, not a quota. A layer may keep a specialized module
 
 Avoid generic `utils`, `writer`, `manager`, and `handlers` modules. A module earns its name from the concept and contract it owns.
 
+Use a module cohesion budget as a review trigger, not a pass/fail metric. At 1,500 source lines or 24 direct imports, inventory the module's top-level responsibilities and import neighborhoods. Split it when two groups can name independent product effects or verbs and each can depend on fewer collaborators. Keep a larger declarative catalog or one closed decision family together when extraction would add re-exports, translation, cycles, or scattered branching. Stop when every remaining module has one thematic owner and another move would increase dependency fan-out.
+
+### Make code and guide tell the same story
+
+Make production code and tests readable by the next coding agent. Names, structure, and local contracts must expose purpose, input provenance, decisions, effects, expected failures, important constraints, and the next owner without author coaching or delivery history. Leave established findings at their owning code or contract, not only in an audit or conversation.
+
+Describe the current supported contract in production code, comments, and public and product documentation, so each stays meaningful outside its delivery history. Explain what happens now in terms a new reader can use without knowing a removed workflow or the change that introduced the current one. Keep implementation-plan task or checkpoint numbers, attempt names, milestone labels, and speculative future file paths in private planning artifacts. Keep historical explanation only at a named supported compatibility or migration boundary, decision record, or evidence artifact with a real reader; identify the retained responsibility and its removal condition where one applies.
+
+Repair misleading names and hidden control flow before adding prose. Comments are for verified invariants or reasons structure cannot express. Dynamic dispatch, selection tables, callbacks, and exceptions must reveal their wiring, supported alternatives, and exits at the responsible owner; preserve a genuinely open boundary. Consequential unresolved intent stays a human question, not a documented guess.
+
+Reviewers trace the changed path's purpose, decisions, effects, and exits from local implementation and named authorities. Tests name the observable guarantee and violating regression. Prefer fixed inputs and behavioral outcomes; interaction counts require a supported requirement that depends on those interactions and must not preserve obsolete production work.
+
+The product overview and one representative implementation path should tell the same ordered story to a computer-literate reader. Use verbs for work and provenance nouns for values. For a state-changing path, the diagnostic grammar is: decode an exact command, observe context, resolve supplied claims into a requested change, reread locked state, decide legality, project the accepted change, commit it, refresh replaceable views, and present the result. Omit absent stages and combine stages one owner genuinely performs.
+
+Keep distinctions that answer different questions visible. An observed snapshot is not locked state; a supplied claim is not resolved authority; an accepted decision is not a durable commit; a failed view refresh does not undo authority; expected rejection and infrastructure failure leave differently. Names, composition, and resource boundaries should reveal these facts before comments or type inspection.
+
+Names are behavioral promises about provenance, timing, success, durability, authority, and demonstrated capability. Change misleading internal names directly. Stable public, wire, schema, storage, history, or compatibility spellings require truthful boundary translation or an explicit migration or versioning decision. Product and personal identities require human disposition. Keep a naming problem and its reading cost visible until disposition and safe reopening are explicit.
+
+Use named arguments and role-specific names when same-shaped values cross a meaningful boundary. Split a multi-stage function only where the pieces own clear verbs, inputs, effects, and exits; do not manufacture a workflow framework merely to regularize the sequence. Function length, smell categories, and split-by-default style are weak prompts. Restructure when sequence, effect boundary, or next ownership becomes easier to predict, and keep a cohesive longer function when splitting would scatter one responsibility.
+
+Review guide and code in both directions. Change whichever tells the less accurate story until vocabulary, order, effects, and exits agree. A fresh reader should be able to trace one real path from the overview; if not, repair the earliest misleading owner: code first, current-story documentation second, recurring contributor guidance last.
+
+Ordinary delivery uses one representative path. Repository Readiness offers the stronger repository-wide lens only when explicitly selected: enumerate every supported runtime, agent, documentation, tooling, packaging, CI, and test-evidence surface; derive each distinct narrative shape; reconcile code and documentation; give each shape a plain-language trace and the sibling simulation in [Make exhaustive sites earn their place](#make-exhaustive-sites-earn-their-place); close its eight semantic receipt categories; then repeat the inventory once. A repository-wide claim requires that fresh pass to find no new candidate.
+
+Story ambiguity does not authorize behavior change. Check accepted requirements, observable tests, and consumers; when intent remains unresolved, name the product question and prefer behavior-preserving structure or vocabulary. Stop ordinary work when the representative path is coherent, matching siblings use the same grammar, and another refactor would only restate a distinction or add ceremony. Use the complete-surface fixed point only for an explicitly selected repository-wide pass.
+
 ### Budget durable explanation
 
 Reader attention is finite. When adding durable documentation, first identify the reader, the decision or action the material supports, and its smallest authoritative owner. New material should replace, consolidate, or displace lower-value detail at that owner rather than accumulate beside it.
@@ -297,7 +224,7 @@ Net growth is justified only when a genuinely new reader need has no existing ow
 
 Stop when the reader can make the supported decision from one authoritative account and further removal would hide a necessary distinction. Reopen the document when behavior, audience, ownership, evidence, or a material limitation changes; ordinary desire to add context is not enough.
 
-Give each README section a distinct visitor job. Keep a claim there when a prospective user can connect it to concrete use, understand who it serves, and judge an honest cost; move operational procedure to its narrower guide or installation owner. Recheck placement when a section repeats another reader job, promises more than current use supports, or hides a material tradeoff.
+Give each README section a distinct visitor job; whether material belongs in the README at all follows the README rule in [AGENTS.md](AGENTS.md). Move operational procedure to its narrower guide or installation owner. Recheck placement when a section repeats another reader job, promises more than current use supports, or hides a material tradeoff.
 
 ### Collapse to a fixed point
 
@@ -306,20 +233,20 @@ Use a reversible pilot before applying a new decomposition broadly:
 1. Identify the decision surface and one repetitive family around it.
 2. State the proposed function and module contract, including hidden effects it forbids.
 3. Move the smallest representative family and preserve observable behavior.
-4. Measure decision visibility, result paths, dependency edges, conversions, and total source separately.
+4. Measure the result on the [independent axes](#evaluate-the-result-on-independent-axes).
 5. Stop if the extraction duplicates legality, adds dynamic indirection, or makes the effect contract harder to see.
 6. If it succeeds, apply the same ownership rule to every matching family.
-7. Recompute imports, callers, dead variants, tests, and documentation after each collapse.
+7. Recompute producers, consumers, imports, callers, dead variants, tests, and documentation after each collapse.
 8. Recount every affected closed family. Treat a one-member vocabulary or variant hierarchy as a cleanup candidate: replace it with the concrete value or result it now represents unless an independently owned external or persisted contract requires that exact singleton shape.
 9. Repeat until a fresh pass finds no matching residue.
 
-Stop when another fold would erase a product distinction, scatter one exhaustive decision, create a generic dumping ground, or add more conversion machinery than repeated ownership it removes.
+Stop when another fold would erase a product distinction, scatter one exhaustive decision, create a generic dumping ground, or add more conversion machinery than the invalid states, repeated decisions, or repeated ownership it removes.
 
-Duplication matches prompt an ownership review, not automatic consolidation. Share repeated behavior only when a reversible pilot gives a real decision, invariant or conversion one clearer owner. Retain an exact independently reviewed occurrence when sharing would weaken a required boundary shape or couple independent decisions. Name the concrete owners, required distinction and falsifying evidence; recompute the matched occurrences and direct residue after the last fold. Byte certification preserves that reviewed occurrence identity, not the truth of the semantic judgment.
+Duplication matches prompt an ownership review, not automatic consolidation. Share repeated behavior only when a reversible pilot gives a real decision, invariant or conversion one clearer owner. Do not move code across an ownership or layer boundary merely to lower the count, and do not abstract independent tests, required boundary shapes, or exhaustive closed-family branches merely to silence the detector. Retain an exact independently reviewed occurrence when sharing would weaken a required boundary shape or couple independent decisions. Name the concrete owners, required distinction and falsifying evidence; recompute the matched occurrences and direct residue after the last fold. Byte certification preserves that reviewed occurrence identity, not the truth of the semantic judgment.
 
 ### Evaluate the result on independent axes
 
-Do not use one metric as a proxy for architecture quality. Report at least:
+Do not use one metric as a proxy for architecture quality. File size, total lines, function length, imports, and duplication counts are separate signals, not objectives; a reduction helps only when it concentrates real alternatives or removes repetition without hiding control flow. Never trade clear layer ownership for a smaller function or a lower count. Report at least:
 
 - where the core decisions are and how many places own them;
 - which expected outcomes are explicit result paths;
@@ -329,3 +256,74 @@ Do not use one metric as a proxy for architecture quality. Report at least:
 - observable behavior, concurrency, rollback, and fresh-reload evidence.
 
 A successful change may reduce the orchestration file while increasing explicit result propagation. That trade is acceptable only when the new lines make control flow or ownership clearer and no smaller plain-Python expression preserves the same guarantees.
+
+## Decisions and evidence
+
+### Validate the premise before changing the rule
+
+When a rule blocks apparently valid work, first verify that the information reaching it accurately represents the situation. Trace what changed, what the decision considers, and what relevant information was omitted or lost.
+
+When a consequential constraint or surprising change footprint shapes the explanation, establish its provenance before proposing a larger remedy. Use the smallest source, invocation, history, or observation that can settle the relevant relationship:
+
+- Identify the actually selected value, executing invocation, resource, and scope: one operation, one turn, or the whole workflow may have different constraints.
+- Locate the owner that enforces the constraint and trace how the selected value reaches that effect. A declared setting or instruction alone does not establish actual enforcement.
+- Recover where the policy was introduced. Reused execution components do not make a wrapper's added policy inherited; Git addition status and equal values do not establish origin either.
+- Identify the accepted human, project, or runtime authority for that policy. Apply the same check to human and agent decisions; an earlier summary is a claim to verify, not substitute authority.
+- Separate the configured constraint from its observed consequence. Correlation in time is not cause until evidence connects them, and a prepared change establishes nothing about its destination until its application is verified.
+
+Keep unavailable origin, authority, enforcement, or cause unknown. Once the premise is corrected, use existing authority for the supported next step and surface only a remaining consequential choice, such as an unapproved cutoff that would truncate the agreed outcome. Stop tracing when the evidence settles that decision; this is not a general history inventory or runtime-tracing requirement.
+
+Correct an incomplete or misleading representation at its owner. Change the rule only when the accurately represented situation demonstrates that the rule itself is wrong.
+
+Include the information needed for the decision—not everything indiscriminately. A checksum, label, or status is evidence about what it represents, not proof that the representation is sufficient.
+
+Before relying on an identity, summary, label, or status to authorize an effect or establish equivalence, name the decision it supports and the distinctions that decision requires.
+
+Challenge the representation with two valid situations that produce the same represented value but require different decisions. Vary relevant surrounding context, not only the information already included in the representation. If such a pair exists, correct the representation or make the missing relationship explicit at its owner before relying on it.
+
+For an enforceable invariant, retain the counterexample as a behavioral regression test. Keep the challenge focused on the changed decision boundary; it does not require an exhaustive search of unrelated states. Derive every expected decision from the supported contract, independently of the representation or implementation under test. A test may take canonical settings as inputs, constructing its cases from the selected setting, but must not call the implementation under test to manufacture its expectation. Independently owned scientific, spending, external, historical and deliberate fixture contracts retain their authority. Equal values are leads, not proof of shared meaning.
+
+### Carry context in a semantic scaffold
+
+When context must survive several reasoning stages, prefer a strict semantic scaffold. Give outcome, provenance, scope, non-goals, acceptance criteria, reviewed sources, verification, and remaining work stable places when those distinctions matter. Validate shape, references, identity, and canonical bytes without claiming that structure proves semantic truth.
+
+Use that context to propose affected code, documentation, architecture, and principles. Reviewed authorities and coverage should reveal likely owners without an exhaustive repository scan; read outward when changed meaning exposes another owner. This mapping remains judgment, confirmed by human acceptance and independent review. Add a hard-coded impact map only for a repository-owned deterministic contract, never as a second source of truth.
+
+### Keep one supported reality and canonical name
+
+Machinery is supported only when it traces to a current product root and a real producer and consumer, supported persisted data or an external protocol, or one explicit retained exception. A declaration, textual reference, test, serializer, schema, comment, shared word, duplicated vocabulary, or line count is evidence to inspect, not proof that the machinery belongs or is defective.
+
+Give one durable concept one canonical owner and name. Preserve different complete names for genuinely different product roles, including source and target, affected and replacement, supplied and resolved, observed and locked, current and historical, or input and accepted output. When an independently required wire, storage, presentation, or compatibility shape uses another spelling, keep one named exhaustive conversion at that boundary rather than spreading the duplicate vocabulary through the domain.
+
+Trace a candidate to its supported root, actual producer and consumer, retained data or protocol responsibility, accepted authority, and cheapest falsifying observation. Keep relational roles and nominal identities distinct when their consumers need them. Remove repeated enforcement only when an earlier owner guarantees the same fact; checks combining independent sources or current state have a separate responsibility. Measure change amplification with the sibling simulation in [Make exhaustive sites earn their place](#make-exhaustive-sites-earn-their-place). Slop Cleanup's [semantic audit](skills/slop-cleanup/references/semantic-audit.md) owns the applied cleanup inventory and dispositions.
+
+A retained exception names its present responsibility and falsifiable reopening condition. An independently required translation, supported retained data, independently changing external consumer or protocol, or accepted product or assurance obligation with a current consequence can justify it. Historical intent, possible future use, analyzer limits and test-only reachability cannot. Keep consequential unresolved decisions open; finish an audit only after its fresh declared-root inventory has no new in-scope selectors and every candidate has a supported disposition.
+
+### Make architectural limitations explicit
+
+Treat a limitation as an implemented constraint or operating assumption with a practical consequence, not as a synonym for every tradeoff or possible improvement. Classify the condition before deciding what to do:
+
+- An **existing limitation** is already present. Preserve its current architecture entry and prior acknowledgement without interrupting the human again unless this change materially alters its consequence, affected boundary, or reopening condition.
+- An **introduced or widened limitation** is created or made materially more restrictive by the proposed change. Evaluate it before implementation, even when the requested feature itself is already authorized.
+- A **defect** violates accepted behavior, an invariant, or a supported contract. Fix or report it as a defect; do not relabel broken behavior as a deliberate limitation to obtain acceptance.
+- A **speculative risk** has no evidence-backed effect on a supported path. A case constructed in a disposable fixture and never observed in a supported layout stays speculative even when it reproduces. Keep it out of current architecture and mandatory work unless an observable trigger turns it into a real decision.
+
+A limitation is material when its consequence meaningfully changes supported scale, resource growth, correctness, durability, compatibility, deployment, platform support, trust, or the cost of removing a foundational constraint later. Use concrete evidence and the supported product boundary; do not invent numerical thresholds or adversarial scenarios.
+
+Before choosing a local remedy, trace the proposed change to the foundation that creates the pressure. A patch that preserves, masks, or deepens an unacknowledged material limitation still requires the architecture decision even if its own diff is small; fixing one symptom does not settle the foundation that produces it. A genuinely bounded local correction that leaves the foundation and its consequences unchanged proceeds without a checkpoint.
+
+A guard against a scenario outside the supported boundary widens the product obligation. Bring it to the human for the same architecture decision as acknowledging a material limitation before adding the guard.
+
+When a proposed change would introduce, widen, preserve, mask, or deepen an unacknowledged material limitation, the task that owns the outcome pauses before implementation and presents the decision in this order:
+
+**Architecture checkpoint**
+
+1. State the concrete current and proposed behavior, affected supported paths, operational or maintenance consequences, and observable reopening condition.
+2. Distinguish what the decision enables from what remains outside accepted scope.
+3. Give a recommendation and its evidence.
+
+**Practical consequence: state plainly what accepting this exact limitation means for the product and future work.**
+
+Ask a familiar approval question about that exact decision, such as “Do you want me to proceed with this limitation?” An ordinary explicit answer is sufficient; never require the human to repeat a legalistic acknowledgement phrase. Silence or generic authority for the surrounding task is not acceptance. Approval covers only the stated limitation and does not authorize adjacent features, hardening, or cleanup.
+
+Once accepted, record the limitation as current truth in `ARCHITECTURE.md` in the same candidate that implements or preserves it, including its consequence and reopening condition. Keep the reusable method here and automatic routing in `AGENTS.md`; do not duplicate the limitations inventory or full procedure in those layers. Reopen an accepted limitation only when its recorded consequence or trigger changes materially.

@@ -89,6 +89,14 @@ READ_ONLY_ANNOTATIONS: ToolAnnotations = ToolAnnotations(
     read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
 )
 
+ORDER: execution.ToolContract[contracts.OrderEnvelope, contracts.OrderResult] = execution.ToolContract(
+    name=ORDER_TOOL,
+    description="Save an explicitly human-authorized complete priority permutation against the current live order; fresh overview reconciles state, not caller commitment. Put all fields inside request. Never grants launch authority.",
+    request=contracts.OrderEnvelope,
+    results=contracts.OrderResult,
+    operate=read_operations._order,
+)
+
 
 def _client_profile(ctx: Context) -> host_profiles.HostProfile:
     try:
@@ -158,18 +166,15 @@ def create_server(  # noqa: C901 - explicit installed SDK tool registration
     request_ids = itertools.count(1)
 
     # Async SDK callbacks let cancellation reach _run_request and its queued or running executor checkpoints.
-    @server.tool(
-        name=ORDER_TOOL,
-        description="Save an explicitly human-authorized complete priority permutation against the current live order; fresh overview reconciles state, not caller commitment. Put all fields inside request. Never grants launch authority.",
-    )
+    @server.tool(name=ORDER.name, description=ORDER.description)
     async def order(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return await execution._run_request(
             executor,
             diagnostics,
             next(request_ids),
-            ORDER_TOOL,
+            ORDER.name,
             str(request.get("project_root", "")),
-            partial(read_operations._order, {"request": request}),
+            partial(ORDER.operate, {"request": request}),
             arguments={"request": request},
             capture=capture,
         )
@@ -882,9 +887,9 @@ def _install_boundary_contracts(server: MCPServer) -> None:
             contract_schemas.union_schema_for(contracts.FIXTURE_REVIEW_RESULT_TYPES),
         ),
         (
-            ORDER_TOOL,
-            contract_schemas.schema_for(contracts.OrderEnvelope),
-            contract_schemas.union_schema_for(contracts.ORDER_RESULT_TYPES),
+            ORDER.name,
+            contract_schemas.schema_for(ORDER.request),
+            contract_schemas.typed_result_schema(ORDER.results),
         ),
         (
             PARALLEL_PREVIEW_TOOL,

@@ -44,6 +44,7 @@ from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, HistoryId, HostId, ProposalId, TaskId, WorkItemId
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
+from pinboard.mcp import contracts as mcp_contracts
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import read_operations as mcp_reads
 from pinboard.mcp import server as mcp_server
@@ -643,9 +644,9 @@ class BoardProjectionTest(unittest.TestCase):
                 }
             },
             mcp_execution.CancellationToken(),
-        ).content
+        ).record
 
-        self.assertEqual("committed", result["status"])
+        self.assertEqual("committed", result.status)
         _markdown, html = self._board(roots)
         self.assertEqual(before, {value.item_id: value.updated_at for value in _page_items(html)})
         self.assertEqual(before_board, _page_data(html).updated_at)
@@ -919,9 +920,9 @@ class BoardProjectionTest(unittest.TestCase):
                 }
             },
             mcp_execution.CancellationToken(),
-        ).content
+        ).record
 
-        self.assertEqual("committed", result["status"])
+        self.assertEqual("committed", result.status)
         markdown, html = self._board(roots)
         self.assertEqual(
             [("work-c", "ready"), ("zz-proposal-a", "ready"), ("intake-work", "ready")],
@@ -956,13 +957,13 @@ class BoardProjectionTest(unittest.TestCase):
                     }
                 },
                 mcp_execution.CancellationToken(),
-            ).content
+            ).record
 
-        self.assertEqual("committed-with-warning", result["status"])
-        warning = result["warning"]
-        assert isinstance(warning, dict)
-        self.assertIn("generated views need repair", str(warning["message"]))
-        self.assertIn("views rebuild", str(warning["recovery"]))
+        assert isinstance(result, mcp_contracts.OrderCommitted)
+        self.assertEqual("committed-with-warning", result.status)
+        assert result.warning is not None
+        self.assertIn("generated views need repair", result.warning.message)
+        self.assertIn("views rebuild", result.warning.recovery)
         self.assertEqual(
             requested,
             [value.item_id for value in store.read_overview_page(0, 25).items],

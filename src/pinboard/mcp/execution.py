@@ -8,7 +8,7 @@ import secrets
 import shlex
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
 from copy import deepcopy
@@ -18,6 +18,7 @@ from typing import Literal, TextIO, assert_never
 
 import msgspec
 from mcp.server.mcpserver.exceptions import ToolError
+from typing_extensions import TypeForm
 
 from pinboard import __version__
 from pinboard.adapters.files import contributor_traces, git_config
@@ -36,11 +37,7 @@ from pinboard.adapters.files.setting_resolution import (
 )
 from pinboard.adapters.sqlite.errors import SQLiteSchemaError, StorageError
 from pinboard.diagnostic_codes import TraceEvent
-from pinboard.domain.errors import (
-    EffectDisposition,
-    RetryDisposition,
-)
-from pinboard.mcp import contract_schemas
+from pinboard.mcp import contract_schemas, contracts
 from pinboard.mcp.contracts import JsonValue
 
 THREAD_NAME_PREFIX = "pinboard-mcp-worker"
@@ -56,9 +53,44 @@ _CANCELLED_REQUEST_MESSAGE = (
 
 @dataclass(frozen=True, slots=True)
 class OperationResult:
+    """An untyped operation result that validate_result selects by tool name and result strings."""
+
     content: dict[str, JsonValue]
     classification: str
     commit_reference: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TypedOperationResult[Result: msgspec.Struct]:
+    """A declared result record emitted through wire_content without runtime revalidation.
+
+    Construction runs the record's post-init invariants; static types and the advertised output schema own the rest.
+    """
+
+    record: Result
+    classification: str
+    commit_reference: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolContract[Request: msgspec.Struct, Result: msgspec.Struct]:
+    """Bind one tool's name and description, request record, result union and operation for the type checker.
+
+    `results` is the `Result` union as a type form, so a union or alias outside `Result` fails type checking, and
+    the advertised output schema projects from it.
+    """
+
+    name: str
+    description: str
+    request: type[Request]
+    results: TypeForm[Result]
+    operate: Callable[[Mapping[str, JsonValue], CancellationToken], TypedOperationResult[Result]]
+
+
+def wire_content(record: msgspec.Struct) -> dict[str, JsonValue]:
+    """Convert one typed result record to the JSON object content the SDK serializes, without revalidating it."""
+    content: dict[str, JsonValue] = msgspec.json.decode(msgspec.json.encode(record))
+    return content
 
 
 class CapturedValueIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -272,19 +304,19 @@ def settings_recovery(  # noqa: C901, PLR0912, PLR0915 - one boundary distinguis
     return resource, repair, retry
 
 
-def _schema_mismatch(error: SQLiteSchemaError, project_root: str) -> tuple[dict[str, JsonValue], str]:
+def _schema_mismatch(error: SQLiteSchemaError, project_root: str) -> tuple[contracts.SchemaMismatch, str]:
     """Present verified schema facts and a separately authorized, quiescent CLI preview."""
-    arguments: list[JsonValue] | None = None
+    arguments: contracts.MigrationPreviewArguments | None = None
     if error.migration_supported:
-        arguments = [
+        arguments = (
             "--project-root",
             project_root,
             "--work-root",
             str(error.database_path.parent),
             "migrate-schema",
             "--json",
-        ]
-        command = " ".join(shlex.quote(str(value)) for value in arguments)
+        )
+        command = " ".join(shlex.quote(value) for value in arguments)
         repair = (
             "Obtain explicit human authorization for migration, then stop every Pinboard process using "
             f"{error.database_path} before preview. Using the same Pinboard launcher from the original caller "
@@ -297,12 +329,12 @@ def _schema_mismatch(error: SQLiteSchemaError, project_root: str) -> tuple[dict[
             f"required sqlite-v{error.required} to the human. No supported migration preview exists for this schema; "
             "do not edit metadata, apply another schema's plan or replay the refused operation."
         )
-    return {
-        "database_path": str(error.database_path),
-        "observed_schema": f"sqlite-v{error.observed}",
-        "required_schema": f"sqlite-v{error.required}",
-        "preview_arguments": arguments,
-    }, repair
+    return contracts.SchemaMismatch(
+        str(error.database_path),
+        f"sqlite-v{error.observed}",
+        f"sqlite-v{error.required}",
+        arguments,
+    ), repair
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,7 +352,7 @@ class AutomaticCapture:
 
     def resolve(  # noqa: C901, PLR0912, PLR0915 - one preflight owns settings, destination and partial effects
         self, project_root: str, arguments: dict[str, JsonValue]
-    ) -> AutomaticCaptureResolution | OperationResult:
+    ) -> AutomaticCaptureResolution | contracts.TracePreflightResult:
         request = arguments.get("request")
         selected = request if isinstance(request, dict) else arguments
         work_root = selected.get("work_root")
@@ -380,10 +412,12 @@ class AutomaticCapture:
                 or settings_effects.key_write == "unconfirmed"
                 or probe_effect == "unconfirmed"
             )
-            effect = "unconfirmed" if unconfirmed else "committed" if confirmed else "unchanged"
+            effect: Literal["unchanged", "committed", "unconfirmed"] = (
+                "unconfirmed" if unconfirmed else "committed" if confirmed else "unchanged"
+            )
             resource_text = str(resource)
-            retry = "correct-input"
-            schema_mismatch: dict[str, JsonValue] | None = None
+            retry: Literal["correct-input", "retry-same-input"] = "correct-input"
+            schema_mismatch: contracts.SchemaMismatch | None = None
             if isinstance(error, SettingResolutionError):
                 resource_text, repair, retry = settings_recovery(
                     error, "Contributor trace settings", f"Correct {error.path} and retry."
@@ -426,26 +460,25 @@ class AutomaticCapture:
                 repair = f"Grant write access to {resource}, then retry."
             else:
                 repair = f"Correct {resource}, then retry."
-            content: dict[str, JsonValue] = {
-                "schema": "pinboard-mcp-execution-result/v1",
-                "status": "rejected",
-                "code": "TRACE_PREFLIGHT_FAILED",
-                "message": f"Automatic Pinboard trace preflight failed: {error}. The target callback did not run.",
-                "resource": resource_text,
-                "repair": repair,
-                "schema_mismatch": schema_mismatch,
-                "target_ran": False,
-                "state_changed": None if unconfirmed else confirmed,
-                "effect": effect,
-                "retry": retry,
-                "changed_surfaces": ["work-root"] if confirmed else [],
-                "settings_parent_creation": settings_effects.parent_creation,
-                "settings_file_creation": settings_effects.file_creation,
-                "settings_mode_write": settings_effects.key_write,
-                "trace_directory_creation": "confirmed" if directory_created else "none",
-                "capture_probe_effect": probe_effect,
-            }
-            return OperationResult(content, "rejected", None)
+            return contracts.TracePreflightResult(
+                "pinboard-mcp-execution-result/v1",
+                "rejected",
+                "TRACE_PREFLIGHT_FAILED",
+                f"Automatic Pinboard trace preflight failed: {error}. The target callback did not run.",
+                resource_text,
+                repair,
+                schema_mismatch,
+                False,
+                None if unconfirmed else confirmed,
+                effect,
+                retry,
+                ("work-root",) if confirmed else (),
+                settings_effects.parent_creation,
+                settings_effects.file_creation,
+                settings_effects.key_write,
+                "confirmed" if directory_created else "none",
+                probe_effect,
+            )
 
 
 class ExecutorBusy(RuntimeError):
@@ -591,13 +624,43 @@ class Diagnostics:
             self._stream.flush()
 
 
-async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns callback and capture aftermath
+def _schema_unsupported(
+    error: SQLiteSchemaError, project_root: str, settings_effects: SettingEffects, trace_directory_created: bool
+) -> TypedOperationResult[contracts.SchemaUnsupportedResult]:
+    """Refuse a callback whose ledger schema is unsupported, keeping trace preflight effects separate."""
+    mismatch, repair = _schema_mismatch(error, project_root)
+    return TypedOperationResult(
+        contracts.SchemaUnsupportedResult(
+            "pinboard-mcp-schema-result/v1",
+            "rejected",
+            "SCHEMA_UNSUPPORTED",
+            str(error),
+            str(error.database_path),
+            repair,
+            mismatch,
+            contracts.TracePreflightEffects(
+                settings_effects.parent_creation,
+                settings_effects.file_creation,
+                settings_effects.key_write,
+                "confirmed" if trace_directory_created else "none",
+            ),
+            False,
+            "unchanged",
+            "do-not-retry",
+            (),
+        ),
+        "rejected",
+        None,
+    )
+
+
+async def _run_request[Result: msgspec.Struct](  # noqa: C901, PLR0915 - one execution boundary owns callback and capture aftermath
     executor: BoundedExecutor,
     diagnostics: Diagnostics,
     request_id: int,
     operation: str,
     project_root: str,
-    callback: Callable[[CancellationToken], OperationResult],
+    callback: Callable[[CancellationToken], OperationResult | TypedOperationResult[Result]],
     *,
     arguments: dict[str, JsonValue],
     capture: SemanticCapture | AutomaticCapture | None,
@@ -626,15 +689,15 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
             capture_selector=None,
         )
 
-    def complete(token: CancellationToken) -> dict[str, JsonValue]:
+    def complete(token: CancellationToken) -> dict[str, JsonValue]:  # noqa: C901, PLR0915 - one worker owns preflight, callback, result emission and capture aftermath
         selected_capture = capture
         settings_effects = SettingEffects("none", "none", "none")
         trace_directory_created = False
         token.checkpoint()
         if isinstance(selected_capture, AutomaticCapture):
             resolved_capture = selected_capture.resolve(project_root, arguments)
-            if isinstance(resolved_capture, OperationResult):
-                return contract_schemas.validate_result(operation, resolved_capture.content)
+            if isinstance(resolved_capture, contracts.TracePreflightResult):
+                return wire_content(resolved_capture)
             selected_capture = resolved_capture.capture
             settings_effects = resolved_capture.settings_effects
             trace_directory_created = resolved_capture.directory_created
@@ -663,34 +726,20 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
             except FileIOError:
                 emit_request_event(TraceEvent.CAPTURE_UNAVAILABLE, classification, commit_reference)
 
+        def record_callback_error() -> None:
+            capture_effect(
+                lambda selected: selected.unavailable(operation, captured_arguments, "callback-error", "error", None),
+                "error",
+                None,
+            )
+            emit_request_event(TraceEvent.RESULT, "error", None)
+
+        result: OperationResult | TypedOperationResult[Result] | TypedOperationResult[contracts.SchemaUnsupportedResult]
         try:
             token.checkpoint()
             result = callback(token)
         except SQLiteSchemaError as error:
-            mismatch, repair = _schema_mismatch(error, project_root)
-            result = OperationResult(
-                {
-                    "schema": "pinboard-mcp-schema-result/v1",
-                    "status": "rejected",
-                    "code": error.code.value,
-                    "message": str(error),
-                    "resource": str(error.database_path),
-                    "repair": repair,
-                    "schema_mismatch": mismatch,
-                    "trace_preflight_effects": {
-                        "settings_parent_creation": settings_effects.parent_creation,
-                        "settings_file_creation": settings_effects.file_creation,
-                        "settings_mode_write": settings_effects.key_write,
-                        "trace_directory_creation": "confirmed" if trace_directory_created else "none",
-                    },
-                    "state_changed": False,
-                    "effect": "unchanged",
-                    "retry": "do-not-retry",
-                    "changed_surfaces": [],
-                },
-                "rejected",
-                None,
-            )
+            result = _schema_unsupported(error, project_root, settings_effects, trace_directory_created)
         except OperationCancelled as error:
             capture_effect(
                 lambda selected: selected.unavailable(operation, captured_arguments, "interrupted", "cancelled", None),
@@ -710,29 +759,37 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
             emit_request_event(TraceEvent.RESULT, "rejected", None)
             raise
         except Exception:
-            capture_effect(
-                lambda selected: selected.unavailable(operation, captured_arguments, "callback-error", "error", None),
-                "error",
-                None,
-            )
-            emit_request_event(TraceEvent.RESULT, "error", None)
+            record_callback_error()
             raise
-        try:
-            validated = contract_schemas.validate_result(operation, result.content)
-        except Exception:
-            capture_effect(
-                lambda selected: selected.unavailable(
-                    operation,
-                    captured_arguments,
-                    "result-validation-error",
-                    result.classification,
-                    result.commit_reference,
-                ),
-                result.classification,
-                result.commit_reference,
-            )
-            emit_request_event(TraceEvent.RESULT_VALIDATION_ERROR, result.classification, result.commit_reference)
-            raise
+        match result:
+            case TypedOperationResult():
+                try:
+                    validated = wire_content(result.record)
+                except Exception:
+                    # A typed record that cannot encode is a defect in the operation that built it.
+                    record_callback_error()
+                    raise
+            case OperationResult():
+                try:
+                    validated = contract_schemas.validate_result(operation, result.content)
+                except Exception:
+                    capture_effect(
+                        lambda selected: selected.unavailable(
+                            operation,
+                            captured_arguments,
+                            "result-validation-error",
+                            result.classification,
+                            result.commit_reference,
+                        ),
+                        result.classification,
+                        result.commit_reference,
+                    )
+                    emit_request_event(
+                        TraceEvent.RESULT_VALIDATION_ERROR, result.classification, result.commit_reference
+                    )
+                    raise
+            case _ as unreachable:
+                assert_never(unreachable)
         capture_effect(
             lambda selected: selected.available(operation, captured_arguments, validated),
             result.classification,
@@ -745,19 +802,20 @@ async def _run_request(  # noqa: C901, PLR0915 - one execution boundary owns cal
         execution = executor.submit(complete)
     except ExecutorBusy:
         emit_request_event(TraceEvent.RESULT, "busy", None)
-        busy: dict[str, JsonValue] = {
-            "schema": "pinboard-mcp-execution-result/v1",
-            "status": "busy",
-            "code": "EXECUTOR_BUSY",
-            "message": "The MCP executor is busy; retry after current work finishes.",
-            "state_changed": False,
-            "effect": EffectDisposition.UNCHANGED.value,
-            "retry": RetryDisposition.RETRY_SAME_INPUT.value,
-            "changed_surfaces": [],
-            "observed": [],
-            "mismatches": [],
-        }
-        return contract_schemas.validate_result(operation, busy)
+        return wire_content(
+            contracts.ExecutorBusyResult(
+                "pinboard-mcp-execution-result/v1",
+                "busy",
+                "EXECUTOR_BUSY",
+                "The MCP executor is busy; retry after current work finishes.",
+                False,
+                "unchanged",
+                "retry-same-input",
+                (),
+                (),
+                (),
+            )
+        )
     try:
         return await execution.result()
     except asyncio.CancelledError:

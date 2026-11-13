@@ -7,7 +7,7 @@ import msgspec
 
 from pinboard.application import work_brief_models
 from pinboard.cli.errors import CliErrorCode, CommandFailure
-from pinboard.domain.errors import EffectDisposition, FailureDetails, FailureFactValue, RetryDisposition
+from pinboard.domain.errors import EffectDisposition, FailureDetails, FailureFact, FailureFactValue, RetryDisposition
 
 
 class FailureFactView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -50,8 +50,15 @@ type RecoveryView = RecoveryCommandView | RecoveryActionView
 
 
 class RejectedOperationView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """One failed CLI operation.
+
+    `rejected` changed nothing and `committed-effect` names what it changed. `effect-unknown` is CLI-only: a
+    mutating operation failed with an unclassified operating-system error, so it may have changed state and the
+    caller inspects current state before repeating it.
+    """
+
     schema: Literal["pinboard-rejected-operation/v1"]
-    status: Literal["rejected", "committed-effect"]
+    status: Literal["rejected", "committed-effect", "effect-unknown"]
     operation: str
     code: str
     message: str
@@ -150,6 +157,31 @@ def write_operation_rejection(
                     for value in details.alternatives
                 ),
             ),
+        )
+    )
+
+
+def write_effect_unknown(
+    operation: str,
+    code: str,
+    message: str,
+    observed: tuple[FailureFact, ...],
+    next_actions: tuple[str, ...],
+) -> None:
+    """Present a mutating operation's failure whose effect is unknown until the caller inspects current state."""
+    write_json(
+        RejectedOperationView(
+            "pinboard-rejected-operation/v1",
+            "effect-unknown",
+            operation,
+            code,
+            message,
+            True,
+            (),
+            tuple(FailureFactView(value.field, value.value) for value in observed),
+            (),
+            RetryDisposition.DO_NOT_RETRY.value,
+            tuple(RecoveryCommandView(value) for value in next_actions),
         )
     )
 

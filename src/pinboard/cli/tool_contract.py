@@ -293,11 +293,20 @@ def describe_operation(operation_id: str) -> CommandResult[ToolContractDetail]:
     return _operation_contract(selected[0])
 
 
-def operation_identity(command: cli_commands.CliCommand) -> str:
+def _installed_command(command: cli_commands.CliCommand) -> cli_parser.InstalledCommand:
     selected = tuple(value for value in cli_parser.installed_commands() if type(command) is value.command_type)
     if len(selected) != 1:
         raise ValueError(f"decoded command has no unique installed operation: {type(command).__name__}")
-    return selected[0].operation_id
+    return selected[0]
+
+
+def operation_identity(command: cli_commands.CliCommand) -> str:
+    return _installed_command(command).operation_id
+
+
+def operation_mutation_class(command: cli_commands.CliCommand) -> MutationClass:
+    """Return the declared mutation class that decides what a failed call may have changed."""
+    return _operation_contract(_installed_command(command)).mutation_class
 
 
 def select_tool_contract(

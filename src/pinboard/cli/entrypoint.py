@@ -6,10 +6,12 @@ thematic CLI owners; this root performs no storage or domain work itself.
 """
 
 import contextlib
+import errno
 import io
+import os
 import sys
 from collections.abc import Sequence
-from typing import assert_never
+from typing import TextIO, assert_never, override
 
 from pinboard.adapters.files.errors import (
     ArtifactError,
@@ -23,6 +25,7 @@ from pinboard.cli import (
     cli_output,
     cli_parser,
     code_catalog,
+    invocation_capture,
     project_export,
     tool_contract,
     transitions,
@@ -166,9 +169,143 @@ def _present_expected_result(
     return exit_code
 
 
-def _run_invocation(  # noqa: PLR0912 - preserve persisted-state invariant tracebacks at the CLI boundary
+class _ResultOutput(io.TextIOBase):
+    """Forward the command's result stream and remember the operating-system error that writing it raised.
+
+    The CLI boundary uses that identity to keep `CLI_IO_ERROR` for undeliverable output and to classify every other
+    unclassified `OSError` as an operation failure.
+    """
+
+    def __init__(self, target: TextIO) -> None:
+        super().__init__()
+        self._target = target
+        self.failure: OSError | None = None
+
+    @override
+    def writable(self) -> bool:
+        return True
+
+    @override
+    def write(self, text: str, /) -> int:
+        try:
+            return self._target.write(text)
+        except OSError as error:
+            self.failure = error
+            raise
+
+    @override
+    def flush(self) -> None:
+        try:
+            self._target.flush()
+        except OSError as error:
+            self.failure = error
+            raise
+
+    @override
+    def close(self) -> None:
+        """Leave the forwarded stream to its owner; finalizing this wrapper must not flush it again."""
+
+
+def _selected_roots_text(roots: cli_commands.ResolvedRoots | None) -> str:
+    return (
+        "the selected command roots"
+        if roots is None
+        else f"project_root='{roots.source_checkout}' and work_root='{roots.work}'"
+    )
+
+
+def _present_filesystem_failure(
+    error: OSError,
+    command: cli_commands.CliCommand,
+    operation: str,
+    roots: cli_commands.ResolvedRoots | None,
+    *,
+    json_requested: bool,
+) -> int:
+    """Report an operation's unclassified `OSError` with its path, error, truthful effect and one next step."""
+    paths = tuple(
+        os.fsdecode(value) if isinstance(value, (str, bytes)) else str(value)
+        for value in (error.filename, error.filename2)
+        if value is not None
+    )
+    resource = " and ".join(f"'{value}'" for value in paths) if paths else "a path the operating system did not name"
+    errno_name = None if error.errno is None else errno.errorcode.get(error.errno, str(error.errno))
+    os_error = str(error) if error.strerror is None else error.strerror
+    reason = os_error if errno_name is None else f"{errno_name} ({os_error})"
+    code = CliErrorCode.FILESYSTEM_ERROR.value
+    root_facts = (
+        ()
+        if roots is None
+        else (FailureFact("project_root", str(roots.source_checkout)), FailureFact("work_root", str(roots.work)))
+    )
+    match tool_contract.operation_mutation_class(command):
+        case "read-only":
+            message = f"The '{operation}' operation failed with {reason} on {resource}; it changed nothing."
+            next_step = (
+                f"Resolve that condition, for example by restoring access to {resource}, then repeat the same "
+                "request; it is read-only and safe to repeat. Report the condition to the human if you cannot resolve it."
+            )
+            effect = "unchanged"
+        case "mutates-ledger" | "repairs-derived-views":
+            message = (
+                f"The '{operation}' operation failed with {reason} on {resource}; its effects are unknown and it may "
+                "have changed state."
+            )
+            next_step = (
+                f"Do not repeat the request yet: inspect current state with 'pinboard diagnose' using "
+                f"{_selected_roots_text(roots)}, resolve the named condition, then decide whether to repeat it. "
+                "Report the condition to the human if inspection is unavailable."
+            )
+            effect = "unknown"
+        case _ as unreachable:
+            assert_never(unreachable)
+    observed = (
+        FailureFact("operation", operation),
+        FailureFact("path", paths[0] if paths else None),
+        *((FailureFact("second_path", paths[1]),) if len(paths) > 1 else ()),
+        FailureFact("errno", errno_name),
+        FailureFact("os_error", os_error),
+        FailureFact("effect", effect),
+        *root_facts,
+        FailureFact("next_step", next_step),
+    )
+    if not json_requested:
+        print(f"{code}: {message} {next_step}", file=sys.stderr)
+    elif effect == "unchanged":
+        cli_output.write_operation_rejection(
+            operation,
+            code,
+            message,
+            FailureDetails(
+                observed=observed,
+                mismatches=(),
+                retry=RetryDisposition.RETRY_SAME_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+            (),
+        )
+    else:
+        cli_output.write_effect_unknown(operation, code, message, observed, ("pinboard diagnose --json",))
+    return 12
+
+
+def _run_invocation(
     invocation: cli_commands.CliInvocation,
     operation: str,
+    *,
+    json_requested: bool,
+) -> int:
+    output = _ResultOutput(sys.stdout)
+    with contextlib.redirect_stdout(output):
+        return _classified_invocation(invocation, operation, output, json_requested=json_requested)
+
+
+def _classified_invocation(  # noqa: PLR0912 - preserve persisted-state invariant tracebacks at the CLI boundary
+    invocation: cli_commands.CliInvocation,
+    operation: str,
+    output: _ResultOutput,
     *,
     json_requested: bool,
 ) -> int:
@@ -176,12 +313,14 @@ def _run_invocation(  # noqa: PLR0912 - preserve persisted-state invariant trace
     try:
         if not isinstance(invocation.command, (cli_commands.ToolContractCommand, cli_commands.CodeCatalogCommand)):
             roots = work_state_commands.resolve_roots(invocation.roots)
-        return _present_expected_result(
+        status = _present_expected_result(
             _dispatch(invocation, roots),
             operation,
             roots,
             json_requested=json_requested,
         )
+        sys.stdout.flush()
+        return status
     except ImmutableFilePublishedError as error:
         details = FailureDetails(
             observed=(FailureFact("selected_output_path", str(error.path)),),
@@ -217,13 +356,12 @@ def _run_invocation(  # noqa: PLR0912 - preserve persisted-state invariant trace
             print(str(error), file=sys.stderr)
         return 2
     except OSError as error:
-        selected = (
-            "the selected command roots"
-            if roots is None
-            else f"project_root='{roots.source_checkout}' and work_root='{roots.work}'"
-        )
+        if error is not output.failure:
+            return _present_filesystem_failure(
+                error, invocation.command, operation, roots, json_requested=json_requested
+            )
         print(
-            f"{CliErrorCode.IO_ERROR.value}: {error}. The '{operation}' result could not be delivered; earlier command effects are unknown. Restore the output connection, then inspect current state using {selected} before repeating any mutating request. Report this condition to the human if inspection is unavailable.",
+            f"{CliErrorCode.IO_ERROR.value}: {error}. The '{operation}' result could not be delivered; earlier command effects are unknown. Restore the output connection, then inspect current state using {_selected_roots_text(roots)} before repeating any mutating request. Report this condition to the human if inspection is unavailable.",
             file=sys.stderr,
         )
         return 2
@@ -256,13 +394,46 @@ def _run_invocation(  # noqa: PLR0912 - preserve persisted-state invariant trace
         return 12
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    arguments = tuple(sys.argv[1:] if argv is None else argv)
-    if arguments and arguments[0] in {"--contributor-capture-select", "--contributor-capture-prune"}:
-        return work_state_commands.contributor_capture_control(arguments)
+def _run_cli(arguments: tuple[str, ...]) -> int:
     json_requested = "--json" in arguments
     invocation = _parse_arguments(arguments, json_requested=json_requested)
     if isinstance(invocation, int):
         return invocation
     operation = tool_contract.operation_identity(invocation.command)
     return _run_invocation(invocation, operation, json_requested=json_requested)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run one CLI call, inside its capture boundary when the launcher selected capture.
+
+    Captured and uncaptured calls reach the target through the same `_run_cli` line, so an uncaught
+    exception presents the same traceback either way. A HUP, INT or TERM that arrives after the target
+    ended but before the session stopped interrupting raises `CaptureInterrupted` in this handoff; the
+    outer handler then finishes the session with it, so the call is recorded as interrupted and its
+    output, record or publication failure and stage cleanup still happen.
+    """
+    match invocation_capture.prepare(tuple(sys.argv[1:] if argv is None else argv)):
+        case invocation_capture.RejectedBeforeTarget(exit_status=rejected):
+            return rejected
+        case invocation_capture.Uncaptured(target_arguments=arguments):
+            session = None
+        case invocation_capture.CaptureSession() as session:
+            arguments = session.target_arguments
+        case _ as unreachable:
+            assert_never(unreachable)
+    try:
+        try:
+            if session is not None:
+                session.arm()
+            status = _run_cli(arguments)
+            if session is not None:
+                session.disarm()
+        except BaseException as error:
+            if session is None:
+                raise
+            return session.finish(error)
+        return status if session is None else session.finish(status)
+    except invocation_capture.CaptureInterrupted as late:
+        if session is None:
+            raise
+        return session.finish(late)

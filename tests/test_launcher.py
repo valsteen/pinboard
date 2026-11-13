@@ -98,13 +98,15 @@ class LauncherTest(unittest.TestCase):
                     launcher = self.copy_launcher(root)
                     executable = root / runtime / "bin" / entry
                     executable.parent.mkdir(parents=True)
-                    executable.write_text('#!/bin/sh\nprintf "native:%s\\n" "$*"\n', encoding="utf-8")
+                    executable.write_text(
+                        '#!/bin/sh\nprintf "native:%s:%s\\n" "$*" "${PINBOARD_LAUNCHER_PATH-unset}"\n', encoding="utf-8"
+                    )
                     executable.chmod(0o755)
                     if runtime != ".venv":
                         (root / ".pinboard-runtime" / ".pinboard-ready").touch()
                     result = self.run_launcher(launcher, selector, path="/usr/bin:/bin")
                     self.assertEqual(0, result.returncode)
-                    self.assertEqual("native:\n", result.stdout)
+                    self.assertEqual("native::unset\n", result.stdout)
                     self.assertEqual("", result.stderr)
 
     def test_hook_context_entry_does_not_enable_missing_mcp_or_accept_extra_arguments(self) -> None:
@@ -589,7 +591,7 @@ class LauncherTest(unittest.TestCase):
             executable = root / ".venv" / "bin" / "pinboard"
             executable.parent.mkdir(parents=True)
             executable.write_text(
-                '#!/bin/sh\nif [ "$1" = "--contributor-capture-select" ]; then printf "off\\n"; exit 0; fi\nprintf "source:%s\\n" "$*"\n',
+                '#!/bin/sh\nprintf "source:%s\\n" "$*"\n',
                 encoding="utf-8",
             )
             executable.chmod(0o755)
@@ -600,6 +602,83 @@ class LauncherTest(unittest.TestCase):
             self.assertEqual(0, result.returncode)
             self.assertEqual("source:status --json\n", result.stdout)
             self.assertEqual("", result.stderr)
+
+    def test_cli_call_starts_one_runtime_process_that_alone_learns_the_launcher_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            launcher = self.copy_launcher(root)
+            starts = root / "starts"
+            executable = root / ".venv" / "bin" / "pinboard"
+            executable.parent.mkdir(parents=True)
+            executable.write_text(
+                f'#!/bin/sh\nprintf "%s|%s\\n" "${{PINBOARD_LAUNCHER_PATH-unset}}" "$*" >> "{starts}"\n',
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            project = root / "project"
+            subprocess.run(["git", "init", "-q", str(project)], check=True)
+            (project / ".pinboard").mkdir()
+            (project / ".git" / "info" / "exclude").write_text("/.pinboard/\n", encoding="utf-8")
+            settings = project / ".pinboard" / "contributor-traces.config"
+            for mode in ("off", "on"):
+                with self.subTest(mode=mode):
+                    starts.unlink(missing_ok=True)
+                    settings.write_text(
+                        f'[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = {mode}\n', encoding="utf-8"
+                    )
+                    before = settings.read_bytes()
+                    result = self.run_launcher(launcher, "--project-root", str(project), "status", path="/usr/bin:/bin")
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(f"{launcher}|--project-root {project} status\n", starts.read_text())
+                    self.assertEqual(before, settings.read_bytes())
+                    self.assertEqual(
+                        ["contributor-traces.config"], sorted(path.name for path in settings.parent.iterdir())
+                    )
+            starts.unlink()
+            manual = ("--capture-evidence", str(root / "capture.json"), "--safe-to-persist-exactly", "--", "status")
+            result = self.run_launcher(launcher, *manual, path="/usr/bin:/bin")
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(f"{launcher}|{' '.join(manual)}\n", starts.read_text())
+
+    def test_preparation_verification_and_protocol_entries_do_not_receive_the_launcher_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            launcher = self.copy_launcher(root)
+            starts = root / "starts"
+            entries = (
+                "pinboard",
+                "pinboard-mcp",
+                "pinboard-claude-subagent-start",
+                "pinboard-claude-session-start",
+                "pinboard-claude-pre-tool-use",
+                "pinboard-antigravity-session-start",
+                "pinboard-antigravity-pre-tool-use",
+            )
+            self.write_uv(
+                root,
+                'mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"\n'
+                + "".join(
+                    f'printf \'#!/bin/sh\\nprintf "{entry}|%%s|%%s\\\\n" "${{PINBOARD_LAUNCHER_PATH-unset}}" "$*" >> "{starts}"\\n\''
+                    f' > "$UV_PROJECT_ENVIRONMENT/bin/{entry}"\nchmod +x "$UV_PROJECT_ENVIRONMENT/bin/{entry}"\n'
+                    for entry in entries
+                ),
+            )
+            prepared = self.run_launcher(launcher, "--prepare-runtime", path=f"{root}:/usr/bin:/bin")
+            self.assertEqual(0, prepared.returncode, prepared.stderr)
+            self.assertEqual("pinboard|unset|--version\n", starts.read_text())
+            for selector in ("--mcp", "--claude-subagent-start", "--antigravity-pre-tool-use"):
+                self.assertEqual(0, self.run_launcher(launcher, selector, path="/usr/bin:/bin").returncode)
+            self.assertEqual(0, self.run_launcher(launcher, "status", path="/usr/bin:/bin").returncode)
+            self.assertEqual(
+                [
+                    "pinboard|unset|--version",
+                    "pinboard-mcp|unset|",
+                    "pinboard-claude-subagent-start|unset|",
+                    "pinboard-antigravity-pre-tool-use|unset|",
+                    f"pinboard|{launcher}|status",
+                ],
+                starts.read_text().splitlines(),
+            )
 
     def test_normal_launch_requires_explicit_preparation_without_invoking_uv(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -846,7 +925,6 @@ class LauncherTest(unittest.TestCase):
                 'printf "%s\\n%s\\n%s\\n" "$*" "$UV_PROJECT_ENVIRONMENT" "$PYTHONDONTWRITEBYTECODE" > "$TRACE_FILE"\n'
                 'mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"\n'
                 'printf \'#!/bin/sh\\nif [ "$1" = "--version" ]; then printf "pinboard 0.1.0\\n"; exit 0; fi\\n'
-                'if [ "$1" = "--contributor-capture-select" ]; then printf "off\\n"; exit 0; fi\\n'
                 'printf "private:%%s\\n" "$*"\\n\' > "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n'
                 'chmod +x "$UV_PROJECT_ENVIRONMENT/bin/pinboard"\n'
                 "printf '#!/bin/sh\\nexit 99\\n' > \"$UV_PROJECT_ENVIRONMENT/bin/pinboard-mcp\"\n"

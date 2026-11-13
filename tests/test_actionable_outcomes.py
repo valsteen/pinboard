@@ -1,21 +1,42 @@
 """Caller continuations and diagnoses at installed response boundaries."""
 
+import errno
 import json
-from contextlib import redirect_stderr
+import os
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+from typing import override
 from unittest.mock import patch
+
+import msgspec
 
 from pinboard.adapters.files import contributor_traces, git_config
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.adapters.sqlite.migration.schema_procedure import SchemaProcedureFailure
 from pinboard.application import query_models
-from pinboard.cli import entrypoint
+from pinboard.cli import cli_output, entrypoint, invocation_capture, work_state_commands
 from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import contract_schemas, execution, read_operations, server
 from tests.checkpoint_support import CheckpointPackageSupport
 from tests.native_support import call_advertised_tool
 from tests.support import JsonObject
+
+
+class BrokenOutput(StringIO):
+    """An output connection whose reader has gone away."""
+
+    @override
+    def write(self, text: str, /) -> int:
+        raise BrokenPipeError(errno.EPIPE, "Broken pipe")
+
+
+class UnflushableOutput(StringIO):
+    """An output connection that accepts writes but cannot deliver them."""
+
+    @override
+    def flush(self) -> None:
+        raise BrokenPipeError(errno.EPIPE, "Broken pipe")
 
 
 class ActionableOutcomeTest(CheckpointPackageSupport):
@@ -121,23 +142,27 @@ class ActionableOutcomeTest(CheckpointPackageSupport):
 
     def test_failed_result_output_keeps_committed_close_uncertain_until_inspected(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
-        with patch("pinboard.cli.transitions.write_json", side_effect=OSError("output connection closed")):
-            status, output, error = self.run_cli(
-                *fixture.common,
-                "close",
-                "work-c",
-                "--outcome",
-                "done",
-                "--reason",
-                "Human requested this close.",
-                "--task-id",
-                "human",
-                "--host-id",
-                "local",
-                "--json",
+        stderr = StringIO()
+        with redirect_stdout(BrokenOutput()), redirect_stderr(stderr):
+            status = entrypoint.main(
+                (
+                    *fixture.common,
+                    "close",
+                    "work-c",
+                    "--outcome",
+                    "done",
+                    "--reason",
+                    "Human requested this close.",
+                    "--task-id",
+                    "human",
+                    "--host-id",
+                    "local",
+                    "--json",
+                )
             )
+        error = stderr.getvalue()
         self.assertEqual(2, status)
-        self.assertEqual("", output)
+        self.assertTrue(error.startswith("CLI_IO_ERROR: "), error)
         self.assertIn("effects are unknown", error)
         self.assertIn(str(fixture.work), error)
         inspected = call_advertised_tool(
@@ -152,6 +177,70 @@ class ActionableOutcomeTest(CheckpointPackageSupport):
             },
         )
         self.assertEqual("done", inspected["state"])
+
+    def test_unclassified_operation_os_error_names_its_path_and_truthful_effect(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        failed = fixture.work / "state.sqlite3"
+        denied = PermissionError(errno.EACCES, "Permission denied", str(failed))
+        close = ("close", "work-c", "--outcome", "done", "--reason", "Human requested this close.")
+        before = fixture.store.validated_snapshot()
+        for arguments, status_value, retry, effect, next_actions in (
+            (("status", "--json"), "rejected", "retry-same-input", "unchanged", ()),
+            (
+                (*close, "--task-id", "human", "--host-id", "local", "--json"),
+                "effect-unknown",
+                "do-not-retry",
+                "unknown",
+                (cli_output.RecoveryCommandView("pinboard diagnose --json"),),
+            ),
+        ):
+            with (
+                self.subTest(arguments=arguments),
+                patch.object(work_state_commands, "resolve_durable_layout", side_effect=denied),
+            ):
+                status, output, error = self.run_cli(*fixture.common, *arguments)
+                self.assertEqual((12, ""), (status, error))
+                rejection = msgspec.json.decode(output, type=cli_output.RejectedOperationView)
+                self.assertEqual("CLI_FILESYSTEM_ERROR", rejection.code)
+                self.assertEqual(status_value, rejection.status)
+                self.assertEqual(effect == "unknown", rejection.state_changed)
+                self.assertEqual(retry, rejection.retry)
+                self.assertEqual(next_actions, rejection.next_actions)
+                observed = {value.field: value.value for value in rejection.observed}
+                self.assertEqual(
+                    (str(failed), "EACCES", effect), (observed["path"], observed["errno"], observed["effect"])
+                )
+                self.assertIn(str(failed), rejection.message)
+                self.assertIn(
+                    "safe to repeat" if effect == "unchanged" else "inspect current state", str(observed["next_step"])
+                )
+        for arguments, effect_text in (
+            (("status",), "it changed nothing"),
+            (("views", "rebuild"), "its effects are unknown"),
+            ((*close, "--task-id", "human", "--host-id", "local"), "its effects are unknown"),
+        ):
+            with (
+                self.subTest(arguments=arguments),
+                patch.object(work_state_commands, "resolve_durable_layout", side_effect=denied),
+            ):
+                status, output, error = self.run_cli(*fixture.common, *arguments)
+                self.assertEqual((12, ""), (status, output))
+                self.assertTrue(error.startswith("CLI_FILESYSTEM_ERROR: "), error)
+                self.assertIn(f"EACCES (Permission denied) on '{failed}'", error)
+                self.assertIn(effect_text, error)
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        catalog_status, catalog, _ = self.run_cli("code-catalog", "--code", "CLI_FILESYSTEM_ERROR", "--json")
+        self.assertEqual(0, catalog_status)
+        self.assertIn("effect is unknown until inspected", str(json.loads(catalog)["meaning"]))
+
+    def test_a_result_stream_that_fails_to_flush_reports_the_output_failure(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        stderr = StringIO()
+        with redirect_stdout(UnflushableOutput()), redirect_stderr(stderr):
+            status = entrypoint.main((*fixture.common, "status", "--json"))
+        self.assertEqual(2, status)
+        self.assertTrue(stderr.getvalue().startswith("CLI_IO_ERROR: "), stderr.getvalue())
+        self.assertNotIn("CLI_FILESYSTEM_ERROR", stderr.getvalue())
 
     def test_migration_preview_and_reverse_do_not_advertise_an_apply_plan(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
@@ -214,6 +303,7 @@ class ActionableOutcomeTest(CheckpointPackageSupport):
         settings = roots.work_root / contributor_traces.SETTINGS_NAME
         settings.unlink(missing_ok=True)
         error = StringIO()
+        output = StringIO()
         with (
             patch.object(
                 git_config,
@@ -224,11 +314,19 @@ class ActionableOutcomeTest(CheckpointPackageSupport):
                     git_config.ProcessFailed(128, "mode write failed"),
                 ),
             ),
+            patch.dict(os.environ, {invocation_capture.LAUNCHER_PATH_VARIABLE: "/plugin/scripts/pinboard"}),
+            patch.object(
+                entrypoint, "_run_cli", side_effect=AssertionError("The target ran after trace setup failed.")
+            ),
+            redirect_stdout(output),
             redirect_stderr(error),
         ):
-            status = entrypoint.main(("--contributor-capture-select", *fixture.common, "status", "--json"))
+            status = entrypoint.main((*fixture.common, "status", "--json"))
         self.assertEqual(64, status)
+        self.assertEqual("", output.getvalue())
         self.assertIn(str(settings), error.getvalue())
+        self.assertIn("settings_parent_creation=none", error.getvalue())
         self.assertIn("settings_file_creation=confirmed", error.getvalue())
         self.assertIn("settings_mode_write=none", error.getvalue())
+        self.assertIn("the target did not run", error.getvalue())
         self.assertEqual(b"", settings.read_bytes())

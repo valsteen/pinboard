@@ -22,6 +22,11 @@ from pinboard.domain.errors import (
 class CliErrorCode(DescribedCode):
     ARGUMENT_INVALID = ("CLI_ARGUMENT_INVALID", "The CLI request failed validation for this operation.")
     IO_ERROR = ("CLI_IO_ERROR", "The CLI could not write its result to the selected output stream.")
+    FILESYSTEM_ERROR = (
+        "CLI_FILESYSTEM_ERROR",
+        "A CLI operation failed with an operating-system error that Pinboard does not otherwise classify; "
+        "a read-only operation changed nothing, and a mutating operation's effect is unknown until inspected.",
+    )
 
 
 def storage_failure_details(

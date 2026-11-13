@@ -1076,6 +1076,37 @@ class PluginPackagingTests(unittest.TestCase):
         self.assertEqual("", version.stderr)
         return launcher, environment, tree_fingerprint(plugin_root)
 
+    def assert_prepared_runtime_capture_records_the_launcher(
+        self, launcher: Path, project: Path, sandbox: Path, environment: dict[str, str]
+    ) -> None:
+        settings = project / ".pinboard" / "contributor-traces.config"
+        settings.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = on\n', encoding="utf-8")
+        manual = sandbox / "manual-capture.json"
+        commands = (
+            ("--project-root", str(project), "root"),
+            (
+                "--capture-evidence",
+                str(manual),
+                "--safe-to-persist-exactly",
+                "--",
+                "--project-root",
+                str(project),
+                "root",
+            ),
+        )
+        for arguments in commands:
+            result = subprocess.run(
+                [str(launcher), *arguments], cwd=sandbox, env=environment, check=False, capture_output=True
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+        [automatic] = tuple((project / ".pinboard" / "invocation-traces").glob("pinboard-auto-cli-*.json"))
+        for path, arguments in ((automatic, commands[0]), (manual, commands[1])):
+            record = json.loads(path.read_bytes())
+            self.assertEqual(
+                [str(launcher), *arguments], [bytes.fromhex(value["data"]).decode() for value in record["argv"]]
+            )
+        settings.write_text('[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = off\n', encoding="utf-8")
+
     def assert_registered_startup_context(self, plugin_root: Path, project: Path, environment: dict[str, str]) -> None:
         manifest = json.loads((plugin_root / ".claude-plugin" / "plugin.json").read_bytes())
         hooks = json.loads((plugin_root / manifest["hooks"]).read_bytes())["hooks"]
@@ -1233,6 +1264,7 @@ class PluginPackagingTests(unittest.TestCase):
             self.assertTrue(validation["valid"])
             self.assertNotIn("Optional next steps", reopened.stdout)
             self.assertTrue((project / ".pinboard" / "state.sqlite3").is_file())
+            self.assert_prepared_runtime_capture_records_the_launcher(launcher, project, sandbox, environment)
             self.assertEqual(before, tree_fingerprint(plugin_root))
             self.assertEqual(
                 managed_dependency_bytes,

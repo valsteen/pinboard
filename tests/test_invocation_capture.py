@@ -10,7 +10,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from typing import Literal
@@ -22,6 +21,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
+from evals.behavioral.export import LauncherResult
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
 from pinboard.mcp import execution, server
 
@@ -57,13 +57,62 @@ def _decode_bytes(value: CapturedBytes) -> bytes:
     return content
 
 
+def _bytes_json(content: bytes) -> str:
+    digest = hashlib.sha256(content).hexdigest()
+    return f'{{"encoding":"hex","sha256":"{digest}","size_bytes":{len(content)},"data":"{content.hex()}"}}'
+
+
+def _record_bytes(selector: str, argv: tuple[str, ...], exit_status: int, stdout: bytes, stderr: bytes) -> bytes:
+    """The capture record laid out field by field, as the v1 format has always been written."""
+    outcome = "interrupted" if exit_status >= 128 else "completed"
+    return (
+        '{"schema":"pinboard-cli-invocation-capture/v1","selector":'
+        + _bytes_json(selector.encode())
+        + ',"argv":['
+        + ",".join(_bytes_json(argument.encode()) for argument in argv)
+        + f'],"outcome":"{outcome}","exit_status":{exit_status},"stdout":'
+        + _bytes_json(stdout)
+        + ',"stderr":'
+        + _bytes_json(stderr)
+        + ',"environment":"not-captured","presentation":"outer-presentation-unavailable","accepted_evidence":false}\n'
+    ).encode()
+
+
 class LauncherCaptureTest(unittest.TestCase):
+    """CLI capture through a copied launcher whose prepared entry runs an injected target in Python."""
+
     def copy_launcher(self, root: Path) -> Path:
         (root / "scripts").mkdir()
         launcher = root / "scripts" / "pinboard"
         shutil.copyfile(ROOT / "scripts" / "pinboard", launcher)
         launcher.chmod(0o755)
         return launcher
+
+    def plugin_with_target(self, root: Path) -> Path:
+        launcher = self.copy_launcher(root)
+        entry = root / ".venv" / "bin" / "pinboard"
+        entry.parent.mkdir(parents=True)
+        entry.write_text(
+            f'#!/bin/sh\ncd "{ROOT}" || exit 70\nexec "{sys.executable}" -m tests.cli_capture_support "$@"\n',
+            encoding="utf-8",
+        )
+        entry.chmod(0o755)
+        return launcher
+
+    def run_launcher(
+        self,
+        launcher: Path,
+        *arguments: str,
+        target: str,
+        environment: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            [str(launcher), *arguments],
+            capture_output=True,
+            check=False,
+            cwd=launcher.parent.parent,
+            env={**os.environ, "PINBOARD_TEST_TARGET": target, **(environment or {})},
+        )
 
     def write_entry(self, root: Path, name: str, body: str) -> Path:
         entry = root / ".venv" / "bin" / name
@@ -72,13 +121,8 @@ class LauncherCaptureTest(unittest.TestCase):
         entry.chmod(0o755)
         return entry
 
-    def run_launcher(
-        self,
-        launcher: Path,
-        *arguments: str,
-        env: dict[str, str] | None = None,
-    ) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run([str(launcher), *arguments], capture_output=True, check=False, env=env)
+    def manual(self, capture: Path, *arguments: str) -> tuple[str, ...]:
+        return ("--capture-evidence", str(capture), "--safe-to-persist-exactly", "--", *arguments)
 
     def read_capture(self, path: Path) -> CliInvocationCapture:
         self.assertEqual(0o600, stat.S_IMODE(path.stat().st_mode))
@@ -86,333 +130,423 @@ class LauncherCaptureTest(unittest.TestCase):
         self.assertFalse(capture.accepted_evidence)
         return capture
 
+    def launcher_result(self, output: bytes) -> LauncherResult:
+        return msgspec.json.decode(output, type=LauncherResult, strict=True)
+
     def test_capture_preserves_read_and_authority_changing_process_results_once(self) -> None:
-        for exit_status, marker_text in ((0, "read"), (12, "authority")):
+        for exit_status in (0, 12):
             with self.subTest(exit_status=exit_status), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                launcher = self.copy_launcher(root)
+                root = Path(temporary).resolve()
+                launcher = self.plugin_with_target(root)
                 marker = root / "effect"
-                self.write_entry(
-                    root,
-                    "pinboard",
-                    f'printf "%s\\n" "$*"\nprintf "stderr-{marker_text}\\n" >&2\nprintf x >> "{marker}"\nexit {exit_status}\n',
-                )
+                scratch = root / "scratch"
+                scratch.mkdir()
                 capture = root / "private" / "capture.json"
                 capture.parent.mkdir()
 
                 result = self.run_launcher(
                     launcher,
-                    "--capture-evidence",
-                    str(capture),
-                    "--safe-to-persist-exactly",
-                    "--",
-                    "status",
-                    "--json",
+                    *self.manual(capture, "status", "--json"),
+                    target=f"status:{exit_status}",
+                    environment={"PINBOARD_TEST_EFFECT": str(marker), "TMPDIR": str(scratch)},
                 )
 
-                self.assertEqual(exit_status, result.returncode)
-                self.assertEqual(b"status --json\n", result.stdout)
-                self.assertEqual(f"stderr-{marker_text}\n".encode(), result.stderr)
+                self.assertEqual(exit_status, result.returncode, result.stderr)
+                self.assertEqual(b"target-stdout\n", result.stdout)
+                self.assertEqual(b"target-stderr\n", result.stderr)
                 self.assertEqual(b"x", marker.read_bytes())
+                self.assertEqual((capture,), tuple(capture.parent.iterdir()))
+                self.assertEqual((), tuple(scratch.iterdir()))
                 evidence = self.read_capture(capture)
                 self.assertEqual(exit_status, evidence.exit_status)
                 self.assertEqual("completed", evidence.outcome)
                 self.assertEqual(result.stdout, _decode_bytes(evidence.stdout))
                 self.assertEqual(result.stderr, _decode_bytes(evidence.stderr))
                 invoked = tuple(_decode_bytes(value).decode() for value in evidence.argv)
-                self.assertEqual(
-                    (
-                        str(launcher),
-                        "--capture-evidence",
-                        str(capture),
-                        "--safe-to-persist-exactly",
-                        "--",
-                        "status",
-                        "--json",
-                    ),
-                    invoked,
-                )
+                self.assertEqual((str(launcher), *self.manual(capture, "status", "--json")), invoked)
                 self.assertEqual(str(capture).encode(), _decode_bytes(evidence.selector))
+                self.assertEqual(
+                    _record_bytes(str(capture), invoked, exit_status, result.stdout, result.stderr),
+                    capture.read_bytes(),
+                )
 
     def test_capture_rejects_incomplete_or_invalid_safety_input_before_target(self) -> None:
         cases = (
             ("--capture-evidence",),
             ("--capture-evidence", "capture.json", "status"),
             ("--capture-evidence", "capture.json", "--safe-to-persist-exactly", "status"),
+            ("--capture-evidence", "capture.json", "--safe-to-persist-exactly", "--"),
             ("status", "--capture-evidence=capture.json", "--safe-to-persist-exactly"),
             ("--safe-to-persist-exactly", "status"),
         )
         for arguments in cases:
             with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                launcher = self.copy_launcher(root)
+                root = Path(temporary).resolve()
+                launcher = self.plugin_with_target(root)
                 marker = root / "effect"
-                self.write_entry(root, "pinboard", f'printf x >> "{marker}"\n')
-
-                result = self.run_launcher(launcher, *arguments)
-
-                self.assertEqual(64, result.returncode)
-                self.assertFalse(marker.exists())
-                self.assertFalse((root / "capture.json").exists())
-                self.assertEqual("invalid-capture-arguments", json.loads(result.stdout)["status"])
-
-    def test_cli_capture_rejects_protocol_and_hook_startup_before_target(self) -> None:
-        for selector, entry_name in (
-            ("--mcp", "pinboard-mcp"),
-            ("--claude-session-start", "pinboard-claude-session-start"),
-            ("--claude-subagent-start", "pinboard-claude-subagent-start"),
-        ):
-            with self.subTest(selector=selector), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                launcher = self.copy_launcher(root)
-                marker = root / "effect"
-                self.write_entry(root, entry_name, f'printf x >> "{marker}"\n')
-                capture = root / "capture.json"
 
                 result = self.run_launcher(
-                    launcher,
-                    "--capture-evidence",
-                    str(capture),
-                    "--safe-to-persist-exactly",
-                    "--",
-                    selector,
+                    launcher, *arguments, target="status:0", environment={"PINBOARD_TEST_EFFECT": str(marker)}
                 )
 
                 self.assertEqual(64, result.returncode)
                 self.assertFalse(marker.exists())
-                self.assertFalse(capture.exists())
-                self.assertEqual("invalid-capture-arguments", json.loads(result.stdout)["status"])
+                self.assertFalse((root / "capture.json").exists())
+                rejected = self.launcher_result(result.stdout)
+                self.assertEqual("invalid-capture-arguments", rejected.status)
+                self.assertFalse(rejected.pinboard_started)
 
-    def test_capture_reserves_writable_publication_before_target(self) -> None:
+    def test_cli_capture_rejects_launcher_only_targets_before_target(self) -> None:
+        for target_arguments in (
+            ("--prepare-runtime",),
+            ("--mcp",),
+            ("--claude-session-start",),
+            ("--claude-subagent-start",),
+            ("--claude-pre-tool-use",),
+            ("--antigravity-session-start",),
+            ("--antigravity-pre-tool-use",),
+            ("--capture-evidence", "nested.json", "--safe-to-persist-exactly", "--", "status"),
+            ("status", "--capture-evidence-dir", "."),
+        ):
+            with self.subTest(target_arguments=target_arguments), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                launcher = self.plugin_with_target(root)
+                marker = root / "effect"
+                capture = root / "capture.json"
+
+                result = self.run_launcher(
+                    launcher,
+                    *self.manual(capture, *target_arguments),
+                    target="status:0",
+                    environment={"PINBOARD_TEST_EFFECT": str(marker)},
+                )
+
+                self.assertEqual(64, result.returncode)
+                self.assertFalse(marker.exists())
+                self.assertEqual((), tuple(root.glob("*.json")))
+                self.assertEqual("invalid-capture-arguments", self.launcher_result(result.stdout).status)
+
+    def test_capture_refuses_dot_named_unavailable_and_existing_destinations_before_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            launcher = self.copy_launcher(root)
+            root = Path(temporary).resolve()
+            launcher = self.plugin_with_target(root)
             marker = root / "effect"
-            self.write_entry(root, "pinboard", f'printf x >> "{marker}"\n')
+            existing = root / "existing.json"
+            existing.write_bytes(b"existing")
+            existing.chmod(0o400)
+            for destination in (f"{root}/.", f"{root}/..", f"{root}/missing/capture.json", str(existing)):
+                with self.subTest(destination=destination):
+                    result = self.run_launcher(
+                        launcher,
+                        "--capture-evidence",
+                        destination,
+                        "--safe-to-persist-exactly",
+                        "--",
+                        "status",
+                        target="status:0",
+                        environment={"PINBOARD_TEST_EFFECT": str(marker)},
+                    )
+
+                    self.assertEqual(64, result.returncode)
+                    self.assertFalse(marker.exists())
+                    self.assertEqual("invalid-capture-arguments", self.launcher_result(result.stdout).status)
+            self.assertEqual(b"existing", existing.read_bytes())
+            self.assertEqual((), tuple(root.glob(".pinboard-capture-stage.*")))
+
+    def test_capture_reserves_its_stage_in_the_selected_parent_before_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            launcher = self.plugin_with_target(root)
+            marker = root / "effect"
             capture = root / "private" / "capture.json"
             capture.parent.mkdir()
-            fake_bin = root / "bin"
-            fake_bin.mkdir()
-            real_mktemp = shutil.which("mktemp")
-            assert real_mktemp is not None
-            fake_mktemp = fake_bin / "mktemp"
-            fake_mktemp.write_text(
-                f'#!/bin/sh\nif [ "$1" = "-d" ]; then exec "{real_mktemp}" "$@"; fi\nexit 1\n',
-                encoding="utf-8",
-            )
-            fake_mktemp.chmod(0o755)
-            environment = os.environ.copy()
-            environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
-
-            result = self.run_launcher(
-                launcher,
-                "--capture-evidence",
-                str(capture),
-                "--safe-to-persist-exactly",
-                "--",
-                "status",
-                env=environment,
-            )
+            capture.parent.chmod(0o500)
+            try:
+                result = self.run_launcher(
+                    launcher,
+                    *self.manual(capture, "status"),
+                    target="status:0",
+                    environment={"PINBOARD_TEST_EFFECT": str(marker)},
+                )
+            finally:
+                capture.parent.chmod(0o700)
 
             self.assertEqual(64, result.returncode)
             self.assertFalse(marker.exists())
-            self.assertFalse(capture.exists())
-            self.assertEqual("invalid-capture-arguments", json.loads(result.stdout)["status"])
-
-    def test_capture_rejects_an_existing_read_only_destination_before_target(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            launcher = self.copy_launcher(root)
-            marker = root / "effect"
-            self.write_entry(root, "pinboard", f'printf x >> "{marker}"\n')
-            capture = root / "capture.json"
-            capture.write_bytes(b"existing")
-            capture.chmod(0o400)
-
-            result = self.run_launcher(
-                launcher,
-                "--capture-evidence",
-                str(capture),
-                "--safe-to-persist-exactly",
-                "--",
-                "--version",
-            )
-
-            self.assertEqual(64, result.returncode)
-            self.assertFalse(marker.exists())
-            self.assertEqual(b"existing", capture.read_bytes())
-            self.assertEqual("invalid-capture-arguments", json.loads(result.stdout)["status"])
+            self.assertEqual((), tuple(capture.parent.iterdir()))
+            rejected = self.launcher_result(result.stdout)
+            self.assertEqual("invalid-capture-arguments", rejected.status)
+            self.assertIn("write access", rejected.observations[0])
 
     def test_capture_reports_post_target_publication_failure_without_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            launcher = self.copy_launcher(root)
+            root = Path(temporary).resolve()
+            launcher = self.plugin_with_target(root)
             capture = root / "private" / "capture.json"
             capture.parent.mkdir()
-            self.write_entry(root, "pinboard", 'printf "target-output\\n"\nprintf occupied > "$1"\n')
 
-            result = self.run_launcher(
-                launcher,
-                "--capture-evidence",
-                str(capture),
-                "--safe-to-persist-exactly",
-                "--",
-                str(capture),
-            )
+            result = self.run_launcher(launcher, *self.manual(capture, "status"), target=f"occupy:{capture}")
 
             self.assertEqual(74, result.returncode)
             self.assertEqual(b"target-output\n", result.stdout)
             self.assertEqual(b"occupied", capture.read_bytes())
-            failure = json.loads(result.stderr)
-            self.assertEqual("capture-publication-failed", failure["status"])
-            self.assertEqual(0, failure["upstream_exit_code"])
-            self.assertEqual("potentially-changed", failure["effect_disposition"])
-            self.assertEqual("do-not-retry", failure["retry_disposition"])
-            self.assertEqual((), tuple(capture.parent.glob(".pinboard-capture-stage.*")))
+            self.assertEqual((capture,), tuple(capture.parent.iterdir()))
+            failure = self.launcher_result(result.stderr)
+            self.assertEqual("capture-publication-failed", failure.status)
+            self.assertTrue(failure.pinboard_started)
+            self.assertEqual(0, failure.upstream_exit_code)
+            self.assertEqual("potentially-changed", failure.effect_disposition)
+            self.assertEqual("do-not-retry", failure.retry_disposition)
+            self.assertEqual(["target"], failure.changed_surfaces)
+            self.assertIn(str(capture), failure.observations[0])
 
-    def test_capture_records_prestart_failure_interruption_and_large_output_without_replay(self) -> None:
+    def test_captured_exit_and_output_match_an_uncaptured_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            launcher = self.copy_launcher(root)
-            prestart = root / "prestart.json"
-            result = self.run_launcher(
-                launcher,
-                "--capture-evidence",
-                str(prestart),
-                "--safe-to-persist-exactly",
-                "--",
-                "status",
-                "--json",
-            )
-            self.assertEqual(78, result.returncode)
-            self.assertEqual(result.stdout, _decode_bytes(self.read_capture(prestart).stdout))
+            root = Path(temporary).resolve()
+            launcher = self.plugin_with_target(root)
+            ordinary = ("--project-root", str(root), "status")
+            for target, exit_status in (("raise", 1), ("system-exit-text", 1), ("large", 3), ("status:143", 143)):
+                with self.subTest(target=target):
+                    capture = root / f"{target.replace(':', '-')}.json"
+                    uncaptured = self.run_launcher(launcher, *ordinary, target=target)
+                    captured = self.run_launcher(launcher, *self.manual(capture, *ordinary), target=target)
 
-            self.write_entry(root, "pinboard", 'printf "partial\\n"\nprintf "interrupted\\n" >&2\nexit 143\n')
-            interrupted = root / "interrupted.json"
-            result = self.run_launcher(
-                launcher,
-                "--capture-evidence",
-                str(interrupted),
-                "--safe-to-persist-exactly",
-                "--",
-                "status",
-            )
-            evidence = self.read_capture(interrupted)
-            self.assertEqual(143, result.returncode)
-            self.assertEqual("interrupted", evidence.outcome)
-            self.assertEqual(b"partial\n", _decode_bytes(evidence.stdout))
-            self.assertEqual(b"interrupted\n", _decode_bytes(evidence.stderr))
+                    self.assertEqual(exit_status, uncaptured.returncode)
+                    self.assertEqual(
+                        (uncaptured.returncode, uncaptured.stdout, uncaptured.stderr),
+                        (captured.returncode, captured.stdout, captured.stderr),
+                    )
+                    evidence = self.read_capture(capture)
+                    self.assertEqual(captured.returncode, evidence.exit_status)
+                    self.assertEqual("interrupted" if exit_status >= 128 else "completed", evidence.outcome)
+                    self.assertEqual(captured.stdout, _decode_bytes(evidence.stdout))
+                    self.assertEqual(captured.stderr, _decode_bytes(evidence.stderr))
+            self.assertIn(b"RuntimeError: target failed", self.run_launcher(launcher, *ordinary, target="raise").stderr)
 
-            self.write_entry(root, "pinboard", "head -c 20000 /dev/zero | tr '\\000' x\n")
-            large = root / "large.json"
-            result = self.run_launcher(
-                launcher,
-                "--capture-evidence",
-                str(large),
-                "--safe-to-persist-exactly",
-                "--",
-                "status",
-            )
-            self.assertEqual(20_000, len(result.stdout))
-            self.assertEqual(result.stdout, _decode_bytes(self.read_capture(large).stdout))
-
-    def test_real_signal_preserves_capture_and_propagates_signal_status(self) -> None:
+    def test_real_cli_exits_and_output_match_an_uncaptured_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            launcher = self.copy_launcher(root)
-            marker = root / "started"
-            scratch = root / "scratch"
-            scratch.mkdir()
-            self.write_entry(
-                root,
-                "pinboard",
-                f'printf "partial\\n"\nprintf "interrupted\\n" >&2\n: > "{marker}"\nwhile :; do sleep 1; done\n',
-            )
-            capture = root / "private" / "capture.json"
-            capture.parent.mkdir()
-            environment = os.environ.copy()
-            environment["TMPDIR"] = str(scratch)
-            process = subprocess.Popen(
-                [
-                    str(launcher),
-                    "--capture-evidence",
-                    str(capture),
-                    "--safe-to-persist-exactly",
-                    "--",
-                    "status",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=environment,
-                start_new_session=True,
-            )
-            try:
-                deadline = time.monotonic() + 5
-                while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                self.assertTrue(marker.exists(), "target did not reach its deterministic signal barrier")
+            root = Path(temporary).resolve()
+            launcher = ROOT / "scripts" / "pinboard"
+            for arguments in (
+                ("--version",),
+                ("--help",),
+                ("root", "--bogus"),
+                ("code-catalog", "--json"),
+                ("--project-root", str(root), "status"),
+            ):
+                with self.subTest(arguments=arguments):
+                    capture = root / "capture.json"
+                    capture.unlink(missing_ok=True)
+                    uncaptured = subprocess.run([str(launcher), *arguments], capture_output=True, check=False, cwd=root)
+                    captured = subprocess.run(
+                        [str(launcher), *self.manual(capture, *arguments)], capture_output=True, check=False, cwd=root
+                    )
+                    self.assertEqual(
+                        (uncaptured.returncode, uncaptured.stdout, uncaptured.stderr),
+                        (captured.returncode, captured.stdout, captured.stderr),
+                    )
+                    if arguments == ("code-catalog", "--json"):
+                        self.assertGreater(len(captured.stdout), 65_536)
+                    evidence = self.read_capture(capture)
+                    self.assertEqual(captured.returncode, evidence.exit_status)
+                    self.assertEqual(captured.stdout, _decode_bytes(evidence.stdout))
+                    self.assertEqual(captured.stderr, _decode_bytes(evidence.stderr))
+                    self.assertEqual(
+                        (str(launcher), *self.manual(capture, *arguments)),
+                        tuple(_decode_bytes(value).decode() for value in evidence.argv),
+                    )
+
+    def test_interrupt_ends_target_with_signal_status_and_publishes_record(self) -> None:
+        for name in ("SIGHUP", "SIGINT", "SIGTERM"):
+            with self.subTest(signal=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                launcher = self.plugin_with_target(root)
+                scratch = root / "scratch"
+                scratch.mkdir()
+                capture = root / "private" / "capture.json"
+                capture.parent.mkdir()
+
+                result = self.run_launcher(
+                    launcher,
+                    *self.manual(capture, "status"),
+                    target=f"signal:{name}",
+                    environment={"TMPDIR": str(scratch)},
+                )
+
+                status = 128 + signal.Signals[name]
+                self.assertEqual(status, result.returncode)
+                self.assertEqual(b"partial\n", result.stdout)
+                self.assertEqual(b"interrupted\n", result.stderr)
+                evidence = self.read_capture(capture)
+                self.assertEqual("interrupted", evidence.outcome)
+                self.assertEqual(status, evidence.exit_status)
+                self.assertEqual(result.stdout, _decode_bytes(evidence.stdout))
+                self.assertEqual(result.stderr, _decode_bytes(evidence.stderr))
+                self.assertEqual((capture,), tuple(capture.parent.iterdir()))
                 self.assertEqual((), tuple(scratch.iterdir()))
-                self.assertTrue(tuple(capture.parent.glob(".pinboard-capture.*")))
-                process.send_signal(signal.SIGTERM)
-                stdout, stderr = process.communicate(timeout=5)
-            finally:
-                if process.poll() is None:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
 
-            self.assertEqual(128 + signal.SIGTERM, process.returncode)
-            self.assertEqual(b"partial\n", stdout)
-            self.assertEqual(b"interrupted\n", stderr)
-            evidence = self.read_capture(capture)
-            self.assertEqual("interrupted", evidence.outcome)
-            self.assertEqual(128 + signal.SIGTERM, evidence.exit_status)
-            self.assertEqual(stdout, _decode_bytes(evidence.stdout))
-            self.assertEqual(stderr, _decode_bytes(evidence.stderr))
-            self.assertEqual((), tuple(capture.parent.glob(".pinboard-capture-stage.*")))
-            self.assertEqual((), tuple(capture.parent.glob(".pinboard-capture.*")))
-            self.assertEqual((), tuple(scratch.iterdir()))
+    def test_signals_ignored_at_startup_stay_ignored_under_capture(self) -> None:
+        for name in ("SIGHUP", "SIGINT"):
+            with self.subTest(signal=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                launcher = self.plugin_with_target(root)
+                capture = root / "capture.json"
+                # Start the launcher as `nohup` or a background job would, with the signal already ignored.
+                ignoring = ("/bin/sh", "-c", f'trap "" {name.removeprefix("SIG")}; exec "$0" "$@"', str(launcher))
+                uncaptured, captured = (
+                    subprocess.run(
+                        [*ignoring, *arguments],
+                        capture_output=True,
+                        check=False,
+                        cwd=root,
+                        env={**os.environ, "PINBOARD_TEST_TARGET": f"signal:{name}"},
+                    )
+                    for arguments in (("status",), self.manual(capture, "status"))
+                )
 
-    def test_d222_rejection_and_d223_publication_remain_separate_invocations(self) -> None:
+                self.assertEqual(0, uncaptured.returncode, uncaptured.stderr)
+                self.assertEqual(b"partial\nsignal-not-delivered\n", uncaptured.stdout)
+                self.assertEqual(
+                    (uncaptured.returncode, uncaptured.stdout, uncaptured.stderr),
+                    (captured.returncode, captured.stdout, captured.stderr),
+                )
+                evidence = self.read_capture(capture)
+                self.assertEqual(("completed", 0), (evidence.outcome, evidence.exit_status))
+                self.assertEqual(captured.stdout, _decode_bytes(evidence.stdout))
+                self.assertEqual(captured.stderr, _decode_bytes(evidence.stderr))
+
+    def test_signal_during_publication_changes_only_a_failed_publication_status(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            launcher = self.copy_launcher(root)
-            self.write_entry(
-                root,
-                "pinboard",
-                'if [ "$1" = "--checkpoint-history-id" ]; then\n'
-                '  printf \'%s\\n\' \'{"schema":"pinboard-rejected-operation/v1","status":"rejected","state_changed":false,"changed_surfaces":[]}\'\n'
-                "  exit 2\n"
-                "fi\n"
-                'printf \'%s\\n\' \'{"schema":"pinboard-dispatch-ready/v2","status":"ready","changed_surfaces":["immutable-artifact","accepted-artifact-reference","ledger"]}\'\n',
+            root = Path(temporary).resolve()
+            launcher = self.plugin_with_target(root)
+            published = root / "published.json"
+            result = self.run_launcher(
+                launcher,
+                *self.manual(published, "status"),
+                target="status:0",
+                environment={"PINBOARD_TEST_PUBLICATION_SIGNAL": "SIGTERM"},
             )
-            rejection = root / "d222.json"
-            publication = root / "d223.json"
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual((b"target-stdout\n", b"target-stderr\n"), (result.stdout, result.stderr))
+            evidence = self.read_capture(published)
+            self.assertEqual(("completed", 0), (evidence.outcome, evidence.exit_status))
+            self.assertEqual(result.stdout, _decode_bytes(evidence.stdout))
 
-            first = self.run_launcher(
+            occupied = root / "occupied.json"
+            failed = self.run_launcher(
                 launcher,
-                "--capture-evidence",
-                str(rejection),
-                "--safe-to-persist-exactly",
-                "--",
-                "--checkpoint-history-id",
-                "3348",
+                *self.manual(occupied, "status"),
+                target=f"occupy:{occupied}",
+                environment={"PINBOARD_TEST_PUBLICATION_SIGNAL": "SIGHUP"},
             )
-            second = self.run_launcher(
+            self.assertEqual(128 + signal.SIGHUP, failed.returncode)
+            self.assertEqual(b"target-output\n", failed.stdout)
+            self.assertEqual("capture-publication-failed", self.launcher_result(failed.stderr).status)
+            self.assertEqual((), tuple(root.glob(".pinboard-capture-stage.*")))
+
+    def test_signal_after_a_raising_target_still_publishes_and_replays(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            launcher = self.plugin_with_target(root)
+            published = root / "published" / "capture.json"
+            published.parent.mkdir()
+
+            result = self.run_launcher(
                 launcher,
-                "--capture-evidence",
-                str(publication),
-                "--safe-to-persist-exactly",
-                "--",
-                "dispatch",
+                *self.manual(published, "status"),
+                target="raise",
+                environment={"PINBOARD_TEST_HANDOFF_SIGNAL": "SIGTERM"},
+            )
+
+            self.assertEqual(128 + signal.SIGTERM, result.returncode, result.stderr)
+            self.assertEqual(b"partial\n", result.stdout)
+            evidence = self.read_capture(published)
+            self.assertEqual(("interrupted", result.returncode), (evidence.outcome, evidence.exit_status))
+            self.assertEqual(result.stdout, _decode_bytes(evidence.stdout))
+            self.assertEqual(result.stderr, _decode_bytes(evidence.stderr))
+            self.assertEqual((published,), tuple(published.parent.iterdir()))
+
+            occupied = root / "occupied" / "capture.json"
+            occupied.parent.mkdir()
+            failed = self.run_launcher(
+                launcher,
+                *self.manual(occupied, "status"),
+                target=f"occupy-raise:{occupied}",
+                environment={"PINBOARD_TEST_HANDOFF_SIGNAL": "SIGINT"},
+            )
+
+            self.assertEqual(128 + signal.SIGINT, failed.returncode)
+            self.assertEqual(b"partial\n", failed.stdout)
+            failure = self.launcher_result(failed.stderr)
+            self.assertEqual("capture-publication-failed", failure.status)
+            self.assertEqual(128 + signal.SIGINT, failure.upstream_exit_code)
+            self.assertEqual("do-not-retry", failure.retry_disposition)
+            self.assertEqual(b"occupied", occupied.read_bytes())
+            self.assertEqual((occupied,), tuple(occupied.parent.iterdir()))
+
+    def test_rejection_and_publication_remain_separate_invocations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            launcher = ROOT / "scripts" / "pinboard"
+            rejection = root / "rejection.json"
+            publication = root / "publication.json"
+
+            first = subprocess.run(
+                [str(launcher), *self.manual(rejection, "root", "--bogus")], capture_output=True, check=False, cwd=root
+            )
+            second = subprocess.run(
+                [str(launcher), *self.manual(publication, "--version")], capture_output=True, check=False, cwd=root
             )
 
             self.assertEqual((2, 0), (first.returncode, second.returncode))
             self.assertNotEqual(rejection.read_bytes(), publication.read_bytes())
-            self.assertFalse(json.loads(_decode_bytes(self.read_capture(rejection).stdout))["state_changed"])
-            self.assertEqual(
-                ["immutable-artifact", "accepted-artifact-reference", "ledger"],
-                json.loads(_decode_bytes(self.read_capture(publication).stdout))["changed_surfaces"],
+            self.assertEqual(first.stderr, _decode_bytes(self.read_capture(rejection).stderr))
+            self.assertEqual(second.stdout, _decode_bytes(self.read_capture(publication).stdout))
+
+    def test_manual_capture_records_the_targets_missing_project_root_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            capture = root / "capture.json"
+            missing = root / "missing"
+            arguments = ("--project-root", str(missing), "root")
+            uncaptured = subprocess.run(
+                [str(ROOT / "scripts" / "pinboard"), *arguments], capture_output=True, check=False, cwd=root
             )
+            captured = subprocess.run(
+                [str(ROOT / "scripts" / "pinboard"), *self.manual(capture, *arguments)],
+                capture_output=True,
+                check=False,
+                cwd=root,
+            )
+            self.assertEqual(2, uncaptured.returncode)
+            self.assertIn(str(missing).encode(), uncaptured.stderr)
+            self.assertEqual(
+                (uncaptured.returncode, uncaptured.stdout, uncaptured.stderr),
+                (captured.returncode, captured.stdout, captured.stderr),
+            )
+            evidence = self.read_capture(capture)
+            self.assertEqual(("completed", 2), (evidence.outcome, evidence.exit_status))
+            self.assertEqual(captured.stderr, _decode_bytes(evidence.stderr))
+            self.assertFalse(missing.exists())
+
+    def test_unprepared_runtime_and_direct_entry_do_not_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            launcher = self.copy_launcher(root)
+            capture = root / "capture.json"
+            unprepared = subprocess.run(
+                [str(launcher), *self.manual(capture, "--version")], capture_output=True, check=False, cwd=root
+            )
+            self.assertEqual(78, unprepared.returncode)
+            self.assertEqual("runtime-preparation-required", json.loads(unprepared.stdout)["status"])
+            direct = subprocess.run(
+                [str(Path(sys.executable).parent / "pinboard"), *self.manual(capture, "--version")],
+                capture_output=True,
+                check=False,
+                cwd=root,
+            )
+            self.assertEqual(2, direct.returncode)
+            self.assertFalse(capture.exists())
 
     def test_dedicated_mcp_capture_startup_forwards_only_the_complete_pair(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -428,8 +562,11 @@ class LauncherCaptureTest(unittest.TestCase):
                 "--capture-evidence-dir",
                 str(capture_directory),
                 "--safe-to-persist-exactly",
+                target="unused",
             )
-            invalid = self.run_launcher(launcher, "--mcp", "--capture-evidence-dir", str(capture_directory))
+            invalid = self.run_launcher(
+                launcher, "--mcp", "--capture-evidence-dir", str(capture_directory), target="unused"
+            )
 
             self.assertEqual(0, valid.returncode)
             self.assertEqual(

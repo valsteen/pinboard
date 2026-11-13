@@ -1,8 +1,8 @@
 """Verified settings and confirmed first-use effects at file boundaries.
 
 Contributor trace settings and per-user host settings share one key-level seeding route: an absent file is
-created privately, a missing key is written through Git config on an exclusive lock copy that Git writers and
-the pre-runtime launcher also honor, and the stored value is read back before use.
+created privately, a missing key is written through Git config on an exclusive lock copy that Git writers also
+honor, and the stored value is read back before use.
 """
 
 import errno

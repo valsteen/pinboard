@@ -7,6 +7,7 @@ import stat
 import subprocess
 from collections.abc import Mapping
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
@@ -186,7 +187,16 @@ def automatic_trace_directory(data_root: Path, settings: ContributorTraceSetting
     return _trace_directory(data_root) if effective == "on" else None
 
 
-def select_cli_trace(arguments: tuple[str, ...]) -> Path | None:
+@dataclass(frozen=True)
+class CliTraceSelection:
+    """The leading root options and `close` item of one CLI call, which select its automatic trace."""
+
+    project_root: Path | None
+    work_root: Path | None
+    item_id: str | None
+
+
+def cli_trace_selection(arguments: tuple[str, ...]) -> CliTraceSelection:
     project_root: Path | None = None
     work_root: Path | None = None
     position = 0
@@ -204,27 +214,20 @@ def select_cli_trace(arguments: tuple[str, ...]) -> Path | None:
             project_root = Path(value)
         elif argument == "--work-root":
             work_root = Path(value)
-    selected = project_root if project_root is not None else Path.cwd()
-    state = read_project_trace_settings(selected, work_root)
-    if state is None:
-        return None
     item_id = (
         arguments[position + 1]
         if arguments[position : position + 1] == ("close",) and position + 1 < len(arguments)
         else None
     )
-    directory = automatic_trace_directory(state[0], state[1].value, item_id)
+    return CliTraceSelection(project_root, work_root, item_id)
+
+
+def select_cli_trace(selection: CliTraceSelection) -> Path | None:
+    selected = selection.project_root if selection.project_root is not None else Path.cwd()
+    state = read_project_trace_settings(selected, selection.work_root)
+    if state is None:
+        return None
+    directory = automatic_trace_directory(state[0], state[1].value, selection.item_id)
     if directory is None:
         return None
-    prune_traces(directory)
     return directory / f"pinboard-auto-cli-{secrets.token_hex(16)}.json"
-
-
-def prune_cli_traces(selected: Path) -> None:
-    if (
-        selected.parent.name != TRACE_DIRECTORY
-        or not selected.name.startswith("pinboard-auto-cli-")
-        or selected.suffix != ".json"
-    ):
-        raise ValueError("Automatic trace destination is invalid.")
-    prune_traces(selected.parent)

@@ -115,6 +115,21 @@ class LauncherCaptureTest(unittest.TestCase):
             env={**os.environ, "PINBOARD_TEST_TARGET": target, **(environment or {})},
         )
 
+    def run_with_closed_stdout(
+        self, launcher: Path, *arguments: str, cwd: Path, environment: dict[str, str]
+    ) -> subprocess.CompletedProcess[bytes]:
+        reader, writer = os.pipe()
+        os.close(reader)
+        with os.fdopen(writer, "wb") as closed_stdout:
+            return subprocess.run(
+                [str(launcher), *arguments],
+                stdout=closed_stdout,
+                stderr=subprocess.PIPE,
+                check=False,
+                cwd=cwd,
+                env=environment,
+            )
+
     def write_entry(self, root: Path, name: str, body: str) -> Path:
         entry = root / ".venv" / "bin" / name
         entry.parent.mkdir(parents=True, exist_ok=True)
@@ -300,6 +315,94 @@ class LauncherCaptureTest(unittest.TestCase):
             self.assertEqual("do-not-retry", failure.retry_disposition)
             self.assertEqual(["target"], failure.changed_surfaces)
             self.assertIn(str(capture), failure.observations[0])
+
+    def test_closed_stdout_keeps_stderr_and_the_failed_publication_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            launcher = self.plugin_with_target(root)
+            capture = root / "capture.json"
+
+            result = self.run_with_closed_stdout(
+                launcher,
+                *self.manual(capture, "status"),
+                cwd=root,
+                environment={**os.environ, "PINBOARD_TEST_TARGET": f"occupy-raise:{capture}"},
+            )
+
+            self.assertEqual(1, result.returncode)
+            self.assertIn(b"RuntimeError: target failed", result.stderr)
+            self.assertIn(b"BrokenPipeError", result.stderr)
+            diagnostic = next((line for line in result.stderr.splitlines() if line.startswith(b"{")), b"")
+            self.assertTrue(diagnostic, result.stderr)
+            failure = self.launcher_result(diagnostic)
+            self.assertEqual("capture-publication-failed", failure.status)
+            self.assertEqual(1, failure.upstream_exit_code)
+            self.assertEqual("potentially-changed", failure.effect_disposition)
+            self.assertEqual("do-not-retry", failure.retry_disposition)
+            self.assertEqual(b"occupied", capture.read_bytes())
+
+    def test_installed_buffered_rejection_can_be_recovered_when_stdout_closes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            launcher = ROOT / "scripts" / "pinboard"
+            environment = dict(os.environ)
+            environment.pop("PYTHONUNBUFFERED", None)
+            subprocess.run(["git", "init", "-b", "main"], check=True, cwd=root, capture_output=True)
+            work_root = root / ".pinboard"
+            work_root.mkdir()
+            (work_root / "views").write_text("blocks generated views\n", encoding="utf-8")
+            arguments = ("--project-root", str(root), "init", "--json")
+            initialized = subprocess.run(
+                [str(launcher), *arguments],
+                capture_output=True,
+                check=False,
+                cwd=root,
+                env=environment,
+            )
+            self.assertEqual(12, initialized.returncode, initialized.stderr)
+            self.assertEqual("committed-effect", json.loads(initialized.stdout)["status"])
+            database = work_root / "state.sqlite3"
+            database_before = database.read_bytes()
+            exclude = root / ".git" / "info" / "exclude"
+            exclude_before = exclude.read_bytes()
+            expected = subprocess.run(
+                [str(launcher), *arguments],
+                capture_output=True,
+                check=False,
+                cwd=root,
+                env=environment,
+            )
+            self.assertEqual(12, expected.returncode, expected.stderr)
+            rejection = json.loads(expected.stdout)
+            self.assertEqual("VIEW_REFRESH_FAILED", rejection["code"])
+            self.assertEqual("rejected", rejection["status"])
+            self.assertFalse(rejection["state_changed"])
+            self.assertEqual([], rejection["changed_surfaces"])
+
+            direct = self.run_with_closed_stdout(launcher, *arguments, cwd=root, environment=environment)
+            self.assertNotEqual(0, direct.returncode)
+            self.assertIn(b"VIEW_REFRESH_FAILED: Generated views could not be rebuilt", direct.stderr)
+            self.assertIn(b"BrokenPipeError", direct.stderr)
+            self.assertEqual(database_before, database.read_bytes())
+            self.assertEqual(exclude_before, exclude.read_bytes())
+
+            capture = root / "capture.json"
+            replay = self.run_with_closed_stdout(
+                launcher,
+                *self.manual(capture, *arguments),
+                cwd=root,
+                environment=environment,
+            )
+            self.assertEqual(1, replay.returncode)
+            self.assertIn(os.fsencode(capture), replay.stderr)
+            self.assertIn(b"exit status 12", replay.stderr)
+            self.assertIn(b"BrokenPipeError", replay.stderr)
+            evidence = self.read_capture(capture)
+            self.assertEqual(expected.returncode, evidence.exit_status)
+            self.assertEqual(expected.stdout, _decode_bytes(evidence.stdout))
+            self.assertEqual(expected.stderr, _decode_bytes(evidence.stderr))
+            self.assertEqual(database_before, database.read_bytes())
+            self.assertEqual(exclude_before, exclude.read_bytes())
 
     def test_captured_exit_and_output_match_an_uncaptured_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

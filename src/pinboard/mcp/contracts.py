@@ -436,63 +436,67 @@ class BriefSourcePlanOutputEnvelope(msgspec.Struct, frozen=True, forbid_unknown_
     request: BriefSourcesPlanToFileRequest
 
 
-class StartupArtifactSource(msgspec.Struct, tag="artifact", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+class EvidenceReadArtifactSource(
+    msgspec.Struct, tag="artifact", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
     artifact_ref_id: PositiveInt
     selector: NonEmptyText
     sha256: Sha256
     size_bytes: PositiveInt
 
 
-class StartupFileSource(msgspec.Struct, tag="file", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+class EvidenceReadFileSource(msgspec.Struct, tag="file", tag_field="kind", frozen=True, forbid_unknown_fields=True):
     path: RootPath
     sha256: Sha256
     size_bytes: NonNegativeInt
 
 
-type StartupSource = StartupArtifactSource | StartupFileSource
+type EvidenceReadSource = EvidenceReadArtifactSource | EvidenceReadFileSource
 # An integer is a ceiling under the connected host profile; "host-profile" selects that profile's page size.
-type StartupBudget = PositiveInt | Literal["host-profile"]
+type EvidenceReadBudget = PositiveInt | Literal["host-profile"]
 
 
-class StartupArtifactStart(
+class EvidenceReadArtifactStart(
     msgspec.Struct, tag="artifact-start", tag_field="operation", frozen=True, forbid_unknown_fields=True
 ):
     project_root: RootPath
     work_root: RootPath
-    source: StartupArtifactSource
-    max_batch_bytes: StartupBudget
+    source: EvidenceReadArtifactSource
+    max_batch_bytes: EvidenceReadBudget
 
 
-class StartupFileStart(
+class EvidenceReadFileStart(
     msgspec.Struct, tag="file-start", tag_field="operation", frozen=True, forbid_unknown_fields=True
 ):
     project_root: RootPath
     work_root: RootPath
     path: RootPath
-    max_batch_bytes: StartupBudget
+    max_batch_bytes: EvidenceReadBudget
 
 
-class StartupContinue(msgspec.Struct, tag="continue", tag_field="operation", frozen=True, forbid_unknown_fields=True):
+class EvidenceReadContinue(
+    msgspec.Struct, tag="continue", tag_field="operation", frozen=True, forbid_unknown_fields=True
+):
     project_root: RootPath
     work_root: RootPath
-    source: StartupSource
+    source: EvidenceReadSource
     start_character: PositiveInt
-    max_batch_bytes: StartupBudget
+    max_batch_bytes: EvidenceReadBudget
 
 
 class EvidenceReadEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    request: StartupArtifactStart | StartupFileStart | StartupContinue
+    request: EvidenceReadArtifactStart | EvidenceReadFileStart | EvidenceReadContinue
 
 
 class EvidenceReadPage(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-evidence-read-page/v1"]
     status: Literal["ok"]
-    source: StartupSource
+    source: EvidenceReadSource
     start_character: NonNegativeInt
     end_character: NonNegativeInt
     text: str
     max_batch_bytes: PositiveInt
-    continuation: StartupContinue | None
+    continuation: EvidenceReadContinue | None
     authority: Literal["delivery-only"]
     state_changed: bool
     effect: Literal["unchanged"]
@@ -521,45 +525,6 @@ class EvidenceReadRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid
     effect: Literal["unchanged"]
     retry: Literal["correct-input"]
     changed_surfaces: Empty
-
-
-class StartupHostSettingFailed(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """The connected host's per-user page size could not be verified; no page was read.
-
-    `setting_key` is the key the repair concerns: the offending entry's own key when stored content is
-    invalid, which may belong to another host, otherwise the connected host's key. Effects report this
-    call's own directory creation, file creation and seeding write in the user's host settings, separately
-    from the unchanged Pinboard project state.
-    """
-
-    schema: Literal["pinboard-evidence-read-result/v1"]
-    status: Literal["rejected"]
-    code: diagnostic_codes.StartupHostSettingFailedCode
-    setting_file: NonEmptyText
-    setting_key: NonEmptyText
-    resource: NonEmptyText
-    message: NonEmptyText
-    recovery: NonEmptyText
-    settings_directory_creation: Literal["none", "confirmed"]
-    settings_file_creation: Literal["none", "confirmed", "unconfirmed"]
-    settings_key_write: Literal["none", "acknowledged", "unconfirmed"]
-    state_changed: bool | None
-    effect: Literal["unchanged", "committed", "unconfirmed"]
-    retry: Literal["correct-input", "retry-same-input"]
-    changed_surfaces: tuple[Literal["user-settings"], ...]
-
-    def __post_init__(self) -> None:
-        confirmed = (
-            self.settings_directory_creation == "confirmed"
-            or self.settings_file_creation == "confirmed"
-            or self.settings_key_write == "acknowledged"
-        )
-        unconfirmed = self.settings_file_creation == "unconfirmed" or self.settings_key_write == "unconfirmed"
-        effect = "unconfirmed" if unconfirmed else "committed" if confirmed else "unchanged"
-        if self.effect != effect or self.state_changed != (None if unconfirmed else confirmed):
-            raise ValueError("Host-setting effect and state_changed must follow the reported settings effects.")
-        if self.changed_surfaces != (("user-settings",) if confirmed else ()):
-            raise ValueError("Host-setting changed surfaces must name user settings exactly when they changed.")
 
 
 class FixtureSource(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -3802,7 +3767,7 @@ type TransitionResult = (
     TransitionCommitted | TransitionCommittedStatusUnavailable | TransitionRejected | TransitionFailedAfterPublication
 )
 
-type EvidenceReadResult = EvidenceReadPage | EvidenceReadRejected | StartupHostSettingFailed
+type EvidenceReadResult = EvidenceReadPage | EvidenceReadRejected
 type FixtureReviewResult = FixtureReviewPage | FixtureReviewRejected
 
 

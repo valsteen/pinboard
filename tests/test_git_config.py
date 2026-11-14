@@ -71,13 +71,13 @@ class GitConfigTest(unittest.TestCase):
     def test_a_key_written_without_a_value_is_an_entry_with_no_value(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "config"
-            path.write_text('[host "codex"]\n\tstartup-page-bytes\n\tempty =\n')
+            path.write_text("[example]\n\tmissing-value\n\tempty =\n")
             self.assertEqual(
                 git_config.Entries(
                     path,
                     (
-                        git_config.Entry("host.codex.startup-page-bytes", None),
-                        git_config.Entry("host.codex.empty", ""),
+                        git_config.Entry("example.missing-value", None),
+                        git_config.Entry("example.empty", ""),
                     ),
                 ),
                 git_config.list_entries(path),

@@ -18,7 +18,6 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.mcpserver import MCPServer
 from mcp_types import ClientCapabilities, Implementation, InitializeRequestParams, TextContent
 
-from pinboard.adapters.files import git_config, host_settings
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.application import artifact_identity
 from pinboard.application.artifacts import NewArtifact
@@ -170,7 +169,7 @@ class EvidenceReadTest(CheckpointPackageSupport):
         self.assertEqual("rejected", self.call(request)["status"])
         self.assertEqual(original + b" ", path.read_bytes())
 
-    def test_enabled_capture_never_writes_or_resolves_startup_settings(self) -> None:
+    def test_enabled_capture_never_writes_evidence_settings(self) -> None:
         self.path.write_text("exact selected text")
         directory = self.root / "traces"
         directory.mkdir()
@@ -331,6 +330,9 @@ class EvidenceReadTest(CheckpointPackageSupport):
                 )
                 assert tool.annotations is not None
                 self.assertTrue(tool.annotations.read_only_hint)
+                schema = msgspec.json.encode({"input": tool.input_schema, "output": tool.output_schema}).decode()
+                self.assertIn("EvidenceRead", schema)
+                self.assertNotIn("Startup", schema)
                 request = self.request
                 parts: list[str] = []
                 while True:
@@ -497,16 +499,19 @@ class HostProfileTest(unittest.TestCase):
                 companion = ordinary.content[0]
                 assert isinstance(companion, TextContent)
                 self.assertEqual(ordinary.structured_content, msgspec.json.decode(companion.text))
-                self.settings.write_text('[host "codex"]\nstartup-page-bytes = broken\n')
-                with patch.object(host_profiles, "representation", return_value=DUAL):
-                    baseline = await client.call_tool("pinboard_evidence_read", {"request": self.request})
-                candidate = await client.call_tool("pinboard_evidence_read", {"request": self.request})
-                self.assertEqual([], candidate.content)
-                self.assertEqual(baseline.structured_content, candidate.structured_content)
-                self.assertEqual("HOST_PAGE_SETTING_UNAVAILABLE", candidate.structured_content["code"])
-                self.assertEqual("unchanged", candidate.structured_content["effect"])
 
         asyncio.run(scenario())
+
+    def test_historical_hosts_config_is_ignored_and_unchanged(self) -> None:
+        self.settings.parent.mkdir(parents=True)
+        historical = b"\xffcustom historical host settings\n"
+        self.settings.write_bytes(historical)
+        for _name, _version, profile in MEASURED_CLIENTS:
+            with self.subTest(profile=profile):
+                page = self.read(self.request, profile)
+                self.assertEqual("ok", page["status"], page)
+                self.assertEqual(host_profiles.measured_page_bytes(profile), page["max_batch_bytes"])
+                self.assertEqual(historical, self.settings.read_bytes())
 
     def test_initialize_client_info_selects_budget_and_representation(self) -> None:
         clients = (
@@ -542,16 +547,3 @@ class HostProfileTest(unittest.TestCase):
                     asyncio.run(scenario(transport, Implementation(name=name, version=version), profile))
                 finally:
                     executor.shutdown()
-                host = host_profiles.setting_host(profile)
-                if host is not None:
-                    listed = git_config.list_entries(self.settings)
-                    assert isinstance(listed, git_config.Entries)
-                    self.assertIn(
-                        git_config.Entry(
-                            host_settings.setting_key(host), str(host_profiles.measured_page_bytes(profile))
-                        ),
-                        listed.entries,
-                    )
-        listed = git_config.list_entries(self.settings)
-        assert isinstance(listed, git_config.Entries)
-        self.assertEqual(3, len(listed.entries))

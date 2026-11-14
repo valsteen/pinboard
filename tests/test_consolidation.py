@@ -193,6 +193,86 @@ class ConsolidationTest(CheckpointPackageSupport):
         self.assertEqual("ACTION_NOT_AVAILABLE", rejected["code"], rejected)
         self.assertEqual(before_confirm, fixture.store.validated_snapshot())
 
+    def test_reopened_source_off_roadmap_episode_invalidates_preview(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        self.create(fixture, "source")
+        marked = fixture.call_advertised_tool(
+            mcp_server.INITIATIVE_TOOL,
+            {
+                "request": {
+                    **self.roots(fixture),
+                    "operation": "mark-off-roadmap",
+                    "item_id": "source",
+                    "expected_disposition_revision": 0,
+                    "human": "Project owner",
+                    "date": "2026-10-16",
+                    "reason": "Keep the source outside initiatives",
+                    "actor_task_id": "human",
+                    "actor_host_id": "local",
+                }
+            },
+        )
+        self.assertEqual("committed", marked["status"], marked)
+        first = next(
+            episode
+            for episode in fixture.store.validated_snapshot().off_roadmap_episodes
+            if episode.item_id == WorkItemId("source") and episode.closed is None
+        )
+        selection = self.selection(fixture, ("source",), "campaign", True)
+        preview = self.preview(fixture, selection)
+        self.assertEqual("ok", preview["status"], preview)
+        source_disposition = self.json_object(
+            self.json_array(self.json_object(preview["preview"])["source_dispositions"])[0]
+        )
+        self.assertEqual(first.episode, source_disposition["active_off_roadmap_episode"])
+
+        cleared = fixture.call_advertised_tool(
+            mcp_server.INITIATIVE_TOOL,
+            {
+                "request": {
+                    **self.roots(fixture),
+                    "operation": "clear-off-roadmap",
+                    "item_id": "source",
+                    "expected_disposition_revision": first.opened.project_revision,
+                    "expected_episode": first.episode,
+                    "human": "Project owner",
+                    "date": "2026-10-17",
+                    "reason": "Return the source to planning",
+                    "actor_task_id": "human",
+                    "actor_host_id": "local",
+                }
+            },
+        )
+        self.assertEqual("committed", cleared["status"], cleared)
+        closed = next(
+            episode
+            for episode in fixture.store.validated_snapshot().off_roadmap_episodes
+            if episode.item_id == WorkItemId("source") and episode.episode == first.episode
+        )
+        assert closed.closed is not None
+        reopened = fixture.call_advertised_tool(
+            mcp_server.INITIATIVE_TOOL,
+            {
+                "request": {
+                    **self.roots(fixture),
+                    "operation": "mark-off-roadmap",
+                    "item_id": "source",
+                    "expected_disposition_revision": closed.closed.project_revision,
+                    "human": "Project owner",
+                    "date": "2026-10-18",
+                    "reason": "Reopen off-roadmap disposition",
+                    "actor_task_id": "human",
+                    "actor_host_id": "local",
+                }
+            },
+        )
+        self.assertEqual("committed", reopened["status"], reopened)
+
+        before_confirm = fixture.store.validated_snapshot()
+        rejected = self.confirm(fixture, selection, preview)
+        self.assertEqual("ACTION_NOT_AVAILABLE", rejected["code"], rejected)
+        self.assertEqual(before_confirm, fixture.store.validated_snapshot())
+
     def test_new_campaign_carries_distinct_origins_and_converging_waits_through_reload(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
         for item in ("source-a", "source-b", "consumer"):

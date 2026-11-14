@@ -107,7 +107,7 @@ def _project(selection: models.Selection, facts: models.Facts, change: consolida
             models.SourceDisposition(
                 WorkItemId(disposition_item),
                 facts.dispositions[index].active_memberships,
-                facts.dispositions[index].active_off_roadmap is not None,
+                (None if (episode := facts.dispositions[index].active_off_roadmap) is None else episode.episode),
             )
             for index, disposition_item in enumerate(value.item_id for value in selection.sources)
         ),

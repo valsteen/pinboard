@@ -388,6 +388,11 @@ def decide_membership_intent(
             "The related item's displayed initiative or off-roadmap facts changed; read them again before confirming intent.",
         )
     current = dict(initiative_revisions)
+    if not current and not isinstance(intent, NoInitiativesIntent):
+        return Rejected(
+            RejectionCode.ROADMAP_DISPOSITION_STALE,
+            "No initiatives exist; confirm the exact no-initiatives intent before creating work.",
+        )
     match intent:
         case InitiativeIntent(initiative_id=initiative_id, expected_revision=expected, reason=reason):
             observed = current.get(initiative_id)

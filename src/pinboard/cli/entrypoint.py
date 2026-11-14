@@ -197,6 +197,8 @@ def _present_direct_effect_failure(
 ) -> None:
     try:
         _present_unchanged_effect_failure(operation, result.code.value, str(result), json_requested)
+        if json_requested:
+            sys.stdout.flush()
     except OSError:
         if json_requested:
             with contextlib.suppress(OSError):

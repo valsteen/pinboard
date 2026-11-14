@@ -27,6 +27,8 @@ signals are only remembered: they change neither the record nor a successful exi
 link without overwriting, removes its stage, applies automatic retention and replays the target's
 exact stdout and stderr. A publication failure after the target ran is reported as
 `capture-publication-failed` with `do-not-retry`; it never invites replay.
+If replaying stdout fails, the session still attempts to deliver stderr and either names the published
+record and target exit status or reports the publication failure. The original output error propagates.
 
 This module adds no process: the target runs in this interpreter. It deliberately does not recover a
 record when the target dies hard or the process fails before `CaptureSession.arm` runs, and it does
@@ -200,14 +202,14 @@ class CaptureSession:
             stdout = _read_all(self._reservation.stdout)
             stderr = _read_all(self._reservation.stderr)
             failure = self._publish(_record(self._reservation.selector, self._argv, status, stdout, stderr))
-            warning = None if failure is not None else self._retain()
-            _write_all(1, stdout)
-            _write_all(2, stderr)
-            if warning is not None:
-                _write_all(2, warning)
+            diagnostic = (
+                self._retain()
+                if failure is None
+                else _publication_failure(self._reservation.destination, failure, status)
+            )
+            self._replay(stdout, stderr, diagnostic, status, published=failure is None)
             if failure is None:
                 return status
-            _write_all(2, _publication_failure(self._reservation.destination, failure, status))
             if isinstance(outcome, CaptureInterrupted):
                 return status
             if self._late_signal is not None:
@@ -220,6 +222,31 @@ class CaptureSession:
             self._reservation.stderr.close()
             for captured, handler in self._previous_handlers.items():
                 signal.signal(captured, handler)
+
+    def _replay(self, stdout: bytes, stderr: bytes, diagnostic: bytes | None, status: int, *, published: bool) -> None:
+        stdout_error = None
+        try:
+            _write_all(1, stdout)
+        except OSError as error:
+            stdout_error = error
+
+        try:
+            _write_all(2, stderr)
+            if diagnostic is not None:
+                _write_all(2, diagnostic)
+            if stdout_error is not None and published:
+                _write_all(
+                    2,
+                    os.fsencode(
+                        f"Pinboard could not deliver captured stdout. Read the exact capture at "
+                        f"'{self._reservation.destination}' for the target's output and exit status {status}.\n"
+                    ),
+                )
+        except OSError:
+            if stdout_error is None:
+                raise
+        if stdout_error is not None:
+            raise stdout_error
 
     def _handle_signal(self, signal_number: int, _frame: types.FrameType | None) -> None:
         if self._phase is _Phase.TARGET:

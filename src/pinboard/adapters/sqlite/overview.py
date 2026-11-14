@@ -20,6 +20,12 @@ class _Count(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     total_items: int
 
 
+class _RoadmapCounts(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    initiative_count: int
+    unassigned_count: int
+    off_roadmap_count: int
+
+
 def read_overview_page(
     connection: sqlite3.Connection, after_position: int, max_items: int
 ) -> query_models.DiscoveryFacts:
@@ -69,6 +75,20 @@ def read_overview_page(
         ORDER BY item.queue_position LIMIT 1
         """
     ).fetchone()
+    roadmap_counts = decode_row(
+        connection.execute(
+            """SELECT
+                   (SELECT count(*) FROM initiatives) AS initiative_count,
+                   (SELECT count(*) FROM work_items AS item
+                    WHERE item.queue_position IS NOT NULL
+                      AND NOT EXISTS (SELECT 1 FROM initiative_memberships AS member
+                                      WHERE member.item_id = item.item_id AND member.removed_json IS NULL)
+                      AND NOT EXISTS (SELECT 1 FROM item_off_roadmap_episodes AS episode
+                                      WHERE episode.item_id = item.item_id AND episode.closed_json IS NULL)) AS unassigned_count,
+                   (SELECT count(*) FROM item_off_roadmap_episodes WHERE closed_json IS NULL) AS off_roadmap_count"""
+        ).fetchone(),
+        _RoadmapCounts,
+    )
     return query_models.DiscoveryFacts(
         str(revision),
         items,
@@ -77,4 +97,7 @@ def read_overview_page(
             connection.execute("SELECT coalesce(max(queue_position), 0) AS total_items FROM work_items").fetchone(),
             _Count,
         ).total_items,
+        roadmap_counts.initiative_count,
+        roadmap_counts.unassigned_count,
+        roadmap_counts.off_roadmap_count,
     )

@@ -758,7 +758,7 @@ class CompletionRecoveryRequired:
 
 
 type ItemStatusSchema = Literal["pinboard-item-status/v5"]
-type ItemStatusAuthority = Literal["sqlite-v11"]
+type ItemStatusAuthority = Literal["sqlite-v12"]
 
 
 type DamagedReceiptActionKind = Literal[
@@ -1733,6 +1733,9 @@ class DiscoveryFacts:
     items: tuple[DiscoveryItem, ...]
     next_unstarted: DiscoveryNextUnstarted | None
     total_items: int
+    initiative_count: int
+    unassigned_count: int
+    off_roadmap_count: int
 
 
 class OverviewCursor(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1742,11 +1745,14 @@ class OverviewCursor(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class DiscoveryPage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-overview/v8"]
-    authority: Literal["sqlite-v11"]
+    schema: Literal["pinboard-overview/v9"]
+    authority: Literal["sqlite-v12"]
     revision: str
     items: Annotated[tuple[DiscoveryItem, ...], msgspec.Meta(max_length=25)]
     total_items: Annotated[int, msgspec.Meta(ge=0)]
+    initiative_count: Annotated[int, msgspec.Meta(ge=0)]
+    unassigned_count: Annotated[int, msgspec.Meta(ge=0)]
+    off_roadmap_count: Annotated[int, msgspec.Meta(ge=0)]
     next_unstarted: DiscoveryNextUnstarted | None
     continuation: OverviewCursor | None
     max_items: Annotated[int, msgspec.Meta(ge=1, le=25)]
@@ -1833,7 +1839,7 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition/v1"]
-    authority: Literal["sqlite-v11"]
+    authority: Literal["sqlite-v12"]
     project_revision: int
     item_id: str
     item_subject_revision: int
@@ -1856,7 +1862,7 @@ class ItemDefinitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class ItemDefinitionHistory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition-history/v1"]
-    authority: Literal["sqlite-v11"]
+    authority: Literal["sqlite-v12"]
     project_revision: int
     item_id: str
     revisions: tuple[ItemDefinitionHistoryRow, ...]

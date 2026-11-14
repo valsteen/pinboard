@@ -80,6 +80,7 @@ def render(projection: roadmap.Projection) -> tuple[bytes, bytes]:  # noqa: C901
     """Return readable Markdown and self-contained HTML for exactly one immutable snapshot."""
     items = {item.item_id: item for item in projection.facts.items}
     appearances: dict[WorkItemId, int] = {}
+    off_roadmap = frozenset(projection.off_roadmap)
     for initiative in projection.facts.initiatives:
         for member in initiative.memberships:
             if member.removed is None:
@@ -113,7 +114,9 @@ def render(projection: roadmap.Projection) -> tuple[bytes, bytes]:  # noqa: C901
             text.append(f"- {message}")
             page.append(f"<p>{escape(message)}</p>")
             return
-        position = _placement(projection.placements.get(item_id))
+        position = (
+            "Intentionally off-roadmap" if item_id in off_roadmap else _placement(projection.placements.get(item_id))
+        )
         shared = " · Shared across initiatives" if appearances.get(item_id, 0) > 1 else ""
         target = f"items/{quote(item_id, safe='')}.md"
         text.append(f"- [{item.title}]({target}) · {item.state.value} · {position}{shared}")
@@ -244,6 +247,7 @@ def render(projection: roadmap.Projection) -> tuple[bytes, bytes]:  # noqa: C901
         page.append("</ul></details></section>")
     for label, selected in (
         ("Unassigned live work", projection.unassigned),
+        ("Off-roadmap work", projection.off_roadmap),
         (
             "External prerequisite context",
             projection.external_prerequisites,
@@ -253,6 +257,14 @@ def render(projection: roadmap.Projection) -> tuple[bytes, bytes]:  # noqa: C901
         page.append(f'<section class="lane"><h2>{label}</h2>')
         for item_id in selected:
             card(item_id)
+        if label == "Off-roadmap work":
+            text.extend(("### Off-roadmap history", ""))
+            page.append("<details><summary>Complete off-roadmap history</summary><ul>")
+            for episode in projection.facts.off_roadmap_episodes:
+                note(f"{episode.item_id}, episode {episode.episode}, opened: {_note(episode.opened)}")
+                if episode.closed is not None:
+                    note(f"{episode.item_id}, episode {episode.episode}, cleared: {_note(episode.closed)}")
+            page.append("</ul></details>")
         page.append("</section>")
     page.append("</main></body></html>")
     return ("\n".join(text) + "\n").encode(), "\n".join(page).encode()

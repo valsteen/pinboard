@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 import msgspec
 
 from pinboard.application import query_models, stored_state
-from pinboard.application.initiative_records import InitiativeRecord
+from pinboard.application.initiative_records import InitiativeRecord, OffRoadmapEpisodeRecord
 from pinboard.domain.history import DependencyPayload
 from pinboard.domain.initiatives import Judgment, RejectionCode
 
@@ -20,13 +20,16 @@ class Roots(msgspec.Struct, frozen=True, forbid_unknown_fields=True, kw_only=Tru
     work_root: Text
 
 
-class Mutation(Roots, frozen=True, forbid_unknown_fields=True, kw_only=True):
-    initiative_id: Identity
+class HumanMutation(Roots, frozen=True, forbid_unknown_fields=True, kw_only=True):
     human: Text
     date: HumanDate
     reason: Text
     actor_task_id: Text
     actor_host_id: Text
+
+
+class Mutation(HumanMutation, frozen=True, forbid_unknown_fields=True, kw_only=True):
+    initiative_id: Identity
 
 
 class DefinitionFields(Mutation, frozen=True, forbid_unknown_fields=True, kw_only=True):
@@ -63,6 +66,21 @@ class RemoveMember(
     item_id: Identity
 
 
+class MarkOffRoadmap(
+    HumanMutation, tag="mark-off-roadmap", tag_field="operation", frozen=True, forbid_unknown_fields=True, kw_only=True
+):
+    item_id: Identity
+    expected_disposition_revision: Annotated[int, msgspec.Meta(ge=0)]
+
+
+class ClearOffRoadmap(
+    HumanMutation, tag="clear-off-roadmap", tag_field="operation", frozen=True, forbid_unknown_fields=True, kw_only=True
+):
+    item_id: Identity
+    expected_disposition_revision: Annotated[int, msgspec.Meta(ge=1)]
+    expected_episode: Revision
+
+
 class Decision(Mutation, tag="decision", tag_field="operation", frozen=True, forbid_unknown_fields=True, kw_only=True):
     expected_revision: Revision
     decision: Text
@@ -84,7 +102,9 @@ class Roadmap(Roots, tag="roadmap", tag_field="operation", frozen=True, forbid_u
     pass
 
 
-type Operation = Create | Revise | AddMember | RemoveMember | Decision | Assess | Read | Roadmap
+type Operation = (
+    Create | Revise | AddMember | RemoveMember | MarkOffRoadmap | ClearOffRoadmap | Decision | Assess | Read | Roadmap
+)
 
 
 class Envelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -142,6 +162,19 @@ class Committed(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
             raise ValueError("Initiative commitment and warning status must match the reported effect.")
 
 
+class DispositionCommitted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-initiative-result/v1"]
+    status: Literal["committed", "committed-with-warning"]
+    item_id: Text
+    operation: Literal["mark-off-roadmap", "clear-off-roadmap"]
+    committed_revision: Revision
+    state_changed: bool
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: tuple[Literal["ledger"]]
+    warning: Warning | None
+
+
 class Wave(msgspec.Struct, tag="wave", frozen=True, forbid_unknown_fields=True):
     number: Revision
 
@@ -182,9 +215,10 @@ class RoadmapResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     initiatives: tuple[InitiativeRecord, ...]
     items: tuple[RoadmapItem, ...]
     unassigned: tuple[Text, ...]
+    off_roadmap: tuple[OffRoadmapEpisodeRecord, ...]
     external_prerequisites: tuple[Text, ...]
     totals: Counts
-    selection: Literal["Distinct current initiative members plus unassigned live items"]
+    selection: Literal["Distinct current initiative members, unassigned live items and off-roadmap history"]
     continuation: Literal[
         "Read-only snapshot; reload generated roadmap.html after refresh. Waves grant no execution authority."
     ]
@@ -198,4 +232,4 @@ class RoadmapResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
             raise ValueError("A roadmap read has no committed effect.")
 
 
-type Result = ReadResult | RoadmapResult | Committed | Rejected
+type Result = ReadResult | RoadmapResult | Committed | DispositionCommitted | Rejected

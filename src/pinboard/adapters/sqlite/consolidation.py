@@ -3,12 +3,13 @@
 import sqlite3
 from datetime import datetime
 
+from pinboard.adapters.sqlite import initiatives as initiative_storage
 from pinboard.adapters.sqlite.database import decode_row
 from pinboard.adapters.sqlite.decision_reads import read_selected_decision_facts
 from pinboard.adapters.sqlite.models import ItemIdRow
 from pinboard.application import consolidation_models as models
 from pinboard.application import query_models
-from pinboard.domain import consolidation, work_models
+from pinboard.domain import consolidation, initiatives, work_models
 
 
 def read_facts(connection: sqlite3.Connection, plan: consolidation.Plan, now: datetime) -> models.Facts:
@@ -30,4 +31,12 @@ def read_facts(connection: sqlite3.Connection, plan: consolidation.Plan, now: da
             "SELECT item_id FROM work_items WHERE queue_position IS NOT NULL ORDER BY queue_position"
         )
     )
-    return models.Facts(facts.snapshot, order)
+    dispositions = tuple(
+        initiative_storage.read_disposition(connection, item_id) for item_id in (*sources, plan.campaign_id)
+    )
+    return models.Facts(
+        facts.snapshot,
+        order,
+        initiative_storage.read_membership_intent_facts(connection, initiatives.NoRelatedDisposition()),
+        dispositions,
+    )

@@ -1211,7 +1211,7 @@ class PluginPackagingTests(unittest.TestCase):
                 managed_lock.read_bytes(),
             )
             proposal: JsonObject = {
-                "schema": "pinboard-proposal/v4",
+                "schema": "pinboard-proposal/v6",
                 "position": None,
                 "checkpoints": [],
                 "route_facts": {
@@ -1228,6 +1228,8 @@ class PluginPackagingTests(unittest.TestCase):
                 "evidence": ["source:packaging-smoke"],
                 "why_it_matters": "The packaged workflow must retain one shared SQLite authority.",
                 "relation": {"kind": "independent", "item": None},
+                "membership_intent": {"kind": "no-initiatives"},
+                "related_disposition": {"kind": "none"},
                 "effect": "One intake item is stored by the existing engine.",
                 "unlock": "The copied plugin can run the supported workflow.",
                 "urgency_evidence": "This is the packaging compatibility boundary.",

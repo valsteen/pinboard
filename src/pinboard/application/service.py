@@ -529,6 +529,7 @@ def create_proposal(
             decision_context,
             operation,
             live_item_count,
+            transaction.read_membership_intent_facts(operation.intake.related_disposition),
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result

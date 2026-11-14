@@ -73,7 +73,7 @@ class ToolResultTest(unittest.TestCase):
 
 class ItemStateReadTest(unittest.IsolatedAsyncioTestCase):
     async def test_proposal_format_is_selected_from_metadata_before_any_effect(self) -> None:
-        for version in ("pinboard-proposal/v2", "pinboard-proposal/v4", "unsupported"):
+        for version in ("pinboard-proposal/v2", "pinboard-proposal/v6", "unsupported"):
             session = MagicMock(spec=ClientSession)
             session.list_tools = AsyncMock(
                 return_value=ListToolsResult(
@@ -108,7 +108,7 @@ class ItemStateReadTest(unittest.IsolatedAsyncioTestCase):
                 session.call_tool.assert_awaited_once()
                 payload = session.call_tool.call_args.args[1]["proposal"]
                 self.assertEqual(version, payload["schema"])
-                self.assertEqual(version == "pinboard-proposal/v4", "route_facts" in payload)
+                self.assertEqual(version == "pinboard-proposal/v6", "route_facts" in payload)
             if version == "unsupported":
                 session.call_tool.assert_not_called()
 
@@ -151,7 +151,7 @@ class ItemStateReadTest(unittest.IsolatedAsyncioTestCase):
 
         @asynccontextmanager
         async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
-            yield board.BoardClient(session, window, "pinboard-proposal/v4")
+            yield board.BoardClient(session, window, "pinboard-proposal/v6")
 
         with patch.object(board, "connect", connected):
             observed = await board.overview(
@@ -188,7 +188,7 @@ class ItemStateReadTest(unittest.IsolatedAsyncioTestCase):
 
         @asynccontextmanager
         async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
-            yield board.BoardClient(session, window, "pinboard-proposal/v4")
+            yield board.BoardClient(session, window, "pinboard-proposal/v6")
 
         with patch.object(board, "connect", connected):
             observed = await board.item_states(
@@ -231,7 +231,7 @@ class SeededReviewTest(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as temporary, patch.object(seeding, "head", return_value="d" * 40):
             root = Path(temporary)
             fixture = seeding.Seeder(
-                board.BoardClient(session, Window(None), "pinboard-proposal/v4"),
+                board.BoardClient(session, Window(None), "pinboard-proposal/v6"),
                 root / "project",
                 root / "board",
                 "fixture-owner",
@@ -324,7 +324,7 @@ class ContinueCheckpointWorldTest(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             project = committed_project(Path(temporary), window)
             seeder = seeding.Seeder(
-                board.BoardClient(session, window, "pinboard-proposal/v4"), project, project / ".pinboard", "owner"
+                board.BoardClient(session, window, "pinboard-proposal/v6"), project, project / ".pinboard", "owner"
             )
             asyncio.run(world_content.seed_continue_checkpoint(seeder))
             candidate = seeding.head(seeder.worktree("usage-guide"), window)
@@ -359,7 +359,7 @@ class ContinueCheckpointWorldTest(unittest.TestCase):
 
         @asynccontextmanager
         async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
-            yield board.BoardClient(MagicMock(spec=ClientSession), window, "pinboard-proposal/v4")
+            yield board.BoardClient(MagicMock(spec=ClientSession), window, "pinboard-proposal/v6")
 
         async def seed(seeder: seeding.Seeder) -> None:
             seeded_content.append(seeder.work_root)
@@ -404,7 +404,7 @@ class ContinueCheckpointWorldTest(unittest.TestCase):
 
             @asynccontextmanager
             async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
-                yield board.BoardClient(MagicMock(spec=ClientSession), window, "pinboard-proposal/v4")
+                yield board.BoardClient(MagicMock(spec=ClientSession), window, "pinboard-proposal/v6")
 
             async def states(*arguments: Path | tuple[str, ...] | Window) -> list[tuple[str, str]]:
                 self.assertEqual(("exit-status",), arguments[4])

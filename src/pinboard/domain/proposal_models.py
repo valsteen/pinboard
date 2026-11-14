@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from pinboard.domain import work_models
+from pinboard.domain import initiatives, work_models
 from pinboard.domain.identifiers import CheckpointId, ProposalId, TaskId, WorkItemId
 
 
@@ -23,6 +23,8 @@ class ProposalIntake:
     obligations: tuple[work_models.DefinitionObligation, ...]
     checkpoints: tuple[CheckpointId, ...]
     route_facts: work_models.RouteFacts
+    membership_intent: initiatives.MembershipIntent
+    related_disposition: initiatives.RelatedDisposition
     position: int | None = None
 
 
@@ -57,5 +59,6 @@ class ProposalCreationDecision:
     ready_item: ReadyProposalWorkItem
     prerequisite_change: PrerequisiteDependencyChange | None
     planned_replacement: work_models.PlannedReplacement | None
+    membership_effect: initiatives.MembershipEffect
     evidence: tuple[str, ...]
     freshness: tuple[str, ...]

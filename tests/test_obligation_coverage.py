@@ -31,7 +31,9 @@ class ObligationCoverageTest(CheckpointPackageSupport):
         if source is not None:
             value.update(
                 {
-                    "schema": "pinboard-proposal/v5",
+                    "schema": "pinboard-proposal/v7"
+                    if any("origin" in obligation for obligation in obligations)
+                    else "pinboard-proposal/v6",
                     "position": None,
                     "checkpoints": [],
                     "route_facts": {
@@ -44,6 +46,12 @@ class ObligationCoverageTest(CheckpointPackageSupport):
                         "kind": "planned-replacement",
                         "item": source,
                         "replacement_cost": "The source is superseded.",
+                    },
+                    "related_disposition": {
+                        "kind": "related",
+                        "item_id": source,
+                        "active_memberships": [],
+                        "active_off_roadmap": False,
                     },
                 }
             )

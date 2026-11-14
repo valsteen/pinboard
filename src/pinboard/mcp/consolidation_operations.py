@@ -23,7 +23,7 @@ def rejected(
     code: DecisionFailureCode, message: str, retry: Literal["correct-input", "refresh-action"]
 ) -> execution.TypedOperationResult[contracts.Result]:
     result = contracts.Rejected(
-        "pinboard-consolidation-result/v1",
+        "pinboard-consolidation-result/v2",
         "rejected",
         code,
         message,
@@ -74,7 +74,7 @@ def operate(
             if isinstance(preview, DecisionFailure):
                 return rejected(preview.code, preview.message, "refresh-action")
             result = contracts.PreviewResult(
-                "pinboard-consolidation-preview-result/v1",
+                "pinboard-consolidation-preview-result/v2",
                 "ok",
                 preview,
                 consolidation.binding(preview, durable.work_root),
@@ -108,7 +108,7 @@ def operate(
             )
             warning = refreshed.warning
             committed = contracts.Committed(
-                "pinboard-consolidation-result/v1",
+                "pinboard-consolidation-result/v2",
                 "committed" if warning is None else "committed-with-warning",
                 request.selection.campaign.item_id,
                 tuple(value.item_id for value in request.selection.sources),
@@ -131,7 +131,7 @@ def operate(
 
 CONSOLIDATE: execution.ToolContract[contracts.Envelope, contracts.Result] = execution.ToolContract(
     name=CONSOLIDATE_TOOL,
-    description="Preview a new or live existing campaign from selected live sources, then atomically confirm the exact displayed map only after a separate human confirmation. Carries every source obligation with its direct origin, folds internal waits into retained context, preserves external waits, retargets surviving consumers and ends sources as superseded. Put all fields inside request. No worker launch or repository effect.",
+    description="Preview a new or live existing campaign from selected live sources, including every source membership and one explicit campaign initiative or off-roadmap intent, then atomically confirm the exact displayed map only after a separate human confirmation. Carries every source obligation with its direct origin, preserves external waits, retargets surviving consumers and ends sources as superseded. Put all fields inside request. No worker launch or repository effect.",
     request=contracts.Envelope,
     results=contracts.Result,
     operate=operate,

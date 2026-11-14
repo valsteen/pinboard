@@ -3,7 +3,7 @@
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from pinboard.domain import decision_models, decisions, history, proposal_models, work_models
+from pinboard.domain import decision_models, decisions, history, initiatives, proposal_models, work_models
 from pinboard.domain.definition_decisions import (
     DefinitionRevisionDecision,
     decide_definition_revision,
@@ -34,6 +34,7 @@ class Plan:
     definition: work_models.WorkItemDefinition
     create: bool
     checkpoint_targets: tuple[CheckpointTarget, ...]
+    membership_intent: initiatives.MembershipIntent
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +43,7 @@ class Change:
     dependent_revisions: tuple[DefinitionRevisionDecision, ...]
     replacements: tuple[work_models.PlannedReplacement, ...]
     source_closures: tuple[decision_models.WorkItemClosureChange, ...]
+    campaign_membership: initiatives.MembershipEffect
 
 
 def _merge_waits(values: tuple[work_models.Dependency, ...]) -> tuple[work_models.Dependency, ...]:
@@ -232,6 +234,7 @@ def _new_campaign(
     actor: TaskId,
     now: datetime,
     route_facts: work_models.RouteFacts,
+    membership_effect: initiatives.MembershipEffect,
 ) -> proposal_models.ProposalCreationDecision:
     intake = proposal_models.ProposalIntake(
         ProposalId(plan.campaign_id),
@@ -250,6 +253,8 @@ def _new_campaign(
         definition.obligations,
         definition.checkpoints,
         route_facts,
+        plan.membership_intent,
+        initiatives.NoRelatedDisposition(),
         live_count + 1,
     )
     return proposal_models.ProposalCreationDecision(
@@ -259,6 +264,7 @@ def _new_campaign(
         ),
         None,
         None,
+        membership_effect,
         intake.evidence,
         (),
     )
@@ -312,7 +318,12 @@ def _source_endings(
 
 
 def decide(
-    snapshot: LedgerSnapshot, plan: Plan, live_count: int, actor: TaskId, now: datetime
+    snapshot: LedgerSnapshot,
+    plan: Plan,
+    live_count: int,
+    actor: TaskId,
+    now: datetime,
+    membership_effect: initiatives.MembershipEffect,
 ) -> DecisionResult[Change]:
     selected = _select_sources(snapshot, plan)
     if isinstance(selected, DecisionFailure):
@@ -377,7 +388,7 @@ def decide(
                 DecisionFailureCode.ITEM_DEPENDENCY_CYCLE, "Campaign dependencies introduce a cycle.", None
             )
         campaign: proposal_models.ProposalCreationDecision | DefinitionRevisionDecision = _new_campaign(
-            plan, campaign_definition, digest, live_count, actor, now, route_facts
+            plan, campaign_definition, digest, live_count, actor, now, route_facts, membership_effect
         )
         dependent_revisions = revisions
     else:
@@ -399,4 +410,4 @@ def decide(
     if isinstance(endings, DecisionFailure):
         return endings
     replacements, closures = endings
-    return Change(campaign, dependent_revisions, replacements, closures)
+    return Change(campaign, dependent_revisions, replacements, closures, membership_effect)

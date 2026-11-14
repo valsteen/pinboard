@@ -27,7 +27,7 @@ from pinboard.application.service import (
     decide_and_commit_transition,
     preflight_checkpoint_candidate,
 )
-from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain import authority_models, decision_models, initiatives, work_models
 from pinboard.domain.decisions import (
     available_actions,
 )
@@ -987,6 +987,8 @@ class ServiceTest(unittest.TestCase):
             ),
             (),
             route_facts=TEST_ROUTE_FACTS,
+            membership_intent=initiatives.NoInitiativesIntent(),
+            related_disposition=initiatives.NoRelatedDisposition(),
         )
 
         with reject_table_deletes("work_items"):
@@ -1054,6 +1056,8 @@ class ServiceTest(unittest.TestCase):
             ),
             (),
             TEST_ROUTE_FACTS,
+            initiatives.NoInitiativesIntent(),
+            initiatives.NoRelatedDisposition(),
             2,
         )
 
@@ -1119,6 +1123,8 @@ class ServiceTest(unittest.TestCase):
             ),
             (),
             route_facts=TEST_ROUTE_FACTS,
+            membership_intent=initiatives.NoInitiativesIntent(),
+            related_disposition=initiatives.ExpectedRelatedDisposition(WorkItemId("work-c"), (), False),
         )
 
         result = self._create_proposal(store, CreateProposalOperation(intake), SQLITE_NOW + timedelta(seconds=1))
@@ -1161,6 +1167,8 @@ class ServiceTest(unittest.TestCase):
             ),
             (),
             TEST_ROUTE_FACTS,
+            initiatives.NoInitiativesIntent(),
+            initiatives.NoRelatedDisposition(),
             6,
         )
         before = store.validated_snapshot()
@@ -1199,6 +1207,8 @@ class ServiceTest(unittest.TestCase):
             ),
             (),
             route_facts=TEST_ROUTE_FACTS,
+            membership_intent=initiatives.NoInitiativesIntent(),
+            related_disposition=initiatives.ExpectedRelatedDisposition(WorkItemId("does-not-exist"), (), False),
         )
         before = store.validated_snapshot()
 

@@ -39,7 +39,7 @@ from pinboard.application.artifacts import NewArtifact
 from pinboard.application.service import create_proposal
 from pinboard.cli import work_views
 from pinboard.cli.entrypoint import main
-from pinboard.domain import decision_models, history, work_models
+from pinboard.domain import decision_models, history, initiatives, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import AttemptId, HistoryId, HostId, ProposalId, TaskId, WorkItemId
@@ -240,6 +240,8 @@ def _prerequisite_intake() -> ProposalIntake:
         ),
         (),
         route_facts=TEST_ROUTE_FACTS,
+        membership_intent=initiatives.NoInitiativesIntent(),
+        related_disposition=initiatives.NoRelatedDisposition(),
     )
 
 
@@ -347,7 +349,7 @@ class _GatedBoard:
 
 class _FixedBoard:
     def read_roadmap(self) -> roadmap.Projection:
-        return roadmap.project(roadmap.Facts(0, (), (), frozenset()))
+        return roadmap.project(roadmap.Facts(0, (), (), frozenset(), ()))
 
     """A board reader returning one already projected board, for presentation tests."""
 
@@ -1203,7 +1205,7 @@ class BoardPagePathTest(unittest.TestCase):
                     "pinboard_item_status", {"request": selected | {"operation": "item", "item_id": "work-c"}}
                 )
 
-                self.assertEqual("pinboard-overview/v8", overview["schema"])
+                self.assertEqual("pinboard-overview/v9", overview["schema"])
                 self.assertEqual(expected, overview["board"])
                 self.assertEqual("pinboard-item-status/v5", status["schema"])
                 self.assertEqual(expected, status["board"])

@@ -220,35 +220,35 @@ class PauseDecisionsTest(CheckpointPackageSupport):
         validated, stdout, stderr = self.run_cli(*fixture.common, "validate", "--json")
         self.assertEqual(0, validated, f"{stdout}\n{stderr}")
 
-    def test_v10_preview_apply_reload_export_validate_and_exact_reversal(self) -> None:  # noqa: PLR0915 - one persisted migration, refresh and reversal journey
+    def test_v11_preview_apply_reload_export_validate_and_exact_reversal(self) -> None:  # noqa: PLR0915 - one persisted migration, refresh and reversal journey
         fixture = self.checkpoint_fixture()
         path = fixture.work / "state.sqlite3"
         expected = fixture.store.validated_snapshot()
         rebuilt, stdout, stderr = self.run_cli(*fixture.common, "views", "rebuild")
         self.assertEqual(0, rebuilt, f"{stdout}\n{stderr}")
         markdown_views = tuple(
-            view for view in (fixture.work / "views").rglob("*.md") if "authority: sqlite-v11" in view.read_text()
+            view for view in (fixture.work / "views").rglob("*.md") if "authority: sqlite-v12" in view.read_text()
         )
         self.assertTrue(markdown_views)
         for view in markdown_views:
             current = view.read_text()
-            self.assertIn("authority: sqlite-v11", current)
-            stale = current.replace("authority: sqlite-v11", "authority: sqlite-v10")
+            self.assertIn("authority: sqlite-v12", current)
+            stale = current.replace("authority: sqlite-v12", "authority: sqlite-v11")
             view.write_text(stale)
             self.assertEqual(stale, view.read_text())
         with closing(sqlite3.connect(path)) as connection, connection:
-            connection.execute("DROP TABLE attempt_decision_batches")
-            connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v11")
+            connection.execute("DROP TABLE item_off_roadmap_episodes")
+            connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v12")
             statement = next(
-                sql for _, name, _, sql in database._build_v10_schema_signature() if name == "project_meta"
+                sql for _, name, _, sql in database._build_v11_schema_signature() if name == "project_meta"
             )
             assert statement is not None
             connection.execute(statement)
             connection.execute(
-                "INSERT INTO project_meta SELECT singleton, application, 10, revision, host_epoch, created_at, updated_at FROM project_meta_v11"
+                "INSERT INTO project_meta SELECT singleton, application, 11, revision, host_epoch, created_at, updated_at FROM project_meta_v12"
             )
-            connection.execute("DROP TABLE project_meta_v11")
-            database._verify_v10_schema(connection)
+            connection.execute("DROP TABLE project_meta_v12")
+            database._verify_v11_schema(connection)
         original = path.read_bytes()
         with self.assertRaises(StorageError) as refused:
             database.open_database(path, OpenMode.READ_ONLY)
@@ -256,7 +256,7 @@ class PauseDecisionsTest(CheckpointPackageSupport):
         self.assertEqual(original, path.read_bytes())
         preview = self.run_json_cli(*fixture.common, "migrate-schema")
         plan_id = str(preview["plan_id"])
-        self.assertEqual("decisions-advance", self.json_object(preview["plan"])["kind"])
+        self.assertEqual("membership-advance", self.json_object(preview["plan"])["kind"])
         self.assertEqual(original, path.read_bytes())
         verify = database._verify_current_schema
 
@@ -269,16 +269,16 @@ class PauseDecisionsTest(CheckpointPackageSupport):
             failed = schema_procedure.apply_schema(path, plan_id)
         self.assertIsInstance(failed, schema_procedure.SchemaProcedureFailure)
         self.assertEqual(original, path.read_bytes())
-        self.assertEqual(original, (fixture.work / "migration" / f"{plan_id}.v10").read_bytes())
+        self.assertEqual(original, (fixture.work / "migration" / f"{plan_id}.v11").read_bytes())
         migrated = self.run_json_cli(*fixture.common, "migrate-schema", "--apply", plan_id)
-        self.assertEqual("sqlite-v11", migrated["authority"])
+        self.assertEqual("sqlite-v12", migrated["authority"])
         self.assertIsNone(migrated["warning"])
         for view in markdown_views:
-            self.assertIn("authority: sqlite-v11", view.read_text())
-            self.assertNotIn("authority: sqlite-v10", view.read_text())
+            self.assertIn("authority: sqlite-v12", view.read_text())
+            self.assertNotIn("authority: sqlite-v11", view.read_text())
         self.assertEqual(expected, SQLiteWorkStore(path).validated_snapshot())
         exported = self.run_json_cli(*fixture.common, "export")
-        self.assertEqual(11, self.json_object(exported["project"])["schema_version"])
+        self.assertEqual(12, self.json_object(exported["project"])["schema_version"])
         validated = self.run_json_cli(*fixture.common, "validate")
         self.assertTrue(validated["valid"])
         self.assertNotIn(
@@ -287,7 +287,7 @@ class PauseDecisionsTest(CheckpointPackageSupport):
         )
         reverse = self.run_json_cli(*fixture.common, "migrate-schema", "--reverse", plan_id)
         reversed_result = self.run_json_cli(*fixture.common, "migrate-schema", "--apply", str(reverse["plan_id"]))
-        self.assertEqual("sqlite-v10", reversed_result["authority"])
+        self.assertEqual("sqlite-v11", reversed_result["authority"])
         self.assertIsNone(reversed_result["warning"])
         self.assertEqual(original, path.read_bytes())
         self.run_json_cli(*fixture.common, "migrate-schema", "--apply", plan_id)

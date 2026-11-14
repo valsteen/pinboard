@@ -3,14 +3,16 @@
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, assert_never
 from urllib.parse import urlsplit
 
 import msgspec
 
 from pinboard.adapters.files.errors import RootError
-from pinboard.adapters.files.models import AffectedViews
+from pinboard.adapters.files.file_io import DurableRoots
+from pinboard.adapters.files.models import AffectedViews, ViewWarning
 from pinboard.application import initiative_records, initiatives, query_models, roadmap
+from pinboard.application.ports import GeneratedViewReader
 from pinboard.domain import history
 from pinboard.domain import initiatives as models
 from pinboard.domain.identifiers import HostId, TaskId, WorkItemId
@@ -52,8 +54,8 @@ def operate(  # noqa: C901, PLR0912 - exact leaf conversion and outer effects
     store = common.compose_store(durable)
     if isinstance(request, contracts.Roadmap):
         return _roadmap_result(store.read_roadmap())
-    initiative_id = models.InitiativeId(request.initiative_id)
     if isinstance(request, contracts.Read):
+        initiative_id = models.InitiativeId(request.initiative_id)
         value = store.read_initiative(initiative_id)
         if value is None:
             return rejected(models.RejectionCode.INITIATIVE_NOT_FOUND, f"Initiative '{initiative_id}' is absent.")
@@ -71,6 +73,39 @@ def operate(  # noqa: C901, PLR0912 - exact leaf conversion and outer effects
             None,
         )
     token.checkpoint()
+    now = datetime.now(UTC)
+    reason = models.HumanReason(request.human, request.date, request.reason)
+    actor_task_id = TaskId(request.actor_task_id)
+    actor_host_id = HostId(request.actor_host_id)
+    if isinstance(request, (contracts.MarkOffRoadmap, contracts.ClearOffRoadmap)):
+        disposition: models.DispositionChange
+        match request:
+            case contracts.MarkOffRoadmap():
+                disposition = models.MarkOffRoadmap(request.expected_disposition_revision, WorkItemId(request.item_id))
+            case contracts.ClearOffRoadmap():
+                disposition = models.ClearOffRoadmap(
+                    request.expected_disposition_revision,
+                    request.expected_episode,
+                    WorkItemId(request.item_id),
+                )
+        result = initiatives.change_disposition(store, disposition, reason, actor_task_id, actor_host_id, now)
+        if isinstance(outcome := _mutation_outcome(durable, store, result, now), models.Rejected):
+            return rejected(outcome.code, outcome.message)
+        result, warning, result_status, execution_status = outcome
+        value = contracts.DispositionCommitted(
+            "pinboard-initiative-result/v1",
+            result_status,
+            request.item_id,
+            "mark-off-roadmap" if isinstance(request, contracts.MarkOffRoadmap) else "clear-off-roadmap",
+            result,
+            True,
+            "committed",
+            "do-not-retry",
+            ("ledger",),
+            None if warning is None else contracts.Warning(warning.message, warning.repair),
+        )
+        return execution.TypedOperationResult(value, execution_status, str(result))
+    initiative_id = models.InitiativeId(request.initiative_id)
     change: models.Change
     match request:
         case contracts.Create():
@@ -106,22 +141,13 @@ def operate(  # noqa: C901, PLR0912 - exact leaf conversion and outer effects
             )
         case _ as unreachable:
             assert_never(unreachable)
-    now = datetime.now(UTC)
-    result = initiatives.change(
-        store,
-        initiative_id,
-        change,
-        models.HumanReason(request.human, request.date, request.reason),
-        TaskId(request.actor_task_id),
-        HostId(request.actor_host_id),
-        now,
-    )
-    if isinstance(result, models.Rejected):
-        return rejected(result.code, result.message)
-    warning = common._refresh_affected_views(durable, store, AffectedViews((), (), ()), now).warning
+    result = initiatives.change(store, initiative_id, change, reason, actor_task_id, actor_host_id, now)
+    if isinstance(outcome := _mutation_outcome(durable, store, result, now), models.Rejected):
+        return rejected(outcome.code, outcome.message)
+    result, warning, result_status, execution_status = outcome
     value = contracts.Committed(
         "pinboard-initiative-result/v1",
-        "committed" if warning is None else "committed-with-warning",
+        result_status,
         initiative_id,
         result,
         True,
@@ -130,7 +156,29 @@ def operate(  # noqa: C901, PLR0912 - exact leaf conversion and outer effects
         ("ledger",),
         None if warning is None else contracts.Warning(warning.message, warning.repair),
     )
-    return execution.TypedOperationResult(value, "committed" if warning is None else "committed-warning", str(result))
+    return execution.TypedOperationResult(value, execution_status, str(result))
+
+
+type MutationOutcome = tuple[
+    int,
+    ViewWarning | None,
+    Literal["committed", "committed-with-warning"],
+    Literal["committed", "committed-warning"],
+]
+
+
+def _mutation_outcome(
+    durable: DurableRoots,
+    store: GeneratedViewReader,
+    result: int | models.Rejected,
+    now: datetime,
+) -> MutationOutcome | models.Rejected:
+    if isinstance(result, models.Rejected):
+        return result
+    warning = common._refresh_affected_views(durable, store, AffectedViews((), (), ()), now).warning
+    if warning is None:
+        return result, None, "committed", "committed"
+    return result, warning, "committed-with-warning", "committed-warning"
 
 
 def _project_references(project_root: Path, references: tuple[str, ...]) -> tuple[str, ...]:
@@ -187,9 +235,10 @@ def _roadmap_result(value: roadmap.Projection) -> execution.TypedOperationResult
         tuple(initiative_records.initiative_record(initiative) for initiative in value.facts.initiatives),
         tuple(items),
         value.unassigned,
+        tuple(initiative_records.off_roadmap_episode_record(episode) for episode in value.facts.off_roadmap_episodes),
         value.external_prerequisites,
         msgspec.convert(value.totals, type=contracts.Counts, from_attributes=True),
-        "Distinct current initiative members plus unassigned live items",
+        "Distinct current initiative members, unassigned live items and off-roadmap history",
         "Read-only snapshot; reload generated roadmap.html after refresh. Waves grant no execution authority.",
         False,
         "unchanged",

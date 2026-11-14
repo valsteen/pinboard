@@ -28,7 +28,7 @@ class ContentEncoding(Enum):
 
 class ProjectExportProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[11]
+    schema_version: Literal[12]
     created_at: str
     updated_at: str
 
@@ -398,8 +398,8 @@ class ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_u
 
 
 class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-project-export/v3"]
-    authority: Literal["sqlite-v11"]
+    schema: Literal["pinboard-project-export/v4"]
+    authority: Literal["sqlite-v12"]
     revision: int
     project: ProjectExportProject
     work_items: tuple[ProjectExportWorkItem, ...]
@@ -417,6 +417,7 @@ class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     checkpoint_packages: tuple[ProjectExportCheckpointPackageV3, ...]
     completion_packages: tuple[ProjectExportCompletionReviewPackage, ...]
     initiatives: tuple[initiative_records.InitiativeRecord, ...]
+    off_roadmap_episodes: tuple[initiative_records.OffRoadmapEpisodeRecord, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,6 +430,7 @@ class ProjectExportState:
     artifact_references: tuple[stored_state.ArtifactReference, ...]
     transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...]
     initiatives: tuple[initiative_models.Initiative, ...]
+    off_roadmap_episodes: tuple[initiative_models.OffRoadmapEpisode, ...]
 
 
 def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> ProjectExportState:
@@ -445,6 +447,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
     artifact_references = list(first.artifact_references)
     transition_receipts = list(first.transition_receipts)
     initiatives = list(first.initiatives)
+    off_roadmap_episodes = list(first.off_roadmap_episodes)
     work_items = list(lifecycle.work_items)
     dependencies = list(lifecycle.dependencies)
     attempts = list(lifecycle.attempts)
@@ -471,6 +474,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
         artifact_references.extend(batch.artifact_references)
         transition_receipts.extend(batch.transition_receipts)
         initiatives.extend(batch.initiatives)
+        off_roadmap_episodes.extend(batch.off_roadmap_episodes)
     return ProjectExportState(
         stored_state.LifecycleRecords(
             lifecycle.project,
@@ -486,6 +490,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
         tuple(artifact_references),
         tuple(transition_receipts),
         tuple(initiatives),
+        tuple(off_roadmap_episodes),
     )
 
 
@@ -584,8 +589,8 @@ def project_export_from_state(
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
     return ProjectExport(
-        "pinboard-project-export/v3",
-        "sqlite-v11",
+        "pinboard-project-export/v4",
+        "sqlite-v12",
         state.lifecycle.project.revision,
         ProjectExportProject(
             state.lifecycle.project.application,
@@ -717,4 +722,5 @@ def project_export_from_state(
         checkpoint_packages,
         completion_packages,
         tuple(initiative_records.initiative_record(value) for value in state.initiatives),
+        tuple(initiative_records.off_roadmap_episode_record(value) for value in state.off_roadmap_episodes),
     )

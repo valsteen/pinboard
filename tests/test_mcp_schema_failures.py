@@ -116,6 +116,7 @@ class NativeSchemaFailureTest(unittest.TestCase):
                         "sources": [{"item_id": "one", "replacement_cost": "Campaign owns it."}],
                         "campaign": {"item_id": "campaign", "create": True, "definition": definition},
                         "checkpoint_targets": [],
+                        "membership_intent": {"kind": "no-initiatives"},
                     },
                 }
             },

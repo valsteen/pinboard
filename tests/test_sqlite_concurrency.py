@@ -25,7 +25,7 @@ from pinboard.application.service import (
     decide_and_commit_preparation_authority_change,
     decide_and_commit_transition,
 )
-from pinboard.domain import authority_models, decision_models, work_models
+from pinboard.domain import authority_models, decision_models, initiatives, work_models
 from pinboard.domain.decisions import (
     available_actions,
     decide,
@@ -304,6 +304,8 @@ def _race_preparation_and_prerequisite_proposal(
             ),
             (),
             route_facts=TEST_ROUTE_FACTS,
+            membership_intent=initiatives.NoInitiativesIntent(),
+            related_disposition=initiatives.NoRelatedDisposition(),
         )
         barrier.wait()
         result = create_proposal(

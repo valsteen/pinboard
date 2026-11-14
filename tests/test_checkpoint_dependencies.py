@@ -77,6 +77,21 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
     def create(self, fixture: CheckpointFixture, item_id: str, target: str | JsonObject) -> JsonObject:
         value = proposal()
         value.update(proposal_id=item_id, relation={"kind": "follow-up", "item": target})
+        related_item = WorkItemId(str(target["item"] if isinstance(target, dict) else target))
+        state = fixture.store.validated_snapshot()
+        value["related_disposition"] = {
+            "kind": "related",
+            "item_id": related_item,
+            "active_memberships": [
+                initiative.initiative_id
+                for initiative in state.initiatives
+                for member in initiative.memberships
+                if member.item_id == related_item and member.removed is None
+            ],
+            "active_off_roadmap": any(
+                episode.item_id == related_item and episode.closed is None for episode in state.off_roadmap_episodes
+            ),
+        }
         return fixture.call_advertised_tool(
             mcp_server.PROPOSAL_CREATE_TOOL,
             {

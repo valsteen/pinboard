@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from datetime import date as HumanDate
 from typing import Annotated, Literal, override
 
 import msgspec
@@ -77,6 +78,54 @@ class PlannedReplacementProposalRelation(
     replacement_cost: ProposalText
 
 
+class HumanAttribution(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    human: ProposalText
+    date: HumanDate
+    reason: ProposalText
+
+
+class InitiativeMembershipIntent(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="initiative", tag_field="kind"
+):
+    initiative_id: ProposalIdentity
+    expected_revision: Annotated[int, msgspec.Meta(ge=1)]
+    attribution: HumanAttribution
+
+
+class OffRoadmapMembershipIntent(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="off-roadmap", tag_field="kind"
+):
+    attribution: HumanAttribution
+
+
+class NoInitiativesMembershipIntent(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="no-initiatives", tag_field="kind"
+):
+    pass
+
+
+type ProposalMembershipIntent = InitiativeMembershipIntent | OffRoadmapMembershipIntent | NoInitiativesMembershipIntent
+
+
+class NoRelatedDisposition(msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="none", tag_field="kind"):
+    pass
+
+
+class RelatedDisposition(msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="related", tag_field="kind"):
+    item_id: ProposalIdentity
+    active_memberships: tuple[ProposalIdentity, ...]
+    active_off_roadmap: bool
+
+    def __post_init__(self) -> None:
+        if len(self.active_memberships) != len(set(self.active_memberships)):
+            raise ValueError("related active_memberships must be ordered and unique")
+        if self.active_memberships and self.active_off_roadmap:
+            raise ValueError("related disposition cannot be assigned and off-roadmap")
+
+
+type ProposalRelatedDisposition = NoRelatedDisposition | RelatedDisposition
+
+
 type ProposalRelation = (
     IndependentProposalRelation
     | PrerequisiteProposalRelation
@@ -103,6 +152,8 @@ class _ProposalFields(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     freshness_assumptions: tuple[ProposalText, ...]
     checkout_policy: Literal["main", "isolated", "coordinator-selected"]
     route_facts: RouteFactsPayload
+    membership_intent: ProposalMembershipIntent
+    related_disposition: ProposalRelatedDisposition
 
     def __post_init__(self) -> None:
         try:
@@ -136,7 +187,7 @@ def _validate_obligations(
 
 
 class Proposal(
-    _ProposalFields, frozen=True, forbid_unknown_fields=True, tag="pinboard-proposal/v4", tag_field="schema"
+    _ProposalFields, frozen=True, forbid_unknown_fields=True, tag="pinboard-proposal/v6", tag_field="schema"
 ):
     obligations: Annotated[tuple[ProposalObligation, ...], msgspec.Meta(min_length=1)]
     position: Annotated[int, msgspec.Meta(ge=1)] | None
@@ -148,7 +199,7 @@ class Proposal(
 
 
 class OriginProposal(
-    _ProposalFields, frozen=True, forbid_unknown_fields=True, tag="pinboard-proposal/v5", tag_field="schema"
+    _ProposalFields, frozen=True, forbid_unknown_fields=True, tag="pinboard-proposal/v7", tag_field="schema"
 ):
     position: Annotated[int, msgspec.Meta(ge=1)] | None
     obligations: Annotated[tuple[OriginObligationPayload, ...], msgspec.Meta(min_length=1)]

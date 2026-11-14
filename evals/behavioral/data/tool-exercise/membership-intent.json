@@ -1,0 +1,14 @@
+{
+  "schema": "pinboard-behavioral-tool-exercise/v1",
+  "scenario_set_sha256": "cc84cda8a50c6681c453aa197aa9f2901104050e17557dcf28fbf5d4157d860b",
+  "scenarios": [
+    {
+      "id": "s43-explicit-membership-intake",
+      "tools": ["pinboard_initiative", "pinboard_proposal_create"]
+    },
+    {
+      "id": "s44-consolidation-membership-preview",
+      "tools": ["pinboard_consolidate", "pinboard_item_definition", "pinboard_item_status"]
+    }
+  ]
+}

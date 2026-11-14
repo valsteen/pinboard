@@ -202,7 +202,7 @@ class OverviewPagingTest(CheckpointPackageSupport):
             self.assertEqual(["work-c"], [item.item_id for item in page.items])
             self.assertEqual("intake-work", page.next_unstarted.item_id if page.next_unstarted else None)
             self.assertFalse(any("from proposals" in query.lower() for query in statements))
-            self.assertEqual(4, len(decoded_columns))
+            self.assertEqual(5, len(decoded_columns))
             self.assertFalse(any("definition_json" in columns or "notes" in columns for columns in decoded_columns))
             selection = next(query for query in statements if "WITH selected AS MATERIALIZED" in query)
             with closing(sqlite3.connect(roots.database_path)) as connection:

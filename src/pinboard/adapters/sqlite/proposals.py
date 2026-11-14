@@ -11,6 +11,7 @@ from typing import assert_never
 
 import msgspec
 
+from pinboard.adapters.sqlite import initiatives as initiative_storage
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
@@ -343,7 +344,7 @@ def insert_planned_replacement(
     )
 
 
-def create_proposal(
+def create_proposal(  # noqa: C901, PLR0912 - one atomic proposal and explicit roadmap disposition
     connection: sqlite3.Connection,
     mutation: ProposalCreationMutation,
 ) -> DecisionFailure | None:
@@ -468,6 +469,21 @@ def create_proposal(
         ),
     )
     replace_dependencies(connection, ready_item.work_item_id, ready_item.dependencies)
+    actor_task_id = mutation.receipt.actor_task_id
+    actor_host_id = mutation.receipt.actor_host_id
+    if actor_task_id is None or actor_host_id is None:
+        raise StorageError(
+            StorageErrorCode.INVARIANT_VIOLATION, "Proposal membership intent requires actor attribution."
+        )
+    initiative_storage.persist_membership_effect(
+        connection,
+        ready_item.work_item_id,
+        decision.membership_effect,
+        actor_task_id,
+        actor_host_id,
+        now,
+        revision,
+    )
     if decision.planned_replacement is not None:
         relation = decision.planned_replacement
         assert replacement_subject_revision is not None

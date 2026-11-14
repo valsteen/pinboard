@@ -163,7 +163,7 @@ ORDER: execution.ToolContract[contracts.OrderEnvelope, contracts.OrderResult] = 
 PROPOSAL_CREATE: execution.ToolContract[contracts.ProposalCreateRequest, contracts.ProposalResult] = (
     execution.ToolContract(
         name=PROPOSAL_CREATE_TOOL,
-        description="Create one durable Pinboard proposal from its canonical structured input. Arguments are top-level project_root, work_root, proposal, actor_task_id and actor_host_id (no request wrapper).",
+        description="Create one durable Pinboard proposal with one explicit human-confirmed initiative, off-roadmap or exact no-initiatives intent. Follow-up and planned-replacement inputs bind displayed related memberships but never inherit them. Arguments are top-level project_root, work_root, proposal, actor_task_id and actor_host_id (no request wrapper).\n",
         request=contracts.ProposalCreateRequest,
         results=contracts.ProposalResult,
         operate=mutation_operations._proposal_created,
@@ -237,7 +237,7 @@ CLOSE: execution.ToolContract[contracts.CloseRequest, contracts.TransitionResult
 
 INITIATIVE: execution.ToolContract[initiative_contracts.Envelope, initiative_contracts.Result] = execution.ToolContract(
     name=INITIATIVE_TOOL,
-    description="Read or revise ledger-owned initiatives, dated membership episodes, human decisions and goal assessments; read the global offline roadmap. Put all fields inside request. Initiative membership and dependency waves grant no execution authority.",
+    description="Read or revise ledger-owned initiatives, dated membership episodes, human decisions and goal assessments; explicitly mark or clear human-attributed off-roadmap episodes; read the global offline roadmap. Member-add closes active off-roadmap state atomically, while member-remove never invents it. Put all fields inside request. Initiative membership, off-roadmap state and dependency waves grant no execution authority.\n",
     request=initiative_contracts.Envelope,
     results=initiative_contracts.Result,
     operate=initiative_operations.operate,
@@ -374,7 +374,7 @@ ITEM_STATUS: execution.ToolContract[contracts.ItemStatusEnvelope, contracts.Item
 OVERVIEW: execution.ToolContract[contracts.OverviewRequest, contracts.OverviewResult] = execution.ToolContract(
     name=OVERVIEW_TOOL,
     description=(
-        "Read one same-revision discovery page; exact top-level roots, max_items 1-25, continuation:null to start. Follow continuations through null; stale traversal restarts. Partial pages prove no absence. Known work uses exact item status and definition."
+        "Read one same-revision discovery page with distinct initiative, unassigned and off-roadmap counts. Use exact roots, max_items 1-25 and continuation:null to start; follow continuations through null and restart stale traversal. Partial pages prove no absence. Known work uses exact item status and definition.\n"
     ),
     request=contracts.OverviewRequest,
     results=contracts.OverviewResult,

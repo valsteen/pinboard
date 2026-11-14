@@ -13,7 +13,7 @@ from pinboard.mcp import mutation_operations as mcp_mutations
 
 def proposal() -> dict[str, proposal_models.ProposalJsonValue]:
     return {
-        "schema": "pinboard-proposal/v4",
+        "schema": "pinboard-proposal/v6",
         "proposal_id": "proposal-1",
         "created_at": "2026-08-25T00:00:00Z",
         "source_task_id": "task",
@@ -35,6 +35,8 @@ def proposal() -> dict[str, proposal_models.ProposalJsonValue]:
             "external_effects": "none",
             "declares_checkpoints": False,
         },
+        "membership_intent": {"kind": "no-initiatives"},
+        "related_disposition": {"kind": "none"},
         "obligations": [
             {
                 "obligation_id": "sqlite-persistence",
@@ -73,6 +75,8 @@ class ProposalInputTest(unittest.TestCase):
     def test_decoder_rejects_invalid_shapes_and_reports_paths(self) -> None:
         valid = proposal()
         cases: tuple[tuple[dict[str, proposal_models.ProposalJsonValue], str], ...] = (
+            ({key: selected for key, selected in valid.items() if key != "membership_intent"}, "membership_intent"),
+            ({key: selected for key, selected in valid.items() if key != "related_disposition"}, "related_disposition"),
             ({**valid, "schema": "repo" + "-work/v1"}, "schema"),
             ({**valid, "schema": "pinboard" + "-proposal/v1"}, "schema"),
             ({**valid, "proposal_id": "Not Valid"}, "proposal_id"),

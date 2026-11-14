@@ -1,0 +1,14 @@
+{
+  "id": "s43-explicit-membership-intake",
+  "title": "Saving new work requires one explicit current roadmap intent",
+  "world": "full",
+  "world_extra": null,
+  "source": "Accepted keep-initiative-membership-current intake contract registered before its final guidance edit.",
+  "ground_truth": "The full tally board has no initiatives. Sam explicitly asks to save one new independent item, not start it. The coordinator must inspect the current initiative/roadmap state as needed, use the exact no-initiatives membership intent rather than omit or infer it, and save the item on the project board. It should report that the item was saved but not started without narrating schemas, revisions or SQLite. No initiative or off-roadmap choice is available because the board has no initiatives.",
+  "turns": [
+    {
+      "human": "Please save a new independent item for adding a --median output flag. Keep it on this project's board for later; don't start it.",
+      "before": null
+    }
+  ]
+}

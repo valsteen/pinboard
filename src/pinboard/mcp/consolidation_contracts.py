@@ -36,7 +36,7 @@ class Envelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class PreviewResult(contracts._UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-consolidation-preview-result/v1"]
+    schema: Literal["pinboard-consolidation-preview-result/v2"]
     status: Literal["ok"]
     preview: models.Preview
     binding: models.Binding
@@ -48,7 +48,7 @@ class PreviewResult(contracts._UnchangedResult, msgspec.Struct, frozen=True, for
 
 
 class Rejected(contracts._UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-consolidation-result/v1"]
+    schema: Literal["pinboard-consolidation-result/v2"]
     status: Literal["rejected"]
     code: DecisionFailureCode
     message: str
@@ -60,7 +60,7 @@ class Rejected(contracts._UnchangedResult, msgspec.Struct, frozen=True, forbid_u
 
 
 class Committed(contracts._ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-consolidation-result/v1"]
+    schema: Literal["pinboard-consolidation-result/v2"]
     status: Literal["committed", "committed-with-warning"]
     campaign_id: str
     superseded_sources: tuple[str, ...]

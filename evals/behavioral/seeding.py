@@ -28,6 +28,7 @@ from evals.behavioral.board import (
     BriefPublish,
     Checkpoint,
     CompatibilityProposalV2,
+    CompatibilityProposalV4,
     Correspondence,
     CorrespondenceTarget,
     Criterion,
@@ -40,6 +41,8 @@ from evals.behavioral.board import (
     Lease,
     LeasedActions,
     LeasedTransition,
+    NoInitiativesIntent,
+    NoRelatedDisposition,
     Obligation,
     PreparationStart,
     ProjectActions,
@@ -50,6 +53,7 @@ from evals.behavioral.board import (
     ReasonPayload,
     Receipt,
     RecordReady,
+    RelatedDisposition,
     Relation,
     ReviewCommission,
     ReviewedCompletion,
@@ -104,9 +108,9 @@ class Seeder:
         )
         match self.board.proposal_format:
             case "pinboard-proposal/v2":
-                selected: Proposal | CompatibilityProposalV2 = compatibility_proposal
+                selected: Proposal | CompatibilityProposalV2 | CompatibilityProposalV4 = compatibility_proposal
             case "pinboard-proposal/v4":
-                selected = Proposal(
+                selected = CompatibilityProposalV4(
                     proposal_id=compatibility_proposal.proposal_id,
                     created_at=compatibility_proposal.created_at,
                     source_task_id=compatibility_proposal.source_task_id,
@@ -125,6 +129,36 @@ class Seeder:
                     route_facts=route,
                     position=None,
                     checkpoints=list(checkpoints),
+                )
+            case "pinboard-proposal/v6":
+                selected = Proposal(
+                    proposal_id=compatibility_proposal.proposal_id,
+                    created_at=compatibility_proposal.created_at,
+                    source_task_id=compatibility_proposal.source_task_id,
+                    user_label=compatibility_proposal.user_label,
+                    trigger=compatibility_proposal.trigger,
+                    evidence=compatibility_proposal.evidence,
+                    why_it_matters=compatibility_proposal.why_it_matters,
+                    relation=compatibility_proposal.relation,
+                    effect=compatibility_proposal.effect,
+                    unlock=compatibility_proposal.unlock,
+                    urgency_evidence=compatibility_proposal.urgency_evidence,
+                    freshness_assumptions=compatibility_proposal.freshness_assumptions,
+                    checkout_policy=compatibility_proposal.checkout_policy,
+                    obligations=compatibility_proposal.obligations,
+                    schema="pinboard-proposal/v6",
+                    route_facts=route,
+                    position=None,
+                    checkpoints=list(checkpoints),
+                    membership_intent=NoInitiativesIntent(kind="no-initiatives"),
+                    related_disposition=NoRelatedDisposition(kind="none")
+                    if follows is None
+                    else RelatedDisposition(
+                        kind="related",
+                        item_id=follows,
+                        active_memberships=[],
+                        active_off_roadmap=False,
+                    ),
                 )
             case _ as unreachable:
                 assert_never(unreachable)

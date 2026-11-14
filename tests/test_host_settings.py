@@ -16,7 +16,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp_types import Implementation
 
 from pinboard.adapters.files import git_config, host_settings
-from pinboard.mcp import contracts, execution, host_profiles, server, startup_text
+from pinboard.mcp import contracts, evidence_read, execution, host_profiles, server
 
 CLAUDE = host_profiles.HostProfile.CLAUDE_CODE
 CLAUDE_KEY = "host.claude-code.startup-page-bytes"
@@ -44,7 +44,7 @@ class HostSettingsTest(unittest.TestCase):
         }
 
     def read(self, profile: host_profiles.HostProfile = CLAUDE) -> dict[str, contracts.JsonValue]:
-        result = startup_text.read({"request": self.request}, execution.CancellationToken(), profile)
+        result = evidence_read.read({"request": self.request}, execution.CancellationToken(), profile)
         return execution.wire_content(result.record)
 
     def store(self, value: str) -> None:
@@ -443,11 +443,11 @@ class HostSettingsTest(unittest.TestCase):
         async def scenario(selected: MCPServer) -> None:
             info = Implementation(name="claude-code", version="9.0.0")
             async with Client(selected, client_info=info, mode="legacy") as client:
-                page = (await client.call_tool("pinboard_startup_text", {"request": self.request})).structured_content
+                page = (await client.call_tool("pinboard_evidence_read", {"request": self.request})).structured_content
                 assert isinstance(page, dict)
                 self.assertEqual(9000, page["max_batch_bytes"])
                 self.settings.write_text('[host "claude-code"]\n\tstartup-page-bytes = 9 KB\n')
-                failed = await client.call_tool("pinboard_startup_text", {"request": self.request})
+                failed = await client.call_tool("pinboard_evidence_read", {"request": self.request})
                 self.assertFalse(failed.is_error)
                 rejected = failed.structured_content
                 assert isinstance(rejected, dict)

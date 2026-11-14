@@ -37,9 +37,9 @@ type ItemStatusGitCode = Literal[
     "PROJECT_GIT_ROOT_UNAVAILABLE",
 ]
 
-type StartupTextRejectedCode = Annotated[
-    Literal["STARTUP_TEXT_INVALID"],
-    CodeMeanings(((0, "The selected startup source, request or continuation could not be verified."),)),
+type EvidenceReadRejectedCode = Annotated[
+    Literal["EVIDENCE_READ_INVALID"],
+    CodeMeanings(((0, "The selected evidence source, request or continuation could not be verified."),)),
 ]
 
 

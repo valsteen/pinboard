@@ -1,4 +1,4 @@
-"""Selected startup pages preserve exact bytes, identities and read-only native effects."""
+"""Selected evidence pages preserve exact bytes, identities and read-only native effects."""
 
 import asyncio
 import hashlib
@@ -25,7 +25,7 @@ from pinboard.application.artifacts import NewArtifact
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId
-from pinboard.mcp import common, contracts, execution, host_profiles, server, startup_text
+from pinboard.mcp import common, contracts, evidence_read, execution, host_profiles, server
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import CheckpointPackageSupport
 from tests.support import SQLITE_NOW
@@ -46,7 +46,7 @@ def client_params(name: str, version: str) -> InitializeRequestParams:
     )
 
 
-class StartupTextTest(CheckpointPackageSupport):
+class EvidenceReadTest(CheckpointPackageSupport):
     @override
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -66,7 +66,7 @@ class StartupTextTest(CheckpointPackageSupport):
         request: dict[str, contracts.JsonValue],
         profile: host_profiles.HostProfile = host_profiles.HostProfile.UNMEASURED,
     ) -> dict[str, contracts.JsonValue]:
-        result = startup_text.read({"request": request}, execution.CancellationToken(), profile)
+        result = evidence_read.read({"request": request}, execution.CancellationToken(), profile)
         return execution.wire_content(result.record)
 
     def test_complete_unicode_escaping_long_lines_and_empty_inputs(self) -> None:
@@ -134,7 +134,7 @@ class StartupTextTest(CheckpointPackageSupport):
         invalid = dict(page)
         invalid["end_character"] = 0
         with self.assertRaises(msgspec.ValidationError):
-            msgspec.convert(invalid, type=contracts.StartupTextPage, strict=True)
+            msgspec.convert(invalid, type=contracts.EvidenceReadPage, strict=True)
 
     def test_exact_accepted_artifact_tuple_and_bytes_are_required(self) -> None:
         fixture = self.checkpoint_fixture()
@@ -182,7 +182,7 @@ class StartupTextTest(CheckpointPackageSupport):
 
             async def scenario(selected_transport: MCPServer) -> None:
                 async with Client(selected_transport) as client:
-                    result = await client.call_tool("pinboard_startup_text", {"request": self.request})
+                    result = await client.call_tool("pinboard_evidence_read", {"request": self.request})
                     self.assertFalse(result.is_error)
                     self.assertEqual("ok", result.structured_content["status"])
 
@@ -222,7 +222,7 @@ class StartupTextTest(CheckpointPackageSupport):
                 transport, client_info=Implementation(name="codex-mcp-client", version="0.164.0"), mode="legacy"
             ) as client:
                 while True:
-                    result = await client.call_tool("pinboard_startup_text", {"request": request})
+                    result = await client.call_tool("pinboard_evidence_read", {"request": request})
                     sent = result.model_dump_json(by_alias=True, exclude_none=True).encode()
                     self.assertLessEqual(len(sent), 20000)
                     byte_count += len(sent)
@@ -252,7 +252,7 @@ class StartupTextTest(CheckpointPackageSupport):
                     {"size_bytes": 1},
                 ):
                     rejected = await client.call_tool(
-                        "pinboard_startup_text",
+                        "pinboard_evidence_read",
                         {
                             "request": {
                                 "operation": "artifact-start",
@@ -307,7 +307,7 @@ class StartupTextTest(CheckpointPackageSupport):
 
         async def scenario() -> None:
             async with Client(transport) as client:
-                result = await client.call_tool("pinboard_startup_text", {"request": self.request})
+                result = await client.call_tool("pinboard_evidence_read", {"request": self.request})
                 self.assertLessEqual(len(result.model_dump_json(by_alias=True, exclude_none=True).encode()), 4000)
                 self.assertEqual("ok", result.structured_content["status"])
 
@@ -326,13 +326,15 @@ class StartupTextTest(CheckpointPackageSupport):
             )
             async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
                 await session.initialize()
-                tool = next(tool for tool in (await session.list_tools()).tools if tool.name == "pinboard_startup_text")
+                tool = next(
+                    tool for tool in (await session.list_tools()).tools if tool.name == "pinboard_evidence_read"
+                )
                 assert tool.annotations is not None
                 self.assertTrue(tool.annotations.read_only_hint)
                 request = self.request
                 parts: list[str] = []
                 while True:
-                    result = await session.call_tool("pinboard_startup_text", {"request": request})
+                    result = await session.call_tool("pinboard_evidence_read", {"request": request})
                     self.assertFalse(result.is_error)
                     self.assertLessEqual(len(result.model_dump_json(by_alias=True, exclude_none=True).encode()), 4000)
                     page = result.structured_content
@@ -347,7 +349,7 @@ class StartupTextTest(CheckpointPackageSupport):
                     request = page["continuation"]
                 self.assertEqual(text.encode(), "".join(parts).encode())
                 rejected = await session.call_tool(
-                    "pinboard_startup_text", {"request": self.request | {"path": str(self.root / "missing")}}
+                    "pinboard_evidence_read", {"request": self.request | {"path": str(self.root / "missing")}}
                 )
                 self.assertLessEqual(len(rejected.model_dump_json(by_alias=True, exclude_none=True).encode()), 4000)
                 self.assertEqual("rejected", rejected.structured_content["status"])
@@ -380,7 +382,7 @@ class HostProfileTest(unittest.TestCase):
     def read(
         self, request: dict[str, contracts.JsonValue], profile: host_profiles.HostProfile
     ) -> dict[str, contracts.JsonValue]:
-        result = startup_text.read({"request": request}, execution.CancellationToken(), profile)
+        result = evidence_read.read({"request": request}, execution.CancellationToken(), profile)
         return execution.wire_content(result.record)
 
     def test_recognized_hosts_select_their_profile_at_every_version_and_others_stay_unmeasured(self) -> None:
@@ -446,7 +448,7 @@ class HostProfileTest(unittest.TestCase):
                     request = self.request | {"max_batch_bytes": 4000}
                     parts: list[str] = []
                     while True:
-                        result = await client.call_tool("pinboard_startup_text", {"request": request})
+                        result = await client.call_tool("pinboard_evidence_read", {"request": request})
                         self.assertEqual([], result.content)
                         self.assertLessEqual(
                             len(result.model_dump_json(by_alias=True, exclude_none=True).encode()), 4000
@@ -462,7 +464,7 @@ class HostProfileTest(unittest.TestCase):
                     self.assertEqual(text.encode(), "".join(parts).encode())
 
                 self.path.write_text("long" * 10000)
-                first = await client.call_tool("pinboard_startup_text", {"request": self.request})
+                first = await client.call_tool("pinboard_evidence_read", {"request": self.request})
                 continuation = first.structured_content["continuation"]
                 self.path.write_text("changed")
                 requests = (
@@ -474,8 +476,8 @@ class HostProfileTest(unittest.TestCase):
                 )
                 for request in requests:
                     with patch.object(host_profiles, "representation", return_value=DUAL):
-                        baseline = await client.call_tool("pinboard_startup_text", {"request": request})
-                    candidate = await client.call_tool("pinboard_startup_text", {"request": request})
+                        baseline = await client.call_tool("pinboard_evidence_read", {"request": request})
+                    candidate = await client.call_tool("pinboard_evidence_read", {"request": request})
                     self.assertEqual([], candidate.content)
                     self.assertEqual(baseline.structured_content, candidate.structured_content)
                     self.assertEqual("rejected", candidate.structured_content["status"])
@@ -497,8 +499,8 @@ class HostProfileTest(unittest.TestCase):
                 self.assertEqual(ordinary.structured_content, msgspec.json.decode(companion.text))
                 self.settings.write_text('[host "codex"]\nstartup-page-bytes = broken\n')
                 with patch.object(host_profiles, "representation", return_value=DUAL):
-                    baseline = await client.call_tool("pinboard_startup_text", {"request": self.request})
-                candidate = await client.call_tool("pinboard_startup_text", {"request": self.request})
+                    baseline = await client.call_tool("pinboard_evidence_read", {"request": self.request})
+                candidate = await client.call_tool("pinboard_evidence_read", {"request": self.request})
                 self.assertEqual([], candidate.content)
                 self.assertEqual(baseline.structured_content, candidate.structured_content)
                 self.assertEqual("HOST_PAGE_SETTING_UNAVAILABLE", candidate.structured_content["code"])
@@ -520,7 +522,7 @@ class HostProfileTest(unittest.TestCase):
 
             async def scenario(selected: MCPServer, info: Implementation, expected: host_profiles.HostProfile) -> None:
                 async with Client(selected, client_info=info, mode="legacy") as client:
-                    result = await client.call_tool("pinboard_startup_text", {"request": self.request})
+                    result = await client.call_tool("pinboard_evidence_read", {"request": self.request})
                     page = result.structured_content
                     assert isinstance(page, dict)
                     self.assertEqual("ok", page["status"], page)

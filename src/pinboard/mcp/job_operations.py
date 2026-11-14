@@ -85,7 +85,7 @@ def _mcp_launch_envelope(
         f"({role_document.size_bytes} UTF-8 bytes; SHA-256 {role_document.sha256}). "
         "Verify that identity and read the entire document in one native read. It contains every applicable "
         "Pinboard instruction for this role and runtime; load no additional Pinboard skill or phase reference. "
-        "Startup never uses pinboard_startup_text. Missing native access, unreadable text or mismatched bytes "
+        "Startup never uses pinboard_evidence_read. Missing native access, unreadable text or mismatched bytes "
         "stops the affected operation; report the exact missing access or mismatch. Verified delivery grants "
         "no readiness, authority or runtime permission."
     )

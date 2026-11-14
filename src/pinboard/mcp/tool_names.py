@@ -35,4 +35,4 @@ FIXTURE_REVIEW_TOOL = "pinboard_fixture_review"
 
 INITIATIVE_TOOL = "pinboard_initiative"
 
-STARTUP_TEXT_TOOL = "pinboard_startup_text"
+EVIDENCE_READ_TOOL = "pinboard_evidence_read"

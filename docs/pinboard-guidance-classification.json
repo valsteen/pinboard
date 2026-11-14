@@ -1055,17 +1055,17 @@
         "tests/test_brief_sources.py::BriefSourcesTest.test_native_saved_emit_reads_only_the_plan_and_selected_batch_without_mutation"
       ]
     },
-    "tool-contract.STARTUP_TEXT_TOOL": {
+    "tool-contract.EVIDENCE_READ_TOOL": {
       "kind": "tool-returns",
       "consumers": [
-        "STARTUP_TEXT_TOOL"
+        "EVIDENCE_READ_TOOL"
       ],
       "clauses": [],
       "includes": [],
-      "source": "skills/pinboard/sources/tool-contract.STARTUP_TEXT_TOOL.md",
+      "source": "skills/pinboard/sources/tool-contract.EVIDENCE_READ_TOOL.md",
       "implementing_tests": [
-        "tests/test_startup_text.py::StartupTextTest.test_exact_accepted_artifact_tuple_and_bytes_are_required",
-        "tests/test_startup_text.py::StartupTextTest.test_budget_accounts_for_metadata_and_sdk_duplication"
+        "tests/test_evidence_read.py::EvidenceReadTest.test_exact_accepted_artifact_tuple_and_bytes_are_required",
+        "tests/test_evidence_read.py::EvidenceReadTest.test_budget_accounts_for_metadata_and_sdk_duplication"
       ]
     },
     "tool-contract.FIXTURE_REVIEW_TOOL": {
@@ -1265,7 +1265,7 @@
       "source": "skills/pinboard/sources/tool-contract.ARTIFACT_VERIFY_TOOL.md",
       "implementing_tests": [
         "tests/test_artifacts.py::ArtifactPersistenceTest.test_reference_verification_rejects_escape_size_and_digest",
-        "tests/test_startup_text.py::StartupTextTest.test_exact_accepted_artifact_tuple_and_bytes_are_required"
+        "tests/test_evidence_read.py::EvidenceReadTest.test_exact_accepted_artifact_tuple_and_bytes_are_required"
       ]
     },
     "tool-contract.PREPARATION_AUTHORITY_TOOL": {

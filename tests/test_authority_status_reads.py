@@ -98,7 +98,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 decision_models.CloseCommand(
                     action,
                     work_models.CloseInput(
-                        work_models.CloseOutcome.DONE, "Covered elsewhere.", "The human requested this close."
+                        work_models.DirectCloseOutcome.DONE, "Covered elsewhere.", "The human requested this close."
                     ),
                 ),
                 SQLITE_NOW,

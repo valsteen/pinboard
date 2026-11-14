@@ -128,7 +128,7 @@ class HumanConfirmedCloseTest(NativeFixtureSupport):
         self.assertEqual("pinboard-close-decision/v1", schema)
         decoded = msgspec.json.decode(stored, type=action_models.CloseInputPayload)
         self.assertEqual(
-            (work_models.CloseOutcome.DONE, "Covered elsewhere.", HUMAN_WORDS),
+            (work_models.DirectCloseOutcome.DONE, "Covered elsewhere.", HUMAN_WORDS),
             (decoded.outcome, decoded.reason, decoded.human_decision),
         )
         self.assertEqual(msgspec.json.encode(decoded, order="sorted"), stored)
@@ -217,7 +217,7 @@ class HumanConfirmedCloseTest(NativeFixtureSupport):
                     "action_id": {"kind": "close", "subject": "work-a"},
                     "subject_revision": str(before.lifecycle.work_items[0].subject_revision),
                 },
-                "payload": {"outcome": "dropped", "reason": "Bypass review.", "human_decision": HUMAN_WORDS},
+                "payload": {"outcome": "done", "reason": "Bypass review.", "human_decision": HUMAN_WORDS},
                 "actor_task_id": "coordinator",
                 "actor_host_id": "local",
             },
@@ -272,6 +272,12 @@ class HumanConfirmedCloseTest(NativeFixtureSupport):
         schema = self.json_object(contract["payload_schema"])
         definition = self.json_object(self.json_object(schema["$defs"])["CloseInputPayload"])
         self.assertIn("human_decision", self.json_array(definition["required"]))
+        outcome = self.json_object(self.json_object(definition["properties"])["outcome"])
+        outcome_definition = str(outcome["$ref"]).rsplit("/", 1)[-1]
+        self.assertEqual(
+            ["done", "superseded"],
+            self.json_array(self.json_object(self.json_object(schema["$defs"])[outcome_definition])["enum"]),
+        )
         semantics = self.json_object(self.json_object(action)["semantics"])
         self.assertFalse(any("pinboard_" in str(value) for value in semantics.values()))
 

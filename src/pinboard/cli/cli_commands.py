@@ -52,7 +52,7 @@ class DiagnoseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class CloseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: StableWorkItemId
-    outcome: work_models.CloseOutcome
+    outcome: work_models.DirectCloseOutcome
     reason: str
     task_id: StableTaskId
     host_id: StableHostId

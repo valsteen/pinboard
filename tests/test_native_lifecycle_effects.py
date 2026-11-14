@@ -284,7 +284,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             "close",
             "work-a",
             "--outcome",
-            "dropped",
+            "done",
             "--reason",
             "Bypass review.",
             "--task-id",

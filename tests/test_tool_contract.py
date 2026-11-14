@@ -58,19 +58,39 @@ class ToolContractTest(unittest.TestCase):
                 self.assertIsInstance(detail, tool_contract.PresentationContract)
             roots.assert_not_called()
 
-    def test_retained_human_close_leaf_schema_rejects_unknown_and_invalid_values(self) -> None:
+    def test_retained_human_close_leaf_lists_only_supported_outcomes_and_rejects_invalid_values(self) -> None:
         detail = tool_contract.describe_operation("close")
         assert isinstance(detail, tool_contract.OperationContract)
         schema = json.loads(bytes(detail.input_schema))
         self.assertIn("CloseCommand", schema["$defs"])
+        outcome = schema["$defs"]["CloseCommand"]["properties"]["outcome"]
+        outcome_definition = outcome["$ref"].rsplit("/", 1)[-1]
+        self.assertEqual(["done", "superseded"], schema["$defs"][outcome_definition]["enum"])
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+            cli_parser.parse_invocation(
+                (
+                    "close",
+                    "work-a",
+                    "--outcome",
+                    "dropped",
+                    "--reason",
+                    "No longer needed.",
+                    "--task-id",
+                    "human",
+                    "--host-id",
+                    "local",
+                )
+            )
+        self.assertIn("invalid choice: 'dropped'", stderr.getvalue())
         command = cli_parser.parse_invocation(
             (
                 "close",
                 "work-a",
                 "--outcome",
-                "dropped",
+                "done",
                 "--reason",
-                "No longer needed.",
+                "Covered elsewhere.",
                 "--task-id",
                 "human",
                 "--host-id",

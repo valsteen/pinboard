@@ -800,7 +800,7 @@ class ServiceTest(unittest.TestCase):
             decision_models.CloseCommand(
                 action(decision_models.CloseAction, WorkItemId("work-a")),
                 work_models.CloseInput(
-                    work_models.CloseOutcome.DROPPED,
+                    work_models.DirectCloseOutcome.DONE,
                     "The retained attempt is no longer needed.",
                     "The human asked to close it.",
                 ),

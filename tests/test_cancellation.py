@@ -96,7 +96,7 @@ class CancellationTest(CheckpointPackageSupport):
                 self.assertFalse(missing.exists())
                 self.assertEqual(before, fixture.store.validated_snapshot())
 
-    def test_ordinary_close_cannot_bypass_cancellation_confirmation(self) -> None:
+    def test_dropped_input_is_rejected_by_close_and_cancellation_records_it(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
         action = self.project_action(fixture, "close:zz-proposal-a")
         before = fixture.store.validated_snapshot()
@@ -110,24 +110,14 @@ class CancellationTest(CheckpointPackageSupport):
         }
         result = call_advertised_tool(mcp_server.CLOSE_TOOL, arguments)
         self.assertEqual("rejected", result["status"], result)
-        self.assertIn("cancellation preview", str(result["message"]))
+        self.assertEqual("TRANSITION_INPUT_INVALID", result["code"])
+        self.assertEqual("unchanged", result["effect"])
         self.assertEqual(before, fixture.store.validated_snapshot())
-        code, output, error = self.run_cli(
-            *fixture.common,
-            "close",
-            "zz-proposal-a",
-            "--outcome",
-            "dropped",
-            "--reason",
-            "Drop zz-proposal-a.",
-            "--task-id",
-            "human-coordinator",
-            "--host-id",
-            "local",
-        )
-        self.assertNotEqual(0, code, (output, error))
-        self.assertIn("cancellation preview", output + error)
-        self.assertEqual(before, fixture.store.validated_snapshot())
+        cancelled = self.confirm(fixture, "zz-proposal-a", self.preview(fixture, "zz-proposal-a"))
+        self.assertEqual("committed", cancelled["status"], cancelled)
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        item = next(value for value in fresh.lifecycle.work_items if value.item_id == "zz-proposal-a")
+        self.assertEqual(stored_state.StoredWorkItemState.DROPPED, item.state)
 
     def test_cancellation_covers_live_stages_preserves_evidence_and_is_not_completion(self) -> None:
         for state in (

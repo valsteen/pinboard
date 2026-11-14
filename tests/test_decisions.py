@@ -897,7 +897,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             decision_models.CloseCommand(
                 action(decision_models.CloseAction, WorkItemId("obsolete")),
                 work_models.CloseInput(
-                    work_models.CloseOutcome.DONE, "covered elsewhere", "The human asked to close it."
+                    work_models.DirectCloseOutcome.DONE, "covered elsewhere", "The human asked to close it."
                 ),
             ),
             NOW,
@@ -924,10 +924,14 @@ class LifecycleDecisionTest(unittest.TestCase):
             dependency_facts=(),
             dropped_item_ids=frozenset(),
         )
-        superseded = work_models.CloseOutcome.SUPERSEDED
+        superseded = work_models.DirectCloseOutcome.SUPERSEDED
         cases = (
-            ("done-with-replacement", snapshot, work_models.CloseOutcome.DONE, DecisionFailureCode.REPLACEMENT_STALE),
-            ("dropped", snapshot, work_models.CloseOutcome.DROPPED, DecisionFailureCode.ACTION_NOT_AVAILABLE),
+            (
+                "done-with-replacement",
+                snapshot,
+                work_models.DirectCloseOutcome.DONE,
+                DecisionFailureCode.REPLACEMENT_STALE,
+            ),
             (
                 "no-relation",
                 replace_dataclass(snapshot, planned_replacements=()),
@@ -1244,7 +1248,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 ),
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, WorkItemId("target")),
-                    work_models.CloseInput(work_models.CloseOutcome.DONE, "done", "The human asked to close it."),
+                    work_models.CloseInput(work_models.DirectCloseOutcome.DONE, "done", "The human asked to close it."),
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
@@ -1260,23 +1264,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, WorkItemId("target")),
                     work_models.CloseInput(
-                        work_models.CloseOutcome.DROPPED, "abandon review", "The human asked to close it."
-                    ),
-                ),
-                "ACTION_NOT_AVAILABLE",
-            ),
-            (
-                LedgerSnapshot(
-                    "r",
-                    (ready, replace(item("dependent", work_models.WorkState.READY), depends_on=("target",))),
-                    accepted_checkpoints=frozenset(),
-                    dependency_facts=(),
-                    dropped_item_ids=frozenset(),
-                ),
-                decision_models.CloseCommand(
-                    action(decision_models.CloseAction, WorkItemId("target")),
-                    work_models.CloseInput(
-                        work_models.CloseOutcome.DROPPED, "obsolete", "The human asked to close it."
+                        work_models.DirectCloseOutcome.DONE, "abandon review", "The human asked to close it."
                     ),
                 ),
                 "ACTION_NOT_AVAILABLE",
@@ -1292,7 +1280,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 ),
                 decision_models.CloseCommand(
                     action(decision_models.CloseAction, WorkItemId("target")),
-                    work_models.CloseInput(work_models.CloseOutcome.DONE, "done", "The human asked to close it."),
+                    work_models.CloseInput(work_models.DirectCloseOutcome.DONE, "done", "The human asked to close it."),
                 ),
                 "HISTORY_RECORD_EXISTS",
             ),

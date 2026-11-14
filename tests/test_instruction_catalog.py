@@ -27,6 +27,28 @@ class GuidanceMetadataTest(unittest.TestCase):
                 instruction_catalog.validate_generated()
 
 
+def _startup_tree(root: Path) -> Path:
+    """Lay out minimal coordinator entry skills, generated coordinators, MCP server and hooks under root."""
+    output = root / "src/pinboard/instructions"
+    output.mkdir(parents=True)
+    for runtime in instruction_catalog.RUNTIMES:
+        (output / f"coordinator-{runtime}.md").write_text("coordinator")
+    (root / "src/pinboard/mcp").mkdir()
+    (root / "src/pinboard/mcp/server.py").write_text("server(instructions='mcp')\n")
+    for hook in ("claude_hook.py", "antigravity_hook.py"):
+        (root / "src/pinboard" / hook).write_text("def session_start_main():\n    context = 'hook'\n")
+    for entry in instruction_catalog.COORDINATOR_ENTRIES:
+        (root / "skills" / entry).mkdir(parents=True)
+        (root / "skills" / entry / "SKILL.md").write_text(
+            "Read `../../src/pinboard/instructions/coordinator-{codex|claude-code|antigravity}.md`."
+        )
+    return output
+
+
+def _tree_bytes(root: Path) -> dict[Path, bytes]:
+    return {path: path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
+
+
 class StartupCompositionTest(unittest.TestCase):
     def test_generated_documents_reject_unresolvable_relative_links(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -46,19 +68,7 @@ class StartupCompositionTest(unittest.TestCase):
     def test_intake_and_transitive_reads_count_toward_each_runtime_budget(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            output = root / "src/pinboard/instructions"
-            output.mkdir(parents=True)
-            for runtime in instruction_catalog.RUNTIMES:
-                (output / f"coordinator-{runtime}.md").write_text("coordinator")
-            (root / "src/pinboard/mcp").mkdir()
-            (root / "src/pinboard/mcp/server.py").write_text("server(instructions='mcp')\n")
-            for hook in ("claude_hook.py", "antigravity_hook.py"):
-                (root / "src/pinboard" / hook).write_text("def session_start_main():\n    context = 'hook'\n")
-            for entry in instruction_catalog.COORDINATOR_ENTRIES:
-                (root / "skills" / entry).mkdir(parents=True)
-                (root / "skills" / entry / "SKILL.md").write_text(
-                    "Read `../../src/pinboard/instructions/coordinator-{codex|claude-code|antigravity}.md`."
-                )
+            output = _startup_tree(root)
             intake = root / "skills/pinboard-intake/SKILL.md"
             intake.write_text("Read [Pinboard](../pinboard/SKILL.md) and [extra](extra.md).")
             extra = intake.parent / "extra.md"
@@ -73,3 +83,38 @@ class StartupCompositionTest(unittest.TestCase):
                 extra.write_text("x" * instruction_catalog.ROLE_BUDGETS["coordinator"])
                 with self.assertRaisesRegex(ValueError, "pinboard-intake:codex"):
                     instruction_catalog.validate_startup_composition()
+
+    def test_generation_over_the_startup_budget_writes_and_deletes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = _startup_tree(root)
+            (output / "documents").mkdir()
+            (output / "documents/stale.md").write_text("stale action document")
+
+            def computed(coordinator: bytes) -> dict[Path, bytes]:
+                return {
+                    **{output / f"coordinator-{runtime}.md": coordinator for runtime in instruction_catalog.RUNTIMES},
+                    output / "documents/new.md": b"new action document\n",
+                    output / "catalog.json": b"{}\n",
+                }
+
+            before = _tree_bytes(root)
+            over_budget = computed(b"x" * instruction_catalog.ROLE_BUDGETS["coordinator"])
+            with (
+                patch.object(instruction_catalog, "ROOT", root),
+                patch.object(instruction_catalog, "OUTPUT", output),
+                patch.object(instruction_catalog, "expected_files", return_value=over_budget),
+                self.assertRaisesRegex(ValueError, "coordinator startup is"),
+            ):
+                instruction_catalog.generate()
+            self.assertEqual(before, _tree_bytes(root))
+
+            within_budget = computed(b"coordinator\n")
+            with (
+                patch.object(instruction_catalog, "ROOT", root),
+                patch.object(instruction_catalog, "OUTPUT", output),
+                patch.object(instruction_catalog, "expected_files", return_value=within_budget),
+            ):
+                instruction_catalog.generate()
+            self.assertEqual(within_budget, {path: path.read_bytes() for path in within_budget})
+            self.assertFalse((output / "documents/stale.md").exists())

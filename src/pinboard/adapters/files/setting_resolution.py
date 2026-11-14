@@ -1,8 +1,7 @@
-"""Verified settings and confirmed first-use effects at file boundaries.
+"""Verified contributor-trace settings and confirmed first-use effects at file boundaries.
 
-Contributor trace settings and per-user host settings share one key-level seeding route: an absent file is
-created privately, a missing key is written through Git config on an exclusive lock copy that Git writers also
-honor, and the stored value is read back before use.
+An absent file is created privately, a missing key is written through Git config on an exclusive lock copy
+that Git writers also honor, and the stored value is read back before use.
 """
 
 import errno
@@ -10,7 +9,6 @@ import os
 import stat
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum, auto
 from pathlib import Path
 from typing import Literal, assert_never
 
@@ -33,30 +31,6 @@ class SettingEffects:
     key_write: Literal["none", "acknowledged", "unconfirmed"]
 
 
-class EntryProblem(Enum):
-    """Why one stored settings entry was rejected."""
-
-    INVALID_VALUE = auto()
-    DUPLICATE_KEY = auto()
-    UNKNOWN_KEY = auto()
-
-
-@dataclass(frozen=True)
-class InvalidEntry:
-    """One stored settings entry that failed validation, named by its own key rather than the caller's."""
-
-    key: str
-    problem: EntryProblem
-    diagnostic: str
-
-
-@dataclass(frozen=True)
-class NotRegularFile:
-    """The settings path holds a directory or other non-regular file, so no key can be read there."""
-
-    path: Path
-
-
 @dataclass(frozen=True)
 class DanglingLink:
     """A symbolic link on the settings path points to a target that does not exist."""
@@ -74,13 +48,6 @@ class UnusableLinkTarget:
 
 
 @dataclass(frozen=True)
-class NotDirectory:
-    """A path where the settings directory belongs exists but is not a directory, so no file can be created."""
-
-    path: Path
-
-
-@dataclass(frozen=True)
 class SeedNotReadBack:
     """A seeded key was written and published but absent when the settings file was read back."""
 
@@ -90,9 +57,6 @@ class SeedNotReadBack:
 type SettingFailureCause = (
     git_config.ReadFailed
     | git_config.WriteUnconfirmed
-    | InvalidEntry
-    | NotRegularFile
-    | NotDirectory
     | DanglingLink
     | UnusableLinkTarget
     | SeedNotReadBack

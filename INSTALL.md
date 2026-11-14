@@ -270,37 +270,6 @@ Contributor traces live under the selected work root. See [invocation diagnostic
 
 See [MCP architecture](ARCHITECTURE.md#mcp) for the tool and schema boundary.
 
-## Startup page size per host
-
-The `startup-page-bytes` setting controls how much oversized evidence Pinboard returns per page. See [evidence paging and fixture review](ARCHITECTURE.md#mcp) for how agents read instructions and evidence.
-
-The default page sizes for Claude Code and Codex fit within each host's default tool output limit. Antigravity saves text blocks above about 4 KB to a file and shows its path. Each spilled page fits in one native `read_file` call at the default size. Pinboard recognizes the host by the client name it sends when it connects and keeps one page size per recognized host across versions in `~/.config/pinboard/hosts.config`.
-
-```ini
-[host "claude-code"]
-	startup-page-bytes = 32000
-[host "codex"]
-	startup-page-bytes = 20000
-[host "antigravity"]
-	startup-page-bytes = 92000
-```
-
-The first page read from a recognized host creates `~/.config/pinboard` (mode `0700`) and the file (mode `0600`) when they are missing, writes that host's measured default as one key, and reads it back, the same way Pinboard seeds contributor-trace settings. If `~/.config/pinboard` or `hosts.config` is a symbolic link, for example from a dotfile manager, Pinboard reads and writes the file it points to and leaves the link in place. That per-user write is the only one `pinboard_evidence_read` makes; it never writes your project or board. After that the value is yours; Pinboard never rewrites it. Any other MCP client gets 8000-byte pages and no setting.
-
-| Host | Client name | Seeded default | Measured on | Host limit the default assumes |
-| --- | --- | --- | --- | --- |
-| Claude Code | `claude-code` | 32000 | Claude Code 2.1.293 | `MAX_MCP_OUTPUT_TOKENS` at its default of 25000 tokens; larger results are saved to a file |
-| Codex | `codex-mcp-client` | 20000 | Codex 0.164.0 | `tool_output_token_limit` at its default of 10000 tokens; larger results lose their middle |
-| Antigravity | `antigravity-client` | 92000 | agy 1.4.8 | Inline text results up to about 4 KB, which agy offers no setting for; larger results are saved to a file, and `read_file` reads 46,080 bytes per call, so each page spills into one file read in one call |
-
-If you lowered a host's output limit, lower its page size to match; if you raised the limit, you can raise the page size. Values are whole numbers of bytes from 4000 to 200000, and a change applies to the next page. For example:
-
-```sh
-git config --file ~/.config/pinboard/hosts.config host.codex.startup-page-bytes 12000
-```
-
-Remove a key to have Pinboard write the measured default again. A malformed or out-of-range value, an unreadable file, or a failed first write stops page reads with a diagnostic that names the file and key and gives one next step; Pinboard does not fall back to another size. Antigravity sends the same client version for every agy release, so if a new agy release changes how much it shows inline or how much `read_file` returns per call, adjust the `antigravity` value yourself. A stored `antigravity` value between about 8400 and 92000, such as 16000, still works but makes every page spill into a smaller file, so reading the evidence takes more calls; remove the key to have Pinboard write the measured default.
-
 ## Upgrade an installed plugin
 
 Refresh the installed code through the client's supported plugin update or reload mechanism. Codex loads a cached copy; marketplace refresh can replace files for configured plugins, including disabled ones. See [Codex plugin refresh](https://developers.openai.com/plugins/build/plugins#enable-or-disable-a-plugin-for-a-repo). In Claude Code, use `claude plugin update pinboard@pinboard`. In Antigravity, [reinstall from the updated clone](#upgrade-or-remove).
@@ -371,10 +340,6 @@ Check the [Pinboard allow rule](#allow-pinboard-tools). `agy plugin list --json`
 ### Antigravity reports the pinboard MCP server as unavailable
 
 Check the session message for the launcher diagnostic, then follow [runtime preparation](#the-launcher-says-runtime-preparation-is-required) and [reconnecting](#reconnect-when-pinboard-stays-unavailable).
-
-### Pinboard reports a host page-size setting as unavailable
-
-If you receive `HOST_PAGE_SETTING_UNAVAILABLE`, follow the next step in the result for the named file or resource and key. Pinboard checks every entry in the shared `hosts.config`, so the key may belong to a different host. Retry the page read once the reported issue is resolved. See [page-size settings](#startup-page-size-per-host) for allowed values and defaults.
 
 ### The launcher says runtime preparation is required
 

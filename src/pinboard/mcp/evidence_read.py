@@ -1,7 +1,4 @@
-"""Verify selected evidence bytes and present one bounded page; never grant authority or write project state.
-
-A recognized host's page size is its per-user host setting, seeded with the measured default on first use.
-"""
+"""Verify selected evidence bytes and present one bounded page; never grant authority or write state."""
 
 from collections.abc import Mapping
 from pathlib import Path
@@ -10,15 +7,6 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters.files import evidence_read as files
-from pinboard.adapters.files import host_settings
-from pinboard.adapters.files.setting_resolution import (
-    EntryProblem,
-    InvalidEntry,
-    NotRegularFile,
-    SettingEffects,
-    SettingFailureCause,
-    SettingResolutionError,
-)
 from pinboard.mcp import contracts, execution, host_profiles, read_operations
 
 
@@ -54,15 +42,15 @@ def _rejected(
 
 
 def _page(
-    request: contracts.StartupArtifactStart | contracts.StartupFileStart | contracts.StartupContinue,
+    request: contracts.EvidenceReadArtifactStart | contracts.EvidenceReadFileStart | contracts.EvidenceReadContinue,
     budget: int,
-    source: contracts.StartupSource,
+    source: contracts.EvidenceReadSource,
     text: str,
     start: int,
     end: int,
 ) -> contracts.EvidenceReadPage:
     continuation = (
-        contracts.StartupContinue(request.project_root, request.work_root, source, end, budget)
+        contracts.EvidenceReadContinue(request.project_root, request.work_root, source, end, budget)
         if end < len(text)
         else None
     )
@@ -83,105 +71,6 @@ def _page(
     )
 
 
-def _correction(path: Path, key: str, cause: SettingFailureCause) -> tuple[str, str]:
-    """The setting key a repair must touch and the repair for invalid stored content.
-
-    An invalid entry names its own key, which may belong to another host or be unknown or duplicated, so
-    that the repair clears the failure; other failures report the connected host's key, the setting this read
-    could not verify.
-    """
-    if not isinstance(cause, InvalidEntry):
-        return key, (
-            f"Set {key} in {path} to a whole number of bytes from {host_settings.MIN_PAGE_BYTES} to "
-            f"{host_settings.MAX_PAGE_BYTES}, or remove that key so the measured default is written again, then retry."
-        )
-    match cause.problem:
-        case EntryProblem.INVALID_VALUE:
-            repair = (
-                f"Set {cause.key} in {path} to a whole number of bytes from {host_settings.MIN_PAGE_BYTES} to "
-                f"{host_settings.MAX_PAGE_BYTES}, or remove that key so its host's measured default is written "
-                "again when that host next reads an evidence page, then retry."
-            )
-        case EntryProblem.DUPLICATE_KEY:
-            repair = f"Keep one {cause.key} entry in {path} and delete the others, then retry."
-        case EntryProblem.UNKNOWN_KEY:
-            repair = (
-                f"Remove {cause.key} from {path}, or rename it to host.<host>.startup-page-bytes for the host it "
-                "was meant for, then retry."
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
-    return cause.key, repair
-
-
-def _sentence(text: str) -> str:
-    return text if text.endswith(".") else f"{text}."
-
-
-def _host_setting_failure(
-    path: Path | None, key: str, error: SettingResolutionError | RuntimeError, directory_created: bool
-) -> execution.TypedOperationResult[contracts.EvidenceReadResult]:
-    """Name the setting, the failed resource, this call's settings effects, retry and one safe next step."""
-    if isinstance(error, RuntimeError):
-        effects = SettingEffects("none", "none", "none")
-        resource = "home directory"
-        recovery = "Start the Pinboard MCP service with HOME set to your home directory, then retry the same request."
-        retry = "retry-same-input"
-        message = f"Host page-size setting {key} is unavailable: {_sentence(str(error))} No page was read."
-    else:
-        effects = error.effects
-        key, correction = _correction(error.path, key, error.cause)
-        resource, recovery, retry = execution.settings_recovery(error, "Host page-size settings", correction)
-        if isinstance(error.cause, NotRegularFile):
-            subject = f"Host page-size settings file {error.path} is unusable"
-        elif isinstance(error.cause, InvalidEntry):
-            subject = f"Host page-size setting {key} is invalid"
-        else:
-            subject = f"Host page-size setting {key} is unavailable"
-        message = f"{subject}: {_sentence(str(error))} No page was read."
-    confirmed = directory_created or effects.file_creation == "confirmed" or effects.key_write == "acknowledged"
-    unconfirmed = effects.file_creation == "unconfirmed" or effects.key_write == "unconfirmed"
-    result = contracts.StartupHostSettingFailed(
-        "pinboard-evidence-read-result/v1",
-        "rejected",
-        "HOST_PAGE_SETTING_UNAVAILABLE",
-        str(path) if path is not None else "~/.config/pinboard/hosts.config",
-        key,
-        resource,
-        message,
-        recovery,
-        "confirmed" if directory_created else "none",
-        effects.file_creation,
-        effects.key_write,
-        None if unconfirmed else confirmed,
-        "unconfirmed" if unconfirmed else "committed" if confirmed else "unchanged",
-        retry,
-        ("user-settings",) if confirmed else (),
-    )
-    return execution.TypedOperationResult(result, "rejected", None)
-
-
-def _page_bytes(
-    profile: host_profiles.HostProfile,
-) -> int | execution.TypedOperationResult[contracts.EvidenceReadResult]:
-    """The unmeasured size, or the recognized host's stored per-user setting seeded with its measured default."""
-    host = host_profiles.setting_host(profile)
-    if host is None:
-        return host_profiles.measured_page_bytes(profile)
-    key = host_settings.setting_key(host)
-    try:
-        path = host_settings.settings_path()
-    except RuntimeError as error:
-        return _host_setting_failure(None, key, error, False)
-    directory_created = False
-    try:
-        path = host_settings.real_location(path)
-        directory_created = host_settings.ensure_directory(path)
-        return host_settings.resolve(path, host, host_profiles.measured_page_bytes(profile)).value
-    except SettingResolutionError as error:
-        return _host_setting_failure(path, key, error, directory_created)
-
-
 def read(
     raw: Mapping[str, contracts.JsonValue], token: execution.CancellationToken, profile: host_profiles.HostProfile
 ) -> execution.TypedOperationResult[contracts.EvidenceReadResult]:
@@ -191,30 +80,28 @@ def read(
         msgspec.json.encode(request)
     except (msgspec.ValidationError, ValueError) as error:
         return _rejected("request", str(error), None, host_profiles.measured_page_bytes(profile), profile)
-    page_bytes = _page_bytes(profile)
-    if isinstance(page_bytes, execution.TypedOperationResult):
-        return page_bytes
+    page_bytes = host_profiles.measured_page_bytes(profile)
     budget = host_profiles.effective_budget(request.max_batch_bytes, page_bytes)
     return _read_selected(request, budget, page_bytes, profile, token)
 
 
 def _read_selected(
-    request: contracts.StartupArtifactStart | contracts.StartupFileStart | contracts.StartupContinue,
+    request: contracts.EvidenceReadArtifactStart | contracts.EvidenceReadFileStart | contracts.EvidenceReadContinue,
     budget: int,
     page_bytes: int,
     profile: host_profiles.HostProfile,
     token: execution.CancellationToken,
 ) -> execution.TypedOperationResult[contracts.EvidenceReadResult]:
-    start = request.start_character if isinstance(request, contracts.StartupContinue) else 0
-    expected: contracts.StartupSource | None
+    start = request.start_character if isinstance(request, contracts.EvidenceReadContinue) else 0
+    expected: contracts.EvidenceReadSource | None
     match request:
-        case contracts.StartupFileStart():
+        case contracts.EvidenceReadFileStart():
             expected = None
             path = Path(request.path)
-        case contracts.StartupArtifactStart() | contracts.StartupContinue():
+        case contracts.EvidenceReadArtifactStart() | contracts.EvidenceReadContinue():
             expected = request.source
             match expected:
-                case contracts.StartupArtifactSource():
+                case contracts.EvidenceReadArtifactSource():
                     verified = read_operations._verify_artifact(
                         {
                             "project_root": request.project_root,
@@ -229,7 +116,7 @@ def _read_selected(
                     if not isinstance(verified.record, contracts.ArtifactVerified):
                         return _rejected(expected.selector, verified.record.message, budget, page_bytes, profile)
                     path = Path(request.work_root) / expected.selector
-                case contracts.StartupFileSource():
+                case contracts.EvidenceReadFileSource():
                     path = Path(expected.path)
                 case _ as unreachable:
                     assert_never(unreachable)
@@ -245,23 +132,23 @@ def _read_selected(
         return _rejected(
             str(path), "Source bytes changed; continuation cannot combine identities.", budget, page_bytes, profile
         )
-    if isinstance(request, contracts.StartupContinue) and start >= len(selected.text):
+    if isinstance(request, contracts.EvidenceReadContinue) and start >= len(selected.text):
         return _rejected(str(path), "Continuation is outside this exact source.", budget, page_bytes, profile)
     source = (
         expected
         if expected is not None
-        else contracts.StartupFileSource(str(path), selected.sha256, selected.size_bytes)
+        else contracts.EvidenceReadFileSource(str(path), selected.sha256, selected.size_bytes)
     )
     token.checkpoint()
     return _bounded_page(request, budget, page_bytes, profile, source, selected.text, start, token)
 
 
 def _bounded_page(
-    request: contracts.StartupArtifactStart | contracts.StartupFileStart | contracts.StartupContinue,
+    request: contracts.EvidenceReadArtifactStart | contracts.EvidenceReadFileStart | contracts.EvidenceReadContinue,
     budget: int,
     page_bytes: int,
     profile: host_profiles.HostProfile,
-    source: contracts.StartupSource,
+    source: contracts.EvidenceReadSource,
     text: str,
     start: int,
     token: execution.CancellationToken,

@@ -27,9 +27,6 @@ from pinboard.adapters.files.file_io import create_immutable
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.files.setting_resolution import (
     DanglingLink,
-    InvalidEntry,
-    NotDirectory,
-    NotRegularFile,
     SeedNotReadBack,
     SettingEffects,
     SettingResolutionError,
@@ -311,10 +308,6 @@ def settings_recovery(  # noqa: C901, PLR0912, PLR0915 - one boundary distinguis
                 repair = (
                     f"Inspect access and resolve the reported filesystem failure at {error.resource} before retrying."
                 )
-            case NotRegularFile(path=path):
-                repair = f"Replace {path} with a regular file, or remove it so Pinboard creates it, then retry."
-            case NotDirectory(path=path):
-                repair = f"Replace {path} with a directory, or remove it so Pinboard creates it, then retry."
             case DanglingLink(link=link, target=target):
                 repair = f"Create {target}, or fix or remove the link {link}, then retry."
             case UnusableLinkTarget(link=link):
@@ -325,7 +318,7 @@ def settings_recovery(  # noqa: C901, PLR0912, PLR0915 - one boundary distinguis
                     "retry the same request."
                 )
                 retry = "retry-same-input"
-            case InvalidEntry() | ValueError():
+            case ValueError():
                 repair = correction
             case _ as unreachable:
                 assert_never(unreachable)

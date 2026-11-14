@@ -22,6 +22,7 @@ from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from evals.behavioral.export import LauncherResult
+from pinboard.adapters.files import contributor_traces
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
 from pinboard.domain import authority_models
 from pinboard.mcp import contracts, execution, server
@@ -332,6 +333,7 @@ class LauncherCaptureTest(unittest.TestCase):
             self.assertEqual(1, result.returncode)
             self.assertIn(b"RuntimeError: target failed", result.stderr)
             self.assertIn(b"BrokenPipeError", result.stderr)
+            self.assertNotIn(b"\npartial\n", result.stderr)
             diagnostic = next((line for line in result.stderr.splitlines() if line.startswith(b"{")), b"")
             self.assertTrue(diagnostic, result.stderr)
             failure = self.launcher_result(diagnostic)
@@ -341,43 +343,41 @@ class LauncherCaptureTest(unittest.TestCase):
             self.assertEqual("do-not-retry", failure.retry_disposition)
             self.assertEqual(b"occupied", capture.read_bytes())
 
+    def installed_unchanged_init_rejection(
+        self, launcher: Path, arguments: tuple[str, ...], root: Path, environment: dict[str, str]
+    ) -> subprocess.CompletedProcess[bytes]:
+        subprocess.run(["git", "init", "-b", "main"], check=True, cwd=root, capture_output=True)
+        work_root = root / ".pinboard"
+        work_root.mkdir()
+        (work_root / "views").write_text("blocks generated views\n", encoding="utf-8")
+        initialized = subprocess.run(
+            [str(launcher), *arguments], capture_output=True, check=False, cwd=root, env=environment
+        )
+        self.assertEqual(12, initialized.returncode, initialized.stderr)
+        self.assertEqual("committed-effect", json.loads(initialized.stdout)["status"])
+        expected = subprocess.run(
+            [str(launcher), *arguments], capture_output=True, check=False, cwd=root, env=environment
+        )
+        self.assertEqual(12, expected.returncode, expected.stderr)
+        rejection = json.loads(expected.stdout)
+        self.assertEqual("VIEW_REFRESH_FAILED", rejection["code"])
+        self.assertEqual("rejected", rejection["status"])
+        self.assertFalse(rejection["state_changed"])
+        self.assertEqual([], rejection["changed_surfaces"])
+        return expected
+
     def test_installed_buffered_rejection_can_be_recovered_when_stdout_closes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             launcher = ROOT / "scripts" / "pinboard"
             environment = dict(os.environ)
             environment.pop("PYTHONUNBUFFERED", None)
-            subprocess.run(["git", "init", "-b", "main"], check=True, cwd=root, capture_output=True)
-            work_root = root / ".pinboard"
-            work_root.mkdir()
-            (work_root / "views").write_text("blocks generated views\n", encoding="utf-8")
             arguments = ("--project-root", str(root), "init", "--json")
-            initialized = subprocess.run(
-                [str(launcher), *arguments],
-                capture_output=True,
-                check=False,
-                cwd=root,
-                env=environment,
-            )
-            self.assertEqual(12, initialized.returncode, initialized.stderr)
-            self.assertEqual("committed-effect", json.loads(initialized.stdout)["status"])
-            database = work_root / "state.sqlite3"
+            expected = self.installed_unchanged_init_rejection(launcher, arguments, root, environment)
+            database = root / ".pinboard" / "state.sqlite3"
             database_before = database.read_bytes()
             exclude = root / ".git" / "info" / "exclude"
             exclude_before = exclude.read_bytes()
-            expected = subprocess.run(
-                [str(launcher), *arguments],
-                capture_output=True,
-                check=False,
-                cwd=root,
-                env=environment,
-            )
-            self.assertEqual(12, expected.returncode, expected.stderr)
-            rejection = json.loads(expected.stdout)
-            self.assertEqual("VIEW_REFRESH_FAILED", rejection["code"])
-            self.assertEqual("rejected", rejection["status"])
-            self.assertFalse(rejection["state_changed"])
-            self.assertEqual([], rejection["changed_surfaces"])
 
             direct = self.run_with_closed_stdout(launcher, *arguments, cwd=root, environment=environment)
             self.assertNotEqual(0, direct.returncode)
@@ -401,6 +401,61 @@ class LauncherCaptureTest(unittest.TestCase):
             self.assertEqual(expected.returncode, evidence.exit_status)
             self.assertEqual(expected.stdout, _decode_bytes(evidence.stdout))
             self.assertEqual(expected.stderr, _decode_bytes(evidence.stderr))
+            self.assertEqual(database_before, database.read_bytes())
+            self.assertEqual(exclude_before, exclude.read_bytes())
+
+    def test_installed_automatic_capture_recovers_stdout_when_retention_evicts_its_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            launcher = ROOT / "scripts" / "pinboard"
+            environment = dict(os.environ)
+            environment.pop("PYTHONUNBUFFERED", None)
+            arguments = ("--project-root", str(root), "init", "--json")
+            expected = self.installed_unchanged_init_rejection(launcher, arguments, root, environment)
+            work_root = root / ".pinboard"
+            database = work_root / "state.sqlite3"
+            database_before = database.read_bytes()
+            exclude = root / ".git" / "info" / "exclude"
+            exclude_before = exclude.read_bytes()
+
+            (work_root / contributor_traces.SETTINGS_NAME).write_text(
+                '[pinboard "unsafe_persist_exact_pinboard_traces"]\n\tmode = on\n', encoding="utf-8"
+            )
+            traces = work_root / contributor_traces.TRACE_DIRECTORY
+            retained = self.run_with_closed_stdout(launcher, *arguments, cwd=root, environment=environment)
+            self.assertEqual(1, retained.returncode)
+            [automatic_capture] = traces.iterdir()
+            self.assertIn(os.fsencode(automatic_capture), retained.stderr)
+            self.assertIn(b"exit status 12", retained.stderr)
+            self.assertIn(b"BrokenPipeError", retained.stderr)
+            self.assertNotIn(expected.stdout, retained.stderr)
+            self.assertEqual(expected.stdout, _decode_bytes(self.read_capture(automatic_capture).stdout))
+
+            newer = set()
+            for index in range(contributor_traces.TRACE_LIMIT):
+                trace = traces / f"pinboard-auto-mcp-{index:04}.json"
+                trace.write_bytes(b"existing trace")
+                os.utime(trace, (4_000_000_000, 4_000_000_000))
+                newer.add(trace)
+
+            healthy = subprocess.run(
+                [str(launcher), *arguments], capture_output=True, check=False, cwd=root, env=environment
+            )
+            self.assertEqual(
+                (expected.returncode, expected.stdout, expected.stderr),
+                (healthy.returncode, healthy.stdout, healthy.stderr),
+            )
+            self.assertEqual(newer, set(traces.iterdir()))
+
+            evicted = self.run_with_closed_stdout(launcher, *arguments, cwd=root, environment=environment)
+            self.assertEqual(1, evicted.returncode)
+            self.assertEqual(newer, set(traces.iterdir()))
+            self.assertEqual(1, evicted.stderr.count(expected.stdout), evicted.stderr)
+            self.assertIn(b"automatic capture is unavailable", evicted.stderr)
+            self.assertIn(b"exit status 12", evicted.stderr)
+            self.assertIn(b"Do not repeat the target command", evicted.stderr)
+            self.assertNotIn(b"Read the exact capture", evicted.stderr)
+            self.assertIn(b"BrokenPipeError", evicted.stderr)
             self.assertEqual(database_before, database.read_bytes())
             self.assertEqual(exclude_before, exclude.read_bytes())
 

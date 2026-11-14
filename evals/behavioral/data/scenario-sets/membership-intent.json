@@ -1,0 +1,14 @@
+{
+  "name": "membership-intent",
+  "scenarios": [
+    {
+      "id": "s43-explicit-membership-intake",
+      "sha256": "d4e4e1b2b27b94e465e518f37b0ec7b476ba36fb6b0dfca5bc3f01e5f627ab34"
+    },
+    {
+      "id": "s44-consolidation-membership-preview",
+      "sha256": "b491fd2646fa65ae779b2749c43cfac0b0cda2a2a39793a8bc97b82fb91ad4d9"
+    }
+  ],
+  "targeted_rules": ["P8", "P11"]
+}

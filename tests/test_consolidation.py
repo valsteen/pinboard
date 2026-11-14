@@ -92,6 +92,7 @@ class ConsolidationTest(CheckpointPackageSupport):
             ],
             "campaign": {"item_id": campaign, "create": create, "definition": definition},
             "checkpoint_targets": [],
+            "membership_intent": {"kind": "no-initiatives"},
         }
 
     def preview(self, fixture: CheckpointFixture, selection: JsonObject) -> JsonObject:
@@ -124,6 +125,73 @@ class ConsolidationTest(CheckpointPackageSupport):
         return fixture.call_advertised_tool(
             mcp_server.CONSOLIDATE_TOOL, self.confirm_request(fixture, selection, preview)
         )
+
+    def create_initiative(self, fixture: CheckpointFixture, initiative_id: str) -> None:
+        result = fixture.call_advertised_tool(
+            mcp_server.INITIATIVE_TOOL,
+            {
+                "request": {
+                    **self.roots(fixture),
+                    "operation": "create",
+                    "initiative_id": initiative_id,
+                    "title": initiative_id,
+                    "goal": "Keep the selected work aligned",
+                    "rationale": "Make campaign scope explicit",
+                    "success_signal": "The selected work remains grouped",
+                    "project_references": [],
+                    "human": "Project owner",
+                    "date": "2026-10-16",
+                    "reason": "Define the initiative",
+                    "actor_task_id": "human",
+                    "actor_host_id": "local",
+                }
+            },
+        )
+        self.assertEqual("committed", result["status"], result)
+
+    def test_source_membership_change_invalidates_preview_without_partial_consolidation(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        for item in ("source-a", "source-b"):
+            self.create(fixture, item)
+        self.create_initiative(fixture, "campaign-scope")
+        self.create_initiative(fixture, "source-scope")
+        selection = self.selection(fixture, ("source-a", "source-b"), "campaign", True)
+        selection["membership_intent"] = {
+            "kind": "initiative",
+            "initiative_id": "campaign-scope",
+            "expected_revision": 1,
+            "attribution": {
+                "human": "Project owner",
+                "date": "2026-10-16",
+                "reason": "Keep the campaign in scope",
+            },
+        }
+        preview = self.preview(fixture, selection)
+        self.assertEqual("ok", preview["status"], preview)
+        self.assertIn("source_dispositions", self.json_object(preview["preview"]))
+
+        changed = fixture.call_advertised_tool(
+            mcp_server.INITIATIVE_TOOL,
+            {
+                "request": {
+                    **self.roots(fixture),
+                    "operation": "member-add",
+                    "initiative_id": "source-scope",
+                    "expected_revision": 1,
+                    "item_id": "source-a",
+                    "human": "Project owner",
+                    "date": "2026-10-17",
+                    "reason": "Assign the source explicitly",
+                    "actor_task_id": "human",
+                    "actor_host_id": "local",
+                }
+            },
+        )
+        self.assertEqual("committed", changed["status"], changed)
+        before_confirm = fixture.store.validated_snapshot()
+        rejected = self.confirm(fixture, selection, preview)
+        self.assertEqual("ACTION_NOT_AVAILABLE", rejected["code"], rejected)
+        self.assertEqual(before_confirm, fixture.store.validated_snapshot())
 
     def test_new_campaign_carries_distinct_origins_and_converging_waits_through_reload(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
@@ -240,7 +308,7 @@ class ConsolidationTest(CheckpointPackageSupport):
         )
         self.assertEqual(0, self.run_cli(*fixture.common, "validate")[0])
         exported = self.run_json_cli(*fixture.common, "export")
-        self.assertIn("pinboard-consolidation/v1", str(exported))
+        self.assertIn("pinboard-consolidation/v2", str(exported))
 
     def test_existing_owner_folds_internal_edges_keeps_external_wait_and_declared_target(self) -> None:
         fixture = self.checkpoint_fixture(local=True)

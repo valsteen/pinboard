@@ -387,10 +387,10 @@ class ProjectExportTest(unittest.TestCase):
         result, stdout, stderr, statements = self.run_project_export_with_trace(common)
         self.assertEqual(0, result, stderr)
         project_export = self.decode_project_export(stdout)
-        self.assertEqual("pinboard-project-export/v3", project_export.schema)
+        self.assertEqual("pinboard-project-export/v4", project_export.schema)
         self.assertEqual((), project_export.completion_packages)
         self.assertEqual((), project_export.checkpoint_packages)
-        self.assertEqual("sqlite-v11", project_export.authority)
+        self.assertEqual("sqlite-v12", project_export.authority)
         self.assertEqual(state_before.lifecycle.project.revision, project_export.revision)
         with patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")):
             self.assertEqual(stdout, self.run_cli(*common)[1])
@@ -498,7 +498,7 @@ class ProjectExportTest(unittest.TestCase):
         replacement_cost = "Work C implementation and review would be discarded."
         subprocess.run(("git", "init", "--quiet", str(project)), check=True)
         proposal: JsonObject = {
-            "schema": "pinboard-proposal/v4",
+            "schema": "pinboard-proposal/v6",
             "position": None,
             "checkpoints": [],
             "route_facts": {
@@ -515,6 +515,13 @@ class ProjectExportTest(unittest.TestCase):
             "evidence": ["source:accepted-plan"],
             "why_it_matters": "Relation provenance must survive every stored projection.",
             "relation": {"kind": "planned-replacement", "item": "work-c", "replacement_cost": replacement_cost},
+            "membership_intent": {"kind": "no-initiatives"},
+            "related_disposition": {
+                "kind": "related",
+                "item_id": "work-c",
+                "active_memberships": [],
+                "active_off_roadmap": False,
+            },
             "effect": "Record the accepted replacement relation unchanged.",
             "unlock": "Fresh reloads and project export preserve the accepted provenance.",
             "urgency_evidence": "Creation and commit times are independently meaningful.",
@@ -679,6 +686,7 @@ class ProjectExportTest(unittest.TestCase):
             (),
             (),
             (),
+            (),
         )
         second = ProjectExportState(
             replace(
@@ -691,6 +699,7 @@ class ProjectExportTest(unittest.TestCase):
             state.artifact_references,
             state.transition_receipts,
             state.initiatives,
+            state.off_roadmap_episodes,
         )
 
         self.assertEqual(state, merge_project_export_batches(iter((first, second))))

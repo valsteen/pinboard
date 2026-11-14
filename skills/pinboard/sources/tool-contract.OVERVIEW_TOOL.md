@@ -1,1 +1,1 @@
-Read one same-revision discovery page; exact top-level roots, max_items 1-25, continuation:null to start. Follow continuations through null; stale traversal restarts. Partial pages prove no absence. Known work uses exact item status and definition.
+Read one same-revision discovery page with distinct initiative, unassigned and off-roadmap counts. Use exact roots, max_items 1-25 and continuation:null to start; follow continuations through null and restart stale traversal. Partial pages prove no absence. Known work uses exact item status and definition.

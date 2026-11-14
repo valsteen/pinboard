@@ -196,7 +196,7 @@ class RecordedRouteNativeTest(CheckpointPackageSupport):
         fixture = self.active_fixture()
         incoming = proposal()
         incoming.update(
-            schema="pinboard-proposal/v4",
+            schema="pinboard-proposal/v6",
             proposal_id="recorded-route",
             checkpoints=[],
             route_facts={
@@ -205,6 +205,8 @@ class RecordedRouteNativeTest(CheckpointPackageSupport):
                 "external_effects": "none",
                 "declares_checkpoints": False,
             },
+            membership_intent={"kind": "no-initiatives"},
+            related_disposition={"kind": "none"},
         )
         arguments: JsonObject = {
             "project_root": str(fixture.project),

@@ -37,7 +37,7 @@ class SchemaMigrationView(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     plan_id: str
     plan: SchemaPlan | None
     database_path: str
-    authority: Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9", "sqlite-v10", "sqlite-v11"]
+    authority: Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9", "sqlite-v10", "sqlite-v11", "sqlite-v12"]
     state_changed: bool
     effect: Literal["committed", "unchanged"]
     retry: Literal["do-not-retry", "safe-to-repeat"]
@@ -142,7 +142,9 @@ def migrate_schema(
     return 0
 
 
-def _authority(version: int) -> Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9", "sqlite-v10", "sqlite-v11"]:
+def _authority(
+    version: int,
+) -> Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9", "sqlite-v10", "sqlite-v11", "sqlite-v12"]:
     match version:
         case 6:
             return "sqlite-v6"
@@ -156,5 +158,7 @@ def _authority(version: int) -> Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "
             return "sqlite-v10"
         case 11:
             return "sqlite-v11"
+        case 12:
+            return "sqlite-v12"
         case _:
             raise ValueError(f"Unsupported schema authority version: {version}")

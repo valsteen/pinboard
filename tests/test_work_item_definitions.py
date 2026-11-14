@@ -9,7 +9,7 @@ from msgspec.structs import replace as replace_struct
 
 from pinboard.application import proposal_models, proposals, query_models, work_brief_models
 from pinboard.application.work_briefs import validate_definition_brief_agreement
-from pinboard.domain import decision_models, history, work_models
+from pinboard.domain import decision_models, history, initiatives, work_models
 from pinboard.domain.decisions import available_actions, decide
 from pinboard.domain.definition_decisions import decide_definition_revision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
@@ -204,7 +204,14 @@ class WorkItemDefinitionContractTest(unittest.TestCase):
             "relation": {"kind": "prerequisite", "item": "work-c"},
         }
         prereq_op = proposals.convert_proposal(msgspec.convert(prereq_raw, type=proposal_models.Proposal))
-        created = expect_success(decide_proposal_creation(snapshot, prereq_op, 1))
+        created = expect_success(
+            decide_proposal_creation(
+                snapshot,
+                prereq_op,
+                1,
+                initiatives.MembershipIntentFacts((), initiatives.NoRelatedDisposition()),
+            )
+        )
         self.assertEqual((CheckpointId("phase-1"), CheckpointId("phase-2")), created.ready_item.definition.checkpoints)
         assert created.prerequisite_change is not None
         self.assertEqual((CheckpointId("existing-cp"),), created.prerequisite_change.definition_after.checkpoints)

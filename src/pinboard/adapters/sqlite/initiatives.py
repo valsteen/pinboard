@@ -1,6 +1,7 @@
 """Initiative row selection and effects on a supplied connection; transaction lifetime belongs to the caller."""
 
 import sqlite3
+from datetime import datetime
 from typing import assert_never
 
 import msgspec
@@ -14,7 +15,7 @@ from pinboard.application import initiative_records as records
 from pinboard.application import roadmap, stored_state
 from pinboard.domain import initiatives as models
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import WorkItemId
+from pinboard.domain.identifiers import HostId, TaskId, WorkItemId
 
 
 class SubjectRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -60,10 +61,22 @@ class AssessmentRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 class ConditionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_exists: int
     active: int
+    off_roadmap: int
 
 
 class EpisodeRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     episode: int
+
+
+class OffRoadmapRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    episode: int
+    opened_json: bytes
+    closed_json: bytes | None
+
+
+class DispositionRevisionRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    revision: int
 
 
 def _decode[Value](payload: bytes, value_type: type[Value]) -> Value:
@@ -122,16 +135,196 @@ def read_current(connection: sqlite3.Connection, initiative_id: models.Initiativ
 
 def membership_condition(
     connection: sqlite3.Connection, initiative_id: models.InitiativeId, change: models.AddMember | models.RemoveMember
-) -> tuple[bool, bool]:
+) -> tuple[bool, bool, bool]:
     row = connection.execute(
-        "SELECT EXISTS(SELECT 1 FROM work_items WHERE item_id = ?) AS item_exists, EXISTS(SELECT 1 FROM initiative_memberships WHERE initiative_id = ? AND item_id = ? AND removed_json IS NULL) AS active",
-        (change.item_id, initiative_id, change.item_id),
+        """SELECT EXISTS(SELECT 1 FROM work_items WHERE item_id = ?) AS item_exists,
+                  EXISTS(SELECT 1 FROM initiative_memberships WHERE initiative_id = ? AND item_id = ? AND removed_json IS NULL) AS active,
+                  EXISTS(SELECT 1 FROM item_off_roadmap_episodes WHERE item_id = ? AND closed_json IS NULL) AS off_roadmap""",
+        (change.item_id, initiative_id, change.item_id, change.item_id),
     ).fetchone()
     selected = decode_row(row, ConditionRow)
-    return bool(selected.item_exists), bool(selected.active)
+    return bool(selected.item_exists), bool(selected.active), bool(selected.off_roadmap)
 
 
-def persist(  # noqa: C901, PLR0912 - exact effects for one closed mutation family
+def read_off_roadmap(connection: sqlite3.Connection) -> tuple[models.OffRoadmapEpisode, ...]:
+    return tuple(
+        models.OffRoadmapEpisode(
+            selected.item_id,
+            selected.episode,
+            records.provenance(_decode(selected.opened_json, records.ProvenanceRecord)),
+            None
+            if selected.closed_json is None
+            else records.provenance(_decode(selected.closed_json, records.ProvenanceRecord)),
+        )
+        for selected in (
+            decode_row(row, OffRoadmapRow)
+            for row in connection.execute(
+                "SELECT item_id, episode, opened_json, closed_json FROM item_off_roadmap_episodes ORDER BY item_id, episode"
+            )
+        )
+    )
+
+
+def read_disposition(connection: sqlite3.Connection, item_id: WorkItemId) -> models.DispositionFacts:
+    item_exists = connection.execute("SELECT 1 FROM work_items WHERE item_id = ?", (item_id,)).fetchone() is not None
+    memberships = tuple(
+        models.InitiativeId(str(row[0]))
+        for row in connection.execute(
+            "SELECT initiative_id FROM initiative_memberships WHERE item_id = ? AND removed_json IS NULL ORDER BY initiative_id",
+            (item_id,),
+        )
+    )
+    active_row = connection.execute(
+        "SELECT item_id, episode, opened_json, closed_json FROM item_off_roadmap_episodes WHERE item_id = ? AND closed_json IS NULL",
+        (item_id,),
+    ).fetchone()
+    active = None
+    if active_row is not None:
+        selected = decode_row(active_row, OffRoadmapRow)
+        active = models.OffRoadmapEpisode(
+            selected.item_id,
+            selected.episode,
+            records.provenance(_decode(selected.opened_json, records.ProvenanceRecord)),
+            None,
+        )
+    revision_row = connection.execute(
+        """SELECT coalesce(max(revision), 0) AS revision FROM (
+               SELECT json_extract(added_json, '$.project_revision') AS revision
+               FROM initiative_memberships WHERE item_id = ?
+               UNION ALL
+               SELECT json_extract(removed_json, '$.project_revision') AS revision
+               FROM initiative_memberships WHERE item_id = ? AND removed_json IS NOT NULL
+               UNION ALL
+               SELECT json_extract(opened_json, '$.project_revision') AS revision
+               FROM item_off_roadmap_episodes WHERE item_id = ?
+               UNION ALL
+               SELECT json_extract(closed_json, '$.project_revision') AS revision
+               FROM item_off_roadmap_episodes WHERE item_id = ? AND closed_json IS NOT NULL
+           )""",
+        (item_id, item_id, item_id, item_id),
+    ).fetchone()
+    revision = decode_row(revision_row, DispositionRevisionRow).revision
+    return models.DispositionFacts(item_exists, memberships, active, revision)
+
+
+def read_membership_intent_facts(
+    connection: sqlite3.Connection, related: models.RelatedDisposition
+) -> models.MembershipIntentFacts:
+    revisions = tuple(
+        (models.InitiativeId(str(row[0])), int(row[1]))
+        for row in connection.execute("SELECT initiative_id, subject_revision FROM initiatives ORDER BY initiative_id")
+    )
+    if isinstance(related, models.NoRelatedDisposition):
+        current: models.RelatedDisposition = models.NoRelatedDisposition()
+    else:
+        facts = read_disposition(connection, related.item_id)
+        current = models.ExpectedRelatedDisposition(
+            related.item_id, facts.active_memberships, facts.active_off_roadmap is not None
+        )
+    return models.MembershipIntentFacts(revisions, current)
+
+
+def _close_off_roadmap(connection: sqlite3.Connection, item_id: WorkItemId, note: bytes) -> None:
+    connection.execute(
+        "UPDATE item_off_roadmap_episodes SET closed_json = ? WHERE item_id = ? AND closed_json IS NULL",
+        (note, item_id),
+    )
+
+
+def _add_membership(
+    connection: sqlite3.Connection,
+    initiative_id: models.InitiativeId,
+    item_id: WorkItemId,
+    note: bytes,
+) -> None:
+    row = connection.execute(
+        "SELECT coalesce(max(episode), 0) + 1 AS episode FROM initiative_memberships WHERE initiative_id = ? AND item_id = ?",
+        (initiative_id, item_id),
+    ).fetchone()
+    episode = decode_row(row, EpisodeRow).episode
+    connection.execute(
+        "INSERT INTO initiative_memberships VALUES (?, ?, ?, ?, NULL)",
+        (initiative_id, item_id, episode, note),
+    )
+    _close_off_roadmap(connection, item_id, note)
+
+
+def persist_membership_effect(
+    connection: sqlite3.Connection,
+    item_id: WorkItemId,
+    effect: models.MembershipEffect,
+    actor_task_id: TaskId,
+    actor_host_id: HostId,
+    committed_at: datetime,
+    project_revision: int,
+) -> None:
+    match effect:
+        case models.AssignMembership(initiative_id=initiative_id, expected_revision=expected_revision, reason=reason):
+            provenance = models.Provenance(reason, actor_task_id, actor_host_id, committed_at, project_revision)
+            cursor = connection.execute(
+                "UPDATE initiatives SET subject_revision = ? WHERE initiative_id = ? AND subject_revision = ?",
+                (expected_revision + 1, initiative_id, expected_revision),
+            )
+            if (
+                require_one_changed_row(cursor, "Locked initiative revision changed before intent persistence.")
+                is not None
+            ):
+                raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "Locked initiative revision changed.")
+            _add_membership(connection, initiative_id, item_id, records.encode_provenance(provenance))
+        case models.OpenOffRoadmap(reason=reason):
+            provenance = models.Provenance(reason, actor_task_id, actor_host_id, committed_at, project_revision)
+            row = connection.execute(
+                "SELECT coalesce(max(episode), 0) + 1 AS episode FROM item_off_roadmap_episodes WHERE item_id = ?",
+                (item_id,),
+            ).fetchone()
+            episode = decode_row(row, EpisodeRow).episode
+            connection.execute(
+                "INSERT INTO item_off_roadmap_episodes VALUES (?, ?, ?, NULL)",
+                (item_id, episode, records.encode_provenance(provenance)),
+            )
+        case models.LeaveUnassigned():
+            pass
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _advance_project_revision(connection: sqlite3.Connection, provenance: models.Provenance) -> int:
+    cursor = connection.execute(
+        "UPDATE project_meta SET revision = ?, updated_at = ? WHERE singleton = 1 AND revision = ?",
+        (provenance.project_revision, provenance.committed_at.isoformat(), provenance.project_revision - 1),
+    )
+    if require_one_changed_row(cursor, "Locked project revision changed.") is not None:
+        raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "Locked project revision changed.")
+    return provenance.project_revision
+
+
+def persist_disposition(
+    connection: sqlite3.Connection,
+    change: models.DispositionChange,
+    provenance: models.Provenance,
+) -> int:
+    note = records.encode_provenance(provenance)
+    match change:
+        case models.MarkOffRoadmap(item_id=item_id):
+            row = connection.execute(
+                "SELECT coalesce(max(episode), 0) + 1 AS episode FROM item_off_roadmap_episodes WHERE item_id = ?",
+                (item_id,),
+            ).fetchone()
+            episode = decode_row(row, EpisodeRow).episode
+            connection.execute("INSERT INTO item_off_roadmap_episodes VALUES (?, ?, ?, NULL)", (item_id, episode, note))
+        case models.ClearOffRoadmap(expected_episode=episode, item_id=item_id):
+            cursor = connection.execute(
+                "UPDATE item_off_roadmap_episodes SET closed_json = ? WHERE item_id = ? AND episode = ? AND closed_json IS NULL",
+                (note, item_id, episode),
+            )
+            if require_one_changed_row(cursor, "Locked off-roadmap episode changed.") is not None:
+                raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "Locked off-roadmap episode changed.")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return _advance_project_revision(connection, provenance)
+
+
+def persist(  # noqa: PLR0912 - exact effects for one closed mutation family
     connection: sqlite3.Connection,
     initiative_id: models.InitiativeId,
     change: models.Change,
@@ -183,14 +376,7 @@ def persist(  # noqa: C901, PLR0912 - exact effects for one closed mutation fami
                 ),
             )
         case models.AddMember(item_id=item_id):
-            row = connection.execute(
-                "SELECT coalesce(max(episode), 0) + 1 AS episode FROM initiative_memberships WHERE initiative_id = ? AND item_id = ?",
-                (initiative_id, item_id),
-            ).fetchone()
-            episode = decode_row(row, EpisodeRow).episode
-            connection.execute(
-                "INSERT INTO initiative_memberships VALUES (?, ?, ?, ?, NULL)", (initiative_id, item_id, episode, note)
-            )
+            _add_membership(connection, initiative_id, item_id, note)
         case models.RemoveMember(item_id=item_id):
             cursor = connection.execute(
                 "UPDATE initiative_memberships SET removed_json = ? WHERE initiative_id = ? AND item_id = ? AND removed_json IS NULL",
@@ -217,13 +403,7 @@ def persist(  # noqa: C901, PLR0912 - exact effects for one closed mutation fami
             )
         case _ as unreachable:
             assert_never(unreachable)
-    cursor = connection.execute(
-        "UPDATE project_meta SET revision = ?, updated_at = ? WHERE singleton = 1 AND revision = ?",
-        (provenance.project_revision, provenance.committed_at.isoformat(), provenance.project_revision - 1),
-    )
-    if require_one_changed_row(cursor, "Locked project revision changed.") is not None:
-        raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, "Locked project revision changed.")
-    return provenance.project_revision
+    return _advance_project_revision(connection, provenance)
 
 
 def read_selected(
@@ -347,7 +527,9 @@ def read_roadmap(connection: sqlite3.Connection) -> roadmap.Facts:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
     project_revision = decode_row(project_row, ProjectRevisionRow).revision
     initiatives = read_all(connection)
+    off_roadmap = read_off_roadmap(connection)
     selected = {member.item_id for initiative in initiatives for member in initiative.memberships}
+    selected.update(episode.item_id for episode in off_roadmap)
     selected.update(
         decode_row(row, ItemIdRow).item_id
         for row in connection.execute("SELECT item_id FROM work_items WHERE queue_position IS NOT NULL").fetchall()
@@ -399,6 +581,7 @@ def read_roadmap(connection: sqlite3.Connection) -> roadmap.Facts:
             )
         ),
         read_accepted_checkpoints(connection, (target for targets in dependencies.values() for target in targets)),
+        off_roadmap,
     )
 
 
@@ -466,4 +649,41 @@ def validate_all(connection: sqlite3.Connection, values: tuple[models.Initiative
         raise StorageError(
             StorageErrorCode.INVALID_STATE,
             "Initiative evaluation contexts differ from their preserved definition history.",
+        )
+
+
+def validate_off_roadmap(
+    initiatives: tuple[models.Initiative, ...],
+    episodes: tuple[models.OffRoadmapEpisode, ...],
+    project_revision: int,
+) -> None:
+    active_members = {
+        member.item_id for initiative in initiatives for member in initiative.memberships if member.removed is None
+    }
+    expected: dict[WorkItemId, int] = {}
+    active: set[WorkItemId] = set()
+    for episode in episodes:
+        number = expected.get(episode.item_id, 0) + 1
+        if episode.episode != number:
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE,
+                f"Item '{episode.item_id}' has an invalid off-roadmap episode chain.",
+            )
+        expected[episode.item_id] = number
+        if not 1 <= episode.opened.project_revision <= project_revision or (
+            episode.closed is not None
+            and not episode.opened.project_revision <= episode.closed.project_revision <= project_revision
+        ):
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE,
+                f"Item '{episode.item_id}' has invalid off-roadmap provenance.",
+            )
+        if episode.closed is None:
+            if episode.item_id in active:
+                raise StorageError(StorageErrorCode.INVALID_STATE, "An item has multiple active off-roadmap episodes.")
+            active.add(episode.item_id)
+    if active & active_members:
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            "An item cannot have active initiative membership and an active off-roadmap episode.",
         )

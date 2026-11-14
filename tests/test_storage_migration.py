@@ -52,7 +52,23 @@ class StorageMigrationTests(unittest.TestCase):
                 )
             return tuple(sorted(facts))
 
+    def downgrade_v11(self, path: Path) -> None:
+        with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("DROP TABLE item_off_roadmap_episodes")
+            connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v12")
+            statement = next(
+                sql for _, name, _, sql in sqlite_database._build_v11_schema_signature() if name == "project_meta"
+            )
+            assert statement is not None
+            connection.execute(statement)
+            connection.execute(
+                "INSERT INTO project_meta SELECT singleton, application, 11, revision, host_epoch, created_at, updated_at FROM project_meta_v12"
+            )
+            connection.execute("DROP TABLE project_meta_v12")
+            sqlite_database._verify_v11_schema(connection)
+
     def downgrade_v9(self, path: Path) -> None:
+        self.downgrade_v11(path)
         with contextlib.closing(sqlite3.connect(path)) as connection, connection:
             connection.execute("DROP TABLE attempt_decision_batches")
             connection.execute("DROP TABLE checkpoint_acceptances")
@@ -147,7 +163,9 @@ class StorageMigrationTests(unittest.TestCase):
                 sqlite_database._verify_v10_schema(connection)
             current = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
             self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
-            self.assertEqual(11, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
+            current = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
+            self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
+            self.assertEqual(12, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
             roots = resolve_durable_roots(project)
             publication = ArtifactRepository(roots).publish(
                 NewArtifact(work_models.ArtifactKind.EVIDENCE, "later", 1, ".txt", b"later")

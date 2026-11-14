@@ -1,1 +1,1 @@
-Create one durable Pinboard proposal from its canonical structured input. Arguments are top-level project_root, work_root, proposal, actor_task_id and actor_host_id (no request wrapper).
+Create one durable Pinboard proposal with one explicit human-confirmed initiative, off-roadmap or exact no-initiatives intent. Follow-up and planned-replacement inputs bind displayed related memberships but never inherit them. Arguments are top-level project_root, work_root, proposal, actor_task_id and actor_host_id (no request wrapper).

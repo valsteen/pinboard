@@ -619,7 +619,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                             "actor_task_id": "review-owner",
                             "actor_host_id": "local",
                             "proposal": {
-                                "schema": "pinboard-proposal/v4",
+                                "schema": "pinboard-proposal/v6",
                                 "position": None,
                                 "checkpoints": [],
                                 "route_facts": {
@@ -639,6 +639,13 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                                     "kind": "planned-replacement",
                                     "item": target,
                                     "replacement_cost": "The retained result would be replaced.",
+                                },
+                                "membership_intent": {"kind": "no-initiatives"},
+                                "related_disposition": {
+                                    "kind": "related",
+                                    "item_id": target,
+                                    "active_memberships": [],
+                                    "active_off_roadmap": False,
                                 },
                                 "effect": "Record the exact proposed replacement.",
                                 "unlock": "Review its disposition.",
@@ -691,7 +698,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                         "actor_task_id": "review-owner",
                         "actor_host_id": "local",
                         "proposal": {
-                            "schema": "pinboard-proposal/v4",
+                            "schema": "pinboard-proposal/v6",
                             "position": None,
                             "checkpoints": [],
                             "route_facts": {
@@ -708,6 +715,8 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                             "evidence": ["source:current-contract"],
                             "why_it_matters": "Affected views must refresh.",
                             "relation": {"kind": kind, "item": None if kind == "independent" else "work-c"},
+                            "membership_intent": {"kind": "no-initiatives"},
+                            "related_disposition": {"kind": "none"},
                             "effect": "Record the exact proposal.",
                             "unlock": "Inspect the current affected items.",
                             "urgency_evidence": "The accepted consumer requires immediate current views.",

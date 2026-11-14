@@ -98,5 +98,16 @@ class InitiativeRecord(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     assessments: tuple[AssessmentRecord, ...]
 
 
+class OffRoadmapEpisodeRecord(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: Text
+    episode: int
+    opened: ProvenanceRecord
+    closed: ProvenanceRecord | None
+
+
 def initiative_record(value: models.Initiative) -> InitiativeRecord:
     return msgspec.convert(value, type=InitiativeRecord, from_attributes=True)
+
+
+def off_roadmap_episode_record(value: models.OffRoadmapEpisode) -> OffRoadmapEpisodeRecord:
+    return msgspec.convert(value, type=OffRoadmapEpisodeRecord, from_attributes=True)

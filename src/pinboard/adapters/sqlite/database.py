@@ -31,8 +31,8 @@ from pinboard.application import stored_state
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 
 APPLICATION: Final = "pinboard"
-SCHEMA_VERSION: Final = 11
-SCHEMA_ID = "sqlite-v11"
+SCHEMA_VERSION: Final = 12
+SCHEMA_ID = "sqlite-v12"
 BUSY_TIMEOUT_MS = 2_000
 _PREDECESSOR_SCHEMA_DIRECTORY = Path(__file__).with_name("migration")
 
@@ -257,13 +257,32 @@ def _verify_v10_schema(connection: sqlite3.Connection) -> None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v10 schema.")
 
 
+@cache
+def _build_v11_schema_signature() -> tuple[tuple[str, str, str, str | None], ...]:
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.executescript(
+            (_PREDECESSOR_SCHEMA_DIRECTORY / "schema_compatibility_v11.sql").read_text(encoding="utf-8")
+        )
+        return _read_schema_signature(connection)
+
+
+def _verify_v11_schema(connection: sqlite3.Connection) -> None:
+    if (
+        _read_pinboard_schema_version(connection) != 11
+        or _read_schema_signature(connection) != _build_v11_schema_signature()
+    ):
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v11 schema.")
+
+
 def _verify_current_schema(connection: sqlite3.Connection) -> None:
     version = _read_pinboard_schema_version(connection)
     if version != SCHEMA_VERSION:
         _, _, database_file = msgspec.convert(
             tuple(connection.execute("PRAGMA database_list").fetchone()), type=tuple[int, str, str], strict=True
         )
-        if version == 10:
+        if version == 11:
+            _verify_v11_schema(connection)
+        elif version == 10:
             _verify_v10_schema(connection)
         elif version == 9:
             _verify_v9_schema(connection)

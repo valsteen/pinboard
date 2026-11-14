@@ -6,7 +6,8 @@ from typing import Annotated, Literal
 
 import msgspec
 
-from pinboard.domain import consolidation, history, work_models
+from pinboard.application import proposal_models, proposals
+from pinboard.domain import consolidation, history, initiatives, work_models
 from pinboard.domain.identifiers import AttemptId, CheckpointId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
@@ -32,6 +33,7 @@ class Selection(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     sources: Annotated[tuple[Source, ...], msgspec.Meta(min_length=1)]
     campaign: Campaign
     checkpoint_targets: tuple[CheckpointTarget, ...]
+    membership_intent: proposal_models.ProposalMembershipIntent
 
     def __post_init__(self) -> None:
         ids = tuple(value.item_id for value in self.sources)
@@ -46,6 +48,8 @@ class Selection(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 class Facts:
     snapshot: LedgerSnapshot
     live_order: tuple[WorkItemId, ...]
+    membership_facts: initiatives.MembershipIntentFacts
+    dispositions: tuple[initiatives.DispositionFacts, ...]
 
 
 class NoAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="none", tag_field="kind"):
@@ -92,14 +96,21 @@ class Replacement(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     replacement_cost: str
 
 
+class SourceDisposition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    active_memberships: tuple[initiatives.InitiativeId, ...]
+    active_off_roadmap: bool
+
+
 class Preview(
-    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-consolidation-preview/v1", tag_field="schema"
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-consolidation-preview/v2", tag_field="schema"
 ):
     selection: Selection
     selected_items: tuple[SelectedItem, ...]
     campaign: DefinitionChange
     dependents: tuple[DefinitionChange, ...]
     replacements: tuple[Replacement, ...]
+    source_dispositions: tuple[SourceDisposition, ...]
     attempt_authorities: tuple[work_models.AttemptAuthority, ...]
     preparation_authorities: tuple[work_models.PreparationAuthority, ...]
     live_attempt_authorities: tuple[work_models.CommandAttemptAuthority, ...]
@@ -115,22 +126,71 @@ class Preview(
 
 class Binding(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     work_root: Annotated[str, msgspec.Meta(min_length=1)]
+    schema: Literal["pinboard-consolidation-binding/v2"]
+    preview_sha256: Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
+
+
+class CompatibilityBindingV1(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    work_root: Annotated[str, msgspec.Meta(min_length=1)]
     schema: Literal["pinboard-consolidation-binding/v1"]
     preview_sha256: Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
 
 
+class CompatibilityCampaignV1(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    revision: int
+    digest: str
+    definition: msgspec.Raw
+
+
+class CompatibilityPreviewV1(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-consolidation-preview/v1", tag_field="schema"
+):
+    selection: msgspec.Raw
+    selected_items: msgspec.Raw
+    campaign: CompatibilityCampaignV1
+    dependents: msgspec.Raw
+    replacements: msgspec.Raw
+    attempt_authorities: msgspec.Raw
+    preparation_authorities: msgspec.Raw
+    live_attempt_authorities: msgspec.Raw
+    live_preparation_authorities: msgspec.Raw
+    queue_changes: msgspec.Raw
+    lifecycle_effect: str
+    checkpoint_effect: str
+
+
+def _validate_record(
+    human_confirmation: str,
+    preview_sha256: str,
+    preview: Preview | CompatibilityPreviewV1,
+) -> None:
+    if not human_confirmation.strip():
+        raise ValueError("consolidation requires the human's separate confirmation")
+    if preview_sha256 != sha256(msgspec.json.encode(preview, order="sorted")).hexdigest():
+        raise ValueError("consolidation binding differs from its recorded preview")
+
+
 class Record(
-    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-consolidation/v1", tag_field="schema"
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-consolidation/v2", tag_field="schema"
 ):
     binding: Binding
     preview: Preview
     human_confirmation: history.RecordText
 
     def __post_init__(self) -> None:
-        if not self.human_confirmation.strip():
-            raise ValueError("consolidation requires the human's separate confirmation")
-        if self.binding.preview_sha256 != sha256(msgspec.json.encode(self.preview, order="sorted")).hexdigest():
-            raise ValueError("consolidation binding differs from its recorded preview")
+        _validate_record(self.human_confirmation, self.binding.preview_sha256, self.preview)
+
+
+class CompatibilityRecordV1(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-consolidation/v1", tag_field="schema"
+):
+    binding: CompatibilityBindingV1
+    preview: CompatibilityPreviewV1
+    human_confirmation: history.RecordText
+
+    def __post_init__(self) -> None:
+        _validate_record(self.human_confirmation, self.binding.preview_sha256, self.preview)
 
 
 def plan(selection: Selection) -> consolidation.Plan:
@@ -145,4 +205,5 @@ def plan(selection: Selection) -> consolidation.Plan:
             )
             for value in selection.checkpoint_targets
         ),
+        proposals.convert_membership_intent(selection.membership_intent),
     )

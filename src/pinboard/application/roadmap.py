@@ -26,6 +26,7 @@ class Facts:
     initiatives: tuple[initiatives.Initiative, ...]
     items: tuple[Item, ...]
     accepted_checkpoints: frozenset[work_models.CheckpointDependency]
+    off_roadmap_episodes: tuple[initiatives.OffRoadmapEpisode, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +67,7 @@ class Projection:
     placements: Mapping[WorkItemId, Placement]
     current_members: frozenset[WorkItemId]
     unassigned: tuple[WorkItemId, ...]
+    off_roadmap: tuple[WorkItemId, ...]
     external_prerequisites: tuple[WorkItemId, ...]
     totals: Counts
     dependency_conditions: Mapping[WorkItemId, tuple[DependencyCondition, ...]]
@@ -110,11 +112,17 @@ def project(facts: Facts) -> Projection:  # noqa: C901, PLR0912 - one global gra
         for member in initiative.memberships
         if member.removed is None
     )
+    off_roadmap = tuple(episode.item_id for episode in facts.off_roadmap_episodes if episode.closed is None)
+    off_roadmap_set = frozenset(off_roadmap)
     unassigned = tuple(
-        item.item_id for item in facts.items if item.queue_position is not None and item.item_id not in members
+        item.item_id
+        for item in facts.items
+        if item.queue_position is not None and item.item_id not in members and item.item_id not in off_roadmap_set
     )
     included = members | frozenset(unassigned)
-    unfinished = {item.item_id: item for item in facts.items if is_unfinished(item.state)}
+    unfinished = {
+        item.item_id: item for item in facts.items if is_unfinished(item.state) and item.item_id not in off_roadmap_set
+    }
     conditions = {
         item.item_id: tuple(
             DependencyCondition(
@@ -200,6 +208,7 @@ def project(facts: Facts) -> Projection:  # noqa: C901, PLR0912 - one global gra
         MappingProxyType(placements),
         members,
         unassigned,
+        off_roadmap,
         external_prerequisites,
         counts(tuple(item for item in facts.items if item.item_id in included)),
         MappingProxyType(conditions),
@@ -225,6 +234,7 @@ def from_state(state: stored_state.StoredWorkState) -> Projection:
         dependencies.setdefault(dependency.item_id, []).append(dependency.target)
     selected = {item.item_id for item in state.lifecycle.work_items if item.queue_position is not None}
     selected.update(member.item_id for initiative in state.initiatives for member in initiative.memberships)
+    selected.update(episode.item_id for episode in state.off_roadmap_episodes)
     items = {item.item_id: item for item in state.lifecycle.work_items}
     pending = list(selected)
     while pending:
@@ -256,5 +266,6 @@ def from_state(state: stored_state.StoredWorkState) -> Projection:
                 work_models.CheckpointDependency(value.item_id, value.checkpoint_id)
                 for value in state.lifecycle.checkpoint_acceptances
             ),
+            state.off_roadmap_episodes,
         )
     )

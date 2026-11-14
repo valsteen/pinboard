@@ -23,7 +23,7 @@ from pinboard.application.mutation_models import (
     StoredStateMutation,
 )
 from pinboard.application.project_export import ProjectExportState
-from pinboard.domain import consolidation, decision_models, work_models
+from pinboard.domain import consolidation, decision_models, initiatives, work_models
 from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, LeaseId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
@@ -43,6 +43,10 @@ class ArtifactReferenceAcceptance:
 
 
 class WorkTransaction(Protocol):
+    def read_membership_intent_facts(
+        self, related: initiatives.RelatedDisposition
+    ) -> initiatives.MembershipIntentFacts: ...
+
     def read_consolidation_facts(self, plan: consolidation.Plan, now: datetime) -> consolidation_models.Facts: ...
 
     def read_obligation_origins(

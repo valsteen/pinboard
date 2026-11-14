@@ -1624,7 +1624,7 @@ def project_item_status(
     )
     return query_models.ItemStatus(
         "pinboard-item-status/v5",
-        "sqlite-v11",
+        "sqlite-v12",
         str(facts.project_revision),
         str(item.work_item_id),
         facts.definition_title,
@@ -1659,7 +1659,7 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
         return None
     return query_models.BranchOwners(
         "pinboard-branch-owners/v1",
-        "sqlite-v11",
+        "sqlite-v12",
         str(facts.project_revision),
         branch,
         tuple(
@@ -1789,7 +1789,7 @@ def select_item_definition(
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
-        "sqlite-v11",
+        "sqlite-v12",
         selected.project_revision,
         work_item_id,
         selected.item_subject_revision,
@@ -1826,7 +1826,7 @@ def select_item_definition_history(
     )
     return query_models.ItemDefinitionHistory(
         "pinboard-item-definition-history/v1",
-        "sqlite-v11",
+        "sqlite-v12",
         selected.project_revision,
         work_item_id,
         rows,

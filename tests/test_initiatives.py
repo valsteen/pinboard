@@ -28,6 +28,7 @@ from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_advertised_tool
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, work_root_durable
+from tests.test_proposals import proposal
 
 
 class InitiativeTest(CheckpointPackageSupport):
@@ -138,6 +139,181 @@ class InitiativeTest(CheckpointPackageSupport):
         self.assertEqual(value.assessments[0].judgment, self.read(fixture).assessments[0].judgment)
         code, _, error = self.run_cli(*fixture.common, "validate", "--json")
         self.assertEqual(0, code, error)
+
+    def test_explicit_creation_intents_and_off_roadmap_lifecycle_reload_atomically(self) -> None:  # noqa: PLR0915 - one end-to-end disposition lifecycle
+        fixture = self.checkpoint_fixture(local=True)
+        self.create(fixture)
+
+        assigned = proposal()
+        assigned["proposal_id"] = "assigned-proposal"
+        assigned["membership_intent"] = {
+            "kind": "initiative",
+            "initiative_id": "workflow",
+            "expected_revision": 1,
+            "attribution": {"human": "Project owner", "date": "2026-10-16", "reason": "Deliver the workflow"},
+        }
+        created = call_advertised_tool(
+            mcp_server.PROPOSAL_CREATE_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "proposal": assigned,
+                "actor_task_id": "initiative-test",
+                "actor_host_id": "local",
+            },
+        )
+        self.assertEqual("committed", created["status"], created)
+
+        off_roadmap = proposal()
+        off_roadmap["proposal_id"] = "off-roadmap-proposal"
+        off_roadmap["membership_intent"] = {
+            "kind": "off-roadmap",
+            "attribution": {"human": "Project owner", "date": "2026-10-17", "reason": "Keep outside initiatives"},
+        }
+        created_off_roadmap = call_advertised_tool(
+            mcp_server.PROPOSAL_CREATE_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "proposal": off_roadmap,
+                "actor_task_id": "initiative-test",
+                "actor_host_id": "local",
+            },
+        )
+        self.assertEqual("committed", created_off_roadmap["status"], created_off_roadmap)
+
+        reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        workflow = reloaded.initiatives[0]
+        self.assertEqual(
+            (WorkItemId("assigned-proposal"),),
+            tuple(member.item_id for member in workflow.memberships if member.removed is None),
+        )
+        episode = next(
+            value for value in reloaded.off_roadmap_episodes if value.item_id == WorkItemId("off-roadmap-proposal")
+        )
+        self.assertIsNone(episode.closed)
+        self.assertEqual("Project owner", episode.opened.reason.human)
+        self.assertEqual("Keep outside initiatives", episode.opened.reason.reason)
+
+        no_initiatives = proposal()
+        no_initiatives["proposal_id"] = "stale-no-initiatives"
+        before = reloaded
+        rejected = call_advertised_tool(
+            mcp_server.PROPOSAL_CREATE_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "proposal": no_initiatives,
+                "actor_task_id": "initiative-test",
+                "actor_host_id": "local",
+            },
+        )
+        self.assertEqual("PROPOSAL_INVALID", rejected["code"], rejected)
+        self.assertEqual(before, fixture.store.validated_snapshot())
+
+        cleared = self.operation(
+            fixture,
+            "clear-off-roadmap",
+            {
+                "item_id": "off-roadmap-proposal",
+                "expected_disposition_revision": episode.opened.project_revision,
+                "expected_episode": episode.episode,
+                "human": "Project owner",
+                "date": "2026-10-18",
+                "reason": "Return to ordinary planning",
+                "actor_task_id": "initiative-test",
+                "actor_host_id": "local",
+            },
+        )
+        self.assertEqual("committed", cleared["status"], cleared)
+        after_clear = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        closed = next(
+            value for value in after_clear.off_roadmap_episodes if value.item_id == WorkItemId("off-roadmap-proposal")
+        )
+        self.assertIsNotNone(closed.closed)
+        roadmap_result = self.operation(fixture, "roadmap", {})
+        self.assertIn("off-roadmap-proposal", self.json_array(roadmap_result["unassigned"]))
+        self.assertIn("off-roadmap-proposal", str(roadmap_result["off_roadmap"]))
+        self.assertIn("closed", str(roadmap_result["off_roadmap"]))
+
+        marked = self.operation(
+            fixture,
+            "mark-off-roadmap",
+            {
+                "item_id": "work-a",
+                "expected_disposition_revision": 0,
+                "human": "Project owner",
+                "date": "2026-10-18",
+                "reason": "Defer from the roadmap",
+                "actor_task_id": "initiative-test",
+                "actor_host_id": "local",
+            },
+        )
+        self.assertEqual("committed", marked["status"], marked)
+        added = self.mutate(
+            fixture,
+            "member-add",
+            {"expected_revision": self.read(fixture).subject_revision, "item_id": "work-a"},
+        )
+        self.assertEqual("committed", added["status"], added)
+        after_add = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        work_a_episode = next(
+            value for value in after_add.off_roadmap_episodes if value.item_id == WorkItemId("work-a")
+        )
+        self.assertIsNotNone(work_a_episode.closed)
+        assert work_a_episode.closed is not None
+        conflict = self.operation(
+            fixture,
+            "mark-off-roadmap",
+            {
+                "item_id": "work-a",
+                "expected_disposition_revision": work_a_episode.closed.project_revision,
+                "human": "Project owner",
+                "date": "2026-10-18",
+                "reason": "Invalid conflict",
+                "actor_task_id": "initiative-test",
+                "actor_host_id": "local",
+            },
+        )
+        self.assertEqual("ROADMAP_DISPOSITION_CONFLICT", conflict["code"], conflict)
+
+        removed = self.mutate(
+            fixture,
+            "member-remove",
+            {"expected_revision": self.read(fixture).subject_revision, "item_id": "work-a"},
+        )
+        self.assertEqual("committed", removed["status"], removed)
+        final = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        self.assertFalse(
+            any(value.item_id == WorkItemId("work-a") and value.closed is None for value in final.off_roadmap_episodes)
+        )
+        exported = fixture.store.read_project_export_batches()[0]
+        self.assertEqual(final.off_roadmap_episodes, exported.off_roadmap_episodes)
+
+        before_rollback = fixture.store.validated_snapshot()
+        original_persist = initiative_storage.persist_disposition
+
+        def persist_then_fail(
+            connection: sqlite3.Connection,
+            change: initiatives.DispositionChange,
+            provenance: initiatives.Provenance,
+        ) -> int:
+            original_persist(connection, change, provenance)
+            raise RuntimeError("injected off-roadmap persistence failure")
+
+        with (
+            patch.object(initiative_storage, "persist_disposition", persist_then_fail),
+            self.assertRaisesRegex(RuntimeError, "injected off-roadmap persistence failure"),
+        ):
+            initiative_application.change_disposition(
+                fixture.store,
+                initiatives.MarkOffRoadmap(0, WorkItemId("work-b")),
+                initiatives.HumanReason("Project owner", SQLITE_NOW.date(), "Test atomic rollback"),
+                TaskId("initiative-test"),
+                HostId("local"),
+                SQLITE_NOW,
+            )
+        self.assertEqual(before_rollback, fixture.store.validated_snapshot())
 
     def test_relative_project_root_references_use_resolved_checkout_for_create_and_revise(self) -> None:
         fixture = self.checkpoint_fixture(local=True)

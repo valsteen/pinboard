@@ -19,7 +19,7 @@ from pinboard.application.mutation_models import PreparationStart
 from pinboard.application.mutations import project_transition_mutation
 from pinboard.application.queries import select_parallel_preview
 from pinboard.application.service import create_proposal, decide_and_commit_preparation_authority_change
-from pinboard.domain import authority_models, decision_models, decisions, work_models
+from pinboard.domain import authority_models, decision_models, decisions, initiatives, work_models
 from pinboard.domain.authority_decisions import decide_preparation_authority
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HostId, LeaseId, ProposalId, TaskId, WorkItemId
@@ -630,6 +630,8 @@ class PreparationAuthorityTest(unittest.TestCase):
             ),
             (),
             route_facts=TEST_ROUTE_FACTS,
+            membership_intent=initiatives.NoInitiativesIntent(),
+            related_disposition=initiatives.NoRelatedDisposition(),
         )
         before = store.validated_snapshot()
 
@@ -685,6 +687,8 @@ class PreparationAuthorityTest(unittest.TestCase):
             ),
             (),
             route_facts=TEST_ROUTE_FACTS,
+            membership_intent=initiatives.NoInitiativesIntent(),
+            related_disposition=initiatives.NoRelatedDisposition(),
         )
         before = store.validated_snapshot()
 

@@ -80,11 +80,37 @@ class RouteFacts(Request, frozen=True, forbid_unknown_fields=True):
     declares_checkpoints: bool
 
 
-class Proposal(_ProposalFields, frozen=True, forbid_unknown_fields=True):
+class CompatibilityProposalV4(_ProposalFields, frozen=True, forbid_unknown_fields=True):
+    """Exact predecessor request used by the accepted comparison base."""
+
     schema: Literal["pinboard-proposal/v4"]
     route_facts: RouteFacts
     position: int | None
     checkpoints: list[str]
+
+
+class NoInitiativesIntent(Request, frozen=True, forbid_unknown_fields=True):
+    kind: Literal["no-initiatives"]
+
+
+class NoRelatedDisposition(Request, frozen=True, forbid_unknown_fields=True):
+    kind: Literal["none"]
+
+
+class RelatedDisposition(Request, frozen=True, forbid_unknown_fields=True):
+    kind: Literal["related"]
+    item_id: str
+    active_memberships: list[str]
+    active_off_roadmap: bool
+
+
+class Proposal(_ProposalFields, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-proposal/v6"]
+    route_facts: RouteFacts
+    position: int | None
+    checkpoints: list[str]
+    membership_intent: NoInitiativesIntent
+    related_disposition: NoRelatedDisposition | RelatedDisposition
 
 
 class ProposalCreate(Request, frozen=True):
@@ -92,11 +118,11 @@ class ProposalCreate(Request, frozen=True):
     work_root: str
     actor_task_id: str
     actor_host_id: str
-    proposal: Proposal | CompatibilityProposalV2
+    proposal: Proposal | CompatibilityProposalV2 | CompatibilityProposalV4
 
 
 class _ProposalTag(Projection, frozen=True):
-    enum: tuple[Literal["pinboard-proposal/v2", "pinboard-proposal/v4"]]
+    enum: tuple[Literal["pinboard-proposal/v2", "pinboard-proposal/v4", "pinboard-proposal/v6"]]
 
     def __post_init__(self) -> None:
         if len(self.enum) != 1:
@@ -471,7 +497,7 @@ class ItemDependencies(Projection, frozen=True):
 class BoardClient:
     session: ClientSession
     window: processes.Window
-    proposal_format: Literal["pinboard-proposal/v2", "pinboard-proposal/v4"]
+    proposal_format: Literal["pinboard-proposal/v2", "pinboard-proposal/v4", "pinboard-proposal/v6"]
 
     async def call[T: Projection](self, tool: str, arguments: Request, projection: type[T]) -> T:
         with anyio.fail_after(self.window.timeout(300)):
@@ -504,7 +530,9 @@ async def connect(launcher: Path, log: Path, window: processes.Window) -> AsyncG
         raise SeedFailure(f"the evaluated launcher could not serve MCP: {error}") from error
 
 
-async def proposal_format(session: ClientSession) -> Literal["pinboard-proposal/v2", "pinboard-proposal/v4"]:
+async def proposal_format(
+    session: ClientSession,
+) -> Literal["pinboard-proposal/v2", "pinboard-proposal/v4", "pinboard-proposal/v6"]:
     """Negotiate the one supported proposal request before submitting any effect."""
     tools = await session.list_tools()
     proposal_tool = next((tool for tool in tools.tools if tool.name == "pinboard_proposal_create"), None)

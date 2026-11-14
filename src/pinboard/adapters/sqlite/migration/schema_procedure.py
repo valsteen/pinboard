@@ -29,6 +29,7 @@ from pinboard.adapters.sqlite.migration.database import (
 )
 from pinboard.adapters.sqlite.migration.schema_decisions_v10 import migrate_v10_database
 from pinboard.adapters.sqlite.migration.schema_dependencies_v9 import migrate_v9_database
+from pinboard.adapters.sqlite.migration.schema_membership_v11 import migrate_v11_database
 from pinboard.adapters.sqlite.migration.schema_ownership_v8 import inspect_current_schema_migration, migrate_v8_database
 
 
@@ -175,6 +176,35 @@ class DecisionBatchRestorePlan(
     backup_sha256: str
 
 
+class MembershipAdvancePlan(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="membership-advance", tag_field="kind"
+):
+    schema: Literal["pinboard-schema-plan/v6"]
+    database_path: str
+    source_version: Literal[11]
+    target_version: Literal[12]
+    source_sha256: str
+    postimage_sha256: str
+
+
+class MembershipCurrentPlan(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="membership-current", tag_field="kind"
+):
+    schema: Literal["pinboard-schema-plan/v6"]
+    database_path: str
+    source_sha256: str
+
+
+class MembershipRestorePlan(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="membership-restore", tag_field="kind"
+):
+    schema: Literal["pinboard-schema-plan/v6"]
+    database_path: str
+    forward_plan_id: str
+    postimage_sha256: str
+    backup_sha256: str
+
+
 type SchemaPlan = (
     CompatibilityForwardPlan
     | CompatibilityUnchangedPlan
@@ -191,6 +221,9 @@ type SchemaPlan = (
     | DecisionBatchAdvancePlan
     | DecisionBatchCurrentPlan
     | DecisionBatchRestorePlan
+    | MembershipAdvancePlan
+    | MembershipCurrentPlan
+    | MembershipRestorePlan
 )
 
 
@@ -205,7 +238,7 @@ class AppliedSchema:
     plan_id: str
     direction: Literal["forward", "reverse", "unchanged"]
     changed_surfaces: tuple[str, ...]
-    resulting_version: Literal[6, 7, 8, 9, 10, 11]
+    resulting_version: Literal[6, 7, 8, 9, 10, 11, 12]
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +265,7 @@ def _identity(plan: SchemaPlan) -> str:
             OwnershipRestorePlan,
             DependencyRestorePlan,
             DecisionBatchRestorePlan,
+            MembershipRestorePlan,
         ),
     ):
         return f"reverse-{plan.forward_plan_id}-{digest}"
@@ -424,8 +458,10 @@ def _preview_advancement(path: Path) -> PlannedSchema | SchemaProcedureFailure:
         plan = DependencyAdvancePlan("pinboard-schema-plan/v4", str(path), 9, 10, source, postimage)
     elif version == 10 and postimage is not None:
         plan = DecisionBatchAdvancePlan("pinboard-schema-plan/v5", str(path), 10, 11, source, postimage)
+    elif version == 11 and postimage is not None:
+        plan = MembershipAdvancePlan("pinboard-schema-plan/v6", str(path), 11, 12, source, postimage)
     else:
-        plan = DecisionBatchCurrentPlan("pinboard-schema-plan/v5", str(path), source)
+        plan = MembershipCurrentPlan("pinboard-schema-plan/v6", str(path), source)
     return PlannedSchema(_identity(plan), plan)
 
 
@@ -439,7 +475,14 @@ def preview_schema(path: Path, reverse_forward_id: str | None = None) -> Planned
         if isinstance(forward, CompatibilityForwardPlan):
             return _preview_v6_compatibility(path, reverse_forward_id)
         if not isinstance(
-            forward, (CompatibilityAdvancePlanV2, OwnershipAdvancePlan, DependencyAdvancePlan, DecisionBatchAdvancePlan)
+            forward,
+            (
+                CompatibilityAdvancePlanV2,
+                OwnershipAdvancePlan,
+                DependencyAdvancePlan,
+                DecisionBatchAdvancePlan,
+                MembershipAdvancePlan,
+            ),
         ) or forward.database_path != str(path):
             return SchemaProcedureFailure(
                 "The selected current forward schema plan is unavailable at this work root.", (), "correct-input"
@@ -469,6 +512,10 @@ def preview_schema(path: Path, reverse_forward_id: str | None = None) -> Planned
             case DecisionBatchAdvancePlan():
                 plan = DecisionBatchRestorePlan(
                     "pinboard-schema-plan/v5", str(path), reverse_forward_id, forward.postimage_sha256, backup_digest
+                )
+            case MembershipAdvancePlan():
+                plan = MembershipRestorePlan(
+                    "pinboard-schema-plan/v6", str(path), reverse_forward_id, forward.postimage_sha256, backup_digest
                 )
             case _ as unreachable:
                 assert_never(unreachable)
@@ -516,7 +563,13 @@ def apply_schema(path: Path, plan_id: str) -> SchemaApplication:  # noqa: C901, 
         version, source, _ = inspect_current_schema_migration(path)
         if isinstance(
             selected,
-            (CompatibilityCurrentPlanV2, OwnershipCurrentPlan, DependencyCurrentPlan, DecisionBatchCurrentPlan),
+            (
+                CompatibilityCurrentPlanV2,
+                OwnershipCurrentPlan,
+                DependencyCurrentPlan,
+                DecisionBatchCurrentPlan,
+                MembershipCurrentPlan,
+            ),
         ):
             match selected:
                 case CompatibilityCurrentPlanV2():
@@ -527,6 +580,8 @@ def apply_schema(path: Path, plan_id: str) -> SchemaApplication:  # noqa: C901, 
                     expected_version = 10
                 case DecisionBatchCurrentPlan():
                     expected_version = 11
+                case MembershipCurrentPlan():
+                    expected_version = 12
                 case _ as unreachable:
                     assert_never(unreachable)
             if version != expected_version or source != selected.source_sha256:
@@ -536,7 +591,13 @@ def apply_schema(path: Path, plan_id: str) -> SchemaApplication:  # noqa: C901, 
             return AppliedSchema(plan_id, "unchanged", (), expected_version)
         if isinstance(
             selected,
-            (CompatibilityAdvancePlanV2, OwnershipAdvancePlan, DependencyAdvancePlan, DecisionBatchAdvancePlan),
+            (
+                CompatibilityAdvancePlanV2,
+                OwnershipAdvancePlan,
+                DependencyAdvancePlan,
+                DecisionBatchAdvancePlan,
+                MembershipAdvancePlan,
+            ),
         ):
             backup_path = folder / f"{plan_id}.v{selected.source_version}"
             if version == selected.target_version:
@@ -581,6 +642,8 @@ def apply_schema(path: Path, plan_id: str) -> SchemaApplication:  # noqa: C901, 
                     migrated = migrate_v9_database(path, selected.postimage_sha256)
                 case DecisionBatchAdvancePlan():
                     migrated = migrate_v10_database(path, selected.postimage_sha256)
+                case MembershipAdvancePlan():
+                    migrated = migrate_v11_database(path, selected.postimage_sha256)
                 case _ as unreachable:
                     assert_never(unreachable)
             if migrated:
@@ -599,7 +662,14 @@ def apply_schema(path: Path, plan_id: str) -> SchemaApplication:  # noqa: C901, 
             )
         forward = _read_plan(folder, selected.forward_plan_id)
         if not isinstance(
-            forward, (CompatibilityAdvancePlanV2, OwnershipAdvancePlan, DependencyAdvancePlan, DecisionBatchAdvancePlan)
+            forward,
+            (
+                CompatibilityAdvancePlanV2,
+                OwnershipAdvancePlan,
+                DependencyAdvancePlan,
+                DecisionBatchAdvancePlan,
+                MembershipAdvancePlan,
+            ),
         ):
             return SchemaProcedureFailure("The original forward migration is unavailable.", (), "correct-input")
         if version == forward.source_version and source == selected.backup_sha256:
@@ -633,9 +703,10 @@ def _restore_predecessor(
     | CompatibilityRestorePlanV2
     | OwnershipRestorePlan
     | DependencyRestorePlan
-    | DecisionBatchRestorePlan,
+    | DecisionBatchRestorePlan
+    | MembershipRestorePlan,
     backup: bytes,
-    version: Literal[6, 7, 8, 9, 10],
+    version: Literal[6, 7, 8, 9, 10, 11],
     changed: list[str],
 ) -> SchemaApplication:
     """Publish the bound reverse plan, replace exact predecessor bytes and retain confirmed effects."""

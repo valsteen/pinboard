@@ -493,4 +493,5 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
         authority,
         transition_receipts,
         (),
+        (),
     )

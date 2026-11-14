@@ -1,6 +1,6 @@
 from typing import assert_never
 
-from pinboard.domain import work_models
+from pinboard.domain import initiatives, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import WorkItemId
@@ -17,6 +17,7 @@ def decide_proposal_creation(  # noqa: C901, PLR0912 - exhaustive proposal relat
     snapshot: LedgerSnapshot,
     operation: CreateProposalOperation,
     live_item_count: int,
+    membership_facts: initiatives.MembershipIntentFacts,
 ) -> DecisionResult[ProposalCreationDecision]:
     intake = operation.intake
     if snapshot.proposal(intake.proposal_id) is not None:
@@ -32,6 +33,38 @@ def decide_proposal_creation(  # noqa: C901, PLR0912 - exhaustive proposal relat
         and intake.relation.work_item_id not in snapshot.history_items
     ):
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, "The related work item does not exist.", None)
+    related_item = (
+        intake.relation.work_item_id
+        if isinstance(
+            intake.relation, (work_models.FollowUpProposalRelation, work_models.PlannedReplacementProposalRelation)
+        )
+        else None
+    )
+    match intake.related_disposition:
+        case initiatives.ExpectedRelatedDisposition(item_id=related_disposition_item_id):
+            if related_disposition_item_id != related_item:
+                return DecisionFailure(
+                    DecisionFailureCode.PROPOSAL_INVALID,
+                    "Related membership facts must name the follow-up or planned-replacement source exactly.",
+                    None,
+                )
+        case initiatives.NoRelatedDisposition():
+            if related_item is not None:
+                return DecisionFailure(
+                    DecisionFailureCode.PROPOSAL_INVALID,
+                    "Follow-up and planned-replacement intake requires the displayed related membership facts.",
+                    None,
+                )
+        case _ as unreachable:
+            assert_never(unreachable)
+    membership_effect = initiatives.decide_membership_intent(
+        intake.membership_intent,
+        membership_facts.initiative_revisions,
+        intake.related_disposition,
+        membership_facts.related_disposition,
+    )
+    if isinstance(membership_effect, initiatives.Rejected):
+        return DecisionFailure(DecisionFailureCode.PROPOSAL_INVALID, membership_effect.message, None)
     position = intake.position if intake.position is not None else live_item_count + 1
     if position > live_item_count + 1:
         return DecisionFailure(
@@ -150,6 +183,7 @@ def decide_proposal_creation(  # noqa: C901, PLR0912 - exhaustive proposal relat
         ReadyProposalWorkItem(item_id, position, dependencies, digest, definition),
         prerequisite_change,
         planned_replacement,
+        membership_effect,
         intake.evidence,
         intake.freshness_assumptions,
     )

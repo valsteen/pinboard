@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
+from typing import assert_never
 
 import msgspec
 
@@ -12,7 +13,7 @@ from pinboard.application import obligation_coverage, stored_state
 from pinboard.application.dependency_authoring import DependencyCheckpointPin, validate_dependency_brief_pins
 from pinboard.application.mutation_models import CommittedEffect, ConsolidationMutation, MutationReceipt
 from pinboard.application.ports import WorkStore
-from pinboard.domain import consolidation, decision_models, history, work_models
+from pinboard.domain import consolidation, decision_models, history, initiatives, work_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ActionId, HistorySubjectId, HostId, TaskId, WorkItemId
@@ -22,7 +23,7 @@ from pinboard.domain.proposal_models import ProposalCreationDecision
 def binding(preview: models.Preview, work_root: Path) -> models.Binding:
     return models.Binding(
         str(work_root),
-        "pinboard-consolidation-binding/v1",
+        "pinboard-consolidation-binding/v2",
         sha256(msgspec.json.encode(preview, order="sorted")).hexdigest(),
     )
 
@@ -102,6 +103,14 @@ def _project(selection: models.Selection, facts: models.Facts, change: consolida
             )
             for value in change.replacements
         ),
+        tuple(
+            models.SourceDisposition(
+                WorkItemId(disposition_item),
+                facts.dispositions[index].active_memberships,
+                facts.dispositions[index].active_off_roadmap is not None,
+            )
+            for index, disposition_item in enumerate(value.item_id for value in selection.sources)
+        ),
         tuple(sorted(snapshot.attempt_authorities, key=lambda value: value.attempt)),
         tuple(sorted(snapshot.preparation_authorities, key=lambda value: value.work_item_id)),
         tuple(sorted(snapshot.command_attempt_authorities, key=lambda value: value.attempt)),
@@ -123,7 +132,38 @@ def _decide_change(
         failure := validate_dependency_brief_pins(facts.snapshot, requested_dependencies(plan), dependency_pins)
     ) is not None:
         return failure
-    return consolidation.decide(facts.snapshot, plan, len(facts.live_order), actor, now)
+    membership = initiatives.decide_membership_intent(
+        plan.membership_intent,
+        facts.membership_facts.initiative_revisions,
+        initiatives.NoRelatedDisposition(),
+        facts.membership_facts.related_disposition,
+    )
+    if isinstance(membership, initiatives.Rejected):
+        return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, membership.message, None)
+    campaign_disposition = facts.dispositions[-1]
+    match membership:
+        case initiatives.AssignMembership(initiative_id=initiative_id):
+            if initiative_id in campaign_disposition.active_memberships:
+                membership = initiatives.LeaveUnassigned()
+        case initiatives.OpenOffRoadmap():
+            if campaign_disposition.active_memberships:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    "The campaign has active initiative memberships; remove them before confirming off-roadmap intent.",
+                    None,
+                )
+            if campaign_disposition.active_off_roadmap is not None:
+                membership = initiatives.LeaveUnassigned()
+        case initiatives.LeaveUnassigned():
+            if campaign_disposition.active_memberships or campaign_disposition.active_off_roadmap is not None:
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    "The no-initiatives campaign intent does not match its current roadmap disposition.",
+                    None,
+                )
+        case _ as unreachable:
+            assert_never(unreachable)
+    return consolidation.decide(facts.snapshot, plan, len(facts.live_order), actor, now, membership)
 
 
 def preview(
@@ -184,7 +224,7 @@ def confirm(
             decision_models.AuthorizationKind.PROJECT,
             actor,
             host,
-            "pinboard-consolidation/v1",
+            "pinboard-consolidation/v2",
             work_models.CanonicalJson(msgspec.json.encode(record, order="sorted")),
         )
         return transaction.commit(
@@ -199,13 +239,17 @@ def requested_dependencies(plan: consolidation.Plan) -> tuple[work_models.Depend
 
 def receipt_failure(receipt: stored_state.StoredTransitionReceipt) -> str | None:
     try:
-        record = msgspec.json.decode(bytes(receipt.input_payload), type=models.Record)
+        record: models.Record | models.CompatibilityRecordV1
+        if receipt.input_schema == "pinboard-consolidation/v1":
+            record = msgspec.json.decode(bytes(receipt.input_payload), type=models.CompatibilityRecordV1)
+        elif receipt.input_schema == "pinboard-consolidation/v2":
+            record = msgspec.json.decode(bytes(receipt.input_payload), type=models.Record)
+        else:
+            return "Consolidation input schema is unsupported."
         outcome = msgspec.json.decode(bytes(receipt.outcome_payload), type=history.TransitionReceiptOutcome)
     except (msgspec.DecodeError, ValueError) as error:
         return f"Consolidation receipt cannot be decoded: {error}"
-    if receipt.input_schema != "pinboard-consolidation/v1" or msgspec.json.encode(record, order="sorted") != bytes(
-        receipt.input_payload
-    ):
+    if msgspec.json.encode(record, order="sorted") != bytes(receipt.input_payload):
         return "Consolidation input schema or canonical bytes differ."
     campaign = record.preview.campaign.item_id
     if receipt.subject_id != campaign or receipt.action_id != f"consolidate:{campaign}":

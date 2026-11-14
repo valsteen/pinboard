@@ -908,6 +908,22 @@ def _persist_state_change(  # noqa: C901, PLR0912 - exhaustive closed mutation p
                         )
                     ) is not None:
                         return failure
+                    actor_task_id = mutation.receipt.actor_task_id
+                    actor_host_id = mutation.receipt.actor_host_id
+                    if actor_task_id is None or actor_host_id is None:
+                        raise StorageError(
+                            StorageErrorCode.INVARIANT_VIOLATION,
+                            "Consolidation membership intent requires actor attribution.",
+                        )
+                    initiative_storage.persist_membership_effect(
+                        connection,
+                        change.campaign.work_item_id,
+                        change.campaign_membership,
+                        actor_task_id,
+                        actor_host_id,
+                        mutation.receipt.transition.decided_at,
+                        mutation.receipt.project_revision,
+                    )
             for revision in change.dependent_revisions:
                 if (
                     failure := _persist_definition_revision(
@@ -1053,6 +1069,11 @@ def _persist(
 
 
 class SQLiteWorkTransaction:
+    def read_membership_intent_facts(
+        self, related: initiative_models.RelatedDisposition
+    ) -> initiative_models.MembershipIntentFacts:
+        return initiative_storage.read_membership_intent_facts(self.connection, related)
+
     def read_consolidation_facts(self, plan: consolidation.Plan, now: datetime) -> consolidation_models.Facts:
         return consolidation_storage.read_facts(self.connection, plan, now)
 
@@ -1070,8 +1091,11 @@ class SQLiteWorkTransaction:
         self,
         initiative_id: initiative_models.InitiativeId,
         change: initiative_models.AddMember | initiative_models.RemoveMember,
-    ) -> tuple[bool, bool]:
+    ) -> tuple[bool, bool, bool]:
         return initiative_storage.membership_condition(self.connection, initiative_id, change)
+
+    def read_disposition(self, item_id: WorkItemId) -> initiative_models.DispositionFacts:
+        return initiative_storage.read_disposition(self.connection, item_id)
 
     def commit_initiative(
         self,
@@ -1081,6 +1105,11 @@ class SQLiteWorkTransaction:
         provenance: initiative_models.Provenance,
     ) -> int:
         return initiative_storage.persist(self.connection, initiative_id, change, accepted, provenance)
+
+    def commit_disposition(
+        self, change: initiative_models.DispositionChange, provenance: initiative_models.Provenance
+    ) -> int:
+        return initiative_storage.persist_disposition(self.connection, change, provenance)
 
     def __init__(self, path: Path) -> None:
         self._path = path

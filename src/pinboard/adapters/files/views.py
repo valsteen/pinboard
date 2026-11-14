@@ -50,7 +50,7 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
 
 
 def _render_header(kind: str) -> str:
-    return f"---\nkind: {kind}\nauthority: sqlite-v11\n---\n\n> {NOTICE}\n\n"
+    return f"---\nkind: {kind}\nauthority: sqlite-v12\n---\n\n> {NOTICE}\n\n"
 
 
 def _render_decision_questions(decisions: tuple[decision_batches.PauseDecision, ...]) -> str:

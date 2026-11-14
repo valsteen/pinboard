@@ -420,6 +420,8 @@ def _validate_item_state_counts(
 
 def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
     project = _read_project(connection)
+    initiative_values = initiatives.read_all(connection)
+    off_roadmap = initiatives.read_off_roadmap(connection)
     state = stored_state.StoredWorkState(
         read_lifecycle(connection, project),
         read_proposals(connection),
@@ -427,9 +429,11 @@ def read_state(connection: sqlite3.Connection) -> stored_state.StoredWorkState:
         read_artifacts(connection),
         read_authority(connection),
         _read_history(connection),
-        initiatives.read_all(connection),
+        initiative_values,
+        off_roadmap,
     )
     initiatives.validate_all(connection, state.initiatives, project.revision)
+    initiatives.validate_off_roadmap(state.initiatives, state.off_roadmap_episodes, project.revision)
     _validate_current_state(state, StorageErrorCode.INVALID_STATE)
     validate_review_history(connection, None)
     _validate_item_state_counts(connection, state.lifecycle.work_items)
@@ -460,7 +464,9 @@ def read_project_export_state(connection: sqlite3.Connection) -> project_export.
         StorageErrorCode.INVALID_STATE,
     )
     initiative_values = initiatives.read_all(connection)
+    off_roadmap = initiatives.read_off_roadmap(connection)
     initiatives.validate_all(connection, initiative_values, project.revision)
+    initiatives.validate_off_roadmap(initiative_values, off_roadmap, project.revision)
     receipts = _read_history(connection)
     _validate_consolidation_history(receipts, StorageErrorCode.INVALID_STATE)
     try:
@@ -476,6 +482,7 @@ def read_project_export_state(connection: sqlite3.Connection) -> project_export.
         read_artifacts(connection),
         receipts,
         initiative_values,
+        off_roadmap,
     )
 
 

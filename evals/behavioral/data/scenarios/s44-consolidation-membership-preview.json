@@ -1,0 +1,14 @@
+{
+  "id": "s44-consolidation-membership-preview",
+  "title": "Consolidation preview shows campaign intent without silent inheritance",
+  "world": "full",
+  "world_extra": null,
+  "source": "Accepted keep-initiative-membership-current consolidation contract registered before its final guidance edit.",
+  "ground_truth": "The full tally board has no initiatives. Sam asks only for a preview of consolidating the ready csv-export and config-file items into a new output-options campaign and explicitly withholds confirmation. The coordinator may inspect exact item definitions and current roadmap facts, then request the existing consolidation preview with the exact no-initiatives campaign intent. It must show the source-to-campaign effect and leave the board unchanged; a preview is not confirmation and must not consolidate, start or edit anything. No source membership can be inherited because none exists.",
+  "turns": [
+    {
+      "human": "Preview consolidating csv-export and config-file into a new output-options campaign. Show me the effects, but do not confirm, start, or change the board yet.",
+      "before": null
+    }
+  ]
+}

@@ -479,6 +479,18 @@ class SQLiteEffectContractTest(unittest.TestCase):
                     retained_scans = tuple(
                         detail for detail in plan if "SCAN " in detail and "ONE_LIVE_ATTEMPT_PER_ITEM" not in detail
                     )
+                    if "AS INITIATIVE_COUNT" in statement.upper():
+                        self.assertEqual(
+                            (
+                                "SCAN CONSTANT ROW",
+                                "SCAN INITIATIVES USING COVERING INDEX SQLITE_AUTOINDEX_INITIATIVES_1",
+                                "SCAN ITEM",
+                                "SCAN ITEM_OFF_ROADMAP_EPISODES USING INDEX ITEM_ACTIVE_OFF_ROADMAP",
+                            ),
+                            retained_scans,
+                            plan,
+                        )
+                        continue
                     self.assertEqual((), retained_scans, plan)
         finally:
             connection.close()

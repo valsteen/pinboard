@@ -197,7 +197,10 @@ def _project_references(project_root: Path, references: tuple[str, ...]) -> tupl
 
 def _roadmap_result(value: roadmap.Projection) -> execution.TypedOperationResult[contracts.Result]:
     items: list[contracts.RoadmapItem] = []
+    active_off_roadmap = {episode.item_id for episode in value.facts.off_roadmap_episodes if episode.closed is None}
     for item in value.facts.items:
+        if item.item_id in active_off_roadmap:
+            continue
         placement: contracts.Wave | contracts.Blocked | contracts.Unknown | contracts.Terminal
         match value.placements.get(item.item_id):
             case roadmap.Wave(number=number):

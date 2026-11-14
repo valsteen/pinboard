@@ -99,7 +99,7 @@ class Replacement(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 class SourceDisposition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: WorkItemId
     active_memberships: tuple[initiatives.InitiativeId, ...]
-    active_off_roadmap: bool
+    active_off_roadmap_episode: int | None
 
 
 class Preview(

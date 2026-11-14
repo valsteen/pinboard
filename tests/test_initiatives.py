@@ -250,6 +250,12 @@ class InitiativeTest(CheckpointPackageSupport):
             },
         )
         self.assertEqual("committed", marked["status"], marked)
+        active_roadmap = self.operation(fixture, "roadmap", {})
+        self.assertNotIn(
+            "work-a",
+            {self.json_object(item)["item_id"] for item in self.json_array(active_roadmap["items"])},
+        )
+        self.assertIn("work-a", str(active_roadmap["off_roadmap"]))
         added = self.mutate(
             fixture,
             "member-add",
@@ -314,6 +320,72 @@ class InitiativeTest(CheckpointPackageSupport):
                 SQLITE_NOW,
             )
         self.assertEqual(before_rollback, fixture.store.validated_snapshot())
+
+    def test_board_without_initiatives_requires_exact_no_initiatives_intent(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        before = fixture.store.validated_snapshot()
+        intents: tuple[tuple[str, JsonObject], ...] = (
+            (
+                "initiative",
+                {
+                    "kind": "initiative",
+                    "initiative_id": "missing",
+                    "expected_revision": 1,
+                    "attribution": {
+                        "human": "Project owner",
+                        "date": "2026-10-16",
+                        "reason": "Assign the work",
+                    },
+                },
+            ),
+            (
+                "off-roadmap",
+                {
+                    "kind": "off-roadmap",
+                    "attribution": {
+                        "human": "Project owner",
+                        "date": "2026-10-16",
+                        "reason": "Keep outside initiatives",
+                    },
+                },
+            ),
+        )
+        for name, intent in intents:
+            with self.subTest(intent=name):
+                value = proposal()
+                value["proposal_id"] = f"invalid-{name}"
+                value["membership_intent"] = intent
+                rejected = call_advertised_tool(
+                    mcp_server.PROPOSAL_CREATE_TOOL,
+                    {
+                        "project_root": str(fixture.project),
+                        "work_root": str(fixture.work),
+                        "proposal": value,
+                        "actor_task_id": "initiative-test",
+                        "actor_host_id": "local",
+                    },
+                )
+                self.assertEqual("PROPOSAL_INVALID", rejected["code"], rejected)
+                self.assertEqual("unchanged", rejected["effect"])
+                self.assertEqual("correct-input", rejected["retry"])
+                message = rejected["message"]
+                assert isinstance(message, str)
+                self.assertIn("exact no-initiatives intent", message)
+                self.assertEqual(before, fixture.store.validated_snapshot())
+
+        accepted = proposal()
+        accepted["proposal_id"] = "valid-no-initiatives"
+        committed = call_advertised_tool(
+            mcp_server.PROPOSAL_CREATE_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "proposal": accepted,
+                "actor_task_id": "initiative-test",
+                "actor_host_id": "local",
+            },
+        )
+        self.assertEqual("committed", committed["status"], committed)
 
     def test_relative_project_root_references_use_resolved_checkout_for_create_and_revise(self) -> None:
         fixture = self.checkpoint_fixture(local=True)

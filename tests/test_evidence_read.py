@@ -134,6 +134,24 @@ class EvidenceReadTest(CheckpointPackageSupport):
         invalid["end_character"] = 0
         with self.assertRaises(msgspec.ValidationError):
             msgspec.convert(invalid, type=contracts.EvidenceReadPage, strict=True)
+        with self.assertRaisesRegex(ValueError, r"state_changed must be false for this result\."):
+            contracts.EvidenceReadPage(
+                "pinboard-evidence-read-page/v1",
+                "ok",
+                contracts.EvidenceReadFileSource(str(self.path), "0" * 64, 2),
+                0,
+                2,
+                "ok",
+                4000,
+                None,
+                "delivery-only",
+                True,
+                "unchanged",
+                "safe-to-repeat",
+                (),
+            )
+        with self.assertRaisesRegex(ValueError, r"state_changed must be false for this result\."):
+            msgspec.convert(page | {"state_changed": True}, type=contracts.EvidenceReadPage, strict=True)
 
     def test_exact_accepted_artifact_tuple_and_bytes_are_required(self) -> None:
         fixture = self.checkpoint_fixture()

@@ -504,6 +504,7 @@ class EvidenceReadPage(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unk
     changed_surfaces: Empty
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         if self.end_character - self.start_character != len(self.text):
             raise ValueError("Character range must identify exactly the returned text.")
         if self.continuation is not None and (

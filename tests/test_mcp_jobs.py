@@ -86,22 +86,6 @@ class McpJobsTest(CheckpointPackageSupport):
         self.assertEqual(hashlib.sha256(body).hexdigest(), document.sha256)
         self.assertLessEqual(len(body), 46080)
 
-    def test_authority_tools_describe_temporary_local_mutation_to_clients(self) -> None:
-        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
-        self.addCleanup(executor.shutdown)
-        transport = mcp_server.create_server(
-            executor,
-            mcp_execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256),
-        )
-        for name in (mcp_server.PREPARATION_AUTHORITY_TOOL, mcp_server.ATTEMPT_AUTHORITY_TOOL):
-            with self.subTest(name=name):
-                tool = transport._tool_manager.get_tool(name)
-                assert tool is not None and tool.annotations is not None
-                self.assertFalse(tool.annotations.read_only_hint)
-                self.assertFalse(tool.annotations.destructive_hint)
-                self.assertFalse(tool.annotations.idempotent_hint)
-                self.assertFalse(tool.annotations.open_world_hint)
-
     def test_candidate_observation_rejects_invalid_input_and_context(self) -> None:
         with patch.object(mcp_common, "resolve_mcp_roots", side_effect=AssertionError("Must not resolve")):
             invalid = mcp_jobs._observe_candidate(
@@ -285,6 +269,15 @@ class McpJobsTest(CheckpointPackageSupport):
                 self.assertEqual({"description", "prompt"}, set(claude_args["properties"]))
                 self.assertEqual(["description", "prompt"], claude_args["required"])
                 self.assertEqual(False, claude_args["additionalProperties"])
+            for name in (mcp_server.PREPARATION_AUTHORITY_TOOL, mcp_server.ATTEMPT_AUTHORITY_TOOL):
+                with self.subTest(name=name):
+                    annotations = tools[name].annotations
+                    self.assertIsNotNone(annotations)
+                    assert annotations is not None
+                    self.assertFalse(annotations.read_only_hint)
+                    self.assertFalse(annotations.destructive_hint)
+                    self.assertFalse(annotations.idempotent_hint)
+                    self.assertFalse(annotations.open_world_hint)
         finally:
             executor.shutdown()
 
@@ -737,6 +730,17 @@ class McpJobsTest(CheckpointPackageSupport):
             "ready", mcp_execution.wire_content(first.record)["status"], mcp_execution.wire_content(first.record)
         )
         self.assertEqual("committed", mcp_execution.wire_content(first.record)["effect"])
+        ready = first.record
+        self.assertIsInstance(ready, contracts.DispatchReady)
+        assert isinstance(ready, contracts.DispatchReady)
+        with self.assertRaisesRegex(ValueError, "state_changed must be true"):
+            msgspec.structs.replace(ready, state_changed=False)
+        with self.assertRaisesRegex(ValueError, "effect and retry must match"):
+            msgspec.structs.replace(ready, effect="unchanged")
+        with self.assertRaisesRegex(ValueError, "effect and retry must match"):
+            msgspec.structs.replace(ready, retry="safe-to-repeat")
+        with self.assertRaisesRegex(ValueError, "exact immutable/reference/ledger surface set"):
+            msgspec.structs.replace(ready, changed_surfaces=("ledger",))
         after = SQLiteWorkStore(work / "state.sqlite3").validated_snapshot()
         self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
         self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
@@ -1240,24 +1244,6 @@ class McpJobsTest(CheckpointPackageSupport):
         self.assertEqual(
             "ready", mcp_execution.wire_content(ready.record)["status"], mcp_execution.wire_content(ready.record)
         )
-
-    def test_dispatch_output_rejects_false_effect_claims(self) -> None:
-        project, work, choice = self.dispatch_fixture()
-        outcome = mcp_jobs._dispatch_job(
-            {"project_root": str(project), "work_root": str(work), "dispatch": choice},
-            mcp_execution.CancellationToken(),
-        )
-        ready = outcome.record
-        self.assertIsInstance(ready, contracts.DispatchReady)
-        assert isinstance(ready, contracts.DispatchReady)
-        with self.assertRaisesRegex(ValueError, "state_changed must be true"):
-            msgspec.structs.replace(ready, state_changed=False)
-        with self.assertRaisesRegex(ValueError, "effect and retry must match"):
-            msgspec.structs.replace(ready, effect="unchanged")
-        with self.assertRaisesRegex(ValueError, "effect and retry must match"):
-            msgspec.structs.replace(ready, retry="safe-to-repeat")
-        with self.assertRaisesRegex(ValueError, "exact immutable/reference/ledger surface set"):
-            msgspec.structs.replace(ready, changed_surfaces=("ledger",))
 
     def test_dispatch_failure_preserves_ready_review_publication(self) -> None:
         project, work, choice = self.dispatch_fixture()

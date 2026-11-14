@@ -275,7 +275,7 @@ class McpJobsTest(CheckpointPackageSupport):
             self.assertNotIn("$defs", dispatch.input_schema)
             assert dispatch.description is not None
             self.assertIn("reuse-correction", dispatch.description)
-            self.assertIn("pinboard-correction-source-review/v1", dispatch.description)
+            self.assertIn("pinboard-correction-source-review/v1", json.dumps(dispatch.input_schema))
             assert dispatch.output_schema is not None
             self.assertIn("TracePreflightResult", dispatch.output_schema["$defs"])
             for tool_name in ("pinboard_dispatch", "pinboard_review_job"):

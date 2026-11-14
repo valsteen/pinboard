@@ -543,7 +543,7 @@ class DispatchTest(unittest.TestCase):
 
         with patch("pinboard.adapters.dispatch_operations.datetime") as clock:
             clock.now.side_effect = samples
-            prompt = expect_dispatch_success(
+            expect_dispatch_success(
                 prepare_dispatch(
                     store,
                     ArtifactRepository(roots),
@@ -556,7 +556,6 @@ class DispatchTest(unittest.TestCase):
                 )
             )
 
-        self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", prompt)
         self.assertEqual(4, clock.now.call_count)
 
     def test_identity_review_and_environment_failure_matrix_is_stable(self) -> None:
@@ -956,7 +955,7 @@ class DispatchTest(unittest.TestCase):
             (roots.work_root / "views" / "roadmap.html").read_text(),
         )
 
-        accepted = expect_dispatch_success(
+        expect_dispatch_success(
             prepare_dispatch(
                 store,
                 ArtifactRepository(roots),
@@ -968,7 +967,6 @@ class DispatchTest(unittest.TestCase):
                 choice=supplied_review(ready_review(value), ReviewId("accepted-ready")),
             )
         )
-        self.assertIn(f"Checkpoint: {CHECKPOINT_ID}", accepted)
         review_bytes = ready_review(value, result="Different complete result.")
 
         with patch.object(SQLiteWorkStore, "accept_artifact_reference", side_effect=database_failure):

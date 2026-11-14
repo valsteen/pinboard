@@ -2,7 +2,9 @@
 
 A scenario set registers each member by the SHA-256 of its scenario file and declares the checklist rules a
 comparison over it targets. A comparison's held-out scenarios and targeted rules are registered this way before its
-last guidance edit, so a later edit to a registered scenario file is detected rather than silently evaluated.
+last guidance edit, so a later edit to a registered scenario file is detected rather than silently evaluated. A set
+may also have a tool-exercise declaration in the sibling ``tool-exercise/`` directory under the set's file name,
+naming the set file's SHA-256 and the Pinboard tools each member scenario exercises.
 """
 
 import hashlib
@@ -11,7 +13,7 @@ from pathlib import Path
 
 import msgspec
 
-from evals.behavioral.records import Scenario, ScenarioSet, WorldKind
+from evals.behavioral.records import PinboardTool, Scenario, ScenarioSet, ToolExercise, WorldKind
 
 DATA = Path(__file__).parent / "data"
 CHECKLIST = DATA / "checklist.md"
@@ -76,3 +78,27 @@ def load_set(path: Path) -> RegisteredSet:
         scenarios.append(scenario)
         sources.append(content)
     return RegisteredSet(tuple(scenarios), scenario_set, tuple(sources))
+
+
+def exercise_path(scenario_set: Path) -> Path:
+    return scenario_set.parent.parent / "tool-exercise" / scenario_set.name
+
+
+def declared_exercise(scenario_set: Path, registration: ScenarioSet) -> dict[str, frozenset[PinboardTool]]:
+    """The Pinboard tools each member scenario declares exercising; empty when the set has no declaration."""
+    path = exercise_path(scenario_set)
+    if not path.is_file():
+        return {}
+    declaration = msgspec.json.decode(path.read_bytes(), type=ToolExercise)
+    digest = hashlib.sha256(scenario_set.read_bytes()).hexdigest()
+    if declaration.scenario_set_sha256 != digest:
+        raise DataIntegrityError(
+            f"{path} declares scenario set SHA-256 {declaration.scenario_set_sha256}, but {scenario_set} has {digest}"
+        )
+    members = {member.id for member in registration.scenarios}
+    declared: dict[str, frozenset[PinboardTool]] = {}
+    for scenario in declaration.scenarios:
+        if scenario.id not in members or scenario.id in declared:
+            raise DataIntegrityError(f"{path} declares {scenario.id}, which is not a single member of {scenario_set}")
+        declared[scenario.id] = frozenset(scenario.tools)
+    return declared

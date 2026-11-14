@@ -1,0 +1,2 @@
+{"type": "item.started", "item": {"id": "item_21", "type": "collab_tool_call", "tool": "wait", "sender_thread_id": "01a0f188-407c-73f3-b3a0-22654875f4a1", "receiver_thread_ids": [], "prompt": null, "agents_states": {}, "status": "in_progress"}}
+{"type": "item.completed", "item": {"id": "item_21", "type": "collab_tool_call", "tool": "wait", "sender_thread_id": "01a0f188-407c-73f3-b3a0-22654875f4a1", "receiver_thread_ids": [], "prompt": null, "agents_states": {}, "status": "completed"}}

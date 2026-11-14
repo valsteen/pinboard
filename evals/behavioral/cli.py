@@ -1,7 +1,8 @@
 """Command entry: decode arguments into one exact leaf command, then dispatch it exhaustively.
 
 Leaves follow the representative path: export a skills revision, run a scenario set for one runtime, score,
-compare (or report one variant), assess Codex reply substance, and total spend.
+compare (or report one variant), assess Codex reply substance, and total spend. ``tool-use`` reads the Pinboard tool
+calls of every recorded run without a paid session.
 """
 
 import argparse
@@ -32,6 +33,7 @@ from evals.behavioral import (
     spend,
     startup_pilot,
     substance,
+    tool_use,
 )
 from evals.behavioral.credentials import default_source
 from evals.behavioral.layout import Layout
@@ -43,12 +45,13 @@ from evals.behavioral.records import (
     Completed,
     CoverageResult,
     CoverageWindow,
+    PinboardTool,
     RegisteredScenario,
     Scored,
     ScorerInput,
     write_new,
 )
-from evals.behavioral.scenarios import RegisteredSet, load_set
+from evals.behavioral.scenarios import RegisteredSet, declared_exercise, exercise_path, load_set
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,7 @@ class RunClaude:
     worlds: Path
     cap_usd: float
     jobs: int
+    changed_tools: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -85,6 +89,7 @@ class RunCodex:
     out: Path
     worlds: Path
     cap_usd: float
+    changed_tools: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -134,6 +139,12 @@ class Compare:
     scenario_set: Path
     baseline: str
     candidate: str
+    changed_tools: frozenset[str]
+
+
+@dataclass(frozen=True)
+class ToolUse:
+    out: Path
 
 
 @dataclass(frozen=True)
@@ -250,6 +261,7 @@ type Command = (
     | Score
     | Assess
     | Compare
+    | ToolUse
     | Report
     | Spend
     | CoverageCodex
@@ -290,8 +302,10 @@ def parser() -> argparse.ArgumentParser:  # noqa: PLR0915
             case "claude":
                 leaf.add_argument("--jobs", type=positive, default=1)
                 leaf.add_argument("--reasoning-effort", type=claude_effort, default=None)
+                add_changed_tool(leaf)
             case "codex":
                 leaf.add_argument("--reasoning-effort", required=True)
+                add_changed_tool(leaf)
             case "agy":
                 leaf.add_argument("--jobs", type=positive, default=1)
                 leaf.add_argument("--reasoning-effort", type=agy_effort, required=True)
@@ -326,6 +340,10 @@ def parser() -> argparse.ArgumentParser:  # noqa: PLR0915
     comparing.add_argument("--scenario-set", type=Path, required=True)
     comparing.add_argument("--baseline", required=True)
     comparing.add_argument("--candidate", required=True)
+    add_changed_tool(comparing)
+
+    tooling = commands.add_parser("tool-use", help="per-run Pinboard tool calls read from recorded raw streams")
+    tooling.add_argument("--out", type=Path, required=True)
 
     reporting = commands.add_parser("report", help="per-rule failures per run for one variant")
     reporting.add_argument("--out", type=Path, required=True)
@@ -407,6 +425,24 @@ def add_coverage_parser(commands: argparse._SubParsersAction[argparse.ArgumentPa
     coverage.add_argument("--accept-unknown-reviewer-price", action="store_true", required=True)
 
 
+def add_changed_tool(leaf: argparse.ArgumentParser) -> None:
+    leaf.add_argument(
+        "--changed-tool",
+        type=pinboard_tool,
+        action="append",
+        default=[],
+        help="a Pinboard tool whose text the evaluated change alters; repeat for each, including both names of a rename",
+    )
+
+
+def pinboard_tool(value: str) -> str:
+    try:
+        checked: str = msgspec.convert(value, type=PinboardTool)
+    except msgspec.ValidationError:
+        raise argparse.ArgumentTypeError("must be a Pinboard tool name such as pinboard_dispatch") from None
+    return checked
+
+
 def claude_effort(value: str) -> ClaudeEffort:
     try:
         return ClaudeEffort(value)
@@ -455,7 +491,11 @@ def decode(arguments: Sequence[str]) -> Command:  # noqa: C901, PLR0912
         case "assess":
             return Assess(options.out, options.cap_usd)
         case "compare":
-            return Compare(options.out, options.scenario_set, options.baseline, options.candidate)
+            return Compare(
+                options.out, options.scenario_set, options.baseline, options.candidate, frozenset(options.changed_tool)
+            )
+        case "tool-use":
+            return ToolUse(options.out)
         case "report":
             return Report(options.out, options.scenario_set, options.variant)
         case "spend":
@@ -563,6 +603,7 @@ def decode_run(options: argparse.Namespace) -> RunClaude | RunCodex | RunAgy:
                 options.worlds,
                 options.cap_usd,
                 options.jobs,
+                frozenset(options.changed_tool),
             )
         case "codex":
             return RunCodex(
@@ -576,6 +617,7 @@ def decode_run(options: argparse.Namespace) -> RunClaude | RunCodex | RunAgy:
                 options.out,
                 options.worlds,
                 options.cap_usd,
+                frozenset(options.changed_tool),
             )
         case "agy":
             return RunAgy(
@@ -663,6 +705,15 @@ def dispatch(command: Command) -> int:  # noqa: C901, PLR0912
         case Compare() as c:
             registered = load_set(c.scenario_set)
             print(decision.compare(Layout(c.out), registered.registration, c.baseline, c.candidate), end="")
+            declared = declared_exercise(c.scenario_set, registered.registration) if c.changed_tools else {}
+            print(
+                decision.tool_use_compare(
+                    Layout(c.out), registered.registration, declared, c.baseline, c.candidate, c.changed_tools
+                ),
+                end="",
+            )
+        case ToolUse(out=out):
+            print(tool_use.report(Layout(out)), end="")
         case Report() as c:
             ids = [scenario.id for scenario in load_set(c.scenario_set).scenarios]
             print(decision.report(Layout(c.out), ids, c.variant), end="")
@@ -798,8 +849,30 @@ def investigation_budget(layout: Layout, batch_id: str) -> spend.Budget:
     return spend.Budget(layout, min(120.0, batch.start_usd + batch.cap_usd), processes.Window(None), False)
 
 
+def exercise_preflight(scenario_set: Path, surface: frozenset[str]) -> bool:
+    """Before any reservation, report which scenarios declare exercising the changed tools; ``False`` refuses spend."""
+    if not surface:
+        return True
+    registered = load_set(scenario_set)
+    found = tool_use.coverage(declared_exercise(scenario_set, registered.registration), surface)
+    print(f"tool use: {found.describe()}")
+    if not found.covered:
+        print(
+            "No paid run started: register a tool-exercise declaration for a scenario that exercises the changed "
+            f"tools at {exercise_path(scenario_set)}, or run without --changed-tool for a checklist-only comparison."
+        )
+    return found.covered
+
+
+def report_exercise(plan: runner.RunPlan, surface: frozenset[str]) -> None:
+    if surface:
+        print(tool_use.observed_exercise(plan.layout, [key for _, key in plan.planned()], surface), end="")
+
+
 def run_claude(command: RunClaude) -> int:
     c = command
+    if not exercise_preflight(c.scenario_set, c.changed_tools):
+        return 2
     plan = run_plan(
         c.export, c.scenario_set, c.variant, c.runs, c.first_index, c.model, c.out, c.worlds, processes.Window(None)
     )
@@ -813,12 +886,16 @@ def run_claude(command: RunClaude) -> int:
         )
     except runner.IsolationBreachError as stop:
         print(f"Claude Code runs stopped: {stop}")
+        report_exercise(plan, c.changed_tools)
         return 2
+    report_exercise(plan, c.changed_tools)
     return 0
 
 
 def run_codex(command: RunCodex) -> int:
     c = command
+    if not exercise_preflight(c.scenario_set, c.changed_tools):
+        return 2
     plan = run_plan(
         c.export, c.scenario_set, c.variant, c.runs, c.first_index, c.model, c.out, c.worlds, processes.Window(None)
     )
@@ -831,7 +908,9 @@ def run_codex(command: RunCodex) -> int:
         )
     except (runner.CredentialConflictError, runner.IsolationBreachError, codex_driver.CodexUnavailableError) as stop:
         print(f"Codex runs stopped: {stop}")
+        report_exercise(plan, c.changed_tools)
         return 2
+    report_exercise(plan, c.changed_tools)
     return 0
 
 

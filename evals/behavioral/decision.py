@@ -6,7 +6,9 @@ run has no rate. Each checklist item and the total get an estimate: the scenario
 candidate and baseline, with an interval of ``K`` standard errors built from the pooled within-scenario standard
 deviation (never below its measured floor). The comparison's verdict rests on the total and the checklist rules its
 scenario set declares as targeted; every other item is advisory and only warns when its interval reaches past its
-no-worse margin. Output is independent of file order and random state.
+no-worse margin. Beside it, and never combined with it, the tool-use verdict applies the same estimate to the same
+scored runs' not-accepted calls to the changed Pinboard tools, with its own floor and margin. Output is independent of
+file order and random state.
 """
 
 import math
@@ -18,7 +20,7 @@ from typing import assert_never
 
 import msgspec
 
-from evals.behavioral import scoring, spend
+from evals.behavioral import scoring, spend, tool_use
 from evals.behavioral.layout import SCORER_INPUT, Layout
 from evals.behavioral.records import (
     AgyEffort,
@@ -57,6 +59,18 @@ class Criteria:
     no_worse_margin_item: float
     sd_floor_total: float
     sd_floor_item: float
+
+
+@dataclass(frozen=True)
+class ToolUseCriteria:
+    """The tool-use verdict's parameters ``CRITERIA.md`` derives from recorded runs; run counts and the interval
+    multiplier are the checklist's."""
+
+    sd_floor: float
+    no_worse_margin: float
+
+
+TOOL_USE_CRITERIA = ToolUseCriteria(sd_floor=0.8, no_worse_margin=0.5)
 
 
 CRITERIA = Criteria(
@@ -185,21 +199,30 @@ def estimate(
     for side, runs in (("baseline", baseline), ("candidate", candidate)):
         for run in runs:
             groups[(side, run.run.scenario_id)].append(value(run, item))
+    return grouped_estimate(criteria, floor, margin, groups, scenarios)
+
+
+def grouped_estimate(
+    criteria: Criteria, floor: float, margin: float, groups: dict[tuple[str, str], list[float]], scenarios: list[str]
+) -> Estimate:
+    """Classify the scenario-stratified candidate-minus-baseline difference of per-run values grouped by side and
+    scenario."""
     squares = sum((x - mean(values)) ** 2 for values in groups.values() for x in values)
     freedom = sum(len(values) - 1 for values in groups.values())
     pooled = math.sqrt(squares / freedom) if freedom > 0 else 0.0
     sd = max(pooled, floor)
-    present = [s for s in scenarios if groups[("baseline", s)] and groups[("candidate", s)]]
+    sides = {key: groups.get(key, []) for s in scenarios for key in (("baseline", s), ("candidate", s))}
+    present = [s for s in scenarios if sides[("baseline", s)] and sides[("candidate", s)]]
     if not present:
         return Estimate(
             0.0, -math.inf, math.inf, pooled, margin, Classification.INCONCLUSIVE, "no scenario has both sides"
         )
-    difference = sum(mean(groups[("candidate", s)]) - mean(groups[("baseline", s)]) for s in present) / len(present)
-    spread = sum(1 / len(groups[("candidate", s)]) + 1 / len(groups[("baseline", s)]) for s in present)
+    difference = sum(mean(sides[("candidate", s)]) - mean(sides[("baseline", s)]) for s in present) / len(present)
+    spread = sum(1 / len(sides[("candidate", s)]) + 1 / len(sides[("baseline", s)]) for s in present)
     half_width = criteria.interval_multiplier * sd * math.sqrt(spread) / len(present)
     lower, upper = difference - half_width, difference + half_width
     needed = required_runs(criteria, len(scenarios))
-    short = [s for s in scenarios if min(len(groups[("baseline", s)]), len(groups[("candidate", s)])) < needed]
+    short = [s for s in scenarios if min(len(sides[("baseline", s)]), len(sides[("candidate", s)])) < needed]
     if short:
         reason = f"fewer than {needed} runs per side in {len(short)} of {len(scenarios)} scenarios"
         return Estimate(difference, lower, upper, pooled, margin, Classification.INCONCLUSIVE, reason)
@@ -415,3 +438,107 @@ def report(layout: Layout, scenarios: list[str], variant: str) -> str:
     lines.append("per-run failed items:")
     lines.extend(failed_items_line(run) for run in runs)
     return "\n".join(lines) + "\n"
+
+
+CHECKLIST_ONLY = "no changed tool surface was declared with --changed-tool, so this comparison is checklist-only"
+
+type SideTallies = list[tuple[RunKey, tool_use.Tally]]
+
+
+def tool_use_compare(
+    layout: Layout,
+    registration: ScenarioSet,
+    declared: dict[str, frozenset[str]],
+    baseline_variant: str,
+    candidate_variant: str,
+    surface: frozenset[str],
+) -> str:
+    """The tool-use verdict beside the checklist verdict, over the same scored runs; it never changes that verdict.
+
+    A run's value is its number of calls to the changed tools that the server did not accept. The verdict is refused
+    when any selected run's calls cannot be observed, and inconclusive when no member scenario declares exercising the
+    changed tools, when either side made no call to them, or when the runs do not qualify.
+    """
+    if not surface:
+        return f"tool-use decision: refused ({CHECKLIST_ONLY})\n"
+    scenarios = [member.id for member in registration.scenarios]
+    declared_coverage = tool_use.coverage(declared, surface)
+    lines = [f"tool use: {declared_coverage.describe()}"]
+    try:
+        baseline = collect(layout, frozenset(scenarios), baseline_variant)
+        candidate = collect(layout, frozenset(scenarios), candidate_variant)
+    except (OSError, msgspec.DecodeError, ValueError) as error:
+        lines.append(f"tool-use decision: inconclusive (comparison evidence is unavailable: {error})")
+        return "\n".join(lines) + "\n"
+    baseline_tallies, baseline_refusals = side_tallies(layout, baseline, surface)
+    candidate_tallies, candidate_refusals = side_tallies(layout, candidate, surface)
+    if refusals := sorted({*baseline_refusals, *candidate_refusals}):
+        lines.append(f"tool-use decision: refused ({'; '.join(refusals)})")
+        return "\n".join(lines) + "\n"
+    lines.append("measure\tbaseline/run\tcandidate/run")
+    lines.append(f"runs\t{len(baseline_tallies)}\t{len(candidate_tallies)}")
+    for index, (name, _) in enumerate(tool_use.EMPTY_TALLY.measures()):
+        lines.append(f"{name}\t{per_run(baseline_tallies, index)}\t{per_run(candidate_tallies, index)}")
+    groups: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for side, counted in (("baseline", baseline_tallies), ("candidate", candidate_tallies)):
+        for run, counts in counted:
+            groups[(side, run.scenario_id)].append(float(counts.not_accepted))
+    result = grouped_estimate(
+        CRITERIA, TOOL_USE_CRITERIA.sd_floor, TOOL_USE_CRITERIA.no_worse_margin, groups, scenarios
+    )
+    lines.append(
+        f"not accepted difference {number(result.difference)}\tinterval [{number(result.lower)}, "
+        f"{number(result.upper)}]\t{result.classification.value} ({result.reason}; pooled sd {number(result.pooled_sd)})"
+    )
+    lines.append("per-run calls to the changed tools:")
+    lines.extend(
+        f"  {run.display()}\t{tool_use.tally_text(counts)}" for run, counts in [*baseline_tallies, *candidate_tallies]
+    )
+    unexercised = [
+        side
+        for side, counted in (("baseline", baseline_tallies), ("candidate", candidate_tallies))
+        if not any(counts.calls for _, counts in counted)
+    ]
+    if not declared_coverage.covered:
+        verdict, reason = Classification.INCONCLUSIVE, "no scenario in the set declares exercising the changed tools"
+    elif unexercised:
+        verdict = Classification.INCONCLUSIVE
+        reason = f"no call to the changed tools was observed on the {' and '.join(unexercised)} side"
+    elif reasons := qualification(layout, registration, baseline_variant, candidate_variant, [*baseline, *candidate]):
+        verdict, reason = Classification.INCONCLUSIVE, "; ".join(reasons)
+    else:
+        verdict, reason = result.classification, result.reason
+    lines.append(f"tool-use decision: {verdict.value} ({reason})")
+    lines.append(
+        f"tool-use criteria: value not-accepted calls to the changed tools per run; runs per scenario and side "
+        f"{required_runs(CRITERIA, len(scenarios))}; interval +/- {number(CRITERIA.interval_multiplier)} standard "
+        f"errors; no-worse margin {number(TOOL_USE_CRITERIA.no_worse_margin)}; sd floor "
+        f"{number(TOOL_USE_CRITERIA.sd_floor)}"
+    )
+    return "\n".join(lines) + "\n"
+
+
+def side_tallies(layout: Layout, runs: list[RunFailures], surface: frozenset[str]) -> tuple[SideTallies, list[str]]:
+    """Each selected run's calls to the changed tools, and why any selected run's calls cannot be observed."""
+    tallies: SideTallies = []
+    refusals: list[str] = []
+    for run in runs:
+        record = layout.run_record(run.run)
+        if record is None:
+            refusals.append(f"{run.run.display()} has no run record")
+            continue
+        match tool_use.read_run(layout, record):
+            case tool_use.Unobservable(reason=reason):
+                refusals.append(reason)
+            case tool_use.Observed(calls=calls):
+                tallies.append((run.run, tool_use.tally(calls, surface)))
+            case _ as unreachable:
+                assert_never(unreachable)
+    return tallies, refusals
+
+
+def per_run(counted: SideTallies, measure: int) -> str:
+    """The mean of one ``Tally.measures`` entry over a side's runs."""
+    if not counted:
+        return NO_SCORED_RUN
+    return number(sum(counts.measures()[measure][1] for _, counts in counted) / len(counted))

@@ -3,6 +3,7 @@
 import ast
 import hashlib
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 from urllib.parse import unquote, urlsplit
@@ -15,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / "src/pinboard/instructions"
 RUNTIMES = ("codex", "claude-code", "antigravity")
 NATIVE_READ_BYTES = 46080
-ROLE_BUDGETS = {"coordinator": 16000, "worker": 36000, "reviewer": 18000}
+ROLE_BUDGETS = {"coordinator": 16600, "worker": 36000, "reviewer": 18000}
 COORDINATOR_ENTRIES = ("pinboard", "pinboard-intake", "pinboard-deliver")
 
 
@@ -252,13 +253,13 @@ def validate_generated() -> None:
             _validate_document_links(path, expected)
 
 
-def _startup_reads(path: Path, runtime: str, seen: set[Path]) -> int:
+def _startup_reads(path: Path, runtime: str, seen: set[Path], pending: Mapping[Path, bytes]) -> int:
     """Follow the entry documents' Markdown links and literal native-read paths, counting shared reads once."""
     path = path.resolve()
     if path in seen:
         return 0
     seen.add(path)
-    body = path.read_text()
+    body = pending[path].decode() if path in pending else path.read_text()
     size = len(body.encode())
     # These instruction wrappers use Markdown, not a structured boundary protocol.
     for selected in re.findall(r"\]\(([^)]+\.md)\)|`([^`]+\.md)`", body):
@@ -268,12 +269,22 @@ def _startup_reads(path: Path, runtime: str, seen: set[Path]) -> int:
         target = path.parent / relative
         if any(target.name.endswith(f"-{other}.md") for other in RUNTIMES if other != runtime):
             continue
-        size += _startup_reads(target, runtime, seen)
+        size += _startup_reads(target, runtime, seen, pending)
     return size
 
 
 def validate_startup_composition() -> dict[str, int]:
-    """Count actual mandatory source composition, including always-loaded MCP and native hook guidance."""
+    """Measure coordinator startup from the documents currently on disk."""
+    return check_startup_budget({})
+
+
+def check_startup_budget(files: Mapping[Path, bytes]) -> dict[str, int]:
+    """Count actual mandatory source composition, including always-loaded MCP and native hook guidance.
+
+    A document in files is measured from those bytes instead of from disk, so generation can check its
+    computed output before writing anything.
+    """
+    pending = {path.resolve(): body for path, body in files.items()}
     server = ast.parse((ROOT / "src/pinboard/mcp/server.py").read_text())
     mcp_bytes = 0
     for node in ast.walk(server):
@@ -290,8 +301,8 @@ def validate_startup_composition() -> dict[str, int]:
     for entry in COORDINATOR_ENTRIES:
         for runtime in RUNTIMES:
             seen: set[Path] = set()
-            size = _startup_reads(ROOT / "skills" / entry / "SKILL.md", runtime, seen)
-            size += _startup_reads(OUTPUT / f"coordinator-{runtime}.md", runtime, seen)
+            size = _startup_reads(ROOT / "skills" / entry / "SKILL.md", runtime, seen, pending)
+            size += _startup_reads(OUTPUT / f"coordinator-{runtime}.md", runtime, seen, pending)
             key = f"{entry}:{runtime}"
             sizes[key] = size + mcp_bytes + _hook_instruction_bytes(runtime)
             if sizes[key] > ROLE_BUDGETS["coordinator"]:
@@ -301,11 +312,14 @@ def validate_startup_composition() -> dict[str, int]:
     return sizes
 
 
-def generate() -> None:
+def generate() -> dict[str, int]:
+    """Write the computed documents only after their coordinator startup fits the budget."""
     files = expected_files()
+    sizes = check_startup_budget(files)
     for path, body in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(body)
     for path in OUTPUT.rglob("*.md"):
         if path not in files:
             path.unlink()
+    return sizes

@@ -94,6 +94,27 @@ class ScenarioSet(Record, frozen=True):
     targeted_rules: list[ChecklistItem]
 
 
+type PinboardTool = Annotated[str, msgspec.Meta(pattern=r"\Apinboard_[a-z][a-z0-9_]*\Z")]
+
+
+class ExercisedScenario(Record, frozen=True):
+    id: Identifier
+    tools: Annotated[list[PinboardTool], msgspec.Meta(min_length=1)]
+
+
+class ToolExercise(Record, frozen=True):
+    """The Pinboard tools each member of one scenario set is declared to exercise, kept outside the set itself.
+
+    It names the exact set file by SHA-256 and, like ``targeted_rules``, is registered before the last edit of the
+    text a comparison evaluates. A paid run that declares changed tools starts only when a member declares exercising
+    one of them; otherwise a comparison's tool-use verdict over the set is inconclusive.
+    """
+
+    schema: Literal["pinboard-behavioral-tool-exercise/v1"]
+    scenario_set_sha256: Sha256
+    scenarios: Annotated[list[ExercisedScenario], msgspec.Meta(min_length=1)]
+
+
 class Runtime(Enum):
     CLAUDE_CODE = "claude-code"
     CODEX = "codex"

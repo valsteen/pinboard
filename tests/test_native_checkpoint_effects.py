@@ -352,7 +352,8 @@ class NativeCheckpointEffectsTest(CheckpointPackageSupport):
             try:
                 # Direct handler execution keeps the deterministic effect boundary
                 # on this named request thread; winner exercises the registered SDK.
-                loser_results.append(mcp_mutations._transition(request, mcp_execution.CancellationToken()).content)
+                result = mcp_mutations._transition(request, mcp_execution.CancellationToken())
+                loser_results.append(mcp_execution.wire_content(result.record))
             except BaseException as error:  # pragma: no cover - asserted by coordinator
                 loser_errors.append(error)
 

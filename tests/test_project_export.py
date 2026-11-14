@@ -1,6 +1,7 @@
 import base64
 import contextlib
 import io
+import os
 import sqlite3
 import subprocess
 import tempfile
@@ -729,10 +730,10 @@ class ProjectExportTest(unittest.TestCase):
         finally:
             connection.close()
         before = store.validated_snapshot()
+        database_before = (work / "state.sqlite3").read_bytes()
+        arguments = ("--project-root", str(project), "--work-root", str(work), "export", "--json")
 
-        result, stdout, stderr = self.run_cli(
-            "--project-root", str(project), "--work-root", str(work), "export", "--json"
-        )
+        result, stdout, stderr = self.run_cli(*arguments)
 
         self.assertEqual(12, result)
         self.assertEqual("", stderr)
@@ -741,6 +742,23 @@ class ProjectExportTest(unittest.TestCase):
         self.assertIn("Unsupported artifact media suffix: .bin", rejection.message)
         self.assertFalse(rejection.state_changed)
         self.assertEqual(before, store.validated_snapshot())
+
+        diagnostics = io.StringIO()
+        read_end, write_end = os.pipe()
+        os.close(read_end)
+        with (
+            io.TextIOWrapper(io.FileIO(write_end, "w"), write_through=True) as closed_stdout,
+            contextlib.redirect_stdout(closed_stdout),
+            contextlib.redirect_stderr(diagnostics),
+            self.assertRaises(BrokenPipeError),
+        ):
+            main(arguments)
+
+        self.assertEqual(
+            "STORAGE_INVARIANT_VIOLATION: Unsupported artifact media suffix: .bin\n", diagnostics.getvalue()
+        )
+        self.assertEqual(database_before, (work / "state.sqlite3").read_bytes())
+        self.assertEqual(before, SQLiteWorkStore(work / "state.sqlite3").validated_snapshot())
 
 
 if __name__ == "__main__":

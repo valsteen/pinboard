@@ -1,5 +1,6 @@
 """Native read-only exact-pair and current planned-replacement obligation coverage."""
 
+from collections.abc import Mapping
 from typing import assert_never
 
 import msgspec
@@ -12,7 +13,9 @@ from pinboard.mcp import common, contracts, execution
 from pinboard.mcp.contracts import JsonValue
 
 
-def read(arguments: dict[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def read(
+    arguments: Mapping[str, JsonValue], token: execution.CancellationToken
+) -> execution.TypedOperationResult[contracts.ObligationCoverageResult]:
     token.checkpoint()
     try:
         request = msgspec.convert(arguments, type=contracts.ObligationCoverageEnvelope, strict=True).request
@@ -28,7 +31,7 @@ def read(arguments: dict[str, JsonValue], token: execution.CancellationToken) ->
             "correct-input",
             (),
         )
-        return execution.OperationResult(msgspec.to_builtins(result), "rejected", None)
+        return execution.TypedOperationResult(result, "rejected", None)
     match request:
         case contracts.ObligationCoveragePairRequest():
             source = WorkItemId(request.source_item)
@@ -51,8 +54,8 @@ def read(arguments: dict[str, JsonValue], token: execution.CancellationToken) ->
             "correct-input",
             (),
         )
-        return execution.OperationResult(msgspec.to_builtins(rejected), "rejected", None)
+        return execution.TypedOperationResult(rejected, "rejected", None)
     success = contracts.ObligationCoverageSuccess(
         "pinboard-obligation-coverage-result/v1", "ok", coverage, False, "unchanged", "safe-to-repeat", ()
     )
-    return execution.OperationResult(msgspec.to_builtins(success), "ok", None)
+    return execution.TypedOperationResult(success, "ok", None)

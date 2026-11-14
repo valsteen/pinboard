@@ -3,6 +3,7 @@ import io
 import json
 import tempfile
 from collections.abc import Mapping
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from unittest.mock import patch
@@ -16,7 +17,7 @@ from pinboard.application import work_brief_models, work_briefs
 from pinboard.domain import work_models
 from pinboard.mcp import (
     common,
-    contract_schemas,
+    contracts,
     execution,
     host_profiles,
     job_operations,
@@ -147,9 +148,8 @@ class McpFileInputsTest(CheckpointPackageSupport):
             changes: tuple[JsonObject, ...] = ({"brief_sha256": "bad"}, {"brief": {}}, {"brief_path": ""})
             for change in changes:
                 rejected = mutation_operations._read_brief_file(arguments | change)
-                assert isinstance(rejected, execution.OperationResult)
-                self.assertEqual("WORK_BRIEF_INVALID", rejected.content["code"])
-                contract_schemas.validate_result("pinboard_brief_publish_file", rejected.content)
+                assert not isinstance(rejected, work_brief_models.WorkBrief)
+                self.assertEqual("WORK_BRIEF_INVALID", execution.wire_content(rejected.record)["code"])
 
     def test_negative_review_file_preserves_identity_collision_and_independence(self) -> None:
         fixture = self.checkpoint_fixture()
@@ -250,8 +250,8 @@ class McpFileInputsTest(CheckpointPackageSupport):
         with patch.object(file_io, "read_verified_input", side_effect=AssertionError("Invalid controls must not read")):
             for change in ({"review_sha256": "bad"}, {"review": negative}, {"review_path": ""}):
                 rejected = read_operations._brief_review({"request": request | change}, execution.CancellationToken())
-                self.assertEqual("BRIEF_REVIEW_REQUEST_INVALID", rejected.content["code"])
-                contract_schemas.validate_result(server.BRIEF_REVIEW_TOOL, rejected.content)
+                assert isinstance(rejected.record, contracts.BriefReviewRejected)
+                self.assertEqual("BRIEF_REVIEW_REQUEST_INVALID", rejected.record.code)
 
     def test_large_ready_review_file_preserves_canonical_bytes_and_inline_identity(self) -> None:
         owner = test_dispatch.DispatchTest()
@@ -369,9 +369,11 @@ class McpFileInputsTest(CheckpointPackageSupport):
         original = job_operations._dispatch_job
 
         def from_file(
-            project_root: str, work_root: str, dispatch: Mapping[str, JsonValue], token: execution.CancellationToken
-        ) -> execution.OperationResult:
+            arguments: Mapping[str, JsonValue], token: execution.CancellationToken
+        ) -> execution.TypedOperationResult[contracts.DispatchResult]:
+            dispatch = self.json_object(arguments["dispatch"])
             choice = dict(dispatch)
+            work_root = str(arguments["work_root"])
             kind = choice["kind"]
             if kind in (
                 "correction",
@@ -390,20 +392,22 @@ class McpFileInputsTest(CheckpointPackageSupport):
                     brief_review_sha256=hashlib.sha256(raw).hexdigest(),
                 )
                 with patch.object(Path, "read_bytes", autospec=True, side_effect=Path.read_bytes) as read:
-                    outcome = original(project_root, work_root, choice, token)
+                    outcome = original(dict(arguments) | {"dispatch": choice}, token)
                 self.assertEqual(1, sum(call.args[0] == selected for call in read.call_args_list))
-                contract_schemas.validate_result(server.DISPATCH_TOOL, outcome.content)
-                if outcome.content["status"] in ("ready", "replacement-ready"):
+                if outcome.record.status in ("ready", "replacement-ready"):
                     observed.add(kind)
                     if kind == "candidate-correction":
                         candidate_boundaries.add(str(self.json_object(dispatch["brief_review"])["boundary"]))
                 return outcome
-            return original(project_root, work_root, choice, token)
+            return original(dict(arguments) | {"dispatch": choice}, token)
 
         for journey in ("pause-resume", "reuse", "local", "replacement", "candidate", "candidate-rejections"):
             owner = test_correction_source_review.CorrectionSourceReviewTest()
             try:
-                with patch.object(job_operations, "_dispatch_job", side_effect=from_file):
+                with (
+                    patch.object(job_operations, "_dispatch_job", side_effect=from_file),
+                    patch.object(server, "DISPATCH", replace(server.DISPATCH, operate=from_file)),
+                ):
                     match journey:
                         case "pause-resume":
                             owner.test_native_correction_survives_same_brief_pause_resume_with_fresh_dispatch_receipt()

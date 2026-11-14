@@ -5,11 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, assert_never, overload
 from uuid import uuid4
 
 import msgspec
 
+from pinboard import diagnostic_codes
 from pinboard.adapters import (
     lifecycle_artifacts,
     lifecycle_operations,
@@ -34,11 +35,17 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
-from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
-from pinboard.application.mutation_models import CommittedEffect
+from pinboard.application.artifact_publication import (
+    AcceptedArtifactPublication,
+    ArtifactAcceptanceFailure,
+    ArtifactWriteFailure,
+)
+from pinboard.application.mutation_models import (
+    AttemptAuthorityMutationResult,
+    PreparationAuthorityMutationResult,
+)
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
-    ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
     EffectDisposition,
@@ -62,36 +69,100 @@ _ARCHITECTURE_IMPACT_KIND_PATH = "$.brief.checkpoint.architecture_impact.kind"
 _ARCHITECTURE_IMPACT_KINDS = ("none", "read-only", "update-required")
 
 
-def _proposal_failure(failure: proposal_models.ProposalFailure | DecisionFailure) -> execution.OperationResult:
-    details = common._details_json(failure.details)
-    if failure.details is None and failure.code == DecisionFailureCode.PROPOSAL_ALREADY_EXISTS:
-        details["retry"] = RetryDisposition.DO_NOT_RETRY.value
-    content: dict[str, JsonValue] = {
-        "schema": "pinboard-mcp-proposal-result/v2",
-        "status": "rejected",
-        "code": failure.code.value,
-        "message": failure.message,
-        "state_changed": details["effect"] == EffectDisposition.COMMITTED.value,
-        **details,
-    }
+def _proposal_rejected_code(code: DecisionFailureCode) -> diagnostic_codes.ProposalRejectedCode:
+    match code:
+        case DecisionFailureCode.PROPOSAL_INVALID:
+            return "PROPOSAL_INVALID"
+        case DecisionFailureCode.ITEM_ALREADY_EXISTS:
+            return "ITEM_ALREADY_EXISTS"
+        case DecisionFailureCode.ITEM_NOT_FOUND:
+            return "ITEM_NOT_FOUND"
+        case DecisionFailureCode.ACTION_NOT_AVAILABLE:
+            return "ACTION_NOT_AVAILABLE"
+        case DecisionFailureCode.ITEM_DEFINITION_INVALID:
+            return "ITEM_DEFINITION_INVALID"
+        case (
+            DecisionFailureCode.ACTION_NOT_MUTATING
+            | DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED
+            | DecisionFailureCode.ATTEMPT_LEASE_REQUIRED
+            | DecisionFailureCode.ATTEMPT_LEASE_EXPIRED
+            | DecisionFailureCode.ATTEMPT_NOT_FOUND
+            | DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED
+            | DecisionFailureCode.DEPENDENCY_NOT_SATISFIED
+            | DecisionFailureCode.HISTORY_RECORD_EXISTS
+            | DecisionFailureCode.ITEM_DEFINITION_STALE
+            | DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED
+            | DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID
+            | DecisionFailureCode.ITEM_DEPENDENCY_CYCLE
+            | DecisionFailureCode.ITEM_STATUS_INCONSISTENT
+            | DecisionFailureCode.LIVE_DEPENDENTS
+            | DecisionFailureCode.LEASE_FENCED
+            | DecisionFailureCode.PROPOSAL_NOT_FOUND
+            | DecisionFailureCode.PROPOSAL_ALREADY_EXISTS
+            | DecisionFailureCode.REPLACEMENT_INVALID
+            | DecisionFailureCode.REPLACEMENT_STALE
+            | DecisionFailureCode.REVIEWER_PROMPT_NOT_COMMISSIONED
+            | DecisionFailureCode.TRANSITION_INPUT_INVALID
+            | DecisionFailureCode.SCHEMA_MIGRATION_INVALID
+            | DecisionFailureCode.SCHEMA_MIGRATION_FAILED
+        ):
+            raise ValueError(f"Proposal creation cannot emit rejection code {code.value}.")
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _proposal_failure(
+    failure: proposal_models.ProposalFailure | DecisionFailure,
+) -> execution.TypedOperationResult[contracts.ProposalResult]:
+    schema = "pinboard-mcp-proposal-result/v2"
     if failure.code == DecisionFailureCode.PROPOSAL_ALREADY_EXISTS:
-        content["recovery"] = "Read item status for the proposal_id before deciding whether any new proposal is needed."
+        result = contracts.ProposalDuplicate(
+            schema,
+            "rejected",
+            "PROPOSAL_ALREADY_EXISTS",
+            failure.message,
+            False,
+            "unchanged",
+            "do-not-retry",
+            (),
+            (),
+            (),
+            "Read item status for the proposal_id before deciding whether any new proposal is needed.",
+        )
     else:
-        content["recovery"] = None
-    return execution.OperationResult(content, "rejected", None)
+        result = contracts.ProposalRejected(
+            schema,
+            "rejected",
+            _proposal_rejected_code(failure.code),
+            failure.message,
+            False,
+            "unchanged",
+            "correct-input",
+            (),
+            (),
+            (),
+            None,
+        )
+    return execution.TypedOperationResult(result, "rejected", None)
 
 
-def _brief_failure(failure: work_brief_models.WorkBriefFailure | DecisionFailure) -> execution.OperationResult:
-    details = common._details_json(failure.details if isinstance(failure, DecisionFailure) else None)
-    return execution.OperationResult(
-        {
-            "schema": "pinboard-mcp-brief-publication-result/v1",
-            "status": "rejected",
-            "code": failure.code.value,
-            "message": failure.message,
-            "state_changed": details["effect"] == EffectDisposition.COMMITTED.value,
-            **details,
-        },
+def _brief_failure(
+    code: diagnostic_codes.BriefRejectedCode,
+    message: str,
+) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
+    return execution.TypedOperationResult(
+        contracts.BriefRejected(
+            "pinboard-mcp-brief-publication-result/v1",
+            "rejected",
+            code,
+            message,
+            False,
+            "unchanged",
+            "correct-input",
+            (),
+            (),
+            (),
+        ),
         "rejected",
         None,
     )
@@ -100,75 +171,59 @@ def _brief_failure(failure: work_brief_models.WorkBriefFailure | DecisionFailure
 def _brief_decode_failure(
     project_root: str,
     work_root: str,
-    brief: Mapping[str, work_brief_models.WorkBriefJsonValue],
+    brief: JsonValue,
     error: msgspec.ValidationError,
-) -> execution.OperationResult:
-    failure = work_brief_models.WorkBriefFailure(
-        work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
-        f"Cannot decode brief publication request: {error}",
-    )
+) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
+    message = f"Cannot decode brief publication request: {error}"
     if not str(error).endswith(f" - at `{_ARCHITECTURE_IMPACT_KIND_PATH}`"):
-        return _brief_failure(failure)
-    checkpoint = brief.get("checkpoint")
+        return _brief_failure("WORK_BRIEF_INVALID", message)
+    checkpoint = brief.get("checkpoint") if isinstance(brief, dict) else None
     if not isinstance(checkpoint, dict) or checkpoint.get("boundary") != "cross-boundary":
-        return _brief_failure(failure)
+        return _brief_failure("WORK_BRIEF_INVALID", message)
     architecture_impact = checkpoint.get("architecture_impact")
     if not isinstance(architecture_impact, dict):
-        return _brief_failure(failure)
+        return _brief_failure("WORK_BRIEF_INVALID", message)
     kind = architecture_impact.get("kind")
     if not isinstance(kind, str) or kind in _ARCHITECTURE_IMPACT_KINDS:
-        return _brief_failure(failure)
-    result = _brief_failure(failure)
-    return execution.OperationResult(
-        {
-            **result.content,
-            "observed": [{"field": _ARCHITECTURE_IMPACT_KIND_PATH, "value": kind}],
-            "mismatches": [
-                {
-                    "field": _ARCHITECTURE_IMPACT_KIND_PATH,
-                    "expected": "none | read-only | update-required",
-                    "observed": kind,
-                }
-            ],
-            "allowed_selections": list[JsonValue](_ARCHITECTURE_IMPACT_KINDS),
-            "recovery": {
-                "tool": tool_names.BRIEF_CONTRACT_TOOL,
-                "arguments": {
-                    "request": {
-                        "operation": "starter",
-                        "project_root": project_root,
-                        "work_root": work_root,
-                        "boundary": "cross-boundary",
-                    }
-                },
-            },
-        },
+        return _brief_failure("WORK_BRIEF_INVALID", message)
+    return execution.TypedOperationResult(
+        contracts.BriefArchitectureImpactRejected(
+            "pinboard-mcp-brief-publication-result/v1",
+            "rejected",
+            "WORK_BRIEF_INVALID",
+            message,
+            False,
+            "unchanged",
+            "correct-input",
+            (),
+            (contracts.BriefArchitectureImpactObservation(_ARCHITECTURE_IMPACT_KIND_PATH, kind),),
+            (
+                contracts.BriefArchitectureImpactMismatch(
+                    _ARCHITECTURE_IMPACT_KIND_PATH,
+                    "none | read-only | update-required",
+                    kind,
+                ),
+            ),
+            _ARCHITECTURE_IMPACT_KINDS,
+            contracts.BriefContractStarterInvocation(
+                tool_names.BRIEF_CONTRACT_TOOL,
+                contracts.BriefContractStarterEnvelope(
+                    contracts.BriefContractStarterRequest(project_root, work_root, "cross-boundary")
+                ),
+            ),
+        ),
         "rejected",
         None,
     )
 
 
 def _proposal_created(
-    project_root: str,
-    work_root: str,
-    proposal: Mapping[str, proposal_models.ProposalJsonValue],
-    actor_task_id: str,
-    actor_host_id: str,
+    raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.ProposalResult]:
     token.checkpoint()
     try:
-        request = msgspec.convert(
-            {
-                "project_root": project_root,
-                "work_root": work_root,
-                "proposal": proposal,
-                "actor_task_id": actor_task_id,
-                "actor_host_id": actor_host_id,
-            },
-            type=contracts.ProposalCreateRequest,
-            strict=True,
-        )
+        request = msgspec.convert(raw, type=contracts.ProposalCreateRequest, strict=True)
         durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return _proposal_failure(
@@ -211,145 +266,335 @@ def _proposal_created(
         now,
     )
     warning = view_result.warning
-    content: dict[str, JsonValue] = {
-        "schema": "pinboard-mcp-proposal-result/v2",
-        "status": "committed" if warning is None else "committed-with-warning",
-        "proposal_id": decoded.proposal_id,
-        "position": committed.item.queue_position,
-        "item_state": committed.item.state.value,
-        "committed_revision": effect.receipt.project_revision,
-        "history_id": int(effect.receipt.history_id),
-        "state_changed": True,
-        "effect": EffectDisposition.COMMITTED.value,
-        "retry": RetryDisposition.DO_NOT_RETRY.value,
-        "changed_surfaces": [ChangedSurface.LEDGER.value],
-        "continuation": "Read item status or inspect the proposal before choosing a project disposition.",
-        "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
-    }
-    return execution.OperationResult(
-        content, "committed" if warning is None else "committed-warning", str(effect.receipt.project_revision)
+    continuation = "Read item status or inspect the proposal before choosing a project disposition."
+    if warning is None:
+        result = contracts.ProposalCommitted(
+            "pinboard-mcp-proposal-result/v2",
+            "committed",
+            decoded.proposal_id,
+            committed.item.queue_position,
+            "ready",
+            effect.receipt.project_revision,
+            int(effect.receipt.history_id),
+            True,
+            "committed",
+            "do-not-retry",
+            ("ledger",),
+            continuation,
+            None,
+        )
+    else:
+        result = contracts.ProposalCommittedWithWarning(
+            "pinboard-mcp-proposal-result/v2",
+            "committed-with-warning",
+            decoded.proposal_id,
+            committed.item.queue_position,
+            "ready",
+            effect.receipt.project_revision,
+            int(effect.receipt.history_id),
+            True,
+            "committed",
+            "do-not-retry",
+            ("ledger",),
+            continuation,
+            contracts.WarningResult(warning.message, warning.repair),
+        )
+    return execution.TypedOperationResult(
+        result, "committed" if warning is None else "committed-warning", str(effect.receipt.project_revision)
     )
 
 
 def _brief_published(
-    project_root: str,
-    work_root: str,
-    brief: Mapping[str, work_brief_models.WorkBriefJsonValue],
+    raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
     token.checkpoint()
     try:
-        request = msgspec.convert(
-            {"project_root": project_root, "work_root": work_root, "brief": brief},
-            type=contracts.BriefPublishRequest,
-            strict=True,
-        )
+        request = msgspec.convert(raw, type=contracts.BriefPublishRequest, strict=True)
         durable = common._resolve_durable(request.project_root, request.work_root)
     except msgspec.ValidationError as error:
-        return _brief_decode_failure(project_root, work_root, brief, error)
-    except (ValueError, OSError) as error:
-        return _brief_failure(
-            work_brief_models.WorkBriefFailure(
-                work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
-                f"Cannot decode brief publication request: {error}",
-            )
+        return _brief_decode_failure(
+            str(raw.get("project_root", "")), str(raw.get("work_root", "")), raw.get("brief"), error
         )
+    except (ValueError, OSError) as error:
+        return _brief_failure("WORK_BRIEF_INVALID", f"Cannot decode brief publication request: {error}")
     return _publish_brief(durable, request.brief, token)
 
 
-def _read_brief_file(raw: Mapping[str, JsonValue]) -> work_brief_models.WorkBrief | execution.OperationResult:
+type SelectedBrief = work_brief_models.WorkBrief | execution.TypedOperationResult[contracts.BriefPublicationResult]
+
+
+def _read_brief_file(raw: Mapping[str, JsonValue]) -> SelectedBrief:
     try:
         request = msgspec.convert(raw, type=contracts.BriefPublishFileRequest, strict=True)
     except msgspec.ValidationError as error:
-        return _brief_failure(
-            work_brief_models.WorkBriefFailure(work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, str(error))
-        )
+        return _brief_failure("WORK_BRIEF_INVALID", str(error))
     content = file_io.read_verified_input(Path(request.brief_path), request.brief_sha256)
     if isinstance(content, file_io.SelectedInputFailure):
-        return common._read_failure("pinboard-mcp-brief-publication-result/v1", content.code, content.message, None)
+        return _brief_failure(content.code, content.message)
     try:
         return msgspec.json.decode(content, type=work_brief_models.WorkBrief)
     except msgspec.DecodeError as error:
         return _brief_failure(
-            work_brief_models.WorkBriefFailure(
-                work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
-                f"Cannot decode selected brief '{request.brief_path}' with verified SHA-256 {request.brief_sha256}: {error}. Correct that file to the current work-brief schema before retrying.",
-            )
+            "WORK_BRIEF_INVALID",
+            f"Cannot decode selected brief '{request.brief_path}' with verified SHA-256 {request.brief_sha256}: {error}. Correct that file to the current work-brief schema before retrying.",
         )
 
 
 def _brief_published_file(
-    project_root: str,
-    work_root: str,
-    read_brief: Callable[[], work_brief_models.WorkBrief | execution.OperationResult],
+    raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+    read_brief: Callable[[], SelectedBrief],
+) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
     token.checkpoint()
     brief = read_brief()
-    if isinstance(brief, execution.OperationResult):
+    if not isinstance(brief, work_brief_models.WorkBrief):
         return brief
     try:
-        durable = common._resolve_durable(project_root, work_root)
+        durable = common._resolve_durable(str(raw["project_root"]), str(raw["work_root"]))
     except (ValueError, OSError) as error:
         return _brief_failure(
-            work_brief_models.WorkBriefFailure(
-                work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
-                f"Cannot resolve brief publication roots: {error}. Correct the selected project_root and work_root before retrying.",
-            )
+            "WORK_BRIEF_INVALID",
+            f"Cannot resolve brief publication roots: {error}. Correct the selected project_root and work_root before retrying.",
         )
     return _publish_brief(durable, brief, token)
 
 
+def _brief_publication_rejected(
+    failure: DecisionFailure,
+) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
+    if failure.code != DecisionFailureCode.ACTION_NOT_AVAILABLE:
+        raise ValueError(failure.message)
+    details = failure.details
+    if details is not None and details.effect == EffectDisposition.COMMITTED:
+        return execution.TypedOperationResult(
+            contracts.BriefPublishedRejection(
+                "pinboard-mcp-brief-publication-result/v1",
+                "rejected",
+                "ACTION_NOT_AVAILABLE",
+                failure.message,
+                True,
+                "committed",
+                "do-not-retry",
+                ("immutable-artifact",),
+                _observations(details),
+                _mismatches(details),
+            ),
+            "rejected",
+            None,
+        )
+    return _brief_failure("ACTION_NOT_AVAILABLE", failure.message)
+
+
+def _brief_publication_failed(
+    failure: ArtifactAcceptanceFailure | ArtifactWriteFailure,
+) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
+    acceptance_failed = isinstance(failure, ArtifactAcceptanceFailure)
+    code = "ARTIFACT_ACCEPTANCE_FAILED" if acceptance_failed else "ARTIFACT_PUBLICATION_FAILED"
+    message = (
+        f"The brief's accepted reference could not be committed. {failure.cause}"
+        if acceptance_failed
+        else f"The brief's immutable publication could not be completed. {failure.cause}"
+    )
+    recovery = (
+        "Preserve the published selector and repair artifact-reference acceptance before continuing."
+        if acceptance_failed
+        else "Inspect the published selector and repair immutable publication before continuing."
+    )
+    schema = "pinboard-mcp-brief-publication-result/v1"
+    if failure.details.effect == EffectDisposition.COMMITTED:
+        result = contracts.BriefPublicationInfrastructureFailure(
+            schema,
+            "failed-after-publication",
+            code,
+            message,
+            True,
+            "committed",
+            "do-not-retry",
+            ("immutable-artifact",),
+            (),
+            (),
+            failure.selector,
+            recovery,
+        )
+    else:
+        result = contracts.BriefPublicationInfrastructureUnchangedFailure(
+            schema,
+            "infrastructure-failure",
+            code,
+            message,
+            False,
+            "unchanged",
+            "retry-same-input" if failure.details.retry == RetryDisposition.RETRY_SAME_INPUT else "do-not-retry",
+            (),
+            (),
+            (),
+            failure.selector,
+            recovery,
+        )
+    return execution.TypedOperationResult(result, "infrastructure-failure", failure.selector)
+
+
 def _publish_brief(
     durable: DurableRoots, decoded: work_brief_models.WorkBrief, token: execution.CancellationToken
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
     store = common.compose_store(durable)
     token.checkpoint()
     now = datetime.now(UTC)
     publication = work_briefs.publish_work_brief(store, ArtifactRepository(durable), decoded, now)
-    if isinstance(publication, (DecisionFailure, work_brief_models.WorkBriefFailure)):
-        return _brief_failure(publication)
+    if isinstance(publication, work_brief_models.WorkBriefFailure):
+        return _brief_failure("WORK_BRIEF_INVALID", publication.message)
+    if isinstance(publication, DecisionFailure):
+        return _brief_publication_rejected(publication)
     if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
-        return common._artifact_publication_failure(
-            "pinboard-mcp-brief-publication-result/v1",
-            publication,
-            acceptance_message="The brief's accepted reference could not be committed.",
-            publication_message="The brief's immutable publication could not be completed.",
-            acceptance_recovery="Preserve the published selector and repair artifact-reference acceptance before continuing.",
-            publication_recovery="Inspect the published selector and repair immutable publication before continuing.",
-        )
+        return _brief_publication_failed(publication)
     view_result = common._refresh_affected_views(durable, store, AffectedViews((), (), ()), now)
     warning = view_result.warning
-    changed_surfaces: list[JsonValue] = [
-        *([ChangedSurface.IMMUTABLE_ARTIFACT.value] if publication.artifact_created else []),
-        *(
-            [ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE.value, ChangedSurface.LEDGER.value]
-            if publication.ledger_changed
-            else []
-        ),
-    ]
-    state_changed = bool(changed_surfaces)
-    if state_changed:
-        status = "committed" if warning is None else "committed-with-warning"
-        classification = "committed" if warning is None else "committed-warning"
+    return _brief_publication_success(publication, warning)
+
+
+def _brief_publication_success(
+    publication: AcceptedArtifactPublication, warning: ViewWarning | None
+) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
+    schema = "pinboard-mcp-brief-publication-result/v1"
+    accepted = publication.reference
+    reference = contracts.ArtifactReferenceResult(
+        int(accepted.artifact_ref_id),
+        "brief",
+        accepted.key,
+        accepted.revision,
+        accepted.selector,
+        accepted.content_sha256,
+        accepted.size_bytes,
+        accepted.accepted_revision,
+    )
+    continuation = "Use the verified reference when preparing or rebinding the matching attempt."
+    if warning is None:
+        match publication.artifact_created, publication.ledger_changed:
+            case True, True:
+                result = contracts.BriefCommitted(
+                    schema,
+                    "committed",
+                    reference,
+                    True,
+                    "committed",
+                    "do-not-retry",
+                    ("immutable-artifact", "accepted-artifact-reference", "ledger"),
+                    continuation,
+                    None,
+                )
+            case False, True:
+                result = contracts.BriefReferenceCommitted(
+                    schema,
+                    "committed",
+                    reference,
+                    True,
+                    "committed",
+                    "do-not-retry",
+                    ("accepted-artifact-reference", "ledger"),
+                    continuation,
+                    None,
+                )
+            case True, False:
+                result = contracts.BriefArtifactCommitted(
+                    schema,
+                    "committed",
+                    reference,
+                    True,
+                    "committed",
+                    "do-not-retry",
+                    ("immutable-artifact",),
+                    continuation,
+                    None,
+                )
+            case False, False:
+                result = contracts.BriefUnchanged(
+                    schema,
+                    "unchanged",
+                    reference,
+                    False,
+                    "unchanged",
+                    "retry-same-input",
+                    (),
+                    continuation,
+                    None,
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+        classification = "committed" if result.state_changed else "unchanged"
     else:
-        status = "unchanged" if warning is None else "unchanged-with-warning"
-        classification = "unchanged" if warning is None else "unchanged-warning"
-    content: dict[str, JsonValue] = {
-        "schema": "pinboard-mcp-brief-publication-result/v1",
-        "status": status,
-        "reference": common._artifact_reference_json(publication.reference),
-        "state_changed": state_changed,
-        "effect": (EffectDisposition.COMMITTED.value if state_changed else EffectDisposition.UNCHANGED.value),
-        "retry": (RetryDisposition.DO_NOT_RETRY.value if state_changed else RetryDisposition.RETRY_SAME_INPUT.value),
-        "changed_surfaces": changed_surfaces,
-        "continuation": "Use the verified reference when preparing or rebinding the matching attempt.",
-        "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
-    }
-    return execution.OperationResult(
-        content,
-        classification,
-        str(publication.reference.artifact_ref_id),
+        rendered_warning = contracts.WarningResult(warning.message, warning.repair)
+        match publication.artifact_created, publication.ledger_changed:
+            case True, True:
+                result = contracts.BriefCommittedWithWarning(
+                    schema,
+                    "committed-with-warning",
+                    reference,
+                    True,
+                    "committed",
+                    "do-not-retry",
+                    ("immutable-artifact", "accepted-artifact-reference", "ledger"),
+                    continuation,
+                    rendered_warning,
+                )
+            case False, True:
+                result = contracts.BriefReferenceCommittedWithWarning(
+                    schema,
+                    "committed-with-warning",
+                    reference,
+                    True,
+                    "committed",
+                    "do-not-retry",
+                    ("accepted-artifact-reference", "ledger"),
+                    continuation,
+                    rendered_warning,
+                )
+            case True, False:
+                result = contracts.BriefArtifactCommittedWithWarning(
+                    schema,
+                    "committed-with-warning",
+                    reference,
+                    True,
+                    "committed",
+                    "do-not-retry",
+                    ("immutable-artifact",),
+                    continuation,
+                    rendered_warning,
+                )
+            case False, False:
+                result = contracts.BriefUnchangedWithWarning(
+                    schema,
+                    "unchanged-with-warning",
+                    reference,
+                    False,
+                    "unchanged",
+                    "retry-same-input",
+                    (),
+                    continuation,
+                    rendered_warning,
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+        classification = "committed-warning" if result.state_changed else "unchanged-warning"
+    return execution.TypedOperationResult(result, classification, str(accepted.artifact_ref_id))
+
+
+def _observations(details: FailureDetails | None) -> tuple[contracts.FailureObservation, ...]:
+    return (
+        ()
+        if details is None
+        else tuple(contracts.FailureObservation(fact.field, fact.value) for fact in details.observed)
+    )
+
+
+def _mismatches(details: FailureDetails | None) -> tuple[contracts.FailureMismatch, ...]:
+    return (
+        ()
+        if details is None
+        else tuple(
+            contracts.FailureMismatch(mismatch.field, mismatch.expected, mismatch.observed)
+            for mismatch in details.mismatches
+        )
     )
 
 
@@ -367,25 +612,25 @@ def _transition_rejected(
     failure: DecisionFailure,
     *,
     continuation: str | None,
-) -> execution.OperationResult:
-    details = common._details_json(failure.details)
+) -> execution.TypedOperationResult[contracts.TransitionResult]:
     retry = _rejection_retry(failure)
-    details["retry"] = retry.value
-    return execution.OperationResult(
-        {
-            "schema": "pinboard-mcp-transition-result/v1",
-            "status": "rejected",
-            "action_id": common._transition_action_json(action_id),
-            "code": failure.code.value,
-            "message": failure.message,
-            "state_changed": False,
-            **details,
-            "continuation": (
-                _transition_rejection_continuation(action_id.kind, failure.code, retry)
-                if continuation is None
-                else continuation
-            ),
-        },
+    return execution.TypedOperationResult(
+        contracts.TransitionRejected(
+            "pinboard-mcp-transition-result/v1",
+            "rejected",
+            action_id,
+            failure.code,
+            failure.message,
+            False,
+            "unchanged",
+            retry,
+            (),
+            _observations(failure.details),
+            _mismatches(failure.details),
+            _transition_rejection_continuation(action_id.kind, failure.code, retry)
+            if continuation is None
+            else continuation,
+        ),
         "rejected",
         None,
     )
@@ -440,31 +685,24 @@ _CLOSE_DECISION_ROUTE = (
 
 def _close_route_rejected(
     identity: contracts.ActionIdentity, message: str, observed: FailureFact
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.TransitionResult]:
     """Refuse a close attempt unchanged and send the agent back to the human-confirmed close route."""
 
-    return execution.OperationResult(
-        {
-            "schema": "pinboard-mcp-transition-result/v1",
-            "status": "rejected",
-            "action_id": common._transition_action_json(identity),
-            "code": DecisionFailureCode.TRANSITION_INPUT_INVALID.value,
-            "message": message,
-            "state_changed": False,
-            **common._details_json(
-                FailureDetails(
-                    observed=(observed,),
-                    mismatches=(),
-                    retry=RetryDisposition.CORRECT_INPUT,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
-                )
+    return _transition_rejected(
+        identity,
+        DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            message,
+            FailureDetails(
+                observed=(observed,),
+                mismatches=(),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
             ),
-            "continuation": _CLOSE_DECISION_ROUTE,
-        },
-        "rejected",
-        None,
+        ),
+        continuation=_CLOSE_DECISION_ROUTE,
     )
 
 
@@ -576,7 +814,7 @@ def _transition_decode_details(inner: JsonValue, *, identity_decoded: bool) -> F
 def _transition(
     raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.TransitionResult]:
     token.checkpoint()
     try:
         request = contracts.decode_transition_request(raw)
@@ -657,41 +895,25 @@ def _transition(
 
 
 def _close(
-    project_root: str,
-    work_root: str,
-    receipt: Mapping[str, JsonValue],
-    payload: Mapping[str, JsonValue],
-    actor_task_id: str,
-    actor_host_id: str,
+    raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.TransitionResult]:
     """Apply one human-confirmed close; a request without the human's own decision never reaches the ledger."""
 
     token.checkpoint()
     try:
-        request = msgspec.convert(
-            {
-                "project_root": project_root,
-                "work_root": work_root,
-                "receipt": receipt,
-                "payload": payload,
-                "actor_task_id": actor_task_id,
-                "actor_host_id": actor_host_id,
-            },
-            type=contracts.CloseRequest,
-            strict=True,
-        )
+        request = msgspec.convert(raw, type=contracts.CloseRequest, strict=True)
         source_checkout = resolve_source_checkout_root(Path(request.project_root))
         durable = common._require_initialized_durable(
             resolve_shared_repository_root(source_checkout), Path(request.work_root)
         )
     except (msgspec.ValidationError, ValueError, OSError) as error:
-        raw_subject = receipt.get("action_id")
-        subject = raw_subject.get("subject") if isinstance(raw_subject, dict) else None
-        identity = contracts.ActionIdentity(
-            decision_models.ActionKind.CLOSE, subject if isinstance(subject, str) and subject else "invalid"
-        )
-        decision = payload.get("human_decision")
+        receipt = raw.get("receipt")
+        raw_identity = receipt.get("action_id") if isinstance(receipt, dict) else None
+        subject = raw_identity.get("subject") if isinstance(raw_identity, dict) else None
+        identity = contracts.ActionIdentity(decision_models.ActionKind.CLOSE, _fallback_subject(subject))
+        payload = raw.get("payload")
+        decision = payload.get("human_decision") if isinstance(payload, dict) else None
         return _close_route_rejected(
             identity,
             f"Cannot decode close request: {error}",
@@ -727,7 +949,7 @@ def _apply_transition(
     receipt: lifecycle_operations.TransitionReceipt,
     payload: action_models.InputPayload,
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.TransitionResult]:
     store = common.compose_store(durable)
     artifacts = ArtifactRepository(durable)
     operation_time = datetime.now(UTC)
@@ -763,64 +985,41 @@ def _apply_transition(
             store, artifacts, selected, operation_time, lambda: datetime.now(UTC)
         )
     if isinstance(committed, lifecycle_artifacts.PublishedTransitionFailure):
-        details = common._details_json(committed.details)
-        return execution.OperationResult(
-            {
-                "schema": "pinboard-mcp-transition-result/v1",
-                "status": "failed-after-publication",
-                "action_id": common._transition_action_json(identity),
-                "code": committed.code,
-                "message": committed.message,
-                "state_changed": True,
-                **details,
-                "continuation": _transition_current_state_route(identity.kind, item_status_returned=False),
-            },
-            "failed-after-publication",
-            None,
-        )
+        return _transition_failed_after_publication(identity, committed.code, committed.message, committed.details)
     if isinstance(committed, lifecycle_artifacts.LandingRejection):
         return _transition_rejected(identity, committed.failure, continuation=committed.continuation)
     if isinstance(committed, DecisionFailure):
         if committed.details is not None and committed.details.effect == EffectDisposition.COMMITTED:
-            details = common._details_json(committed.details)
-            return execution.OperationResult(
-                {
-                    "schema": "pinboard-mcp-transition-result/v1",
-                    "status": "failed-after-publication",
-                    "action_id": common._transition_action_json(identity),
-                    "code": committed.code.value,
-                    "message": committed.message,
-                    "state_changed": True,
-                    **details,
-                    "continuation": _transition_current_state_route(identity.kind, item_status_returned=False),
-                },
-                "failed-after-publication",
-                None,
+            return _transition_failed_after_publication(
+                identity,
+                committed.code.value,
+                committed.message,
+                committed.details,
             )
         return _transition_rejected(
             identity,
             _with_completion_reinspection(committed, identity, project_root, work_root),
             continuation=None,
         )
-    changed_surfaces: list[JsonValue]
-    cleanup: dict[str, JsonValue] = {}
+    changed_surfaces: contracts.PublicationSurfaces | contracts.ReferenceSurfaces | contracts.LedgerSurface
+    cleanup: contracts.LocalCleanupPlanView | msgspec.UnsetType = msgspec.UNSET
     cleanup_continuation = ""
     if isinstance(committed, lifecycle_artifacts.ArtifactTransitionSuccess):
         committed_effect = committed.effect
         if committed.local_cleanup is not None:
-            cleanup["local_cleanup"] = {
-                "branch": committed.local_cleanup.branch,
-                "disposition": "retain" if committed.local_cleanup.retain_local_resources else "remove",
-            }
+            cleanup = contracts.LocalCleanupPlanView(
+                committed.local_cleanup.branch,
+                "retain" if committed.local_cleanup.retain_local_resources else "remove",
+            )
             cleanup_continuation = "Apply local_cleanup in this close turn using the native Git procedure. "
-        changed_surfaces = [
-            *([ChangedSurface.IMMUTABLE_ARTIFACT.value] if committed.published_selectors else []),
-            ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE.value,
-            ChangedSurface.LEDGER.value,
-        ]
+        changed_surfaces = (
+            ("immutable-artifact", "accepted-artifact-reference", "ledger")
+            if committed.published_selectors
+            else ("accepted-artifact-reference", "ledger")
+        )
     else:
         committed_effect = committed
-        changed_surfaces = [ChangedSurface.LEDGER.value]
+        changed_surfaces = ("ledger",)
     refreshed = common._refresh_affected_views(
         durable,
         store,
@@ -838,30 +1037,74 @@ def _apply_transition(
     assert item_id is not None
     item_status = _committed_item_status(durable, store, item_id, datetime.now(UTC))
     continuation = _transition_current_state_route(identity.kind, item_status_returned=True)
+    schema = "pinboard-mcp-transition-result/v1"
+    revision = committed_effect.receipt.project_revision
+    history_id = int(committed_effect.receipt.history_id)
     if isinstance(item_status, contracts.TransitionItemStatusUnavailable):
-        continuation = item_status.recovery
-        warning = ViewWarning(
+        warning_result = contracts.WarningResult(
             item_status.message if warning is None else f"{warning.message} {item_status.message}",
             item_status.recovery if warning is None else f"{warning.repair} {item_status.recovery}",
         )
-    return execution.OperationResult(
-        {
-            "schema": "pinboard-mcp-transition-result/v1",
-            "status": "committed" if warning is None else "committed-with-warning",
-            "action_id": common._transition_action_json(identity),
-            "committed_revision": committed_effect.receipt.project_revision,
-            "history_id": int(committed_effect.receipt.history_id),
-            "state_changed": True,
-            "effect": EffectDisposition.COMMITTED.value,
-            "retry": RetryDisposition.DO_NOT_RETRY.value,
-            "changed_surfaces": changed_surfaces,
-            "continuation": cleanup_continuation + continuation,
-            "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
-            "item_status": msgspec.to_builtins(item_status),
-            **cleanup,
-        },
+        result = contracts.TransitionCommittedStatusUnavailable(
+            schema=schema,
+            status="committed-with-warning",
+            action_id=identity,
+            committed_revision=revision,
+            history_id=history_id,
+            state_changed=True,
+            effect="committed",
+            retry="do-not-retry",
+            changed_surfaces=changed_surfaces,
+            continuation=cleanup_continuation + item_status.recovery,
+            warning=warning_result,
+            item_status=item_status,
+            local_cleanup=cleanup,
+        )
+        return execution.TypedOperationResult(result, "committed-warning", str(revision))
+    return execution.TypedOperationResult(
+        contracts.TransitionCommitted(
+            schema=schema,
+            status="committed" if warning is None else "committed-with-warning",
+            action_id=identity,
+            committed_revision=revision,
+            history_id=history_id,
+            state_changed=True,
+            effect="committed",
+            retry="do-not-retry",
+            changed_surfaces=changed_surfaces,
+            continuation=cleanup_continuation + continuation,
+            warning=None if warning is None else contracts.WarningResult(warning.message, warning.repair),
+            item_status=item_status,
+            local_cleanup=cleanup,
+        ),
         "committed" if warning is None else "committed-warning",
-        str(committed_effect.receipt.project_revision),
+        str(revision),
+    )
+
+
+def _transition_failed_after_publication(
+    identity: contracts.ActionIdentity,
+    code: str,
+    message: str,
+    details: FailureDetails,
+) -> execution.TypedOperationResult[contracts.TransitionResult]:
+    return execution.TypedOperationResult(
+        contracts.TransitionFailedAfterPublication(
+            "pinboard-mcp-transition-result/v1",
+            "failed-after-publication",
+            identity,
+            code,
+            message,
+            True,
+            "committed",
+            "do-not-retry",
+            ("immutable-artifact",),
+            _observations(details),
+            _mismatches(details),
+            _transition_current_state_route(identity.kind, item_status_returned=False),
+        ),
+        "failed-after-publication",
+        None,
     )
 
 
@@ -913,131 +1156,161 @@ def _rejection_retry(failure: DecisionFailure) -> RetryDisposition:
     return RetryDisposition.CORRECT_INPUT
 
 
-def _authority_rejection_details(failure: DecisionFailure) -> dict[str, JsonValue]:
-    if failure.details is not None:
-        return common._details_json(failure.details)
-    return {
-        "effect": EffectDisposition.UNCHANGED.value,
-        "retry": _rejection_retry(failure).value,
-        "changed_surfaces": [],
-        "observed": [],
-        "mismatches": [],
-    }
+def _fallback_subject(subject: JsonValue) -> str:
+    if not isinstance(subject, str) or not subject:
+        return "invalid"
+    msgspec.convert(subject, type=contracts.PathComponent, strict=True)
+    return subject
 
 
-def _authority_identity(
-    retained: query_models.PreparationAuthorityStatus | query_models.AttemptAuthorityStatus,
-) -> dict[str, JsonValue]:
-    """Render shared authority claims without erasing the family's scope or status enum."""
-    return {
-        "task_id": retained.task_id,
-        "host_id": retained.host_id,
-        "lease_id": retained.lease_id,
-        "generation": retained.generation,
-        "expires_at": retained.expires_at.isoformat(),
-        "authority_status": retained.status.value,
-    }
+def _authority_rejection_message(failure: DecisionFailure) -> str:
+    return (
+        failure.message
+        + " Follow next_step_tool with next_step_input in observed to inspect the current subject. This rejection grants no authority; do not borrow a conflicting owner's lease or revoke it without authorization."
+        + (" " + common.ATTEMPT_LEASE_RECOVERY if failure.code in _ATTEMPT_LEASE_CODES else "")
+    )
 
 
-def _authority_conflict(
-    retained: query_models.PreparationAuthorityStatus | query_models.AttemptAuthorityStatus | None,
-) -> dict[str, JsonValue] | None:
-    return None if retained is None else _authority_identity(retained)
-
-
-def _authority_rejected(
-    schema: str,
-    identity: Mapping[str, JsonValue],
-    failure: DecisionFailure,
-    conflict: dict[str, JsonValue] | None,
+def _authority_rejection_observations(
+    details: FailureDetails | None,
     inspection_tool: str,
     inspection_input: dict[str, JsonValue],
-) -> execution.OperationResult:
-    details = _authority_rejection_details(failure)
-    observed: list[JsonValue] = [
-        {"field": fact.field, "value": fact.value}
-        for fact in (() if failure.details is None else failure.details.observed)
-    ]
-    observed.append({"field": "next_step_tool", "value": inspection_tool})
-    observed.append(
-        {"field": "next_step_input", "value": msgspec.json.encode(inspection_input, order="sorted").decode()}
-    )
-    details["observed"] = observed
-    return execution.OperationResult(
-        {
-            "schema": schema,
-            "status": "rejected",
-            **identity,
-            "code": failure.code.value,
-            "message": failure.message
-            + " Follow next_step_tool with next_step_input in observed to inspect the current subject. This rejection grants no authority; do not borrow a conflicting owner's lease or revoke it without authorization."
-            + (" " + common.ATTEMPT_LEASE_RECOVERY if failure.code in _ATTEMPT_LEASE_CODES else ""),
-            "conflict": conflict,
-            "state_changed": False,
-            **details,
-        },
-        "rejected",
-        None,
+) -> tuple[contracts.FailureObservation, ...]:
+    return (
+        *_observations(details),
+        contracts.FailureObservation("next_step_tool", inspection_tool),
+        contracts.FailureObservation("next_step_input", msgspec.json.encode(inspection_input, order="sorted").decode()),
     )
 
 
-def _refresh_authority_views(
-    durable: DurableRoots, store: ports.WorkStore, effect: CommittedEffect, now: datetime
-) -> ViewWarning | None:
-    return common._refresh_affected_views(
+@overload
+def _committed_authority(
+    durable: DurableRoots,
+    store: ports.WorkStore,
+    committed: PreparationAuthorityMutationResult,
+    now: datetime,
+) -> execution.TypedOperationResult[contracts.PreparationAuthorityResult]: ...
+
+
+@overload
+def _committed_authority(
+    durable: DurableRoots,
+    store: ports.WorkStore,
+    committed: AttemptAuthorityMutationResult,
+    now: datetime,
+) -> execution.TypedOperationResult[contracts.AttemptAuthorityResult]: ...
+
+
+def _committed_authority(
+    durable: DurableRoots,
+    store: ports.WorkStore,
+    committed: PreparationAuthorityMutationResult | AttemptAuthorityMutationResult,
+    now: datetime,
+) -> (
+    execution.TypedOperationResult[contracts.PreparationAuthorityResult]
+    | execution.TypedOperationResult[contracts.AttemptAuthorityResult]
+):
+    effect = committed.effect
+    warning = common._refresh_affected_views(
         durable,
         store,
         AffectedViews(effect.work_item_ids, effect.attempt_ids, (effect.receipt.history_id,)),
         now,
     ).warning
-
-
-def _authority_status_fields(
-    retained: query_models.PreparationAuthorityStatus | query_models.AttemptAuthorityStatus | None,
-) -> dict[str, JsonValue]:
-    """Render read-only authority presence; callers retain exact family-specific identity."""
-    return {
-        "status": "absent" if retained is None else "present",
-        **(
-            {}
-            if retained is None
-            else {**_authority_identity(retained), "acquired_at": retained.acquired_at.isoformat()}
-        ),
-        "state_changed": False,
-        "effect": EffectDisposition.UNCHANGED.value,
-        "retry": "safe-to-repeat",
-        "changed_surfaces": [],
-    }
+    revision = effect.receipt.project_revision
+    status: Literal["committed", "committed-with-warning"] = (
+        "committed" if warning is None else "committed-with-warning"
+    )
+    receipt: tuple[
+        Literal["committed", "committed-with-warning"],
+        int,
+        int,
+        Literal[True],
+        Literal["committed"],
+        Literal["do-not-retry"],
+        contracts.LedgerSurface,
+        contracts.WarningResult | None,
+    ] = (
+        status,
+        revision,
+        int(effect.receipt.history_id),
+        True,
+        "committed",
+        "do-not-retry",
+        ("ledger",),
+        None if warning is None else contracts.WarningResult(warning.message, warning.repair),
+    )
+    classification = "committed" if warning is None else "committed-warning"
+    match committed:
+        case PreparationAuthorityMutationResult(authority=retained):
+            result = contracts.PreparationAuthorityCommitted(
+                "pinboard-mcp-preparation-authority-result/v1",
+                retained.work_item_id,
+                retained.definition_revision,
+                retained.definition_digest,
+                retained.task_id,
+                retained.host_id,
+                retained.lease_id,
+                retained.generation,
+                retained.expires_at.isoformat(),
+                retained.status,
+                retained.acquired_at.isoformat(),
+                *receipt,
+            )
+            return execution.TypedOperationResult[contracts.PreparationAuthorityResult](
+                result, classification, str(revision)
+            )
+        case AttemptAuthorityMutationResult(authority=retained):
+            item_id = effect.receipt.transition.work_item_id
+            if item_id is None:
+                raise RuntimeError("Attempt authority mutation did not identify its item.")
+            result = contracts.AttemptAuthorityCommitted(
+                "pinboard-mcp-attempt-authority-result/v1",
+                retained.attempt_id,
+                item_id,
+                retained.task_id,
+                retained.host_id,
+                retained.lease_id,
+                retained.generation,
+                retained.expires_at.isoformat(),
+                retained.status,
+                retained.acquired_at.isoformat(),
+                *receipt,
+            )
+            return execution.TypedOperationResult[contracts.AttemptAuthorityResult](
+                result, classification, str(revision)
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _preparation_authority(
     raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.PreparationAuthorityResult]:
     token.checkpoint()
+    schema = "pinboard-mcp-preparation-authority-result/v1"
     try:
         request = msgspec.convert(raw, type=contracts.PreparationAuthorityEnvelope, strict=True).request
         durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
         inner = raw.get("request")
         subject = inner.get("item_id") if isinstance(inner, dict) else None
-        return execution.OperationResult(
-            {
-                "schema": "pinboard-mcp-preparation-authority-result/v1",
-                "status": "rejected",
-                "item_id": subject if isinstance(subject, str) and subject else "invalid",
-                "code": DecisionFailureCode.TRANSITION_INPUT_INVALID.value,
-                "message": f"Cannot perform preparation authority operation: {error}",
-                "conflict": None,
-                "state_changed": False,
-                **_authority_rejection_details(
-                    DecisionFailure(
-                        DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                        f"Cannot perform preparation authority operation: {error}",
-                        None,
-                    )
-                ),
-            },
+        return execution.TypedOperationResult(
+            contracts.PreparationAuthorityRejected(
+                schema,
+                "rejected",
+                _fallback_subject(subject),
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                f"Cannot perform preparation authority operation: {error}",
+                None,
+                False,
+                "unchanged",
+                RetryDisposition.CORRECT_INPUT,
+                (),
+                (),
+                (),
+            ),
             "rejected",
             None,
         )
@@ -1045,17 +1318,37 @@ def _preparation_authority(
     now = datetime.now(UTC)
     if isinstance(request, contracts.PreparationAuthorityStatusRequest):
         selected = authority_operations.preparation_authority_status(store, WorkItemId(request.item_id), now)
-        content: dict[str, JsonValue] = {
-            "schema": "pinboard-mcp-preparation-authority-result/v1",
-            "item_id": request.item_id,
-            **_authority_status_fields(selected),
-        }
-        if selected is not None:
-            content.update(
-                definition_revision=selected.definition_revision, definition_digest=selected.definition_digest
-            )
         token.checkpoint()
-        return execution.OperationResult(content, "ok", None)
+        if selected is None:
+            return execution.TypedOperationResult(
+                contracts.PreparationAuthorityStatusAbsent(
+                    schema, request.item_id, "absent", False, "unchanged", "safe-to-repeat", ()
+                ),
+                "ok",
+                None,
+            )
+        return execution.TypedOperationResult(
+            contracts.PreparationAuthorityStatusPresent(
+                schema,
+                request.item_id,
+                "present",
+                selected.task_id,
+                selected.host_id,
+                selected.lease_id,
+                selected.generation,
+                selected.expires_at.isoformat(),
+                selected.status,
+                selected.acquired_at.isoformat(),
+                False,
+                "unchanged",
+                "safe-to-repeat",
+                (),
+                selected.definition_revision,
+                selected.definition_digest,
+            ),
+            "ok",
+            None,
+        )
     token.checkpoint()
     work_item_id = WorkItemId(request.item_id)
     match request:
@@ -1099,66 +1392,78 @@ def _preparation_authority(
         case _ as unreachable:
             assert_never(unreachable)
     if isinstance(result, DecisionFailure):
-        return _authority_rejected(
-            "pinboard-mcp-preparation-authority-result/v1",
-            {"item_id": request.item_id},
-            result,
-            _authority_conflict(authority_operations.preparation_authority_status(store, work_item_id, now)),
-            tool_names.ITEM_STATUS_TOOL,
-            {
-                "request": {
-                    "project_root": request.project_root,
-                    "work_root": request.work_root,
-                    "operation": "item",
-                    "item_id": request.item_id,
-                }
-            },
+        retained = authority_operations.preparation_authority_status(store, work_item_id, now)
+        conflict = (
+            None
+            if retained is None
+            else contracts.PreparationAuthorityConflict(
+                retained.task_id,
+                retained.host_id,
+                retained.lease_id,
+                retained.generation,
+                retained.expires_at.isoformat(),
+                retained.status,
+            )
         )
-    warning = _refresh_authority_views(durable, store, result.effect, now)
-    retained = result.authority
-    return execution.OperationResult(
-        {
-            "schema": "pinboard-mcp-preparation-authority-result/v1",
-            "item_id": retained.work_item_id,
-            "definition_revision": retained.definition_revision,
-            "definition_digest": retained.definition_digest,
-            **_authority_identity(retained),
-            "acquired_at": retained.acquired_at.isoformat(),
-            **common._committed_authority_fields(result.effect, warning),
-        },
-        "committed" if warning is None else "committed-warning",
-        str(result.effect.receipt.project_revision),
-    )
+        return execution.TypedOperationResult(
+            contracts.PreparationAuthorityRejected(
+                schema,
+                "rejected",
+                request.item_id,
+                result.code,
+                _authority_rejection_message(result),
+                conflict,
+                False,
+                "unchanged",
+                _rejection_retry(result),
+                (),
+                _authority_rejection_observations(
+                    result.details,
+                    tool_names.ITEM_STATUS_TOOL,
+                    {
+                        "request": {
+                            "project_root": request.project_root,
+                            "work_root": request.work_root,
+                            "operation": "item",
+                            "item_id": request.item_id,
+                        }
+                    },
+                ),
+                _mismatches(result.details),
+            ),
+            "rejected",
+            None,
+        )
+    return _committed_authority(durable, store, result, now)
 
 
 def _attempt_authority(
     raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.AttemptAuthorityResult]:
     token.checkpoint()
+    schema = "pinboard-mcp-attempt-authority-result/v1"
     try:
         request = msgspec.convert(raw, type=contracts.AttemptAuthorityEnvelope, strict=True).request
         durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
         inner = raw.get("request")
         subject = inner.get("attempt_id") if isinstance(inner, dict) else None
-        return execution.OperationResult(
-            {
-                "schema": "pinboard-mcp-attempt-authority-result/v1",
-                "status": "rejected",
-                "attempt_id": subject if isinstance(subject, str) and subject else "invalid",
-                "code": DecisionFailureCode.TRANSITION_INPUT_INVALID.value,
-                "message": f"Cannot perform attempt authority operation: {error}",
-                "conflict": None,
-                "state_changed": False,
-                **_authority_rejection_details(
-                    DecisionFailure(
-                        DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                        f"Cannot perform attempt authority operation: {error}",
-                        None,
-                    )
-                ),
-            },
+        return execution.TypedOperationResult(
+            contracts.AttemptAuthorityRejected(
+                schema,
+                "rejected",
+                _fallback_subject(subject),
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                f"Cannot perform attempt authority operation: {error}",
+                None,
+                False,
+                "unchanged",
+                RetryDisposition.CORRECT_INPUT,
+                (),
+                (),
+                (),
+            ),
             "rejected",
             None,
         )
@@ -1166,13 +1471,35 @@ def _attempt_authority(
     now = datetime.now(UTC)
     if isinstance(request, contracts.AttemptAuthorityStatusRequest):
         selected = authority_operations.attempt_authority_status(store, AttemptId(request.attempt_id), now)
-        content: dict[str, JsonValue] = {
-            "schema": "pinboard-mcp-attempt-authority-result/v1",
-            "attempt_id": request.attempt_id,
-            **_authority_status_fields(selected),
-        }
         token.checkpoint()
-        return execution.OperationResult(content, "ok", None)
+        if selected is None:
+            return execution.TypedOperationResult(
+                contracts.AttemptAuthorityStatusAbsent(
+                    schema, request.attempt_id, "absent", False, "unchanged", "safe-to-repeat", ()
+                ),
+                "ok",
+                None,
+            )
+        return execution.TypedOperationResult(
+            contracts.AttemptAuthorityStatusPresent(
+                schema,
+                request.attempt_id,
+                "present",
+                selected.task_id,
+                selected.host_id,
+                selected.lease_id,
+                selected.generation,
+                selected.expires_at.isoformat(),
+                selected.status,
+                selected.acquired_at.isoformat(),
+                False,
+                "unchanged",
+                "safe-to-repeat",
+                (),
+            ),
+            "ok",
+            None,
+        )
     token.checkpoint()
     match request:
         case contracts.AttemptAuthorityAcquireRequest():
@@ -1215,35 +1542,44 @@ def _attempt_authority(
         case _ as unreachable:
             assert_never(unreachable)
     if isinstance(result, DecisionFailure):
-        return _authority_rejected(
-            "pinboard-mcp-attempt-authority-result/v1",
-            {"attempt_id": request.attempt_id},
-            result,
-            _authority_conflict(
-                authority_operations.attempt_authority_status(store, AttemptId(request.attempt_id), now)
-            ),
-            tool_names.ATTEMPT_INSPECT_TOOL,
-            {
-                "project_root": request.project_root,
-                "work_root": request.work_root,
-                "attempt_id": request.attempt_id,
-                "reconciliation": None,
-            },
+        retained = authority_operations.attempt_authority_status(store, AttemptId(request.attempt_id), now)
+        conflict = (
+            None
+            if retained is None
+            else contracts.AttemptAuthorityConflict(
+                retained.task_id,
+                retained.host_id,
+                retained.lease_id,
+                retained.generation,
+                retained.expires_at.isoformat(),
+                retained.status,
+            )
         )
-    warning = _refresh_authority_views(durable, store, result.effect, now)
-    retained = result.authority
-    item_id = result.effect.receipt.transition.work_item_id
-    if item_id is None:
-        raise RuntimeError("Attempt authority mutation did not identify its item.")
-    return execution.OperationResult(
-        {
-            "schema": "pinboard-mcp-attempt-authority-result/v1",
-            "attempt_id": retained.attempt_id,
-            "item_id": item_id,
-            **_authority_identity(retained),
-            "acquired_at": retained.acquired_at.isoformat(),
-            **common._committed_authority_fields(result.effect, warning),
-        },
-        "committed" if warning is None else "committed-warning",
-        str(result.effect.receipt.project_revision),
-    )
+        return execution.TypedOperationResult(
+            contracts.AttemptAuthorityRejected(
+                schema,
+                "rejected",
+                request.attempt_id,
+                result.code,
+                _authority_rejection_message(result),
+                conflict,
+                False,
+                "unchanged",
+                _rejection_retry(result),
+                (),
+                _authority_rejection_observations(
+                    result.details,
+                    tool_names.ATTEMPT_INSPECT_TOOL,
+                    {
+                        "project_root": request.project_root,
+                        "work_root": request.work_root,
+                        "attempt_id": request.attempt_id,
+                        "reconciliation": None,
+                    },
+                ),
+                _mismatches(result.details),
+            ),
+            "rejected",
+            None,
+        )
+    return _committed_authority(durable, store, result, now)

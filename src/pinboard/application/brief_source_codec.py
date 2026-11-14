@@ -1,6 +1,4 @@
-"""Source-plan boundary conversion, canonical bytes and selected-output receipts; no effects."""
-
-import hashlib
+"""Source-plan boundary conversion and canonical plan bytes."""
 
 import msgspec
 
@@ -102,21 +100,3 @@ def decode_brief_source_plan(raw: bytes) -> models.BriefSourceResult[models.Brie
 
 def encode_brief_source_plan(plan: models.BriefSourcePlan) -> bytes:
     return msgspec.json.format(msgspec.json.encode(project_brief_source_plan(plan), order="sorted"), indent=2) + b"\n"
-
-
-def plan_output_receipt(
-    destination: str,
-    created: bool,
-    plan_bytes: bytes,
-    source_plan: models.BriefSourcePlan,
-) -> models.BriefSourcePlanOutputReceipt:
-    return models.BriefSourcePlanOutputReceipt(
-        "pinboard-brief-source-plan-output/v1",
-        destination,
-        created,
-        hashlib.sha256(plan_bytes).hexdigest(),
-        len(plan_bytes),
-        len(source_plan.sources),
-        len(source_plan.batches),
-        sum(source.selected_byte_count for source in source_plan.sources),
-    )

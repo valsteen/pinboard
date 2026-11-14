@@ -4,58 +4,58 @@
   "records": [
     {
       "identity": {
-        "id": "independent-consolidation-initiative-native-boundaries",
         "format": "python",
-        "tokens": 66,
-        "lines": 9,
+        "id": "independent-consolidation-initiative-native-boundaries",
+        "lines": 10,
         "occurrences": [
           {
             "endpoint": {
-              "name": "mcp/consolidation_operations.py",
-              "start": 62,
-              "end": 70,
-              "startLoc": {
-                "line": 62,
-                "column": 63,
-                "position": 2850
-              },
+              "end": 45,
               "endLoc": {
-                "line": 70,
-                "column": 31,
-                "position": 3199
+                "column": 24,
+                "line": 45,
+                "position": 1906
+              },
+              "name": "mcp/consolidation_operations.py",
+              "start": 36,
+              "startLoc": {
+                "column": 48,
+                "line": 36,
+                "position": 1558
               }
             },
-            "sha256": "2c4e82aa4f8179d32efb0aac0baa760d083bff11ef071f07b49c6d5f13e3999a"
+            "sha256": "6a56a45a21626b02464b7712ca485a6a381c1fc185b45beecdf1370340046424"
           },
           {
             "endpoint": {
-              "name": "mcp/initiative_operations.py",
-              "start": 33,
-              "end": 40,
-              "startLoc": {
-                "line": 33,
-                "column": 62,
-                "position": 1214
-              },
+              "end": 43,
               "endLoc": {
-                "line": 40,
-                "column": 30,
-                "position": 1602
+                "column": 24,
+                "line": 43,
+                "position": 1671
+              },
+              "name": "mcp/initiative_operations.py",
+              "start": 34,
+              "startLoc": {
+                "column": 47,
+                "line": 34,
+                "position": 1258
               }
             },
-            "sha256": "bb49e96a04bf87b564ea9bd4443999f3f64c8e12e6286f281a427633e5105cdf"
+            "sha256": "8c63af3aa80d8e50a6b4f859e52fe81b31f8ebedfc94472f29ce3c2622d72693"
           }
         ],
         "owners": [
-          "src/pinboard/mcp/consolidation_operations.py: consolidation request decoding and rejection projection",
-          "src/pinboard/mcp/initiative_operations.py: initiative request decoding and rejection projection"
+          "src/pinboard/mcp/consolidation_operations.py: consolidation preview/confirm request decoding and rejection projection",
+          "src/pinboard/mcp/initiative_operations.py: initiative and roadmap request decoding and rejection projection"
         ],
-        "rationale": "Required independent native boundary shapes: consolidation decodes its own preview/confirm Envelope and emits consolidation-specific DecisionFailureCode, recovery and correct-input/refresh-action results; initiative decodes its distinct operation union and emits initiative RejectionCode, recovery and correct-input results. The shared algorithm already belongs to msgspec.convert. Further sharing would parameterize or couple independently owned schemas and rejection decisions without giving one product decision a clearer owner. Retain the typed local producers and decoders. This judgment is falsified if both boundaries actually acquire one accepted request family and the same rejection/recovery/retry contract; current concrete Envelope and Rejected declarations show that they differ. Recompute exact matched occurrences and direct residue after source changes; this record applies only to the independently reviewed pair, not another occurrence or a future protocol change."
+        "rationale": "Retain the exact native pair. Consolidation decodes its PreviewRequest or ConfirmRequest and produces a consolidation DecisionFailureCode, recovery for separate human confirmation, and correct-input or refresh-action results. Initiative decodes its distinct read, roadmap and mutation leaves and produces an initiative RejectionCode and its own read/roadmap recovery with correct-input. The common decoding algorithm already belongs to msgspec.convert. A shared wrapper would need both schema and rejection behavior as parameters while obscuring the owning boundary. Reopen if a supported shared request family and matching recovery/retry contract replace these separate owners, or if one boundary loses its consumer.",
+        "tokens": 70
       },
       "certification": {
-        "reviewer_task_id": "01a19436-f4f5-7193-9339-0ba82a1a9a42",
-        "reviewed_pair_sha256": "fc862825f556b029f95b28c98f07bb042a2d7b9d1882e577f841c4b34beebb3e",
-        "evidence_sha256": "35a0349eb5010b556f60e8badde6858d618d6c5da198c43ca89ca8a59cce63e5"
+        "reviewer_task_id": "01a1d653-1f22-7b22-a731-b58a7f98d28f",
+        "reviewed_pair_sha256": "7de2ce1cc0866c17fb604688355e613531afefb220b7872f15a45a3c83c8fa3c",
+        "evidence_sha256": "ffcfb37171408a86a87fe870702b247aa0e5c47723927a539b73b8b66bcd6e95"
       }
     },
     {
@@ -224,6 +224,118 @@
         "reviewer_task_id": "01a1a2a3-19f7-77f3-a3b0-36db3defe3af",
         "reviewed_pair_sha256": "c55da490d270a8d9bda8e25ab37ee7b893cbed578aca9fc2ce7b1873471239fd",
         "evidence_sha256": "458e4ea0c021631fe23d8609ebcb7b716b5066f1c1904e08201fcf8e7b4cf694"
+      }
+    },
+    {
+      "identity": {
+        "format": "python",
+        "id": "independent-flat-authority-commit-wire-results",
+        "lines": 16,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 3037,
+              "endLoc": {
+                "column": 5,
+                "line": 3037,
+                "position": 113818
+              },
+              "name": "mcp/contracts.py",
+              "start": 3022,
+              "startLoc": {
+                "column": 4,
+                "line": 3022,
+                "position": 113357
+              }
+            },
+            "sha256": "f9d5ec60912ac1231696f52b92f8c53b8a9785be926dba86f7a22cada0b01b49"
+          },
+          {
+            "endpoint": {
+              "end": 3104,
+              "endLoc": {
+                "column": 5,
+                "line": 3104,
+                "position": 116209
+              },
+              "name": "mcp/contracts.py",
+              "start": 3089,
+              "startLoc": {
+                "column": 4,
+                "line": 3089,
+                "position": 115748
+              }
+            },
+            "sha256": "f9d5ec60912ac1231696f52b92f8c53b8a9785be926dba86f7a22cada0b01b49"
+          }
+        ],
+        "owners": [
+          "src/pinboard/mcp/contracts.py: PreparationAuthorityCommitted defines the preparation result and its exact wire order",
+          "src/pinboard/mcp/contracts.py: AttemptAuthorityCommitted defines the attempt result and its exact wire order"
+        ],
+        "rationale": "Retain the exact native pair. Preparation receipts have an item, definition revision and digest, and a preparation lease status. Attempt receipts have an attempt, its item, and an attempt lease status. Both negotiated records require their own flat layouts with identity fields before the common receipt fields, and the typed emitter preserves declaration order in the result bytes. A common Struct field base would prepend the shared receipt fields or require a separate order conversion. The commitment and warning invariant is now shared by both constructors and transition results via _require_fixed_state_changed and _require_committed_warning. The remaining constructor hooks only invoke those owners. Reopen if a supported common flat record preserves both schemas and emitted bytes without a second layout projection, or if the two constructors begin independently rebuilding a common invariant.",
+        "tokens": 64
+      },
+      "certification": {
+        "reviewer_task_id": "01a1d653-1f22-7b22-a731-b58a7f98d28f",
+        "reviewed_pair_sha256": "4feb320a999a033e952ce9959b56245fce946ffa1d931fe7901527c95df58f9f",
+        "evidence_sha256": "ffcfb37171408a86a87fe870702b247aa0e5c47723927a539b73b8b66bcd6e95"
+      }
+    },
+    {
+      "identity": {
+        "format": "python",
+        "id": "independent-preparation-attempt-revocation-routing",
+        "lines": 11,
+        "occurrences": [
+          {
+            "endpoint": {
+              "end": 1391,
+              "endLoc": {
+                "column": 40,
+                "line": 1391,
+                "position": 56145
+              },
+              "name": "mcp/mutation_operations.py",
+              "start": 1381,
+              "startLoc": {
+                "column": 41,
+                "line": 1381,
+                "position": 55723
+              }
+            },
+            "sha256": "e44604b06566af34448e00865608e288eeed76504385aef0862ea7408e7965db"
+          },
+          {
+            "endpoint": {
+              "end": 1541,
+              "endLoc": {
+                "column": 40,
+                "line": 1541,
+                "position": 61971
+              },
+              "name": "mcp/mutation_operations.py",
+              "start": 1531,
+              "startLoc": {
+                "column": 56,
+                "line": 1531,
+                "position": 61549
+              }
+            },
+            "sha256": "e44604b06566af34448e00865608e288eeed76504385aef0862ea7408e7965db"
+          }
+        ],
+        "owners": [
+          "src/pinboard/mcp/mutation_operations.py: _preparation_authority selects the item-keyed revoke and observes preparation authority on rejection",
+          "src/pinboard/mcp/mutation_operations.py: _attempt_authority selects the attempt-keyed revoke and observes attempt authority on rejection"
+        ],
+        "rationale": "Retain the exact native pair. Revocation uses distinct closed request families, identifier types, application transactions and status queries. Preparation can be unavailable without a preparation snapshot and uses item status recovery. Attempt revocation fences against the attempt lease and uses attempt inspection recovery. The shared rejection message and observation conversions already have their own helpers. Sharing this exhaustive arm would introduce a callback or generic subject merely to repeat the two direct calls and would obscure where each failure is observed. Reopen if one supported revocation command and one authority/status transaction own both families, or if a new consumer needs a shared decision that both arms independently reconstruct.",
+        "tokens": 60
+      },
+      "certification": {
+        "reviewer_task_id": "01a1d653-1f22-7b22-a731-b58a7f98d28f",
+        "reviewed_pair_sha256": "76b6b819180d04f3337da758ff6cd6fd936b11f0f75fb9315e7c728b4c97e721",
+        "evidence_sha256": "ffcfb37171408a86a87fe870702b247aa0e5c47723927a539b73b8b66bcd6e95"
       }
     }
   ]

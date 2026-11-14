@@ -59,11 +59,15 @@ class CandidateRestoreRejection:
     head: str
 
 
-type CandidateRestoreResult = CandidateRestoreSuccess | CandidateRestoreRejection
-
-
-class CandidateRestoreAfterMutationError(RootError):
+@dataclass(frozen=True, slots=True)
+class CandidateRestoreVerificationFailure:
     """The checkout changed before exact restoration verification failed."""
+
+    code: RootErrorCode
+    message: str
+
+
+type CandidateRestoreResult = CandidateRestoreSuccess | CandidateRestoreRejection | CandidateRestoreVerificationFailure
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +130,7 @@ def _run_git_path_query(cwd: Path, selector: str, unavailable_message: str) -> P
         check=False,
     )
     if result.returncode != 0:
-        raise CandidateRestoreAfterMutationError(
+        raise RootError(
             RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE,
             result.stderr.strip() or unavailable_message,
         )
@@ -140,7 +144,7 @@ def _resolve_git_common_directory(cwd: Path) -> Path:
         f"'{cwd}' is not inside a Git repository.",
     )
     if common_directory.name != ".git":
-        raise CandidateRestoreAfterMutationError(
+        raise RootError(
             RootErrorCode.PROJECT_GIT_LAYOUT_UNSUPPORTED,
             f"Expected the shared Git directory to end in '.git', found '{common_directory}'.",
         )
@@ -493,14 +497,14 @@ def restore_working_tree_candidate(
     try:
         restored = read_working_tree_candidate(cwd)
     except RootError as error:
-        raise CandidateRestoreAfterMutationError(
+        return CandidateRestoreVerificationFailure(
             error.code,
             "Candidate restoration changed the checkout before exact snapshot verification failed.",
-        ) from error
+        )
     if working_tree_identity(restored.preimage_revision, diff) != candidate or not candidate_diffs_match(
         diff, restored.diff
     ):
-        raise CandidateRestoreAfterMutationError(
+        return CandidateRestoreVerificationFailure(
             RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
             "Candidate restoration changed the checkout but did not produce the exact snapshot.",
         )
@@ -556,16 +560,16 @@ def restore_commit_candidate(
         restored_branch, restored_head = observe_checkout_identity(cwd)
         restored_status = _working_tree_status(cwd)
     except RootError as error:
-        raise CandidateRestoreAfterMutationError(
+        return CandidateRestoreVerificationFailure(
             error.code,
             "Candidate restoration changed the checkout before exact commit verification failed.",
-        ) from error
+        )
     if (
         restored_branch != expected_branch
         or restored_head != candidate
         or _has_unexcluded_changes(restored_status, excluded_untracked_paths)
     ):
-        raise CandidateRestoreAfterMutationError(
+        return CandidateRestoreVerificationFailure(
             RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE,
             "Candidate restoration changed the checkout but did not produce the exact clean commit.",
         )

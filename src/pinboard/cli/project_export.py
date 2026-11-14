@@ -6,7 +6,7 @@ from pathlib import PurePosixPath
 from types import MappingProxyType
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
+from pinboard.adapters.files.errors import ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import (
     cancellation,
@@ -19,6 +19,7 @@ from pinboard.application import (
 )
 from pinboard.cli import cli_commands
 from pinboard.cli.cli_output import write_json
+from pinboard.cli.errors import CliEffectFailure, ExportMediaFailure
 from pinboard.domain import decision_models
 from pinboard.domain.identifiers import ArtifactRefId
 
@@ -49,23 +50,25 @@ def _encode_artifact_content(reference_id: int, value: bytes) -> project_export.
 def _read_and_encode_artifacts(
     state: project_export.ProjectExportState,
     artifacts: ArtifactRepository,
-) -> tuple[
-    tuple[project_export.ProjectExportArtifactReference, ...],
-    tuple[project_export.ProjectExportArtifactContent, ...],
-    Mapping[ArtifactRefId, bytes],
-]:
+) -> (
+    tuple[
+        tuple[project_export.ProjectExportArtifactReference, ...],
+        tuple[project_export.ProjectExportArtifactContent, ...],
+        Mapping[ArtifactRefId, bytes],
+    ]
+    | ExportMediaFailure
+):
     projected_references: list[project_export.ProjectExportArtifactReference] = []
     encoded_contents: list[project_export.ProjectExportArtifactContent] = []
     verified_artifacts: dict[ArtifactRefId, bytes] = {}
     for reference in state.artifact_references:
         suffix = PurePosixPath(reference.selector).suffix.lower()
-        try:
-            media_type = MEDIA_TYPE_BY_SUFFIX[suffix]
-        except KeyError as error:
-            raise ArtifactError(
+        media_type = MEDIA_TYPE_BY_SUFFIX.get(suffix)
+        if media_type is None:
+            return CliEffectFailure(
                 ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION,
                 f"Unsupported artifact media suffix: {suffix or '<none>'}",
-            ) from error
+            )
         verified_bytes = artifacts.read(reference)
         verified_artifacts[reference.artifact_ref_id] = verified_bytes
         projected_references.append(project_export.project_artifact_reference(reference, media_type=media_type))
@@ -75,12 +78,13 @@ def _read_and_encode_artifacts(
 
 def export_project(
     durable: DurableRoots, store: ports.ProjectExportReader, _command: cli_commands.ExportCommand
-) -> work_brief_models.WorkBriefResult[int]:
+) -> work_brief_models.WorkBriefResult[int] | ExportMediaFailure:
     captured_state = project_export.merge_project_export_batches(store.read_project_export_batches())
     artifact_repository = ArtifactRepository(durable)
-    projected_references, encoded_contents, verified_artifacts = _read_and_encode_artifacts(
-        captured_state, artifact_repository
-    )
+    artifacts = _read_and_encode_artifacts(captured_state, artifact_repository)
+    if isinstance(artifacts, CliEffectFailure):
+        return artifacts
+    projected_references, encoded_contents, verified_artifacts = artifacts
     archived = history_archives.verify_archives(captured_state, verified_artifacts)
     if isinstance(archived, work_brief_models.WorkBriefFailure):
         return archived

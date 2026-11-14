@@ -22,7 +22,7 @@ from typing_extensions import TypeForm
 
 from pinboard import __version__
 from pinboard.adapters.files import contributor_traces, git_config
-from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
+from pinboard.adapters.files.errors import FileIOError, ImmutableFilePublishedError
 from pinboard.adapters.files.file_io import create_immutable
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.files.setting_resolution import (
@@ -37,7 +37,7 @@ from pinboard.adapters.files.setting_resolution import (
 )
 from pinboard.adapters.sqlite.errors import SQLiteSchemaError, StorageError
 from pinboard.diagnostic_codes import TraceEvent
-from pinboard.mcp import contract_schemas, contracts
+from pinboard.mcp import contracts
 from pinboard.mcp.contracts import JsonValue
 
 THREAD_NAME_PREFIX = "pinboard-mcp-worker"
@@ -52,20 +52,8 @@ _CANCELLED_REQUEST_MESSAGE = (
 
 
 @dataclass(frozen=True, slots=True)
-class OperationResult:
-    """An untyped operation result that validate_result selects by tool name and result strings."""
-
-    content: dict[str, JsonValue]
-    classification: str
-    commit_reference: str | None
-
-
-@dataclass(frozen=True, slots=True)
 class TypedOperationResult[Result: msgspec.Struct]:
-    """A declared result record emitted through wire_content without runtime revalidation.
-
-    Construction runs the record's post-init invariants; static types and the advertised output schema own the rest.
-    """
+    """A declared result record and the operation's effect facts for capture and diagnostics."""
 
     record: Result
     classification: str
@@ -73,7 +61,16 @@ class TypedOperationResult[Result: msgspec.Struct]:
 
 
 @dataclass(frozen=True, slots=True)
-class ToolContract[Request: msgspec.Struct, Result: msgspec.Struct]:
+class ResultProjectionFailure:
+    """A result constraint failed after the operation classified its effects."""
+
+    error: msgspec.ValidationError
+    classification: str
+    commit_reference: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolContract[Request: msgspec.Struct, Result: msgspec.Struct, *Context]:
     """Bind one tool's name and description, request record, result union and operation for the type checker.
 
     `results` is the `Result` union as a type form, so a union or alias outside `Result` fails type checking, and
@@ -84,7 +81,10 @@ class ToolContract[Request: msgspec.Struct, Result: msgspec.Struct]:
     description: str
     request: type[Request]
     results: TypeForm[Result]
-    operate: Callable[[Mapping[str, JsonValue], CancellationToken], TypedOperationResult[Result]]
+    operate: Callable[
+        [Mapping[str, JsonValue], CancellationToken, *Context], TypedOperationResult[Result] | ResultProjectionFailure
+    ]
+    meta: dict[str, JsonValue] | None
 
 
 def wire_content(record: msgspec.Struct) -> dict[str, JsonValue]:
@@ -106,7 +106,7 @@ class CapturedResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class UnavailableCapturedResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     availability: Literal["unavailable"]
-    reason: Literal["interrupted", "callback-rejected", "callback-error", "result-validation-error"]
+    reason: Literal["interrupted", "callback-rejected", "callback-error"]
     classification: str
     commit_reference: str | None
 
@@ -126,8 +126,36 @@ class McpInvocationCapture(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     accepted_evidence: Literal[False]
 
 
+@dataclass(frozen=True, slots=True)
+class CaptureUnavailable:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class CapturePublished:
+    path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class CapturePublishedWithWarning:
+    path: Path
+
+
+type CapturePublication = CaptureUnavailable | CapturePublished | CapturePublishedWithWarning
+
+
+def _publish_capture_file(path: Path, content: bytes) -> CapturePublication:
+    try:
+        create_immutable(path, content)
+    except ImmutableFilePublishedError as error:
+        return CapturePublishedWithWarning(error.path)
+    except FileIOError:
+        return CaptureUnavailable()
+    return CapturePublished(path)
+
+
 class SemanticCapture:
-    """Publish exact decoded MCP request and validated result values to a selected private directory."""
+    """Publish the exact decoded request and its result evidence to a selected private directory."""
 
     def __init__(self, directory: Path, *, automatic: bool = False) -> None:
         try:
@@ -137,14 +165,18 @@ class SemanticCapture:
         if not selected.is_dir():
             raise ValueError(f"Capture destination must be an existing directory: {directory}")
         probe = selected / f".pinboard-capture-probe-{secrets.token_hex(16)}"
-        try:
-            create_immutable(probe, b"")
-        except ImmutableFilePublishedError as error:
-            with suppress(OSError):
-                error.path.unlink()
-            raise ValueError(f"Capture directory could not be synchronized: {directory}") from error
-        except FileIOError as error:
-            raise ValueError(f"Capture directory is not writable: {directory}") from error
+        probe_publication = _publish_capture_file(probe, b"")
+        match probe_publication:
+            case CaptureUnavailable():
+                raise ValueError(f"Capture directory is not writable: {directory}")
+            case CapturePublishedWithWarning(path=path):
+                with suppress(OSError):
+                    path.unlink()
+                raise ValueError(f"Capture directory could not be synchronized: {directory}")
+            case CapturePublished():
+                pass
+            case _ as unreachable:
+                assert_never(unreachable)
         try:
             probe.unlink()
         except OSError as error:
@@ -161,7 +193,7 @@ class SemanticCapture:
         operation: str,
         arguments: dict[str, JsonValue],
         result: InvocationCaptureResult,
-    ) -> None:
+    ) -> CapturePublication:
         capture_id = secrets.token_hex(16)
         request_bytes = msgspec.json.encode(arguments)
         record = McpInvocationCapture(
@@ -179,34 +211,32 @@ class SemanticCapture:
         identity = self._identity(content)
         prefix = "pinboard-auto-mcp" if self._automatic else "pinboard-mcp"
         path = self._directory / f"{prefix}-{capture_id}-{identity.sha256}-{identity.size_bytes}.json"
-        create_immutable(path, content)
-        if self._automatic:
+        published = _publish_capture_file(path, content)
+        if isinstance(published, CapturePublished) and self._automatic:
             try:
                 contributor_traces.prune_traces(self._directory)
-            except OSError as error:
-                raise ImmutableFilePublishedError(
-                    path,
-                    FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "Automatic trace retention cleanup failed."),
-                ) from error
+            except OSError:
+                return CapturePublishedWithWarning(published.path)
+        return published
 
     def available(
         self,
         operation: str,
         arguments: dict[str, JsonValue],
         result: dict[str, JsonValue],
-    ) -> None:
+    ) -> CapturePublication:
         content = msgspec.json.encode(result)
-        self._publish(operation, arguments, CapturedResult("available", result, self._identity(content)))
+        return self._publish(operation, arguments, CapturedResult("available", result, self._identity(content)))
 
     def unavailable(
         self,
         operation: str,
         arguments: dict[str, JsonValue],
-        reason: Literal["interrupted", "callback-rejected", "callback-error", "result-validation-error"],
+        reason: Literal["interrupted", "callback-rejected", "callback-error"],
         classification: str,
         commit_reference: str | None,
-    ) -> None:
-        self._publish(
+    ) -> CapturePublication:
+        return self._publish(
             operation,
             arguments,
             UnavailableCapturedResult("unavailable", reason, classification, commit_reference),
@@ -481,16 +511,17 @@ class AutomaticCapture:
             )
 
 
-class ExecutorBusy(RuntimeError):
-    """The bounded executor rejected work before its callback began."""
+@dataclass(frozen=True, slots=True)
+class ExecutorSaturated:
+    """No unfinished-work slot was available and the callback was never admitted."""
 
 
 class ExecutorClosed(RuntimeError):
-    """The bounded executor no longer accepts work."""
+    """Submission after shutdown is a process-lifetime error; no callback can run."""
 
 
 class OperationCancelled(RuntimeError):
-    """A running callback observed its request-local cancellation token."""
+    """A cooperative checkpoint unwinds an admitted callback to the execution boundary."""
 
 
 class CancellationToken:
@@ -505,6 +536,7 @@ class CancellationToken:
         self._cancelled.set()
 
     def checkpoint(self) -> None:
+        """Raise OperationCancelled at a cooperative checkpoint before proceeding."""
         if self.cancelled:
             raise OperationCancelled("The request was cancelled at a cooperative checkpoint.")
 
@@ -531,7 +563,7 @@ class Execution[Result]:
 
 
 class BoundedExecutor:
-    """A fixed worker pool whose semaphore bounds every unfinished callback."""
+    """Bound unfinished callbacks. Submission after shutdown raises ExecutorClosed."""
 
     def __init__(self, *, worker_count: int, unfinished_limit: int) -> None:
         if worker_count < 1 or unfinished_limit < worker_count:
@@ -541,12 +573,12 @@ class BoundedExecutor:
         self._lock = threading.Lock()
         self._closed = False
 
-    def submit[Result](self, callback: Callable[[CancellationToken], Result]) -> Execution[Result]:
+    def submit[Result](self, callback: Callable[[CancellationToken], Result]) -> Execution[Result] | ExecutorSaturated:
         with self._lock:
             if self._closed:
                 raise ExecutorClosed("The executor is closed.")
             if not self._admission.acquire(blocking=False):
-                raise ExecutorBusy("The executor has reached its unfinished-work limit.")
+                return ExecutorSaturated()
             token = CancellationToken()
             finished = threading.Event()
             try:
@@ -660,7 +692,7 @@ async def _run_request[Result: msgspec.Struct](  # noqa: C901, PLR0915 - one exe
     request_id: int,
     operation: str,
     project_root: str,
-    callback: Callable[[CancellationToken], OperationResult | TypedOperationResult[Result]],
+    callback: Callable[[CancellationToken], TypedOperationResult[Result] | ResultProjectionFailure],
     *,
     arguments: dict[str, JsonValue],
     capture: SemanticCapture | AutomaticCapture | None,
@@ -704,37 +736,46 @@ async def _run_request[Result: msgspec.Struct](  # noqa: C901, PLR0915 - one exe
         captured_arguments = deepcopy(arguments) if selected_capture is not None else arguments
 
         def capture_effect(
-            effect: Callable[[SemanticCapture], None],
+            effect: Callable[[SemanticCapture], CapturePublication],
             classification: str,
             commit_reference: str | None,
         ) -> None:
             if selected_capture is None:
                 return
-            try:
-                effect(selected_capture)
-            except ImmutableFilePublishedError as error:
-                diagnostics.emit(
-                    event=TraceEvent.CAPTURE_COMMITTED_WITH_WARNING,
-                    request_id=None,
-                    operation=None,
-                    project_id=None,
-                    duration_ms=None,
-                    classification=classification,
-                    commit_reference=commit_reference,
-                    capture_selector=error.path.name,
-                )
-            except FileIOError:
-                emit_request_event(TraceEvent.CAPTURE_UNAVAILABLE, classification, commit_reference)
+            match effect(selected_capture):
+                case CapturePublishedWithWarning(path=path):
+                    diagnostics.emit(
+                        event=TraceEvent.CAPTURE_COMMITTED_WITH_WARNING,
+                        request_id=None,
+                        operation=None,
+                        project_id=None,
+                        duration_ms=None,
+                        classification=classification,
+                        commit_reference=commit_reference,
+                        capture_selector=path.name,
+                    )
+                case CaptureUnavailable():
+                    emit_request_event(TraceEvent.CAPTURE_UNAVAILABLE, classification, commit_reference)
+                case CapturePublished():
+                    pass
+                case _ as unreachable:
+                    assert_never(unreachable)
 
-        def record_callback_error() -> None:
+        def record_callback_error(classification: str, commit_reference: str | None) -> None:
             capture_effect(
-                lambda selected: selected.unavailable(operation, captured_arguments, "callback-error", "error", None),
-                "error",
-                None,
+                lambda selected: selected.unavailable(
+                    operation, captured_arguments, "callback-error", classification, commit_reference
+                ),
+                classification,
+                commit_reference,
             )
-            emit_request_event(TraceEvent.RESULT, "error", None)
+            emit_request_event(TraceEvent.RESULT, classification, commit_reference)
 
-        result: OperationResult | TypedOperationResult[Result] | TypedOperationResult[contracts.SchemaUnsupportedResult]
+        result: (
+            TypedOperationResult[Result]
+            | TypedOperationResult[contracts.SchemaUnsupportedResult]
+            | ResultProjectionFailure
+        )
         try:
             token.checkpoint()
             result = callback(token)
@@ -759,48 +800,27 @@ async def _run_request[Result: msgspec.Struct](  # noqa: C901, PLR0915 - one exe
             emit_request_event(TraceEvent.RESULT, "rejected", None)
             raise
         except Exception:
-            record_callback_error()
+            record_callback_error("error", None)
             raise
-        match result:
-            case TypedOperationResult():
-                try:
-                    validated = wire_content(result.record)
-                except Exception:
-                    # A typed record that cannot encode is a defect in the operation that built it.
-                    record_callback_error()
-                    raise
-            case OperationResult():
-                try:
-                    validated = contract_schemas.validate_result(operation, result.content)
-                except Exception:
-                    capture_effect(
-                        lambda selected: selected.unavailable(
-                            operation,
-                            captured_arguments,
-                            "result-validation-error",
-                            result.classification,
-                            result.commit_reference,
-                        ),
-                        result.classification,
-                        result.commit_reference,
-                    )
-                    emit_request_event(
-                        TraceEvent.RESULT_VALIDATION_ERROR, result.classification, result.commit_reference
-                    )
-                    raise
-            case _ as unreachable:
-                assert_never(unreachable)
+        if isinstance(result, ResultProjectionFailure):
+            record_callback_error(result.classification, result.commit_reference)
+            raise result.error
+        try:
+            content = wire_content(result.record)
+        except Exception:
+            # A typed record that cannot encode is a defect in the operation that built it.
+            record_callback_error("error", None)
+            raise
         capture_effect(
-            lambda selected: selected.available(operation, captured_arguments, validated),
+            lambda selected: selected.available(operation, captured_arguments, content),
             result.classification,
             result.commit_reference,
         )
         emit_request_event(TraceEvent.RESULT, result.classification, result.commit_reference)
-        return validated
+        return content
 
-    try:
-        execution = executor.submit(complete)
-    except ExecutorBusy:
+    execution = executor.submit(complete)
+    if isinstance(execution, ExecutorSaturated):
         emit_request_event(TraceEvent.RESULT, "busy", None)
         return wire_content(
             contracts.ExecutorBusyResult(

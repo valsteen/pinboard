@@ -1,5 +1,6 @@
 """Native boundary for the distinct human-owned PR review route."""
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, assert_never
@@ -18,12 +19,14 @@ from pinboard.mcp import common, contracts, execution, host_profiles, instructio
 from pinboard.mcp.contracts import JsonValue
 
 
-def _rejected(code: str, message: str) -> execution.OperationResult:
-    value = contracts.PrReviewRejected(
+def _rejected_record(code: str, message: str) -> contracts.PrReviewRejected:
+    return contracts.PrReviewRejected(
         "pinboard-pr-review-result/v1", "rejected", code, message, False, "unchanged", "correct-input", ()
     )
-    content: dict[str, JsonValue] = msgspec.to_builtins(value)
-    return execution.OperationResult(content, "rejected", None)
+
+
+def _rejected(code: str, message: str) -> execution.TypedOperationResult[contracts.PrReviewResult]:
+    return execution.TypedOperationResult(_rejected_record(code, message), "rejected", None)
 
 
 def _present(
@@ -31,8 +34,8 @@ def _present(
     *,
     committed: bool,
     profile: host_profiles.HostProfile,
-    view_warning: str | None = None,
-) -> execution.OperationResult:
+    view_warning: str | None,
+) -> execution.TypedOperationResult[contracts.PrReviewResult]:
     brief = state.brief
     rounds = state.rounds
     latest = state.latest_observation
@@ -91,26 +94,25 @@ def _present(
         ("ledger",) if committed else (),
         view_warning,
     )
-    content: dict[str, JsonValue] = msgspec.to_builtins(value)
-    return execution.OperationResult(content, "committed" if committed else "ok", str(state.project_revision))
+    return execution.TypedOperationResult(value, "committed" if committed else "ok", str(state.project_revision))
 
 
-def _selected_record[T](path: str, sha256: str, record_type: type[T]) -> T | execution.OperationResult:
+def _selected_record[T](path: str, sha256: str, record_type: type[T]) -> T | contracts.PrReviewRejected:
     content = file_io.read_verified_input(Path(path), sha256)
     if isinstance(content, file_io.SelectedInputFailure):
-        return _rejected(content.code, content.message)
+        return _rejected_record(content.code, content.message)
     try:
         return msgspec.json.decode(content, type=record_type)
     except msgspec.DecodeError as error:
-        return _rejected(
+        return _rejected_record(
             ProducerOnlyCode.PR_REVIEW_INVALID.value,
             f"Cannot decode selected PR review record '{path}' with verified SHA-256 {sha256}: {error}. Correct that file to this exact operation's record schema before retrying.",
         )
 
 
 def execute(  # noqa: C901, PLR0912, PLR0915 - exact inline/file leaves retain actor and persistence checks
-    raw: dict[str, JsonValue], token: execution.CancellationToken, profile: host_profiles.HostProfile
-) -> execution.OperationResult:
+    raw: Mapping[str, JsonValue], token: execution.CancellationToken, profile: host_profiles.HostProfile
+) -> execution.TypedOperationResult[contracts.PrReviewResult]:
     token.checkpoint()
     try:
         envelope = msgspec.convert(raw, type=contracts.PrReviewEnvelope, strict=True)
@@ -128,12 +130,12 @@ def execute(  # noqa: C901, PLR0912, PLR0915 - exact inline/file leaves retain a
                     DecisionFailureCode.ITEM_NOT_FOUND.value,
                     f"Review item '{request.item_id}' does not exist. Read pinboard_overview with project_root={request.project_root!r}, work_root={request.work_root!r}, max_items=25 and continuation=null; follow its continuation to discover all live items. Do not create a replacement without human intent.",
                 )
-            return _present(state, committed=False, profile=profile)
+            return _present(state, committed=False, profile=profile, view_warning=None)
         case contracts.PrReviewStartRequest() | contracts.PrReviewStartFileRequest():
             if isinstance(request, contracts.PrReviewStartFileRequest):
                 selected = _selected_record(request.brief_path, request.brief_sha256, pr_reviews.ReviewBrief)
-                if isinstance(selected, execution.OperationResult):
-                    return selected
+                if isinstance(selected, contracts.PrReviewRejected):
+                    return execution.TypedOperationResult(selected, "rejected", None)
                 payload = selected
             else:
                 payload = request.brief
@@ -143,8 +145,8 @@ def execute(  # noqa: C901, PLR0912, PLR0915 - exact inline/file leaves retain a
                 selected = _selected_record(
                     request.brief_review_path, request.brief_review_sha256, pr_reviews.BriefReview
                 )
-                if isinstance(selected, execution.OperationResult):
-                    return selected
+                if isinstance(selected, contracts.PrReviewRejected):
+                    return execution.TypedOperationResult(selected, "rejected", None)
                 payload = selected
             else:
                 payload = request.brief_review
@@ -155,8 +157,8 @@ def execute(  # noqa: C901, PLR0912, PLR0915 - exact inline/file leaves retain a
         case contracts.PrReviewRoundRequest() | contracts.PrReviewRoundFileRequest():
             if isinstance(request, contracts.PrReviewRoundFileRequest):
                 selected = _selected_record(request.round_path, request.round_sha256, pr_reviews.ReviewRound)
-                if isinstance(selected, execution.OperationResult):
-                    return selected
+                if isinstance(selected, contracts.PrReviewRejected):
+                    return execution.TypedOperationResult(selected, "rejected", None)
                 payload = selected
             else:
                 payload = request.round

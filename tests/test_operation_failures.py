@@ -47,7 +47,7 @@ class OperationFailureTest(unittest.TestCase):
     def transition(self, roots: cli_commands.ResolvedRoots, receipt: JsonObject) -> JsonObject:
         with patch("pinboard.mcp.mutation_operations.datetime") as clock:
             clock.now.return_value = SQLITE_NOW
-            return mcp_mutations._transition(
+            result = mcp_mutations._transition(
                 {
                     "request": {
                         "project_root": str(roots.source_checkout),
@@ -60,7 +60,8 @@ class OperationFailureTest(unittest.TestCase):
                     }
                 },
                 mcp_execution.CancellationToken(),
-            ).content
+            )
+            return mcp_execution.wire_content(result.record)
 
     def test_sqlite_readonly_is_classified_separately_from_generic_storage_io(self) -> None:
         error = sqlite3.OperationalError("attempt to write a readonly database")
@@ -123,20 +124,22 @@ class OperationFailureTest(unittest.TestCase):
             unchanged = status_store.validated_snapshot()
             with patch("pinboard.mcp.mutation_operations.datetime") as clock:
                 clock.now.return_value = SQLITE_NOW
-                rejected = mcp_reads._read_actions(
-                    {
-                        "request": {
-                            "project_root": str(status_roots.source_checkout),
-                            "work_root": str(status_roots.work),
-                            "role": "worker",
-                            "lease_id": "attempt-lease-a",
-                            "generation": 3,
-                            "action_id": {"kind": "continue", "subject": "work-a-1"},
-                        }
-                    },
-                    mcp_execution.CancellationToken(),
-                    profile=host_profiles.HostProfile.UNMEASURED,
-                ).content
+                rejected = mcp_execution.wire_content(
+                    mcp_reads._read_actions(
+                        {
+                            "request": {
+                                "project_root": str(status_roots.source_checkout),
+                                "work_root": str(status_roots.work),
+                                "role": "worker",
+                                "lease_id": "attempt-lease-a",
+                                "generation": 3,
+                                "action_id": {"kind": "continue", "subject": "work-a-1"},
+                            }
+                        },
+                        mcp_execution.CancellationToken(),
+                        profile=host_profiles.HostProfile.UNMEASURED,
+                    ).record
+                )
             self.assertEqual("ATTEMPT_LEASE_REQUIRED", rejected["code"])
             self.assertEqual("reacquire-authority", rejected["retry"])
             self.assertFalse(rejected["state_changed"])

@@ -13,7 +13,7 @@ from unittest.mock import patch
 import msgspec
 from mcp_types import CallToolResult
 
-from pinboard.mcp import contract_schemas, contracts, execution, read_operations, server
+from pinboard.mcp import contracts, execution, read_operations, server
 
 
 class FixtureReviewTest(unittest.TestCase):
@@ -45,11 +45,7 @@ class FixtureReviewTest(unittest.TestCase):
 
     def call(self, request: dict[str, contracts.JsonValue]) -> dict[str, contracts.JsonValue]:
         result = read_operations._fixture_review({"request": request}, execution.CancellationToken())
-        content: dict[str, contracts.JsonValue] = msgspec.json.decode(
-            msgspec.json.encode(contract_schemas.validate_result("pinboard_fixture_review", result.content))
-        )
-
-        return content
+        return execution.wire_content(result.record)
 
     def read_all(self) -> tuple[str, list[dict[str, contracts.JsonValue]]]:
         request = self.request

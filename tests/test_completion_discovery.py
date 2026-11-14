@@ -18,7 +18,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import actions, query_models, stored_state, work_brief_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, WorkItemId
-from pinboard.mcp import contract_schemas, contracts
+from pinboard.mcp import contracts
 from pinboard.mcp import server as mcp_server
 from pinboard.mcp.contracts import JsonValue
 from tests.checkpoint_support import CheckpointPackageSupport
@@ -139,7 +139,7 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                     del payload["obligation_correspondence"]
                 status["brief"] = payload
                 with self.assertRaises(msgspec.ValidationError):
-                    contract_schemas.validate_result(mcp_server.BRIEF_REVIEW_TOOL, status)
+                    msgspec.convert(status, type=contracts.BriefReviewNoEvidence, strict=True)
                 self.replace_artifact_bytes(fixture, reference, msgspec.json.encode(payload, order="sorted") + b"\n")
                 lease = self.native_attempt_acquire(fixture, "original-v2-worker")
                 selected = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
@@ -198,7 +198,6 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 original = deepcopy(result)
                 valid_results.append(result)
                 msgspec.convert(result, type=contracts.CompletionActionsSuccess, strict=True)
-                self.assertIs(result, contract_schemas.validate_result(mcp_server.ACTIONS_TOOL, result))
                 self.assertEqual(original, result)
                 action = self.json_object(self.json_array(result["actions"])[0])
                 invocation = self.json_object(action["invocation"])
@@ -257,8 +256,6 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                         unchanged = deepcopy(invalid)
                         with self.assertRaises((msgspec.ValidationError, ValueError)):
                             msgspec.convert(invalid, type=contracts.CompletionActionsSuccess, strict=True)
-                        with self.assertRaises((msgspec.ValidationError, ValueError)):
-                            contract_schemas.validate_result(mcp_server.ACTIONS_TOOL, invalid)
                         self.assertEqual(unchanged, invalid)
                 self.assertEqual(before, fixture.store.validated_snapshot())
 

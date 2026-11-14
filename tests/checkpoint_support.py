@@ -260,8 +260,9 @@ class CheckpointPackageSupport(unittest.TestCase):
             },
             mcp_execution.CancellationToken(),
         )
-        self.assertEqual("committed", result.content["status"], result.content)
-        return result.content
+        content = mcp_execution.wire_content(result.record)
+        self.assertEqual("committed", content["status"], content)
+        return content
 
     def native_transition_request(
         self,
@@ -297,8 +298,9 @@ class CheckpointPackageSupport(unittest.TestCase):
             self.native_transition_request(fixture, action, self.json_object(json.loads(payload.read_bytes()))),
             mcp_execution.CancellationToken(),
         )
-        self.assertEqual("committed", result.content["status"], result.content)
-        return result.content
+        content = mcp_execution.wire_content(result.record)
+        self.assertEqual("committed", content["status"], content)
+        return content
 
     def submit_review(self, fixture: AcceptedPackageFixture, label: str, worker: str) -> str:
         tracked = fixture.project / "tracked.txt"

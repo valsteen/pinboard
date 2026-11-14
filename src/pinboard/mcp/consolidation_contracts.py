@@ -73,4 +73,4 @@ class Committed(contracts._ChangedResult, msgspec.Struct, frozen=True, forbid_un
     warning: contracts.WarningResult | None
 
 
-RESULT_TYPES = (PreviewResult, Rejected, Committed, contracts.ExecutorBusyResult)
+type Result = PreviewResult | Rejected | Committed

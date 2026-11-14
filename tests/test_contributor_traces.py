@@ -16,6 +16,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Never
 from unittest.mock import patch
 
 from mcp.client.session import ClientSession
@@ -37,7 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class ContributorTraceTest(unittest.TestCase):
     def preflight_result(self, project: Path, work_root: Path) -> dict[str, JsonValue]:
-        def forbidden_callback(_token: execution.CancellationToken) -> execution.OperationResult:
+        def forbidden_callback(_token: execution.CancellationToken) -> Never:
             raise AssertionError("The target callback ran after trace preflight failed.")
 
         async def run() -> dict[str, JsonValue]:
@@ -773,13 +774,25 @@ class ContributorTraceTest(unittest.TestCase):
             }
             called = 0
 
-            def callback(_token: execution.CancellationToken) -> execution.OperationResult:
+            result = contracts.ItemStatusUnavailable(
+                "pinboard-mcp-item-status-result/v3",
+                "rejected",
+                "ITEM_NOT_FOUND",
+                "Missing.",
+                False,
+                "unchanged",
+                "correct-input",
+                (),
+                (),
+                (),
+            )
+
+            def callback(
+                _token: execution.CancellationToken,
+            ) -> execution.TypedOperationResult[contracts.ItemStatusUnavailable]:
                 nonlocal called
                 called += 1
-                return execution.OperationResult({"ok": True}, "ok", None)
-
-            def identity_result(_operation: str, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
-                return value
+                return execution.TypedOperationResult(result, "rejected", None)
 
             original_create = setting_resolution.create_immutable
 
@@ -804,11 +817,8 @@ class ContributorTraceTest(unittest.TestCase):
                 finally:
                     executor.shutdown()
 
-            with (
-                patch.object(setting_resolution, "create_immutable", side_effect=deny_shared),
-                patch.object(execution.contract_schemas, "validate_result", side_effect=identity_result),
-            ):
-                self.assertEqual({"ok": True}, asyncio.run(run()))
+            with patch.object(setting_resolution, "create_immutable", side_effect=deny_shared):
+                self.assertEqual(execution.wire_content(result), asyncio.run(run()))
                 self.assertEqual(1, called)
 
                 self.assertFalse((primary / ".pinboard" / contributor_traces.SETTINGS_NAME).exists())
@@ -1377,15 +1387,12 @@ class ContributorTraceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             capture = execution.SemanticCapture(directory, automatic=True)
-            with (
-                patch.object(contributor_traces, "prune_traces", side_effect=OSError("retention unavailable")),
-                self.assertRaises(ImmutableFilePublishedError) as published,
-            ):
-                capture.available(
+            with patch.object(contributor_traces, "prune_traces", side_effect=OSError("retention unavailable")):
+                published = capture.available(
                     "pinboard_item_status", {"request": {"operation": "item", "item_id": "one"}}, {"status": "ok"}
                 )
-            self.assertEqual(FileIOErrorCode.FILE_PUBLISH_FAILED, published.exception.code)
-            self.assertTrue(published.exception.path.is_file())
+            assert isinstance(published, execution.CapturePublishedWithWarning)
+            self.assertTrue(published.path.is_file())
             self.assertEqual(1, len(tuple(directory.glob("pinboard-auto-mcp-*.json"))))
 
     def test_mcp_capture_preflight_rejects_missing_unwritable_and_unsynced_destinations(self) -> None:

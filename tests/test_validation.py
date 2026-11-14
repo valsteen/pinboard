@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -19,7 +20,7 @@ from pinboard.application import stored_state, work_brief_models
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.work_briefs import canonical_work_brief_bytes, render_work_brief_markdown
 from pinboard.cli.entrypoint import main
-from pinboard.cli.errors import InitializationAfterCommittedEffects
+from pinboard.cli.errors import CliEffectFailure, InitializationAfterCommittedEffects
 from pinboard.cli.work_state import initialize_work_state
 from pinboard.domain import work_models
 from tests.artifact_support import write_revision
@@ -48,13 +49,15 @@ class SQLiteValidationTest(unittest.TestCase):
         self, project: Path, work_root: Path | None = None
     ) -> work_brief_models.WorkBriefResult[InitReceipt | InitializationAfterCommittedEffects]:
         roots = resolve_durable_roots(project, work_root)
-        return initialize_work_state(
+        result = initialize_work_state(
             project,
             roots,
             default_work_root=work_root is None,
             store=SQLiteWorkStore(roots.database_path),
             now=SQLITE_NOW,
         )
+        assert not isinstance(result, CliEffectFailure), result
+        return result
 
     def run_git(self, cwd: Path, *arguments: str) -> str:
         return subprocess.run(
@@ -380,6 +383,51 @@ class SQLiteValidationTest(unittest.TestCase):
         self.assertEqual([], repeated_failure["observed"])
         self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/.pinboard/"))
         self.assertTrue(database.exists())
+
+    def test_resumed_initialization_reports_view_repair_on_closed_stdout(self) -> None:
+        for explicit in (False, True):
+            with self.subTest(explicit_work_root=explicit), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                project = root / "project"
+                project.mkdir()
+                self.run_git(project, "init", "-b", "main")
+                work_root = root / "board" if explicit else project / ".pinboard"
+                work_root.mkdir()
+                views = work_root / "views"
+                views.write_text("blocks generated views\n", encoding="utf-8")
+                arguments = ("--project-root", str(project))
+                if explicit:
+                    arguments += ("--work-root", str(work_root))
+                arguments += ("init", "--json")
+                result, stdout, stderr = self.run_cli(*arguments)
+                self.assertEqual(12, result, stderr)
+                self.assertEqual("committed-effect", json.loads(stdout)["status"])
+
+                database = work_root / "state.sqlite3"
+                exclude = project / ".git" / "info" / "exclude"
+                database_before = database.read_bytes()
+                exclude_before = exclude.read_bytes()
+                before = SQLiteWorkStore(database).validated_snapshot()
+                diagnostics = io.StringIO()
+                read_end, write_end = os.pipe()
+                os.close(read_end)
+                with (
+                    io.TextIOWrapper(io.FileIO(write_end, "w"), write_through=True) as closed_stdout,
+                    contextlib.redirect_stdout(closed_stdout),
+                    contextlib.redirect_stderr(diagnostics),
+                    self.assertRaises(BrokenPipeError),
+                ):
+                    main(arguments)
+
+                self.assertEqual(
+                    "VIEW_REFRESH_FAILED: Generated views could not be rebuilt: DIRECTORY_INVALID: "
+                    f"Durable directory is not a directory: {views} "
+                    "Resolve the filesystem problem and run 'pinboard views rebuild' again.\n",
+                    diagnostics.getvalue(),
+                )
+                self.assertEqual(database_before, database.read_bytes())
+                self.assertEqual(before, SQLiteWorkStore(database).validated_snapshot())
+                self.assertEqual(exclude_before, exclude.read_bytes())
 
     def test_explicit_work_root_preserves_its_path_without_changing_git_excludes(self) -> None:
         project = Path(tempfile.mkdtemp()).resolve()

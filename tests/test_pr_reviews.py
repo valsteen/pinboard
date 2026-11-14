@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,7 +20,7 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import pr_reviews, queries, query_models
 from pinboard.domain.identifiers import WorkItemId
-from pinboard.mcp import common, contracts, execution, pr_review_operations, server
+from pinboard.mcp import common, contracts, execution, server
 from tests.decision_support import BOARD
 from tests.native_support import call_native_tool
 from tests.support import SQLITE_NOW, JsonObject, LedgerOnlyStatusArtifacts, complete_sqlite_state, initialize_store
@@ -31,7 +32,7 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
             with self.subTest(occupied=occupied):
                 self._assert_advertised_shared_failure(occupied)
 
-    def _assert_advertised_shared_failure(self, occupied: bool) -> None:
+    def _assert_advertised_shared_failure(self, occupied: bool) -> None:  # noqa: PLR0915 - one SDK preflight or saturation scenario
         project = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as temporary:
             work_root = Path(temporary).resolve() / ".pinboard"
@@ -71,10 +72,13 @@ class HumanOwnedPrReviewTest(unittest.TestCase):
                     assert isinstance(result.structured_content, dict)
                     return result.structured_content
 
+            def unexpected_callback(*_arguments: object) -> execution.TypedOperationResult[contracts.PrReviewResult]:
+                raise AssertionError("PR callback ran")
+
             try:
                 if occupied:
                     executor.submit(hold)
-                with patch.object(pr_review_operations, "execute", side_effect=AssertionError("PR callback ran")):
+                with patch.object(server, "PR_REVIEW", replace(server.PR_REVIEW, operate=unexpected_callback)):
                     response = asyncio.run(call())
             finally:
                 release.set()

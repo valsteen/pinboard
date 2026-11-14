@@ -1,4 +1,4 @@
-"""State-independent lookup of codes declared by installed result and emitter owners."""
+"""State-independent lookup of installed diagnostic codes, including codes in historical captures."""
 
 from types import UnionType
 from typing import Annotated, Literal, TypeAliasType, get_args, get_origin
@@ -148,6 +148,13 @@ def installed_code_catalog() -> CodeCatalogIndex:
         add(code, "MCP result contract", "failure", mcp_meanings.get(code))
     for event in diagnostic_codes.TraceEvent:
         add(event.value, "MCP trace emitter", "trace-event", event.meaning)
+    # Preserve lookup for existing captures that recorded the retired event.
+    add(
+        "result-validation-error",
+        "MCP trace emitter",
+        "trace-event",
+        "The result failed its declared MCP output schema after execution.",
+    )
     for action in decision_models.ActionKind:
         if action not in (
             decision_models.ActionKind.DISPATCH,

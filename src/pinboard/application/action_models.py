@@ -159,7 +159,7 @@ class CloseInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     authentication of the human.
     """
 
-    outcome: work_models.CloseOutcome
+    outcome: work_models.DirectCloseOutcome
     reason: NonEmptyLine
     human_decision: NonEmptyLine
 

@@ -100,6 +100,14 @@ class McpSchemaProjectionTest(unittest.TestCase):
         transition = tools[server.TRANSITION_TOOL].input_schema
         dispatch = tools[server.DISPATCH_TOOL].input_schema
         close = tools[server.CLOSE_TOOL].input_schema
+        close_outcome = schema_field(close, "CloseInputPayload", "outcome")
+        close_outcome_definition = close_outcome["$ref"]
+        assert isinstance(close_outcome_definition, str)
+        definitions = close["$defs"]
+        assert isinstance(definitions, dict)
+        outcome_schema = definitions[close_outcome_definition.rsplit("/", 1)[-1]]
+        assert isinstance(outcome_schema, dict)
+        self.assertEqual(["done", "superseded"], outcome_schema["enum"])
         for schema, definition, field in (
             (transition, "ReasonInputPayload", "reason"),
             (transition, "AcceptCheckpointInputPayload", "evidence"),

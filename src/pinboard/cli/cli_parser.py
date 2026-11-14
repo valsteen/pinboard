@@ -58,7 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     _select_command(diagnose, cli_commands.DiagnoseCommand)
     close = commands.add_parser("close", help="Record a terminal decision for live work without an accepted attempt.")
     close.add_argument("item_id")
-    close.add_argument("--outcome", choices=tuple(outcome.value for outcome in work_models.CloseOutcome), required=True)
+    close.add_argument(
+        "--outcome", choices=tuple(outcome.value for outcome in work_models.DirectCloseOutcome), required=True
+    )
     close.add_argument("--reason", required=True)
     close.add_argument("--task-id", required=True)
     close.add_argument("--host-id", required=True)

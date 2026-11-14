@@ -71,6 +71,11 @@ class CloseOutcome(Enum):
     SUPERSEDED = "superseded"
 
 
+class DirectCloseOutcome(Enum):
+    DONE = "done"
+    SUPERSEDED = "superseded"
+
+
 class Timing(Enum):
     MUST_NOW = "must-now"
     CHEAPER_NOW = "cheaper-now"
@@ -460,7 +465,7 @@ class RetainTemporarilyInput:
 
 @dataclass(frozen=True, slots=True)
 class CloseInput:
-    outcome: CloseOutcome
+    outcome: DirectCloseOutcome
     reason: str
     human_decision: str
 

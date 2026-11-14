@@ -326,7 +326,7 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                     decision_models.CloseCommand(
                         close_dependency,
                         work_models.CloseInput(
-                            work_models.CloseOutcome.DONE, "Dependency complete.", "The human asked to close it."
+                            work_models.DirectCloseOutcome.DONE, "Dependency complete.", "The human asked to close it."
                         ),
                     ),
                     SQLITE_NOW,

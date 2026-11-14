@@ -1050,7 +1050,7 @@ def _close(
         case _ as unreachable:
             assert_never(unreachable)
     replacement = snapshot.unresolved_replacement(item.work_item_id)
-    if value.outcome == work_models.CloseOutcome.DONE and replacement is not None:
+    if value.outcome == work_models.DirectCloseOutcome.DONE and replacement is not None:
         return DecisionFailure(
             DecisionFailureCode.REPLACEMENT_STALE,
             f"Item '{item_id}' has an unresolved planned replacement '{replacement.replacement_item}'. "
@@ -1058,21 +1058,15 @@ def _close(
             "the ledger is unchanged.",
             None,
         )
-    if item.attempt is not None and value.outcome != work_models.CloseOutcome.SUPERSEDED:
+    if item.attempt is not None and value.outcome != work_models.DirectCloseOutcome.SUPERSEDED:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             "An accepted attempt must resume and follow its review path; changing accepted semantics requires item "
             "revision and rebind.",
             None,
         )
-    if value.outcome == work_models.CloseOutcome.DROPPED:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            f"Dropping '{item.work_item_id}' requires a fresh cancellation preview and separate exact-item human confirmation; ordinary close records done or superseded.",
-            None,
-        )
     attempt_closure = None
-    if value.outcome == work_models.CloseOutcome.SUPERSEDED:
+    if value.outcome == work_models.DirectCloseOutcome.SUPERSEDED:
         attempt_closure = superseded_attempt_closure(snapshot, item, replacement)
         if isinstance(attempt_closure, DecisionFailure):
             return attempt_closure
@@ -1080,14 +1074,21 @@ def _close(
         return DecisionFailure(
             DecisionFailureCode.HISTORY_RECORD_EXISTS, f"History already contains '{item.work_item_id}'.", None
         )
+    match value.outcome:
+        case work_models.DirectCloseOutcome.DONE:
+            terminal_state = work_models.CloseOutcome.DONE
+        case work_models.DirectCloseOutcome.SUPERSEDED:
+            terminal_state = work_models.CloseOutcome.SUPERSEDED
+        case _ as unreachable:
+            assert_never(unreachable)
     return _accepted_transition_decision(
         action,
         now,
         decision_models.WorkItemClosureChange(
-            item.work_item_id, item.state, value.outcome, value.reason, value.human_decision, attempt_closure
+            item.work_item_id, item.state, terminal_state, value.reason, value.human_decision, attempt_closure
         ),
         work_item_id=item.work_item_id,
-        outcome=value.outcome.value,
+        outcome=terminal_state.value,
         evidence=value.reason,
     )
 

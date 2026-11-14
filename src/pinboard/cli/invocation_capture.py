@@ -28,7 +28,9 @@ link without overwriting, removes its stage, applies automatic retention and rep
 exact stdout and stderr. A publication failure after the target ran is reported as
 `capture-publication-failed` with `do-not-retry`; it never invites replay.
 If replaying stdout fails, the session still attempts to deliver stderr and either names the published
-record and target exit status or reports the publication failure. The original output error propagates.
+record and target exit status or reports the publication failure. If the published automatic record is
+already gone after retention, it reports the unavailability and replays the captured stdout on stderr.
+The original output error propagates.
 
 This module adds no process: the target runs in this interpreter. It deliberately does not recover a
 record when the target dies hard or the process fails before `CaptureSession.arm` runs, and it does
@@ -235,18 +237,33 @@ class CaptureSession:
             if diagnostic is not None:
                 _write_all(2, diagnostic)
             if stdout_error is not None and published:
-                _write_all(
-                    2,
-                    os.fsencode(
-                        f"Pinboard could not deliver captured stdout. Read the exact capture at "
-                        f"'{self._reservation.destination}' for the target's output and exit status {status}.\n"
-                    ),
-                )
+                self._report_stdout_failure(stdout, status)
         except OSError:
             if stdout_error is None:
                 raise
         if stdout_error is not None:
             raise stdout_error
+
+    def _report_stdout_failure(self, stdout: bytes, status: int) -> None:
+        destination = self._reservation.destination
+        if self._retained_directory is not None:
+            try:
+                destination.stat()
+            except FileNotFoundError:
+                _write_all(
+                    2,
+                    f"Pinboard could not deliver captured stdout. The automatic capture is unavailable. "
+                    f"Target exit status {status}. Do not repeat the target command. Captured stdout follows.\n".encode(),
+                )
+                _write_all(2, stdout)
+                return
+        _write_all(
+            2,
+            os.fsencode(
+                f"Pinboard could not deliver captured stdout. Read the exact capture at "
+                f"'{destination}' for the target's output and exit status {status}.\n"
+            ),
+        )
 
     def _handle_signal(self, signal_number: int, _frame: types.FrameType | None) -> None:
         if self._phase is _Phase.TARGET:

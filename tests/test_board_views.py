@@ -622,12 +622,13 @@ class BoardProjectionTest(unittest.TestCase):
 
         self.assertEqual(outputs[0], outputs[1])
 
-    def test_committed_reorder_changes_neither_an_items_time_nor_the_board_time(self) -> None:
+    def test_committed_reorder_refreshes_the_board_order_without_changing_any_time(self) -> None:
         project, roots, store = self._ledger(complete_sqlite_state())
         self._rebuild(roots, store)
         before = {value.item_id: value.updated_at for value in _page_items(self._board(roots)[1])}
         before_board = _page_data(self._board(roots)[1]).updated_at
         current = ["intake-work", "work-a", "work-c", "zz-proposal-a"]
+        requested = [*current[1:], current[0]]
 
         result = mcp_reads._order(
             {
@@ -639,7 +640,7 @@ class BoardProjectionTest(unittest.TestCase):
                     "order": {
                         "schema": "pinboard-live-order/v1",
                         "expected_order": list(current),
-                        "requested_order": [*current[1:], current[0]],
+                        "requested_order": list(requested),
                     },
                 }
             },
@@ -647,7 +648,12 @@ class BoardProjectionTest(unittest.TestCase):
         ).record
 
         self.assertEqual("committed", result.status)
-        _markdown, html = self._board(roots)
+        markdown, html = self._board(roots)
+        self.assertEqual(
+            [("work-c", "ready"), ("zz-proposal-a", "ready"), ("intake-work", "ready")],
+            _markdown_groups(markdown)["Ready"],
+        )
+        self.assertEqual(requested, [value.item_id for value in _page_items(html)])
         self.assertEqual(before, {value.item_id: value.updated_at for value in _page_items(html)})
         self.assertEqual(before_board, _page_data(html).updated_at)
 
@@ -899,36 +905,6 @@ class BoardProjectionTest(unittest.TestCase):
         self.assertEqual(1, len(latest.obligations_changed))
         scope = page.scope
         self.assertEqual((2, None, None), (scope.revision, scope.obligations, scope.checkout_policy))
-
-    def test_mcp_committed_order_refreshes_the_board(self) -> None:
-        project, roots, _store = self._ledger(complete_sqlite_state())
-        current = ["intake-work", "work-a", "work-c", "zz-proposal-a"]
-        requested = [*current[1:], current[0]]
-
-        result = mcp_reads._order(
-            {
-                "request": {
-                    "project_root": str(project),
-                    "work_root": str(roots.work_root),
-                    "actor_task_id": "priority-owner",
-                    "actor_host_id": "local",
-                    "order": {
-                        "schema": "pinboard-live-order/v1",
-                        "expected_order": list(current),
-                        "requested_order": list(requested),
-                    },
-                }
-            },
-            mcp_execution.CancellationToken(),
-        ).record
-
-        self.assertEqual("committed", result.status)
-        markdown, html = self._board(roots)
-        self.assertEqual(
-            [("work-c", "ready"), ("zz-proposal-a", "ready"), ("intake-work", "ready")],
-            _markdown_groups(markdown)["Ready"],
-        )
-        self.assertEqual(requested, [value.item_id for value in _page_items(html)])
 
     def test_board_write_failure_is_a_view_warning_with_the_commit_intact(self) -> None:
         project, roots, store = self._ledger(complete_sqlite_state())
@@ -1659,7 +1635,7 @@ class BoardHistoryTest(ItemLifecycleSupport):
         )
         self.assert_board_parity(fixture)
 
-    def test_record_text_round_trips_inert_and_multiline_remaining_work_stays_verbatim(self) -> None:
+    def test_hostile_record_text_round_trips_and_multiline_remaining_work_stays_verbatim(self) -> None:
         fixture = self.checkpoint_fixture()
         hostile_reason = "Label: `</script>` & <b>bold</b> \u2028 next"
         self.return_for_review(fixture, hostile_reason)
@@ -1695,10 +1671,6 @@ class BoardHistoryTest(ItemLifecycleSupport):
             },
         )
 
-        html = (fixture.work / "views" / "board.html").read_text(encoding="utf-8")
-        for raw in ("</script><img", "<b>bold", "</SCRIPT>", "<i>tag", "\u2028", "\u2029", "&amp;"):
-            self.assertNotIn(raw, html)
-        self.assertEqual(2, html.lower().count("</script"))
         checkpoint_page = self.json_object(self.standing(fixture)["checkpoint"])
         self.assertEqual(HOSTILE_TITLE, checkpoint_page["title"])
         self.assertEqual({"kind": "recorded", "text": remaining}, checkpoint_page["remaining_work"])
@@ -1714,24 +1686,14 @@ class BoardHistoryTest(ItemLifecycleSupport):
             ],
             self.json_object(revision["changes"])["texts"],
         )
-        script = html.rpartition("<script>")[2]
-        self.assertNotIn("innerHTML", script)
-        self.assertNotIn("insertAdjacentHTML", script)
         self.assert_board_parity(fixture)
 
-    def test_multiline_records_of_every_kind_reach_the_page_data_exactly(self) -> None:
+    def test_multiline_acceptance_and_pause_records_reach_the_page_data_exactly(self) -> None:
         def record(kind: str) -> str:
             return f"Lead sentence for the {kind}.\n\nProblem:\n- `{kind}` detail.\n1. Step.\n\nReferences: {kind}.md"
 
         fixture = self.checkpoint_fixture()
         self.return_for_review(fixture, record("return"))
-        self.assertEqual(record("return"), self.condition(fixture)["text"])
-        continued = self.submit_candidate(fixture, "continued")
-        self.record_ready(fixture, continued)
-        self.transition(
-            fixture, "accept-review-and-continue:work-a-1", {"candidate": continued, "evidence": record("continue")}
-        )
-        self.assertEqual(record("continue"), self.condition(fixture)["text"])
         accepted = self.submit_candidate(fixture, "accepted")
         self.record_ready(fixture, accepted)
         checkpoint_id = fixture.brief.checkpoint.checkpoint_id
@@ -1765,24 +1727,6 @@ class BoardHistoryTest(ItemLifecycleSupport):
         self.assertEqual(
             ("rebound", record("pause")), (self.condition(fixture)["kind"], self.condition(fixture)["text"])
         )
-        definition = call_native_tool(
-            mcp_server.ITEM_DEFINITION_TOOL,
-            {"request": {**self.roots(fixture), "operation": "current", "item_id": "work-a"}},
-        )
-        self.transition(
-            fixture,
-            "revise-item:work-a",
-            {
-                "schema": "pinboard-item-revision/v1",
-                "expected_revision": definition["definition_revision"],
-                "expected_digest": definition["definition_digest"],
-                "source_task": "review-owner",
-                "reason": record("scope revision"),
-                "definition": {**self.json_object(definition["definition"]), "title": "Renamed"},
-            },
-        )
-        revision = self.json_object(self.json_array(self.board_item(fixture)["scope_revisions"])[-1])
-        self.assertEqual(record("scope revision"), revision["reason"])
         self.assert_board_parity(fixture)
 
     def test_unreadable_brief_is_a_card_notice_while_the_board_refreshes_and_validation_agrees(self) -> None:

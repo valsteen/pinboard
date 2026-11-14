@@ -11,13 +11,12 @@ from pathlib import Path
 from typing import override
 from unittest.mock import patch
 
-import msgspec
 from mcp import Client
 from mcp.server.mcpserver import MCPServer
 from mcp_types import Implementation
 
 from pinboard.adapters.files import git_config, host_settings
-from pinboard.mcp import contract_schemas, contracts, execution, host_profiles, server, startup_text
+from pinboard.mcp import contracts, execution, host_profiles, server, startup_text
 
 CLAUDE = host_profiles.HostProfile.CLAUDE_CODE
 CLAUDE_KEY = "host.claude-code.startup-page-bytes"
@@ -45,10 +44,8 @@ class HostSettingsTest(unittest.TestCase):
         }
 
     def read(self, profile: host_profiles.HostProfile = CLAUDE) -> dict[str, contracts.JsonValue]:
-        result = startup_text.read({"request": self.request}, profile, execution.CancellationToken())
-        validated = contract_schemas.validate_result("pinboard_startup_text", result.content)
-        wire: dict[str, contracts.JsonValue] = msgspec.json.decode(msgspec.json.encode(validated))
-        return wire
+        result = startup_text.read({"request": self.request}, execution.CancellationToken(), profile)
+        return execution.wire_content(result.record)
 
     def store(self, value: str) -> None:
         self.settings.parent.mkdir(parents=True)

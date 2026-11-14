@@ -1,5 +1,6 @@
 """Compose exact initiative leaves, transactional changes and replaceable views."""
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import assert_never
@@ -18,7 +19,7 @@ from pinboard.mcp import initiative_contracts as contracts
 from pinboard.mcp.contracts import JsonValue
 
 
-def rejected(code: models.RejectionCode, message: str) -> execution.OperationResult:
+def rejected(code: models.RejectionCode, message: str) -> execution.TypedOperationResult[contracts.Result]:
     value = contracts.Rejected(
         "pinboard-initiative-result/v1",
         "rejected",
@@ -30,10 +31,12 @@ def rejected(code: models.RejectionCode, message: str) -> execution.OperationRes
         "correct-input",
         (),
     )
-    return execution.OperationResult(msgspec.to_builtins(value), "rejected", None)
+    return execution.TypedOperationResult(value, "rejected", None)
 
 
-def operate(arguments: dict[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:  # noqa: C901, PLR0912 - exact leaf conversion and outer effects
+def operate(  # noqa: C901, PLR0912 - exact leaf conversion and outer effects
+    arguments: Mapping[str, JsonValue], token: execution.CancellationToken
+) -> execution.TypedOperationResult[contracts.Result]:
     try:
         request = msgspec.convert(arguments, type=contracts.Envelope, strict=True).request
     except (msgspec.ValidationError, ValueError) as error:
@@ -54,17 +57,15 @@ def operate(arguments: dict[str, JsonValue], token: execution.CancellationToken)
         value = store.read_initiative(initiative_id)
         if value is None:
             return rejected(models.RejectionCode.INITIATIVE_NOT_FOUND, f"Initiative '{initiative_id}' is absent.")
-        return execution.OperationResult(
-            msgspec.to_builtins(
-                contracts.ReadResult(
-                    "pinboard-initiative-result/v1",
-                    "ok",
-                    initiative_records.initiative_record(value),
-                    False,
-                    "unchanged",
-                    "safe-to-repeat",
-                    (),
-                )
+        return execution.TypedOperationResult(
+            contracts.ReadResult(
+                "pinboard-initiative-result/v1",
+                "ok",
+                initiative_records.initiative_record(value),
+                False,
+                "unchanged",
+                "safe-to-repeat",
+                (),
             ),
             "ok",
             None,
@@ -129,9 +130,7 @@ def operate(arguments: dict[str, JsonValue], token: execution.CancellationToken)
         ("ledger",),
         None if warning is None else contracts.Warning(warning.message, warning.repair),
     )
-    return execution.OperationResult(
-        msgspec.to_builtins(value), "committed" if warning is None else "committed-warning", str(result)
-    )
+    return execution.TypedOperationResult(value, "committed" if warning is None else "committed-warning", str(result))
 
 
 def _project_references(project_root: Path, references: tuple[str, ...]) -> tuple[str, ...]:
@@ -148,7 +147,7 @@ def _project_references(project_root: Path, references: tuple[str, ...]) -> tupl
     return tuple(resolved)
 
 
-def _roadmap_result(value: roadmap.Projection) -> execution.OperationResult:
+def _roadmap_result(value: roadmap.Projection) -> execution.TypedOperationResult[contracts.Result]:
     items: list[contracts.RoadmapItem] = []
     for item in value.facts.items:
         placement: contracts.Wave | contracts.Blocked | contracts.Unknown | contracts.Terminal
@@ -197,4 +196,4 @@ def _roadmap_result(value: roadmap.Projection) -> execution.OperationResult:
         "safe-to-repeat",
         (),
     )
-    return execution.OperationResult(msgspec.to_builtins(result), "ok", None)
+    return execution.TypedOperationResult(result, "ok", None)

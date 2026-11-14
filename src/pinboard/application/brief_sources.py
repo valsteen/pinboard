@@ -4,9 +4,10 @@ import hashlib
 import re
 from collections.abc import Iterable, Sequence
 from pathlib import PurePosixPath
-from typing import Final, Protocol
+from typing import Final, Literal, Protocol
 
 import msgspec
+from typing_extensions import TypedDict
 
 from pinboard.application.brief_source_models import (
     AuthoritySelector,
@@ -212,8 +213,17 @@ def _render_segments(segments: tuple[tuple[BriefSourceSegment, bytes], ...]) -> 
     return b"".join(rendered)
 
 
-def brief_source_batch_payload(index: int, content_byte_count: int, rendered: bytes) -> dict[str, str | int]:
-    payload: dict[str, str | int] = {
+class _BriefSourceBatchPricing(TypedDict, closed=True):
+    schema: Literal["pinboard-brief-source-batch/v1"]
+    batch_index: int
+    content_byte_count: int
+    rendered_byte_count: int
+    presented_byte_count: int
+    text: str
+
+
+def brief_source_batch_payload(index: int, content_byte_count: int, rendered: bytes) -> _BriefSourceBatchPricing:
+    payload: _BriefSourceBatchPricing = {
         "schema": "pinboard-brief-source-batch/v1",
         "batch_index": index,
         "content_byte_count": content_byte_count,
@@ -228,11 +238,9 @@ def brief_source_batch_payload(index: int, content_byte_count: int, rendered: by
 
 def _presented_size(index: int, segments: tuple[tuple[BriefSourceSegment, bytes], ...]) -> int:
     rendered = _render_segments(segments)
-    return int(
-        brief_source_batch_payload(index, sum(len(content) for _, content in segments), rendered)[
-            "presented_byte_count"
-        ]
-    )
+    return brief_source_batch_payload(index, sum(len(content) for _, content in segments), rendered)[
+        "presented_byte_count"
+    ]
 
 
 def _compose_batch(index: int, segments: tuple[BriefSourceSegment, ...]) -> BriefSourceBatch:

@@ -196,3 +196,6 @@ class RoadmapResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     def __post_init__(self) -> None:
         if self.state_changed:
             raise ValueError("A roadmap read has no committed effect.")
+
+
+type Result = ReadResult | RoadmapResult | Committed | Rejected

@@ -183,10 +183,12 @@ def restore_candidate(
                 )
             case _ as unreachable:
                 assert_never(unreachable)
-    except root.CandidateRestoreAfterMutationError as error:
+    except RootError as error:
+        return DecisionFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
+    if isinstance(restored, root.CandidateRestoreVerificationFailure):
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
-            str(error),
+            f"{restored.code.value}: {restored.message}",
             FailureDetails(
                 observed=(FailureFact("candidate", snapshot.candidate),),
                 mismatches=(),
@@ -196,8 +198,6 @@ def restore_candidate(
                 alternatives=(),
             ),
         )
-    except RootError as error:
-        return DecisionFailure(DecisionFailureCode.TRANSITION_INPUT_INVALID, str(error), None)
     if isinstance(restored, root.CandidateRestoreRejection):
         return DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,

@@ -17,7 +17,7 @@ from pinboard.adapters.sqlite.migration.schema_procedure import SchemaProcedureF
 from pinboard.application import query_models
 from pinboard.cli import cli_output, entrypoint, invocation_capture, work_state_commands
 from pinboard.domain.identifiers import AttemptId
-from pinboard.mcp import contract_schemas, execution, read_operations, server
+from pinboard.mcp import contracts, execution, read_operations, server
 from tests.checkpoint_support import CheckpointPackageSupport
 from tests.native_support import call_advertised_tool
 from tests.support import JsonObject
@@ -61,20 +61,21 @@ class ActionableOutcomeTest(CheckpointPackageSupport):
             "project_root": str(fixture.project),
             "work_root": str(fixture.work),
             "operation": "emit",
-            "plan": planned.content,
+            "plan": execution.wire_content(planned.record),
             "batch_index": 0,
         }
-        rejected = read_operations._brief_sources({"request": emitted}, execution.CancellationToken())
-        contract_schemas.validate_result(server.BRIEF_SOURCES_TOOL, rejected.content)
-        self.assertEqual("BRIEF_SOURCE_CHANGED", rejected.content["code"])
-        self.assertEqual("unchanged", rejected.content["effect"])
-        self.assertIn("pinboard_brief_sources", str(rejected.content["message"]))
+        rejected = read_operations._brief_sources({"request": emitted}, execution.CancellationToken()).record
+        assert isinstance(rejected, contracts.BriefSourcesRejected)
+        self.assertEqual("BRIEF_SOURCE_CHANGED", rejected.code)
+        self.assertEqual("unchanged", rejected.effect)
+        self.assertIn("pinboard_brief_sources", rejected.message)
         replanned = read_operations._brief_sources({"request": request}, execution.CancellationToken())
         recovered = read_operations._brief_sources(
-            {"request": emitted | {"plan": replanned.content}}, execution.CancellationToken()
-        )
-        self.assertIn("changed source", str(recovered.content["text"]))
-        self.assertNotEqual(planned.content, replanned.content)
+            {"request": emitted | {"plan": execution.wire_content(replanned.record)}}, execution.CancellationToken()
+        ).record
+        assert isinstance(recovered, contracts.BriefSourceBatchResult)
+        self.assertIn("changed source", recovered.text)
+        self.assertNotEqual(planned.record, replanned.record)
         self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_corrupt_accepted_bytes_name_the_resource_and_remain_untouched(self) -> None:
@@ -86,18 +87,20 @@ class ActionableOutcomeTest(CheckpointPackageSupport):
         resource.write_bytes(b"corrupt")
         before = fixture.store.validated_snapshot()
         reply = read_operations._verify_artifact(
-            str(fixture.project),
-            str(fixture.work),
-            int(context.brief_artifact_ref_id),
-            reference.selector,
-            reference.content_sha256,
-            reference.size_bytes,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "artifact_ref_id": int(context.brief_artifact_ref_id),
+                "selector": reference.selector,
+                "sha256": reference.content_sha256,
+                "size_bytes": reference.size_bytes,
+            },
             execution.CancellationToken(),
         )
-        contract_schemas.validate_result(server.ARTIFACT_VERIFY_TOOL, reply.content)
-        self.assertEqual("ARTIFACT_BYTES_INVALID", reply.content["code"])
-        self.assertEqual("do-not-retry", reply.content["retry"])
-        self.assertIn(str(resource), str(reply.content["message"]))
+        assert isinstance(reply.record, contracts.ArtifactBytesInvalid)
+        self.assertEqual("ARTIFACT_BYTES_INVALID", reply.record.code)
+        self.assertEqual("do-not-retry", reply.record.retry)
+        self.assertIn(str(resource), reply.record.message)
         self.assertEqual(b"corrupt", resource.read_bytes())
         self.assertEqual(before, fixture.store.validated_snapshot())
 

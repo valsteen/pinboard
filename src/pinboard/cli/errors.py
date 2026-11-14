@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import override
+from typing import Literal, override
 
-from pinboard.adapters.files.errors import ArtifactError, FileIOError
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode, FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError
 from pinboard.application import work_brief_models
@@ -102,7 +102,21 @@ class CommandFailure:
 type CommandResult[T] = T | CommandFailure
 
 
-type InitializationCause = StorageError | ArtifactError | FileIOError | work_brief_models.WorkBriefFailure
+@dataclass(frozen=True, slots=True)
+class CliEffectFailure[Code: ArtifactErrorCode | FileIOErrorCode]:
+    code: Code
+    message: str
+
+    @override
+    def __str__(self) -> str:
+        return f"{self.code.value}: {self.message}"
+
+
+type ExportMediaFailure = CliEffectFailure[Literal[ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION]]
+type ViewRefreshFailure = CliEffectFailure[Literal[FileIOErrorCode.VIEW_REFRESH_FAILED]]
+type InitializationCause = (
+    StorageError | ArtifactError | FileIOError | work_brief_models.WorkBriefFailure | ViewRefreshFailure
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,5 +177,7 @@ def initialization_failure_details(
     )
 
 
-type CliFailure = CommandFailure | WorkBriefFailure | InitializationAfterCommittedEffects
+type CliFailure = (
+    CommandFailure | WorkBriefFailure | InitializationAfterCommittedEffects | ExportMediaFailure | ViewRefreshFailure
+)
 type CliResult[T] = T | CliFailure

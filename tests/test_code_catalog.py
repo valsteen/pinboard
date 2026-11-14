@@ -119,6 +119,7 @@ class CodeCatalogTest(unittest.TestCase):
                 "closure-unknown",
                 "inspect",
                 "inspect:live-order",
+                "result-validation-error",
                 "startup",
             ):
                 with self.subTest(code=code):

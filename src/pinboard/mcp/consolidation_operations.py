@@ -1,12 +1,10 @@
 """Compose native consolidation decoding, selected observation, locked commit and view refresh."""
 
-from collections.abc import Iterator
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from functools import partial
 from typing import Literal, assert_never
 
 import msgspec
-from mcp.server.mcpserver import MCPServer
 
 from pinboard.adapters.dependency_operations import resolve_dependency_brief_pins
 from pinboard.adapters.files.artifacts import ArtifactRepository
@@ -15,39 +13,15 @@ from pinboard.adapters.files.models import AffectedViews
 from pinboard.application import consolidation, consolidation_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HostId, TaskId
-from pinboard.mcp import common, execution, tool_names
+from pinboard.mcp import common, execution
 from pinboard.mcp import consolidation_contracts as contracts
 from pinboard.mcp.contracts import JsonValue, WarningResult
-
-
-def register(
-    server: MCPServer,
-    executor: execution.BoundedExecutor,
-    diagnostics: execution.Diagnostics,
-    request_ids: Iterator[int],
-    capture: execution.SemanticCapture | execution.AutomaticCapture | None,
-) -> None:
-    @server.tool(
-        name=tool_names.CONSOLIDATE_TOOL,
-        description="Preview a new or live existing campaign from selected live sources, then atomically confirm the exact displayed map only after a separate human confirmation. Carries every source obligation with its direct origin, folds internal waits into retained context, preserves external waits, retargets surviving consumers and ends sources as superseded. Put all fields inside request. No worker launch or repository effect.",
-    )
-    async def consolidate(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
-        arguments: dict[str, JsonValue] = {"request": request}
-        return await execution._run_request(
-            executor,
-            diagnostics,
-            next(request_ids),
-            tool_names.CONSOLIDATE_TOOL,
-            str(request.get("project_root", "")),
-            partial(operate, arguments),
-            arguments=arguments,
-            capture=None if request.get("operation") == "preview" else capture,
-        )
+from pinboard.mcp.tool_names import CONSOLIDATE_TOOL
 
 
 def rejected(
     code: DecisionFailureCode, message: str, retry: Literal["correct-input", "refresh-action"]
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.Result]:
     result = contracts.Rejected(
         "pinboard-consolidation-result/v1",
         "rejected",
@@ -59,10 +33,12 @@ def rejected(
         retry,
         (),
     )
-    return execution.OperationResult(msgspec.to_builtins(result), "rejected", None)
+    return execution.TypedOperationResult(result, "rejected", None)
 
 
-def operate(arguments: dict[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def operate(
+    arguments: Mapping[str, JsonValue], token: execution.CancellationToken
+) -> execution.TypedOperationResult[contracts.Result]:
     try:
         request = msgspec.convert(arguments, type=contracts.Envelope, strict=True).request
     except (msgspec.ValidationError, ValueError) as error:
@@ -108,7 +84,7 @@ def operate(arguments: dict[str, JsonValue], token: execution.CancellationToken)
                 "safe-to-repeat",
                 (),
             )
-            return execution.OperationResult(msgspec.to_builtins(result), "ok", None)
+            return execution.TypedOperationResult(result, "ok", None)
         case contracts.ConfirmRequest():
             token.checkpoint()
             effect = consolidation.confirm(
@@ -144,10 +120,20 @@ def operate(arguments: dict[str, JsonValue], token: execution.CancellationToken)
                 ("ledger",),
                 None if warning is None else WarningResult(warning.message, warning.repair),
             )
-            return execution.OperationResult(
-                msgspec.to_builtins(committed),
+            return execution.TypedOperationResult(
+                committed,
                 "committed" if warning is None else "committed-warning",
                 str(effect.receipt.project_revision),
             )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+CONSOLIDATE: execution.ToolContract[contracts.Envelope, contracts.Result] = execution.ToolContract(
+    name=CONSOLIDATE_TOOL,
+    description="Preview a new or live existing campaign from selected live sources, then atomically confirm the exact displayed map only after a separate human confirmation. Carries every source obligation with its direct origin, folds internal waits into retained context, preserves external waits, retargets surviving consumers and ends sources as superseded. Put all fields inside request. No worker launch or repository effect.",
+    request=contracts.Envelope,
+    results=contracts.Result,
+    operate=operate,
+    meta=None,
+)

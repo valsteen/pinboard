@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import hashlib
+import io
 import json
 import os
 import sqlite3
@@ -42,7 +43,7 @@ from pinboard.application.dispatch_models import DispatchArtifactPort
 from pinboard.application.ports import WorkStore
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, CheckpointId, HistoryId, ReviewId
-from pinboard.mcp import contract_schemas, server
+from pinboard.mcp import contracts, server
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import job_operations as mcp_jobs
 from pinboard.mcp.contracts import JsonValue
@@ -55,6 +56,94 @@ from tests.work_brief_support import ready_review, work_a_brief
 
 
 class CorrectionSourceReviewTest(CheckpointPackageSupport):
+    def test_review_job_preserves_prompt_publication_when_owner_cannot_be_projected(self) -> None:
+        self.fixed_native_time()
+        fixture = self.correction_fixture()
+        brief = msgspec.structs.replace(
+            fixture.brief, artifact_revision=fixture.brief.artifact_revision + 1, owner_task_id="owner/other"
+        )
+        roots = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+        published = fixture.call_advertised_tool(
+            server.BRIEF_PUBLISH_TOOL, roots | {"brief": msgspec.to_builtins(brief)}
+        )
+        self.assertEqual("committed", published["status"], published)
+        reference = self.json_object(published["reference"])
+        rebound = self.transition_result(
+            fixture,
+            self.project_action(fixture, "rebind-attempt:work-a-1"),
+            {
+                "branch": brief.branch,
+                "base_revision": brief.base_revision,
+                "brief_artifact_ref_id": reference["artifact_ref_id"],
+            },
+        )
+        self.assertEqual("committed", rebound["status"], rebound)
+        (fixture.project / "tests" / "test_only.py").write_text("assert 1 == 1\n", encoding="utf-8")
+        candidate = root.read_working_tree_candidate(fixture.project).identity
+        lease = self.native_attempt_acquire(fixture, "review-worker")
+        submitted = self.transition_result(
+            fixture,
+            self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease),
+            {"candidate": candidate},
+        )
+        self.assertEqual("committed", submitted["status"], submitted)
+        database = fixture.work / "state.sqlite3"
+        before = SQLiteWorkStore(database).validated_snapshot()
+
+        trace_directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        diagnostics = io.StringIO()
+        executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        transport = server.create_server(
+            executor,
+            mcp_execution.Diagnostics(diagnostics, event_limit=4, line_limit=512),
+            mcp_execution.SemanticCapture(trace_directory),
+        )
+        arguments = roots | {
+            "review": {
+                "kind": "initial",
+                "attempt_id": "work-a-1",
+                "candidate_revision": candidate,
+                "runtime": "codex",
+                "background": False,
+            }
+        }
+
+        async def review() -> CallToolResult:
+            async with Client(transport) as client:
+                return await client.call_tool(server.REVIEW_JOB_TOOL, arguments)
+
+        with self.assertLogs("mcp.server.mcpserver.server", level="ERROR"):
+            reply = asyncio.run(review())
+        self.assertTrue(reply.is_error)
+        self.assertIsNone(reply.structured_content)
+        (message,) = reply.content
+        assert message.type == "text"
+        self.assertEqual("Error executing tool pinboard_review_job", message.text)
+
+        after = SQLiteWorkStore(database).validated_snapshot()
+        (prompt,) = set(after.artifact_references) - set(before.artifact_references)
+        self.assertEqual(before.lifecycle.project.revision + 1, after.lifecycle.project.revision)
+        self.assertEqual(after.lifecycle.project.revision, prompt.accepted_revision)
+        prompt_bytes = (fixture.work / prompt.selector).read_bytes()
+        self.assertEqual(
+            (prompt.size_bytes, prompt.content_sha256), (len(prompt_bytes), hashlib.sha256(prompt_bytes).hexdigest())
+        )
+        self.assertIn(work_briefs.canonical_work_brief_bytes(brief), prompt_bytes)
+        (trace_path,) = trace_directory.glob("*.json")
+        trace = json.loads(trace_path.read_bytes())
+        self.assertEqual(
+            {
+                "availability": "unavailable",
+                "reason": "callback-error",
+                "classification": "committed",
+                "commit_reference": str(prompt.accepted_revision),
+            },
+            trace["result"],
+        )
+        self.assertIn("event=result request_id=", diagnostics.getvalue())
+        self.assertIn(f"classification=committed commit={prompt.accepted_revision}", diagnostics.getvalue())
+
     def test_sdk_correction_dispatch_preserves_historical_diff_evidence_across_abbreviation_changes(self) -> None:
         self.fixed_native_time()
         for abbreviation, committed in (("7", False), ("8", False), ("7", True), ("8", True)):
@@ -196,9 +285,12 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         return choice
 
     def dispatch_native(self, fixture: CheckpointFixture, choice: JsonObject) -> JsonObject:
-        return mcp_jobs._dispatch_job(
-            str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
-        ).content
+        return mcp_execution.wire_content(
+            mcp_jobs._dispatch_job(
+                {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
+                mcp_execution.CancellationToken(),
+            ).record
+        )
 
     def reuse_choice(self, fixture: CheckpointFixture, choice: JsonObject) -> JsonObject:
         selected = deepcopy(choice)
@@ -1478,19 +1570,25 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         first_state = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         first_reviews = {value.key for value in first_state.artifact_references if "-brief-review-" in value.key}
         replay = mcp_jobs._dispatch_job(
-            str(fixture.project), str(fixture.work), first, mcp_execution.CancellationToken()
+            {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": first},
+            mcp_execution.CancellationToken(),
         )
-        self.assertEqual("unchanged", replay.content["effect"], replay.content)
+        self.assertEqual(
+            "unchanged", mcp_execution.wire_content(replay.record)["effect"], mcp_execution.wire_content(replay.record)
+        )
         second_history, second = self.submit_and_return(fixture, "second-test", committed=False)
         self.assertEqual(
             self.json_object(first["brief_review"])["contract_review"],
             self.json_object(second["brief_review"])["contract_review"],
         )
         ready = mcp_jobs._dispatch_job(
-            str(fixture.project), str(fixture.work), second, mcp_execution.CancellationToken()
+            {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": second},
+            mcp_execution.CancellationToken(),
         )
-        self.assertEqual("ready", ready.content["status"], ready.content)
-        second_reference = self.json_object(ready.content["prompt_reference"])
+        self.assertEqual(
+            "ready", mcp_execution.wire_content(ready.record)["status"], mcp_execution.wire_content(ready.record)
+        )
+        second_reference = self.json_object(mcp_execution.wire_content(ready.record)["prompt_reference"])
         second_prompt = (fixture.work / str(second_reference["selector"])).read_text()
         self.assertIn(f"Selected return history ID: {second_history}", second_prompt)
         self.assertNotIn(f"Selected return history ID: {first_history}", second_prompt)
@@ -1504,15 +1602,17 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         )
         collision["review_id"] = "different-proof"
         outcome = mcp_jobs._dispatch_job(
-            str(fixture.project), str(fixture.work), collision, mcp_execution.CancellationToken()
+            {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": collision},
+            mcp_execution.CancellationToken(),
         )
-        self.assertEqual("DISPATCH_BRIEF_REVIEW_COLLISION", outcome.content["code"])
-        self.assertEqual("failed-after-publication", outcome.content["status"])
-        self.assertEqual("do-not-retry", outcome.content["retry"])
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_COLLISION", mcp_execution.wire_content(outcome.record)["code"])
+        self.assertEqual("failed-after-publication", mcp_execution.wire_content(outcome.record)["status"])
+        self.assertEqual("do-not-retry", mcp_execution.wire_content(outcome.record)["retry"])
         replay_collision = mcp_jobs._dispatch_job(
-            str(fixture.project), str(fixture.work), collision, mcp_execution.CancellationToken()
+            {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": collision},
+            mcp_execution.CancellationToken(),
         )
-        self.assertFalse(replay_collision.content["state_changed"])
+        self.assertFalse(mcp_execution.wire_content(replay_collision.record)["state_changed"])
 
     def test_wrong_snapshot_reason_candidate_preimage_and_stale_return_reject_before_publication(self) -> None:
         fixture = self.correction_fixture()
@@ -1542,9 +1642,10 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.commit_all(fixture.project, "different preimage")
         before = fixture.store.validated_snapshot()
         rejected = mcp_jobs._dispatch_job(
-            str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
+            {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
+            mcp_execution.CancellationToken(),
         )
-        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", rejected.content["code"])
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", mcp_execution.wire_content(rejected.record)["code"])
         self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_large_correction_evidence_fits_complete_sdk_replies_and_dispatches(self) -> None:  # noqa: PLR0915 - one SDK evidence-to-dispatch journey
@@ -1640,6 +1741,11 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                     for tool, arguments in routes:
                         reply = await client.call_tool(tool, arguments)
                         assert isinstance(reply.structured_content, dict)
+                        result_type = (
+                            contracts.CorrectionContextReady
+                            if tool == server.CORRECTION_CONTEXT_TOOL
+                            else contracts.ReturnContextReady
+                        )
                         changes: tuple[JsonObject, ...] = (
                             {"reuse_eligible": True, "reuse_blockers": ["Cannot reuse coverage."]},
                             {"reuse_eligible": False, "reuse_blockers": []},
@@ -1658,7 +1764,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                                     tool, CallToolResult(content=[], structured_content=invalid)
                                 )
                             with self.assertRaises(msgspec.ValidationError):
-                                contract_schemas.validate_result(tool, invalid)
+                                msgspec.convert(invalid, type=result_type, strict=True)
                         predecessor = reply.structured_content | {
                             "schema": "pinboard-correction-context/v1"
                             if tool == server.CORRECTION_CONTEXT_TOOL
@@ -1669,7 +1775,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                                 tool, CallToolResult(content=[], structured_content=predecessor)
                             )
                         with self.assertRaises(msgspec.ValidationError):
-                            contract_schemas.validate_result(tool, predecessor)
+                            msgspec.convert(predecessor, type=result_type, strict=True)
 
             asyncio.run(scenario())
 
@@ -1768,11 +1874,12 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
 
         with patch.object(dispatch_operations, "_read_correction_start", side_effect=change_before_recheck):
             outcome = mcp_jobs._dispatch_job(
-                str(fixture.project), str(fixture.work), choice, mcp_execution.CancellationToken()
+                {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
+                mcp_execution.CancellationToken(),
             )
-        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", outcome.content["code"])
-        self.assertEqual("failed-after-publication", outcome.content["status"])
-        self.assertEqual("do-not-retry", outcome.content["retry"])
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", mcp_execution.wire_content(outcome.record)["code"])
+        self.assertEqual("failed-after-publication", mcp_execution.wire_content(outcome.record)["status"])
+        self.assertEqual("do-not-retry", mcp_execution.wire_content(outcome.record)["retry"])
         after = fixture.store.validated_snapshot()
         self.assertEqual(before.lifecycle.work_items, after.lifecycle.work_items)
         self.assertEqual(before.lifecycle.attempts, after.lifecycle.attempts)
@@ -2111,7 +2218,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
 
         for change in ({"status": "drifted"}, {"schema": "pinboard-return-context/v99"}, {"unknown": True}):
             with self.assertRaises(msgspec.ValidationError):
-                contract_schemas.validate_result(server.RETURN_CONTEXT_TOOL, returned | change)
+                msgspec.convert(returned | change, type=contracts.ReturnContextReady, strict=True)
         invalid = deepcopy(choice)
         invalid["kind"] = "candidate-correction"
         invalid["brief_review"] = {

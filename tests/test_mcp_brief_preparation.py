@@ -27,7 +27,7 @@ from pinboard.application import (
     work_briefs,
 )
 from pinboard.mcp import common as mcp_common
-from pinboard.mcp import contract_schemas, contracts, server
+from pinboard.mcp import contracts, server
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import read_operations as mcp_reads
 from tests import test_mcp
@@ -113,9 +113,8 @@ class McpBriefPreparationTest(unittest.TestCase):
 
     def sources(self, operation: str, **fields: contracts.JsonValue) -> dict[str, contracts.JsonValue]:
         owner = mcp_reads._brief_source_plan_output if operation == "plan-to-file" else mcp_reads._brief_sources
-        tool = server.BRIEF_SOURCE_PLAN_OUTPUT_TOOL if operation == "plan-to-file" else server.BRIEF_SOURCES_TOOL
         result = owner({"request": {**self.roots, "operation": operation, **fields}}, mcp_execution.CancellationToken())
-        return contract_schemas.validate_result(tool, result.content)
+        return mcp_execution.wire_content(result.record)
 
     def test_negotiated_construction_outputs_complete_canonical_starters_and_publish(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
@@ -177,7 +176,7 @@ class McpBriefPreparationTest(unittest.TestCase):
             result = mcp_reads._brief_contract(
                 {"request": {**self.roots, "operation": "full"}}, mcp_execution.CancellationToken()
             )
-            contract_schemas.validate_result(server.BRIEF_CONTRACT_TOOL, result.content)
+            self.assertIsInstance(result.record, contracts.WorkBriefContractResult)
         asyncio.run(scenario())
 
     def test_strict_leaf_matrix_rejects_before_root_source_or_output_effects(self) -> None:
@@ -209,9 +208,9 @@ class McpBriefPreparationTest(unittest.TestCase):
                 with self.subTest(leaf=leaf):
                     result = mcp_reads._brief_sources(
                         {"request": {**self.roots, **leaf}}, mcp_execution.CancellationToken()
-                    ).content
-                    self.assertEqual("BRIEF_SOURCES_REQUEST_INVALID", result["code"])
-                    contract_schemas.validate_result(server.BRIEF_SOURCES_TOOL, result)
+                    ).record
+                    assert isinstance(result, contracts.BriefSourcesRejected)
+                    self.assertEqual("BRIEF_SOURCES_REQUEST_INVALID", result.code)
             for root in ("", "bad\x00root"):
                 self.assertEqual(
                     "BRIEF_SOURCES_REQUEST_INVALID",
@@ -222,11 +221,12 @@ class McpBriefPreparationTest(unittest.TestCase):
             {"operation": "starter", "boundary": "invalid"},
             {"operation": "starter"},
         ):
-            result = mcp_reads._brief_contract(
-                {"request": {**self.roots, **fields}}, mcp_execution.CancellationToken()
-            ).content
+            result = mcp_execution.wire_content(
+                mcp_reads._brief_contract(
+                    {"request": {**self.roots, **fields}}, mcp_execution.CancellationToken()
+                ).record
+            )
             self.assertEqual("BRIEF_CONTRACT_REQUEST_INVALID", result["code"])
-            contract_schemas.validate_result(server.BRIEF_CONTRACT_TOOL, result)
 
     def test_read_tool_rejects_plan_publication_at_the_negotiated_boundary(self) -> None:
         executor = mcp_execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
@@ -608,6 +608,6 @@ class McpBriefPreparationTest(unittest.TestCase):
             return created
 
         with patch.object(mcp_reads, "create_immutable", side_effect=cancel_after_visibility):
-            result = mcp_reads._brief_source_plan_output(request, token).content
-        self.assertEqual("committed", result["effect"])
+            result = mcp_reads._brief_source_plan_output(request, token).record
+        self.assertEqual("committed", result.effect)
         self.assertTrue(destination.exists())

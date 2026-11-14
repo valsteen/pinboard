@@ -1,4 +1,4 @@
-"""Generate negotiated MCP schemas and validate emitted transport results."""
+"""Generate negotiated MCP request and result schemas."""
 
 from types import UnionType
 from typing import TypeAliasType, assert_never, get_args
@@ -7,137 +7,21 @@ import msgspec
 from typing_extensions import TypeForm
 
 from pinboard.adapters import dispatch_operations
-from pinboard.application import action_models, brief_source_models, dispatch_models, query_models
+from pinboard.application import action_models, dispatch_models
 from pinboard.domain import decision_models
 from pinboard.domain.errors import DecisionFailureCode
-from pinboard.mcp import consolidation_contracts, initiative_contracts
 from pinboard.mcp.contracts import (
     _ACTIVE_CONTINUATION_ACTION_KINDS,
     _BLOCKED_CONTINUATION_ACTION_KINDS,
     _PAUSED_CONTINUATION_ACTION_KINDS,
     _REVIEW_CONTINUATION_ACTION_KINDS,
-    ActionRouteClassificationRequired,
     ActionsEnvelope,
-    ActionsInvalid,
-    ActionsSuccess,
-    ActionUnavailable,
-    ArtifactBytesInvalid,
-    ArtifactReferenceMismatch,
-    ArtifactVerificationInvalid,
-    ArtifactVerified,
-    AttemptActionUnavailable,
-    AttemptAuthorityCommitted,
-    AttemptAuthorityEnvelope,
-    AttemptAuthorityRejected,
-    AttemptAuthorityStatusAbsent,
-    AttemptAuthorityStatusPresent,
-    AttemptBriefInvalid,
-    AttemptInspectInvalid,
-    AttemptLeaseRequired,
-    AttemptNotFound,
-    AttemptReceiptDamaged,
-    BranchOwnerNotFound,
-    BriefArchitectureImpactRejected,
-    BriefArtifactCommitted,
-    BriefArtifactCommittedWithWarning,
-    BriefCommitted,
-    BriefCommittedWithWarning,
-    BriefContractRejected,
-    BriefLookupInvalid,
-    BriefNotFound,
-    BriefPublicationInfrastructureFailure,
-    BriefPublicationInfrastructureUnchangedFailure,
-    BriefPublishedRejection,
-    BriefReferenceCommitted,
-    BriefReferenceCommittedWithWarning,
-    BriefRejected,
-    BriefReviewCommitted,
-    BriefReviewInfrastructureFailure,
-    BriefReviewInfrastructureUnchangedFailure,
-    BriefReviewNeedsCorrection,
-    BriefReviewNoEvidence,
-    BriefReviewPublishedRejection,
-    BriefReviewRejected,
-    BriefReviewUnchanged,
-    BriefSourceBatchResult,
-    BriefSourcePlanOutputResult,
-    BriefSourcesPublishedFailure,
-    BriefSourcesRejected,
-    BriefUnchanged,
-    BriefUnchangedWithWarning,
-    CancellationCommitted,
-    CancellationPreviewResult,
-    CancellationRejected,
-    CandidateObservationRejected,
-    CandidateObserved,
-    CandidateRestoreFailed,
-    CandidateRestoreInvalid,
-    CandidateRestoreReady,
-    CandidateRestoreRejected,
-    CandidateReviewRecorded,
-    CloseActionsSuccess,
-    CompletionActionsSuccess,
-    CorrectionContextReady,
-    CorrectionContextRejected,
-    DispatchFailedAfterPublication,
-    DispatchInfrastructureFailure,
-    DispatchInvalid,
-    DispatchReady,
-    DispatchRejected,
     DispatchRequest,
     ExecutorBusyResult,
-    FixtureReviewPage,
-    FixtureReviewRejected,
-    IntegrationCandidateEvidenceInvalid,
-    IntegrationCandidateUnavailable,
-    IntegrationTargetUnresolved,
-    ItemDefinitionRejected,
-    ItemStatusGitUnavailable,
-    ItemStatusInconsistent,
-    ItemStatusInvalid,
-    ItemStatusReceiptDamaged,
-    ItemStatusUnavailable,
     JsonSchemaValue,
-    JsonValue,
-    NonterminalAttemptInspectionSuccess,
-    NoPayloadInputContract,
-    ObligationCoverageRejected,
-    ObligationCoverageSuccess,
-    OverviewRejected,
-    ParallelPreviewRejected,
-    ParallelPreviewSuccess,
-    PreparationAuthorityCommitted,
-    PreparationAuthorityEnvelope,
-    PreparationAuthorityRejected,
-    PreparationAuthorityStatusAbsent,
-    PreparationAuthorityStatusPresent,
-    ProposalCommitted,
-    ProposalCommittedWithWarning,
-    ProposalDuplicate,
-    ProposalRejected,
-    PrReviewRejected,
-    PrReviewSuccess,
-    ReplacementReadinessReady,
-    ReturnContextReady,
-    ReturnContextRejected,
-    ReviewJobFailedAfterPublication,
-    ReviewJobInfrastructureFailure,
-    ReviewJobInvalid,
-    ReviewJobReady,
-    ReviewJobRejected,
     SchemaUnsupportedResult,
-    StartupHostSettingFailed,
-    StartupTextPage,
-    StartupTextRejected,
-    TerminalAttemptInspectionSuccess,
     TracePreflightResult,
-    TransitionCommitted,
-    TransitionCommittedStatusUnavailable,
-    TransitionFailedAfterPublication,
-    TransitionRejected,
     TransitionRequest,
-    WorkBriefContractResult,
-    WorkBriefStarterContractResult,
     _committed_transition_surfaces,
     _fixed_state_changed,
     action_invocation_tool,
@@ -219,10 +103,10 @@ def schema_for(boundary_type: type[msgspec.Struct]) -> dict[str, JsonSchemaValue
     return {**definition, **schema}
 
 
-def dispatch_request_schema() -> dict[str, JsonSchemaValue]:
+def dispatch_request_schema(request: type[DispatchRequest]) -> dict[str, JsonSchemaValue]:
     """Inline dispatch records so host reference-expansion limits retain every choice."""
 
-    schema = schema_for(DispatchRequest)
+    schema = schema_for(request)
     definitions = schema.pop("$defs")
     assert isinstance(definitions, dict)
 
@@ -251,14 +135,6 @@ def actions_request_schema() -> dict[str, JsonSchemaValue]:
     """Return the exact role-discriminated action request schema."""
 
     return schema_for(ActionsEnvelope)
-
-
-def preparation_authority_request_schema() -> dict[str, JsonSchemaValue]:
-    return schema_for(PreparationAuthorityEnvelope)
-
-
-def attempt_authority_request_schema() -> dict[str, JsonSchemaValue]:
-    return schema_for(AttemptAuthorityEnvelope)
 
 
 def transition_request_schema() -> dict[str, JsonSchemaValue]:
@@ -516,6 +392,9 @@ def _apply_transition_constraints(definitions: dict[str, JsonSchemaValue]) -> No
         definition = definitions.get(name)
         if isinstance(definition, dict):
             definition["oneOf"] = alternatives
+            required = definition.get("required")
+            if isinstance(required, list):
+                required.remove("local_cleanup")
 
 
 def _relative_action(kind: decision_models.ActionKind) -> dict[str, JsonSchemaValue]:
@@ -797,371 +676,3 @@ def typed_result_schema(results: TypeForm[msgspec.Struct]) -> dict[str, JsonSche
     value = results.__value__
     members = get_args(value) if isinstance(value, UnionType) else (value,)
     return union_schema_for((*members, ExecutorBusyResult))
-
-
-BRIEF_CONTRACT_RESULT_TYPES = (
-    WorkBriefContractResult,
-    WorkBriefStarterContractResult,
-    BriefContractRejected,
-    ExecutorBusyResult,
-)
-BRIEF_SOURCES_RESULT_TYPES = (
-    brief_source_models.BriefSourcePlanView,
-    BriefSourceBatchResult,
-    BriefSourcesRejected,
-    ExecutorBusyResult,
-)
-BRIEF_SOURCE_PLAN_OUTPUT_RESULT_TYPES = (
-    BriefSourcePlanOutputResult,
-    BriefSourcesRejected,
-    BriefSourcesPublishedFailure,
-    ExecutorBusyResult,
-)
-
-
-def validate_brief_preparation_result(content: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    """Decode Raw-bearing construction outputs exactly; structured requests never take this route."""
-    match content.get("schema"):
-        case "pinboard-work-brief-contract/v1":
-            msgspec.json.decode(msgspec.json.encode(content), type=WorkBriefContractResult)
-        case "pinboard-work-brief-starter/v1":
-            msgspec.json.decode(msgspec.json.encode(content), type=WorkBriefStarterContractResult)
-        case "pinboard-brief-source-plan/v1":
-            msgspec.convert(content, type=brief_source_models.BriefSourcePlanView, strict=True)
-        case "pinboard-brief-source-plan-output/v1":
-            msgspec.convert(content, type=BriefSourcePlanOutputResult, strict=True)
-        case "pinboard-brief-source-batch/v1":
-            msgspec.convert(content, type=BriefSourceBatchResult, strict=True)
-        case "pinboard-mcp-brief-contract-result/v1":
-            msgspec.convert(content, type=BriefContractRejected, strict=True)
-        case "pinboard-mcp-brief-sources-result/v1":
-            if content.get("status") == "committed-effect":
-                msgspec.convert(content, type=BriefSourcesPublishedFailure, strict=True)
-            else:
-                msgspec.convert(content, type=BriefSourcesRejected, strict=True)
-        case unexpected:
-            raise ValueError(f"Unsupported brief preparation result schema: {unexpected}")
-    return content
-
-
-def _validate_actions_result(content: dict[str, JsonValue]) -> None:
-    action_values = content.get("actions")
-    first_action = action_values[0] if isinstance(action_values, list) and len(action_values) == 1 else None
-    input_contract = first_action.get("input_contract") if isinstance(first_action, dict) else None
-    focused_completion = isinstance(input_contract, dict) and "checkpoint_packages" in input_contract
-    if isinstance(first_action, dict) and "replacement_coverage" in first_action:
-        msgspec.convert(content, type=CloseActionsSuccess, strict=True)
-        return
-    if focused_completion:
-        msgspec.convert(content, type=CompletionActionsSuccess, strict=True)
-        return
-    if not isinstance(action_values, list):
-        msgspec.convert(content, type=ActionsSuccess, strict=True)
-        return
-    prepared_actions: list[dict[str, JsonValue | action_models.InputContractView]] = []
-    for action in action_values:
-        if not isinstance(action, dict):
-            raise ValueError("Action discovery actions must be objects.")
-        prepared = dict[str, JsonValue | action_models.InputContractView](action)
-        contract = action.get("input_contract")
-        if isinstance(contract, dict) and "payload_schema" not in contract:
-            absent = msgspec.convert(contract, type=NoPayloadInputContract, strict=True)
-            # Exact typed instances preserve explicit UNSET without giving the internal record a default.
-            prepared["input_contract"] = action_models.InputContractView(
-                absent.action_kind, absent.semantics, msgspec.UNSET
-            )
-        prepared_actions.append(prepared)
-    msgspec.convert({**content, "actions": prepared_actions}, type=ActionsSuccess, strict=True)
-
-
-def validate_result(tool_name: str, content: dict[str, JsonValue]) -> dict[str, JsonValue]:  # noqa: C901, PLR0912, PLR0915
-    """Validate one untyped operation result against the alternative its tool name and strings select.
-
-    Typed records, including every shared execution envelope, are emitted by mcp.execution without revalidation.
-    """
-    if tool_name in {"pinboard_brief_contract", "pinboard_brief_sources", "pinboard_brief_source_plan_output"}:
-        return validate_brief_preparation_result(content)
-    schema = content.get("schema")
-    status = content.get("status")
-    code = content.get("code")
-    surfaces = content.get("changed_surfaces")
-    if tool_name == "pinboard_startup_text":
-        msgspec.convert(
-            content,
-            type=StartupTextPage
-            if status != "rejected"
-            else StartupHostSettingFailed
-            if code == "HOST_PAGE_SETTING_UNAVAILABLE"
-            else StartupTextRejected,
-            strict=True,
-        )
-    elif tool_name == "pinboard_fixture_review":
-        msgspec.convert(content, type=FixtureReviewRejected if status == "rejected" else FixtureReviewPage, strict=True)
-    elif tool_name == "pinboard_initiative" and schema == "pinboard-roadmap-result/v1":
-        msgspec.convert(content, type=initiative_contracts.RoadmapResult, strict=True)
-    elif tool_name == "pinboard_initiative":
-        msgspec.convert(
-            content,
-            type=initiative_contracts.Rejected
-            if status == "rejected"
-            else initiative_contracts.ReadResult
-            if status == "ok"
-            else initiative_contracts.Committed,
-            strict=True,
-        )
-    elif tool_name == "pinboard_consolidate":
-        msgspec.convert(
-            content,
-            type=consolidation_contracts.Rejected
-            if status == "rejected"
-            else consolidation_contracts.PreviewResult
-            if status == "ok"
-            else consolidation_contracts.Committed,
-            strict=True,
-        )
-    elif tool_name == "pinboard_cancel":
-        msgspec.convert(
-            content,
-            type=CancellationRejected
-            if status == "rejected"
-            else CancellationPreviewResult
-            if status == "ok"
-            else CancellationCommitted,
-            strict=True,
-        )
-    elif tool_name == "pinboard_pr_review":
-        msgspec.convert(content, type=PrReviewRejected if status == "rejected" else PrReviewSuccess, strict=True)
-    elif tool_name == "pinboard_parallel_preview":
-        msgspec.convert(
-            content, type=ParallelPreviewRejected if status == "rejected" else ParallelPreviewSuccess, strict=True
-        )
-    elif tool_name == "pinboard_obligation_coverage":
-        msgspec.convert(
-            content,
-            type=ObligationCoverageRejected if status == "rejected" else ObligationCoverageSuccess,
-            strict=True,
-        )
-    elif tool_name == "pinboard_item_definition":
-        if schema == "pinboard-item-definition/v1":
-            msgspec.convert(content, type=query_models.ItemDefinition, strict=True)
-        elif schema == "pinboard-item-definition-history/v1":
-            msgspec.convert(content, type=query_models.ItemDefinitionHistory, strict=True)
-        else:
-            msgspec.convert(content, type=ItemDefinitionRejected, strict=True)
-    elif tool_name == "pinboard_brief_review":
-        if status == "no-needs-correction-evidence":
-            msgspec.convert(
-                content,
-                type=BriefReviewNoEvidence,
-                strict=True,
-            )
-        elif status == "needs-correction":
-            msgspec.convert(
-                content,
-                type=BriefReviewNeedsCorrection,
-                strict=True,
-            )
-        elif status in {"committed", "committed-with-warning"}:
-            msgspec.convert(content, type=BriefReviewCommitted, strict=True)
-        elif status == "unchanged":
-            msgspec.convert(content, type=BriefReviewUnchanged, strict=True)
-        elif status == "failed-after-publication":
-            msgspec.convert(content, type=BriefReviewInfrastructureFailure, strict=True)
-        elif status == "infrastructure-failure":
-            msgspec.convert(content, type=BriefReviewInfrastructureUnchangedFailure, strict=True)
-        elif surfaces == ["immutable-artifact"]:
-            msgspec.convert(content, type=BriefReviewPublishedRejection, strict=True)
-        else:
-            msgspec.convert(content, type=BriefReviewRejected, strict=True)
-    elif tool_name == "pinboard_dispatch":
-        if status == "ready":
-            result_type = DispatchReady
-        elif status == "replacement-ready":
-            result_type = ReplacementReadinessReady
-        elif status == "failed-after-publication":
-            result_type = DispatchFailedAfterPublication
-        elif status == "infrastructure-failure":
-            result_type = DispatchInfrastructureFailure
-        elif code in {"DISPATCH_INVALID", "INPUT_FILE_UNREADABLE", "INPUT_FILE_DIGEST_MISMATCH"}:
-            result_type = DispatchInvalid
-        else:
-            result_type = DispatchRejected
-        msgspec.convert(content, type=result_type, strict=True)
-    elif tool_name == "pinboard_review_job":
-        if status == "ready":
-            result_type = ReviewJobReady
-        elif status == "recorded":
-            result_type = CandidateReviewRecorded
-        elif status == "failed-after-publication":
-            result_type = ReviewJobFailedAfterPublication
-        elif status == "infrastructure-failure":
-            result_type = ReviewJobInfrastructureFailure
-        elif code == "REVIEW_JOB_INVALID":
-            result_type = ReviewJobInvalid
-        else:
-            result_type = ReviewJobRejected
-        msgspec.convert(content, type=result_type, strict=True)
-    elif tool_name == "pinboard_candidate_observe":
-        msgspec.convert(
-            content, type=CandidateObserved if status == "observed" else CandidateObservationRejected, strict=True
-        )
-    elif tool_name == "pinboard_candidate_restore":
-        if status == "restored":
-            result_type = CandidateRestoreReady
-        elif status == "failed-after-mutation":
-            result_type = CandidateRestoreFailed
-        elif code == "CANDIDATE_RESTORE_INVALID":
-            result_type = CandidateRestoreInvalid
-        else:
-            result_type = CandidateRestoreRejected
-        msgspec.convert(content, type=result_type, strict=True)
-    elif tool_name in {"pinboard_transition", "pinboard_close"}:
-        if status in {"committed", "committed-with-warning"}:
-            item_status = content.get("item_status")
-            result_type = (
-                TransitionCommittedStatusUnavailable
-                if isinstance(item_status, dict) and item_status.get("status") == "unavailable"
-                else TransitionCommitted
-            )
-        elif status == "failed-after-publication":
-            result_type = TransitionFailedAfterPublication
-        else:
-            result_type = TransitionRejected
-        msgspec.convert(content, type=result_type, strict=True)
-    elif tool_name == "pinboard_preparation_authority":
-        if status == "present":
-            result_type = PreparationAuthorityStatusPresent
-        elif status == "absent":
-            result_type = PreparationAuthorityStatusAbsent
-        elif status in {"committed", "committed-with-warning"}:
-            result_type = PreparationAuthorityCommitted
-        else:
-            result_type = PreparationAuthorityRejected
-        msgspec.convert(content, type=result_type, strict=True)
-    elif tool_name == "pinboard_attempt_authority":
-        if status == "present":
-            result_type = AttemptAuthorityStatusPresent
-        elif status == "absent":
-            result_type = AttemptAuthorityStatusAbsent
-        elif status in {"committed", "committed-with-warning"}:
-            result_type = AttemptAuthorityCommitted
-        else:
-            result_type = AttemptAuthorityRejected
-        msgspec.convert(content, type=result_type, strict=True)
-    elif schema == "pinboard-overview/v8" and tool_name == "pinboard_overview":
-        msgspec.convert(content, type=query_models.DiscoveryPage, strict=True)
-    elif tool_name == "pinboard_actions" and status == "ok":
-        _validate_actions_result(content)
-    elif tool_name == "pinboard_attempt_inspect" and status == "ok":
-        continuation = content.get("continuation")
-        state = continuation.get("state") if isinstance(continuation, dict) else None
-        result_type = (
-            TerminalAttemptInspectionSuccess
-            if state in {"done", "dropped", "superseded"}
-            else NonterminalAttemptInspectionSuccess
-        )
-        msgspec.convert(content, type=result_type, strict=True)
-    elif tool_name == "pinboard_correction_context":
-        msgspec.convert(
-            content, type=CorrectionContextReady if status == "ready" else CorrectionContextRejected, strict=True
-        )
-    elif tool_name == "pinboard_return_context":
-        msgspec.convert(content, type=ReturnContextReady if status == "ready" else ReturnContextRejected, strict=True)
-    elif (
-        tool_name in {"pinboard_artifact_verify", "pinboard_brief_lookup"}
-        and schema == "pinboard-verified-artifact-reference/v1"
-    ):
-        msgspec.convert(content, type=ArtifactVerified, strict=True)
-    elif tool_name == "pinboard_brief_lookup" and code == "BRIEF_LOOKUP_INVALID":
-        msgspec.convert(content, type=BriefLookupInvalid, strict=True)
-    elif tool_name == "pinboard_brief_lookup" and code == "BRIEF_NOT_FOUND":
-        msgspec.convert(content, type=BriefNotFound, strict=True)
-    elif tool_name == "pinboard_brief_lookup":
-        msgspec.convert(content, type=ArtifactBytesInvalid, strict=True)
-    elif tool_name == "pinboard_overview":
-        msgspec.convert(content, type=OverviewRejected, strict=True)
-    elif tool_name == "pinboard_actions" and code == "ACTIONS_INVALID":
-        msgspec.convert(content, type=ActionsInvalid, strict=True)
-    elif tool_name == "pinboard_actions" and code == "ATTEMPT_LEASE_REQUIRED":
-        msgspec.convert(content, type=AttemptLeaseRequired, strict=True)
-    elif tool_name == "pinboard_actions" and code == "ROUTE_CLASSIFICATION_REQUIRED":
-        msgspec.convert(content, type=ActionRouteClassificationRequired, strict=True)
-    elif tool_name == "pinboard_actions":
-        msgspec.convert(content, type=ActionUnavailable, strict=True)
-    elif tool_name == "pinboard_attempt_inspect" and code == "ATTEMPT_INSPECT_INVALID":
-        msgspec.convert(content, type=AttemptInspectInvalid, strict=True)
-    elif tool_name == "pinboard_attempt_inspect" and code == "ATTEMPT_NOT_FOUND":
-        msgspec.convert(content, type=AttemptNotFound, strict=True)
-    elif tool_name == "pinboard_attempt_inspect" and code == "ATTEMPT_BRIEF_INVALID":
-        msgspec.convert(content, type=AttemptBriefInvalid, strict=True)
-    elif tool_name == "pinboard_attempt_inspect" and code == "TRANSITION_RECEIPT_DAMAGED":
-        msgspec.convert(content, type=AttemptReceiptDamaged, strict=True)
-    elif tool_name == "pinboard_attempt_inspect":
-        msgspec.convert(content, type=AttemptActionUnavailable, strict=True)
-    elif tool_name == "pinboard_artifact_verify" and code == "ARTIFACT_VERIFY_INVALID":
-        msgspec.convert(content, type=ArtifactVerificationInvalid, strict=True)
-    elif tool_name == "pinboard_artifact_verify" and code == "ARTIFACT_REFERENCE_MISMATCH":
-        msgspec.convert(content, type=ArtifactReferenceMismatch, strict=True)
-    elif tool_name == "pinboard_artifact_verify":
-        msgspec.convert(content, type=ArtifactBytesInvalid, strict=True)
-    elif schema == "pinboard-item-status/v5" and tool_name == "pinboard_item_status":
-        msgspec.convert(content, type=query_models.ItemStatus, strict=True)
-    elif schema == "pinboard-branch-owners/v1" and tool_name == "pinboard_item_status":
-        msgspec.convert(content, type=query_models.BranchOwners, strict=True)
-    elif schema == "pinboard-item-integration/v1" and tool_name == "pinboard_item_status":
-        msgspec.convert(content, type=query_models.ItemIntegration, strict=True)
-    elif tool_name == "pinboard_item_status" and code == "INTEGRATION_TARGET_UNRESOLVED":
-        msgspec.convert(content, type=IntegrationTargetUnresolved, strict=True)
-    elif tool_name == "pinboard_item_status" and code == "INTEGRATION_CANDIDATE_UNAVAILABLE":
-        msgspec.convert(content, type=IntegrationCandidateUnavailable, strict=True)
-    elif tool_name == "pinboard_item_status" and code == "INTEGRATION_CANDIDATE_EVIDENCE_INVALID":
-        msgspec.convert(content, type=IntegrationCandidateEvidenceInvalid, strict=True)
-    elif tool_name == "pinboard_item_status" and isinstance(code, str) and code.startswith("PROJECT_GIT_"):
-        msgspec.convert(content, type=ItemStatusGitUnavailable, strict=True)
-    elif tool_name == "pinboard_item_status" and code == "ITEM_STATUS_INVALID":
-        msgspec.convert(content, type=ItemStatusInvalid, strict=True)
-    elif tool_name == "pinboard_item_status" and code in {"ITEM_NOT_FOUND", "ITEM_DEFINITION_INVALID"}:
-        msgspec.convert(content, type=ItemStatusUnavailable, strict=True)
-    elif tool_name == "pinboard_item_status" and code == "BRANCH_OWNER_NOT_FOUND":
-        msgspec.convert(content, type=BranchOwnerNotFound, strict=True)
-    elif tool_name == "pinboard_item_status" and code == "TRANSITION_RECEIPT_DAMAGED":
-        msgspec.convert(content, type=ItemStatusReceiptDamaged, strict=True)
-    elif tool_name == "pinboard_item_status":
-        msgspec.convert(content, type=ItemStatusInconsistent, strict=True)
-    elif tool_name == "pinboard_proposal_create" and status == "committed":
-        msgspec.convert(content, type=ProposalCommitted, strict=True)
-    elif tool_name == "pinboard_proposal_create" and status == "committed-with-warning":
-        msgspec.convert(content, type=ProposalCommittedWithWarning, strict=True)
-    elif tool_name == "pinboard_proposal_create" and code == "PROPOSAL_ALREADY_EXISTS":
-        msgspec.convert(content, type=ProposalDuplicate, strict=True)
-    elif tool_name == "pinboard_proposal_create":
-        msgspec.convert(content, type=ProposalRejected, strict=True)
-    elif status == "failed-after-publication":
-        msgspec.convert(content, type=BriefPublicationInfrastructureFailure, strict=True)
-    elif status == "infrastructure-failure":
-        msgspec.convert(content, type=BriefPublicationInfrastructureUnchangedFailure, strict=True)
-    elif status == "rejected" and surfaces == ["immutable-artifact"]:
-        msgspec.convert(content, type=BriefPublishedRejection, strict=True)
-    elif status == "rejected":
-        msgspec.convert(
-            content,
-            type=BriefArchitectureImpactRejected if "recovery" in content else BriefRejected,
-            strict=True,
-        )
-    elif status == "unchanged":
-        msgspec.convert(content, type=BriefUnchanged, strict=True)
-    elif status == "unchanged-with-warning":
-        msgspec.convert(content, type=BriefUnchangedWithWarning, strict=True)
-    elif status == "committed" and surfaces == ["immutable-artifact"]:
-        msgspec.convert(content, type=BriefArtifactCommitted, strict=True)
-    elif status == "committed" and surfaces == ["accepted-artifact-reference", "ledger"]:
-        msgspec.convert(content, type=BriefReferenceCommitted, strict=True)
-    elif status == "committed":
-        msgspec.convert(content, type=BriefCommitted, strict=True)
-    elif status == "committed-with-warning" and surfaces == ["immutable-artifact"]:
-        msgspec.convert(content, type=BriefArtifactCommittedWithWarning, strict=True)
-    elif status == "committed-with-warning" and surfaces == ["accepted-artifact-reference", "ledger"]:
-        msgspec.convert(content, type=BriefReferenceCommittedWithWarning, strict=True)
-    else:
-        msgspec.convert(content, type=BriefCommittedWithWarning, strict=True)
-    return content

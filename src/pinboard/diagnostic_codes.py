@@ -23,10 +23,6 @@ class ProducerOnlyCode(DescribedCode):
 class TraceEvent(DescribedCode):
     STARTUP = ("startup", "The MCP server recorded its startup before handling requests.")
     RESULT = ("result", "An MCP request produced a correlated result record.")
-    RESULT_VALIDATION_ERROR = (
-        "result-validation-error",
-        "The result failed its declared MCP output schema after execution.",
-    )
     CAPTURE_UNAVAILABLE = ("capture-unavailable", "Exact invocation capture was unavailable for the request.")
     CAPTURE_COMMITTED_WITH_WARNING = (
         "capture-committed-with-warning",

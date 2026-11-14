@@ -7,11 +7,12 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, assert_never
+from typing import Literal, assert_never, overload
 from uuid import uuid4
 
 import msgspec
 
+from pinboard import diagnostic_codes
 from pinboard.adapters import (
     candidate_evidence,
     dispatch_operations,
@@ -22,8 +23,7 @@ from pinboard.adapters.files import root as git_root
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.adapters.files.models import AffectedViews
-from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
+from pinboard.adapters.files.models import AffectedViews, ViewWarning
 from pinboard.application import (
     actions,
     dispatch_models,
@@ -42,7 +42,6 @@ from pinboard.domain.errors import (
     EffectDisposition,
     FailureDetails,
     FailureFact,
-    FailureMismatch,
     RetryDisposition,
 )
 from pinboard.domain.identifiers import (
@@ -162,28 +161,50 @@ def _mcp_launch_envelope(
             assert_never(unreachable)
 
 
+type JobFailure = (
+    DecisionFailure | dispatch_operations.DispatchFailure | ArtifactAcceptanceFailure | ArtifactWriteFailure
+)
+
+
+@overload
 def _job_failure(
     project_root: str,
     work_root: str,
-    schema: str,
+    schema: Literal["pinboard-mcp-dispatch-result/v1"],
     attempt_id: str,
-    code: str,
-    message: str,
-    details: FailureDetails | None,
-    infrastructure: bool,
-) -> execution.OperationResult:
-    rendered = common._details_json(details)
-    if details is not None:
-        rendered["changed_surfaces"] = list[JsonValue](_job_publication_surfaces(details.changed_surfaces))
-    committed = details is not None and details.effect == EffectDisposition.COMMITTED
-    observed: list[JsonValue] = [
-        {"field": fact.field, "value": fact.value} for fact in (() if details is None else details.observed)
-    ]
-    observed.append({"field": "inspection_tool", "value": tool_names.ATTEMPT_INSPECT_TOOL})
-    observed.append(
-        {
-            "field": "inspection_input",
-            "value": msgspec.json.encode(
+    failure: JobFailure,
+    refresh_warning: ViewWarning | None,
+) -> execution.TypedOperationResult[contracts.DispatchResult]: ...
+
+
+@overload
+def _job_failure(
+    project_root: str,
+    work_root: str,
+    schema: Literal["pinboard-mcp-review-job-result/v1"],
+    attempt_id: str,
+    failure: DecisionFailure | ArtifactAcceptanceFailure | ArtifactWriteFailure,
+    refresh_warning: ViewWarning | None,
+) -> execution.TypedOperationResult[contracts.ReviewJobResult]: ...
+
+
+def _job_failure(
+    project_root: str,
+    work_root: str,
+    schema: Literal["pinboard-mcp-dispatch-result/v1", "pinboard-mcp-review-job-result/v1"],
+    attempt_id: str,
+    failure: JobFailure,
+    refresh_warning: ViewWarning | None,
+) -> (
+    execution.TypedOperationResult[contracts.DispatchResult] | execution.TypedOperationResult[contracts.ReviewJobResult]
+):
+    details = failure.details
+    observed, mismatches = common._failure_evidence(details)
+    observed += (
+        contracts.FailureObservation("inspection_tool", tool_names.ATTEMPT_INSPECT_TOOL),
+        contracts.FailureObservation(
+            "inspection_input",
+            msgspec.json.encode(
                 {
                     "project_root": project_root,
                     "work_root": work_root,
@@ -192,25 +213,115 @@ def _job_failure(
                 },
                 order="sorted",
             ).decode(),
-        },
+        ),
     )
-    rendered["observed"] = observed
-    return execution.OperationResult(
-        {
-            "schema": schema,
-            "status": "failed-after-publication"
-            if committed
-            else "infrastructure-failure"
-            if infrastructure
-            else "rejected",
-            "attempt_id": attempt_id,
-            "code": code,
-            "message": message
-            + " Inspect this attempt with inspection_tool and inspection_input in observed before choosing another action. Preserve any published selectors; do not replay after a committed or uncertain effect.",
-            "state_changed": committed,
-            **rendered,
-        },
-        "committed-failure" if committed else "infrastructure-failure" if infrastructure else "rejected",
+    infrastructure_code: Literal["ARTIFACT_ACCEPTANCE_FAILED", "ARTIFACT_PUBLICATION_FAILED"] | None
+    match failure:
+        case ArtifactAcceptanceFailure() | ArtifactWriteFailure():
+            infrastructure_code = (
+                "ARTIFACT_ACCEPTANCE_FAILED"
+                if isinstance(failure, ArtifactAcceptanceFailure)
+                else "ARTIFACT_PUBLICATION_FAILED"
+            )
+            code, message = infrastructure_code, str(failure.cause)
+        case DecisionFailure() | dispatch_operations.DispatchFailure():
+            infrastructure_code = None
+            code, message = failure.code.value, failure.message
+        case _ as unreachable:
+            assert_never(unreachable)
+    if refresh_warning is not None:
+        message += f" {refresh_warning.message} {refresh_warning.repair}"
+    message += " Inspect this attempt with inspection_tool and inspection_input in observed before choosing another action. Preserve any published selectors; do not replay after a committed or uncertain effect."
+    retry = RetryDisposition.CORRECT_INPUT if details is None else details.retry
+    if details is not None and details.effect == EffectDisposition.COMMITTED:
+        surfaces = _job_publication_surfaces(details.changed_surfaces)
+        assert retry == RetryDisposition.DO_NOT_RETRY
+        if schema == "pinboard-mcp-dispatch-result/v1":
+            return execution.TypedOperationResult(
+                contracts.DispatchFailedAfterPublication(
+                    schema,
+                    "failed-after-publication",
+                    attempt_id,
+                    code,
+                    message,
+                    True,
+                    "committed",
+                    "do-not-retry",
+                    surfaces,
+                    observed,
+                    mismatches,
+                ),
+                "committed-failure",
+                None,
+            )
+        return execution.TypedOperationResult(
+            contracts.ReviewJobFailedAfterPublication(
+                schema,
+                "failed-after-publication",
+                attempt_id,
+                code,
+                message,
+                True,
+                "committed",
+                "do-not-retry",
+                surfaces,
+                observed,
+                mismatches,
+            ),
+            "committed-failure",
+            None,
+        )
+    if infrastructure_code is not None:
+        assert retry in {RetryDisposition.RETRY_SAME_INPUT, RetryDisposition.DO_NOT_RETRY}
+        infrastructure_retry = "retry-same-input" if retry == RetryDisposition.RETRY_SAME_INPUT else "do-not-retry"
+        if schema == "pinboard-mcp-dispatch-result/v1":
+            return execution.TypedOperationResult(
+                contracts.DispatchInfrastructureFailure(
+                    schema,
+                    "infrastructure-failure",
+                    attempt_id,
+                    infrastructure_code,
+                    message,
+                    False,
+                    "unchanged",
+                    infrastructure_retry,
+                    (),
+                    observed,
+                    mismatches,
+                ),
+                "infrastructure-failure",
+                None,
+            )
+        return execution.TypedOperationResult(
+            contracts.ReviewJobInfrastructureFailure(
+                schema,
+                "infrastructure-failure",
+                attempt_id,
+                infrastructure_code,
+                message,
+                False,
+                "unchanged",
+                infrastructure_retry,
+                (),
+                observed,
+                mismatches,
+            ),
+            "infrastructure-failure",
+            None,
+        )
+    if schema == "pinboard-mcp-dispatch-result/v1":
+        return execution.TypedOperationResult(
+            contracts.DispatchRejected(
+                schema, "rejected", attempt_id, code, message, False, "unchanged", retry, (), observed, mismatches
+            ),
+            "rejected",
+            None,
+        )
+    return execution.TypedOperationResult(
+        contracts.ReviewJobRejected(
+            schema, "rejected", attempt_id, code, message, False, "unchanged", retry, (), observed, mismatches
+        ),
+        "rejected",
         None,
     )
 
@@ -248,7 +359,7 @@ def _record_ready_review(
     choice: contracts.RecordReadyReviewChoice,
     schema: Literal["pinboard-mcp-review-job-result/v1"],
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.ReviewJobResult]:
     token.checkpoint()
     recorded = review_operations.record_ready_candidate_review(
         durable.work_root,
@@ -278,28 +389,10 @@ def _record_ready_review(
                 alternatives=details.alternatives,
             )
         return _job_failure(
-            project_root,
-            str(durable.work_root),
-            schema,
-            choice.attempt_id,
-            recorded.code.value,
-            recorded.message,
-            details,
-            False,
+            project_root, str(durable.work_root), schema, choice.attempt_id, replace(recorded, details=details), None
         )
     if isinstance(recorded, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
-        return _job_failure(
-            project_root,
-            str(durable.work_root),
-            schema,
-            choice.attempt_id,
-            "ARTIFACT_ACCEPTANCE_FAILED"
-            if isinstance(recorded, ArtifactAcceptanceFailure)
-            else "ARTIFACT_PUBLICATION_FAILED",
-            str(recorded.cause),
-            recorded.details,
-            True,
-        )
+        return _job_failure(project_root, str(durable.work_root), schema, choice.attempt_id, recorded, None)
     reference = recorded.reference
     surfaces = _job_publication_surfaces(recorded.changed_surfaces)
     warning = (
@@ -307,29 +400,26 @@ def _record_ready_review(
         if surfaces
         else None
     )
-    content = msgspec.to_builtins(
-        contracts.CandidateReviewRecorded(
-            schema,
-            "recorded",
-            choice.attempt_id,
-            choice.candidate_revision,
-            contracts.CandidateReviewPresent(
-                int(reference.artifact_ref_id),
-                reference.selector,
-                reference.content_sha256,
-                reference.size_bytes,
-                reference.accepted_revision,
-            ),
-            bool(surfaces),
-            "committed" if surfaces else "unchanged",
-            "do-not-retry" if surfaces else "safe-to-repeat",
-            surfaces,
-            None if warning is None else contracts.WarningResult(warning.message, warning.repair),
-        )
+    result = contracts.CandidateReviewRecorded(
+        schema,
+        "recorded",
+        choice.attempt_id,
+        choice.candidate_revision,
+        contracts.CandidateReviewPresent(
+            int(reference.artifact_ref_id),
+            reference.selector,
+            reference.content_sha256,
+            reference.size_bytes,
+            reference.accepted_revision,
+        ),
+        bool(surfaces),
+        "committed" if surfaces else "unchanged",
+        "do-not-retry" if surfaces else "safe-to-repeat",
+        surfaces,
+        None if warning is None else contracts.WarningResult(warning.message, warning.repair),
     )
-    assert isinstance(content, dict)
-    return execution.OperationResult(
-        content, "committed" if surfaces else "unchanged", str(reference.accepted_revision)
+    return execution.TypedOperationResult(
+        result, "committed" if surfaces else "unchanged", str(reference.accepted_revision)
     )
 
 
@@ -349,24 +439,42 @@ def _review_histories(
             assert_never(unreachable)
 
 
+def _dispatch_invalid(
+    code: diagnostic_codes.DispatchInvalidCode, message: str
+) -> execution.TypedOperationResult[contracts.DispatchResult]:
+    return execution.TypedOperationResult(
+        contracts.DispatchInvalid(
+            "pinboard-mcp-dispatch-result/v1",
+            "rejected",
+            code,
+            message,
+            False,
+            "unchanged",
+            "correct-input",
+            (),
+            (),
+            (),
+        ),
+        "rejected",
+        None,
+    )
+
+
 def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and distinct readiness/worker effects
-    project_root: str, work_root: str, dispatch: Mapping[str, JsonValue], token: execution.CancellationToken
-) -> execution.OperationResult:
+    raw: Mapping[str, JsonValue], token: execution.CancellationToken
+) -> execution.TypedOperationResult[contracts.DispatchResult]:
     token.checkpoint()
     schema = "pinboard-mcp-dispatch-result/v1"
     try:
         request = msgspec.convert(
-            {"project_root": project_root, "work_root": work_root, "dispatch": dispatch},
+            raw,
             type=contracts.DispatchRequest,
             strict=True,
             dec_hook=dispatch_models.dispatch_environment_dec_hook,
         )
-        source_checkout = resolve_source_checkout_root(Path(request.project_root))
-        durable = common._require_initialized_durable(
-            resolve_shared_repository_root(source_checkout), Path(request.work_root)
-        )
+        source_checkout, durable = common.resolve_mcp_roots(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
-        return common._read_failure(schema, "DISPATCH_INVALID", f"Cannot decode dispatch request: {error}", None)
+        return _dispatch_invalid("DISPATCH_INVALID", f"Cannot decode dispatch request: {error}")
     choice = request.dispatch
     attempt_id = choice.receipt.action_id.subject
     if isinstance(
@@ -382,7 +490,7 @@ def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and dis
     ):
         review_bytes = file_io.read_verified_input(Path(choice.brief_review_path), choice.brief_review_sha256)
         if isinstance(review_bytes, file_io.SelectedInputFailure):
-            return common._read_failure(schema, review_bytes.code, review_bytes.message, None)
+            return _dispatch_invalid(review_bytes.code, review_bytes.message)
         try:
             match choice:
                 case contracts.ReviewedFileDispatchChoice():
@@ -422,11 +530,9 @@ def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and dis
                 case _ as unreachable:
                     assert_never(unreachable)
         except msgspec.DecodeError as error:
-            return common._read_failure(
-                schema,
+            return _dispatch_invalid(
                 "DISPATCH_INVALID",
                 f"Cannot decode selected review '{choice.brief_review_path}' with verified SHA-256 {choice.brief_review_sha256}: {error}. Correct that file to this exact dispatch leaf's review schema before retrying.",
-                None,
             )
     else:
         match choice:
@@ -468,16 +574,7 @@ def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and dis
         action_id=ActionId(f"dispatch:{attempt_id}"),
     )
     if isinstance(selected, DecisionFailure):
-        return _job_failure(
-            project_root,
-            str(durable.work_root),
-            schema,
-            attempt_id,
-            selected.code.value,
-            selected.message,
-            selected.details,
-            False,
-        )
+        return _job_failure(request.project_root, str(durable.work_root), schema, attempt_id, selected, None)
     action = selected.actions[0]
     if not isinstance(action, decision_models.DispatchAction):
         raise AssertionError("Exact dispatch discovery returned a different action.")
@@ -511,116 +608,95 @@ def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and dis
             None if choice.prompt is None else choice.prompt.encode(),
             preparation_choice,
         )
-    if isinstance(publication, dispatch_operations.DispatchFailure):
+    if isinstance(publication, (dispatch_operations.DispatchFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         refresh_warning = common._refresh_published_ledger(durable, store, publication.details, datetime.now(UTC))
         return _job_failure(
-            project_root,
-            str(durable.work_root),
-            schema,
-            attempt_id,
-            publication.code.value,
-            publication.message
-            + ("" if refresh_warning is None else f" {refresh_warning.message} {refresh_warning.repair}"),
-            publication.details,
-            False,
-        )
-    if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
-        refresh_warning = common._refresh_published_ledger(durable, store, publication.details, datetime.now(UTC))
-        return _job_failure(
-            project_root,
-            str(durable.work_root),
-            schema,
-            attempt_id,
-            "ARTIFACT_ACCEPTANCE_FAILED"
-            if isinstance(publication, ArtifactAcceptanceFailure)
-            else "ARTIFACT_PUBLICATION_FAILED",
-            str(publication.cause)
-            + ("" if refresh_warning is None else f" {refresh_warning.message} {refresh_warning.repair}"),
-            publication.details,
-            True,
+            request.project_root, str(durable.work_root), schema, attempt_id, publication, refresh_warning
         )
     surfaces = _job_publication_surfaces(publication.changed_surfaces)
     view_warning = _job_publication_warning(durable, store, surfaces, datetime.now(UTC))
     if isinstance(publication, dispatch_operations.ReplacementReadiness):
-        content = msgspec.to_builtins(
-            contracts.ReplacementReadinessReady(
-                schema,
-                "replacement-ready",
-                attempt_id,
-                choice.checkpoint_id,
-                publication.candidate,
-                msgspec.convert(
-                    common._artifact_reference_json(publication.proof), type=contracts.ReviewEvidenceReference
-                ),
-                msgspec.convert(
-                    common._artifact_reference_json(publication.ready_review), type=contracts.ReviewEvidenceReference
-                ),
-                f"Protect current candidate {publication.candidate} using your own attempt authority, then commission a full candidate review "
-                "against the replacement brief, retaining every prior finding. Obtain a new current return before correction dispatch.",
-                bool(surfaces),
-                "committed" if surfaces else "unchanged",
-                "do-not-retry" if surfaces else "safe-to-repeat",
-                surfaces,
-                view_warning,
-            )
-        )
-        assert isinstance(content, dict)
-        return execution.OperationResult(
-            content, "committed" if surfaces else "unchanged", str(publication.ready_review.accepted_revision)
-        )
-    assert not isinstance(choice, (contracts.ReplacementReadinessChoice, contracts.ReplacementReadinessFileChoice))
-    content = msgspec.to_builtins(
-        contracts.DispatchReady(
-            "ready",
-            publication.reference,
-            _mcp_launch_envelope(
-                source_checkout,
-                durable.work_root,
-                "worker",
-                attempt_id,
-                publication,
-                choice.environment,
-                choice.environment.runtime,
-                choice.environment.background,
-            ),
-            instructions.native_document("recovery-launch"),
+        result = contracts.ReplacementReadinessReady(
+            schema,
+            "replacement-ready",
+            attempt_id,
+            choice.checkpoint_id,
+            publication.candidate,
+            common._review_evidence_reference(publication.proof),
+            common._review_evidence_reference(publication.ready_review),
+            f"Protect current candidate {publication.candidate} using your own attempt authority, then commission a full candidate review "
+            "against the replacement brief, retaining every prior finding. Obtain a new current return before correction dispatch.",
             bool(surfaces),
             "committed" if surfaces else "unchanged",
             "do-not-retry" if surfaces else "safe-to-repeat",
             surfaces,
             view_warning,
-            schema,
-            attempt_id,
-            choice.checkpoint_id,
         )
+        return execution.TypedOperationResult(
+            result, "committed" if surfaces else "unchanged", str(publication.ready_review.accepted_revision)
+        )
+    assert not isinstance(choice, (contracts.ReplacementReadinessChoice, contracts.ReplacementReadinessFileChoice))
+    result = contracts.DispatchReady(
+        "ready",
+        publication.reference,
+        _mcp_launch_envelope(
+            source_checkout,
+            durable.work_root,
+            "worker",
+            attempt_id,
+            publication,
+            choice.environment,
+            choice.environment.runtime,
+            choice.environment.background,
+        ),
+        instructions.native_document("recovery-launch"),
+        bool(surfaces),
+        "committed" if surfaces else "unchanged",
+        "do-not-retry" if surfaces else "safe-to-repeat",
+        surfaces,
+        view_warning,
+        schema,
+        attempt_id,
+        choice.checkpoint_id,
     )
-    assert isinstance(content, dict)
-    return execution.OperationResult(
-        content, "committed" if surfaces else "unchanged", str(publication.reference.accepted_revision)
+    return execution.TypedOperationResult(
+        result, "committed" if surfaces else "unchanged", str(publication.reference.accepted_revision)
     )
 
 
 def _review_job(
-    project_root: str, work_root: str, review: Mapping[str, JsonValue], token: execution.CancellationToken
-) -> execution.OperationResult:
+    raw: Mapping[str, JsonValue], token: execution.CancellationToken
+) -> execution.TypedOperationResult[contracts.ReviewJobResult] | execution.ResultProjectionFailure:
     token.checkpoint()
     schema = "pinboard-mcp-review-job-result/v1"
     try:
         request = msgspec.convert(
-            {"project_root": project_root, "work_root": work_root, "review": review},
+            raw,
             type=contracts.ReviewJobRequest,
             strict=True,
         )
-        source_checkout = resolve_source_checkout_root(Path(request.project_root))
-        durable = common._require_initialized_durable(
-            resolve_shared_repository_root(source_checkout), Path(request.work_root)
-        )
+        source_checkout, durable = common.resolve_mcp_roots(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
-        return common._read_failure(schema, "REVIEW_JOB_INVALID", f"Cannot decode review-job request: {error}", None)
+        return execution.TypedOperationResult(
+            contracts.ReviewJobInvalid(
+                schema,
+                "rejected",
+                "REVIEW_JOB_INVALID",
+                f"Cannot decode review-job request: {error}",
+                False,
+                "unchanged",
+                "correct-input",
+                (),
+                (),
+                (),
+            ),
+            "rejected",
+            None,
+        )
     choice = request.review
     store = common.compose_store(durable)
     if isinstance(choice, contracts.RecordReadyReviewChoice):
-        return _record_ready_review(project_root, durable, store, choice, schema, token)
+        return _record_ready_review(request.project_root, durable, store, choice, schema, token)
     checkpoint_history_id, correction_history_id = _review_histories(choice)
     token.checkpoint()
     # Cancellation cannot turn an entered publication into an unchanged/replayable result.
@@ -633,205 +709,193 @@ def _review_job(
         checkpoint_history_id,
         correction_history_id,
     )
-    if isinstance(prepared, DecisionFailure):
+    if isinstance(prepared, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         refresh_warning = common._refresh_published_ledger(durable, store, prepared.details, datetime.now(UTC))
         return _job_failure(
-            project_root,
-            str(durable.work_root),
-            schema,
-            choice.attempt_id,
-            prepared.code.value,
-            prepared.message
-            + ("" if refresh_warning is None else f" {refresh_warning.message} {refresh_warning.repair}"),
-            prepared.details,
-            False,
+            request.project_root, str(durable.work_root), schema, choice.attempt_id, prepared, refresh_warning
         )
     if isinstance(prepared, review_operations.ReviewPromptPublicationFailure):
         raise prepared.cause
-    if isinstance(prepared, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
-        refresh_warning = common._refresh_published_ledger(durable, store, prepared.details, datetime.now(UTC))
-        return _job_failure(
-            project_root,
-            str(durable.work_root),
-            schema,
-            choice.attempt_id,
-            "ARTIFACT_ACCEPTANCE_FAILED"
-            if isinstance(prepared, ArtifactAcceptanceFailure)
-            else "ARTIFACT_PUBLICATION_FAILED",
-            str(prepared.cause)
-            + ("" if refresh_warning is None else f" {refresh_warning.message} {refresh_warning.repair}"),
-            prepared.details,
-            True,
-        )
     publication = prepared.published_prompt
     recovery = common._candidate_recovery_view(durable, prepared.candidate_evidence)
     reference = prepared.brief_reference
     brief = prepared.brief
     surfaces = _job_publication_surfaces(publication.changed_surfaces)
     view_warning = _job_publication_warning(durable, store, surfaces, datetime.now(UTC))
-    content = msgspec.to_builtins(
-        contracts.ReviewJobReady(
-            "ready",
-            publication.reference,
-            _mcp_launch_envelope(
-                source_checkout,
-                durable.work_root,
-                "reviewer",
-                choice.attempt_id,
-                publication,
-                None,
-                choice.runtime,
-                choice.background,
-            ),
-            instructions.native_document("recovery-launch"),
-            bool(surfaces),
-            "committed" if surfaces else "unchanged",
-            "do-not-retry" if surfaces else "safe-to-repeat",
-            surfaces,
-            view_warning,
-            schema,
-            choice.attempt_id,
-            choice.candidate_revision,
-            recovery,
-            brief.owner_task_id,
-            str(durable.work_root / reference.selector),
-            reference.content_sha256,
-            brief.accepted_scope.revision,
-            brief.accepted_scope.digest,
-            str(prepared.result_path),
-            prepared.result_sha256,
-            prepared.prior_checkpoint_package,
-            prepared.review_round,
-            prepared.return_contract,
-            contracts.ReviewInvocation(
-                "pinboard_review_job",
-                contracts.ReviewStarterArguments(
-                    request.project_root,
-                    request.work_root,
-                    contracts.RecordReadyReviewStarter(
-                        choice.attempt_id,
-                        choice.candidate_revision,
-                        recovery.sha256,
-                        reference.content_sha256,
-                        prepared.result_sha256,
-                        publication.reference.sha256,
-                        None,
-                        None,
-                        None,
-                        None,
-                    ),
+    classification: Literal["committed", "unchanged"] = "committed" if surfaces else "unchanged"
+    commit_reference = str(publication.reference.accepted_revision)
+    launch = _mcp_launch_envelope(
+        source_checkout,
+        durable.work_root,
+        "reviewer",
+        choice.attempt_id,
+        publication,
+        None,
+        choice.runtime,
+        choice.background,
+    )
+    launch_recovery = instructions.native_document("recovery-launch")
+    try:
+        owner_task_id = msgspec.convert(brief.owner_task_id, type=contracts.RuntimeIdentity, strict=True)
+    except msgspec.ValidationError as error:
+        return execution.ResultProjectionFailure(error, classification, commit_reference)
+    result = contracts.ReviewJobReady(
+        "ready",
+        publication.reference,
+        launch,
+        launch_recovery,
+        bool(surfaces),
+        classification,
+        "do-not-retry" if surfaces else "safe-to-repeat",
+        surfaces,
+        view_warning,
+        schema,
+        choice.attempt_id,
+        choice.candidate_revision,
+        recovery,
+        owner_task_id,
+        str(durable.work_root / reference.selector),
+        reference.content_sha256,
+        brief.accepted_scope.revision,
+        brief.accepted_scope.digest,
+        str(prepared.result_path),
+        prepared.result_sha256,
+        prepared.prior_checkpoint_package,
+        prepared.review_round,
+        prepared.return_contract,
+        contracts.ReviewInvocation(
+            "pinboard_review_job",
+            contracts.ReviewStarterArguments(
+                request.project_root,
+                request.work_root,
+                contracts.RecordReadyReviewStarter(
+                    choice.attempt_id,
+                    choice.candidate_revision,
+                    recovery.sha256,
+                    reference.content_sha256,
+                    prepared.result_sha256,
+                    publication.reference.sha256,
+                    None,
+                    None,
+                    None,
+                    None,
                 ),
             ),
-        )
+        ),
     )
-    assert isinstance(content, dict)
-    return execution.OperationResult(
-        content, "committed" if surfaces else "unchanged", str(publication.reference.accepted_revision)
+    return execution.TypedOperationResult(result, classification, commit_reference)
+
+
+def _observation_rejected(
+    code: diagnostic_codes.CandidateObservationRejectedCode,
+    message: str,
+    observed: tuple[contracts.FailureObservation, ...],
+    mismatches: tuple[contracts.FailureMismatch, ...],
+) -> execution.TypedOperationResult[contracts.CandidateObservationResult]:
+    return execution.TypedOperationResult(
+        contracts.CandidateObservationRejected(
+            "pinboard-mcp-candidate-observation-result/v1",
+            "rejected",
+            code,
+            message,
+            False,
+            "unchanged",
+            "correct-input",
+            (),
+            observed,
+            mismatches,
+        ),
+        "rejected",
+        None,
     )
 
 
 def _observe_candidate(
-    project_root: str,
-    work_root: str,
-    attempt_id: str,
+    raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.CandidateObservationResult]:
     """Read one checkout and selected attempt context; never prepare, freeze or submit."""
 
     token.checkpoint()
-    schema = "pinboard-mcp-candidate-observation-result/v1"
     try:
-        request = msgspec.convert(
-            {"project_root": project_root, "work_root": work_root, "attempt_id": attempt_id},
-            type=contracts.CandidateObserveRequest,
-            strict=True,
-        )
+        request = msgspec.convert(raw, type=contracts.CandidateObserveRequest, strict=True)
     except (msgspec.ValidationError, ValueError) as error:
-        return common._read_failure(
-            schema, "CANDIDATE_OBSERVATION_INVALID", f"Cannot decode candidate observation: {error}", None
+        return _observation_rejected(
+            "CANDIDATE_OBSERVATION_INVALID", f"Cannot decode candidate observation: {error}", (), ()
         )
     try:
-        source_checkout = resolve_source_checkout_root(Path(request.project_root))
-        durable = common._require_initialized_durable(
-            resolve_shared_repository_root(source_checkout), Path(request.work_root)
-        )
+        source_checkout, durable = common.resolve_mcp_roots(request.project_root, request.work_root)
     except (RootError, OSError, ValueError) as error:
-        return common._read_failure(
-            schema, "CANDIDATE_GIT_UNAVAILABLE", f"Cannot resolve candidate checkout: {error}", None
-        )
+        return _observation_rejected("CANDIDATE_GIT_UNAVAILABLE", f"Cannot resolve candidate checkout: {error}", (), ())
     store = common.compose_store(durable)
     context = queries.select_attempt_context(store, AttemptId(request.attempt_id))
     if isinstance(context, DecisionFailure) or not isinstance(context, query_models.NonterminalAttemptContextFacts):
-        return common._read_failure(
-            schema, "CANDIDATE_CONTEXT_UNAVAILABLE", "Observation requires one current nonterminal attempt.", None
+        return _observation_rejected(
+            "CANDIDATE_CONTEXT_UNAVAILABLE", "Observation requires one current nonterminal attempt.", (), ()
         )
     token.checkpoint()
     try:
         branch, _ = git_root.observe_checkout_identity(source_checkout)
         if branch != context.branch:
-            return common._read_failure(
-                schema,
+            return _observation_rejected(
                 "CANDIDATE_BRANCH_MISMATCH",
                 "Candidate observation requires the attempt's exact branch.",
-                FailureDetails(
-                    observed=(FailureFact("branch", branch),),
-                    mismatches=(FailureMismatch("branch", context.branch, branch),),
-                    retry=RetryDisposition.CORRECT_INPUT,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
-                ),
+                (contracts.FailureObservation("branch", branch),),
+                (contracts.FailureMismatch("branch", context.branch, branch),),
             )
         candidate = git_root.read_working_tree_candidate(source_checkout)
         omitted = git_root.read_untracked_paths(source_checkout)
     except (RootError, OSError, ValueError) as error:
-        return common._read_failure(
-            schema, "CANDIDATE_GIT_UNAVAILABLE", f"Cannot read candidate checkout: {error}", None
-        )
-    content = msgspec.to_builtins(
-        contracts.CandidateObserved(
-            schema,
-            "observed",
-            request.attempt_id,
-            candidate.identity,
-            str(source_checkout),
-            branch,
-            context.base_revision,
-            candidate.preimage_revision,
-            hashlib.sha256(candidate.diff).hexdigest(),
-            len(candidate.diff),
-            omitted,
-            False,
-            "unchanged",
-            "safe-to-repeat",
-            (),
-        )
+        return _observation_rejected("CANDIDATE_GIT_UNAVAILABLE", f"Cannot read candidate checkout: {error}", (), ())
+    result = contracts.CandidateObserved(
+        "pinboard-mcp-candidate-observation-result/v1",
+        "observed",
+        request.attempt_id,
+        candidate.identity,
+        str(source_checkout),
+        branch,
+        context.base_revision,
+        candidate.preimage_revision,
+        hashlib.sha256(candidate.diff).hexdigest(),
+        len(candidate.diff),
+        omitted,
+        False,
+        "unchanged",
+        "safe-to-repeat",
+        (),
     )
-    return execution.OperationResult(content, "ok", None)
+    return execution.TypedOperationResult(result, "ok", None)
 
 
 def _candidate_restore(
-    project_root: str,
-    work_root: str,
-    attempt_id: str,
-    candidate: str,
+    raw: Mapping[str, JsonValue],
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.CandidateRestoreResult]:
     token.checkpoint()
     schema = "pinboard-mcp-candidate-restore-result/v1"
     try:
         request = msgspec.convert(
-            {"project_root": project_root, "work_root": work_root, "attempt_id": attempt_id, "candidate": candidate},
+            raw,
             type=contracts.CandidateRestoreRequest,
             strict=True,
         )
-        source_checkout = resolve_source_checkout_root(Path(request.project_root))
-        durable = common._require_initialized_durable(
-            resolve_shared_repository_root(source_checkout), Path(request.work_root)
-        )
+        source_checkout, durable = common.resolve_mcp_roots(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
-        return common._read_failure(
-            schema, "CANDIDATE_RESTORE_INVALID", f"Cannot decode candidate restore request: {error}", None
+        return execution.TypedOperationResult(
+            contracts.CandidateRestoreInvalid(
+                schema,
+                "rejected",
+                "CANDIDATE_RESTORE_INVALID",
+                f"Cannot decode candidate restore request: {error}",
+                False,
+                "unchanged",
+                "correct-input",
+                (),
+                (),
+                (),
+            ),
+            "rejected",
+            None,
         )
     store = common.compose_store(durable)
     token.checkpoint()
@@ -840,16 +904,13 @@ def _candidate_restore(
         source_checkout, durable.work_root, store, AttemptId(request.attempt_id), request.candidate
     )
     if isinstance(restored, DecisionFailure):
-        details = common._details_json(restored.details)
-        observed: list[JsonValue] = [
-            {"field": fact.field, "value": fact.value}
-            for fact in (() if restored.details is None else restored.details.observed)
-        ]
-        observed.append({"field": "next_step_tool", "value": tool_names.CANDIDATE_OBSERVE_TOOL})
-        observed.append(
-            {
-                "field": "next_step_input",
-                "value": msgspec.json.encode(
+        details = restored.details
+        observed, mismatches = common._failure_evidence(details)
+        observed += (
+            contracts.FailureObservation("next_step_tool", tool_names.CANDIDATE_OBSERVE_TOOL),
+            contracts.FailureObservation(
+                "next_step_input",
+                msgspec.json.encode(
                     {
                         "project_root": request.project_root,
                         "work_root": request.work_root,
@@ -857,39 +918,59 @@ def _candidate_restore(
                     },
                     order="sorted",
                 ).decode(),
-            },
+            ),
         )
-        details["observed"] = observed
-        committed = restored.details is not None and restored.details.effect == EffectDisposition.COMMITTED
-        return execution.OperationResult(
-            {
-                "schema": schema,
-                "status": "failed-after-mutation" if committed else "rejected",
-                "attempt_id": request.attempt_id,
-                "code": restored.code.value,
-                "message": restored.message
-                + " Observe the checkout through next_step_tool and next_step_input in observed before deciding how to recover. A committed source change must not be replayed.",
-                "state_changed": committed,
-                **details,
-            },
-            "committed-failure" if committed else "rejected",
+        message = (
+            restored.message
+            + " Observe the checkout through next_step_tool and next_step_input in observed before deciding how to recover. A committed source change must not be replayed."
+        )
+        if details is not None and details.effect == EffectDisposition.COMMITTED:
+            return execution.TypedOperationResult(
+                contracts.CandidateRestoreFailed(
+                    schema,
+                    "failed-after-mutation",
+                    request.attempt_id,
+                    restored.code,
+                    message,
+                    True,
+                    "committed",
+                    "do-not-retry",
+                    ("source-checkout",),
+                    observed,
+                    mismatches,
+                ),
+                "committed-failure",
+                None,
+            )
+        return execution.TypedOperationResult(
+            contracts.CandidateRestoreRejected(
+                schema,
+                "rejected",
+                request.attempt_id,
+                restored.code,
+                message,
+                False,
+                "unchanged",
+                RetryDisposition.CORRECT_INPUT if details is None else details.retry,
+                (),
+                observed,
+                mismatches,
+            ),
+            "rejected",
             None,
         )
-    content = msgspec.to_builtins(
-        contracts.CandidateRestoreReady(
-            schema,
-            "restored",
-            request.attempt_id,
-            restored.candidate,
-            str(source_checkout),
-            restored.changed,
-            "committed" if restored.changed else "unchanged",
-            "do-not-retry" if restored.changed else "safe-to-repeat",
-            ("source-checkout",) if restored.changed else (),
-        )
+    result = contracts.CandidateRestoreReady(
+        schema,
+        "restored",
+        request.attempt_id,
+        restored.candidate,
+        str(source_checkout),
+        restored.changed,
+        "committed" if restored.changed else "unchanged",
+        "do-not-retry" if restored.changed else "safe-to-repeat",
+        ("source-checkout",) if restored.changed else (),
     )
-    assert isinstance(content, dict)
-    return execution.OperationResult(content, "committed" if restored.changed else "unchanged", None)
+    return execution.TypedOperationResult(result, "committed" if restored.changed else "unchanged", None)
 
 
 def _job_publication_warning(

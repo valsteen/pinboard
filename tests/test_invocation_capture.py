@@ -23,7 +23,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from evals.behavioral.export import LauncherResult
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, ImmutableFilePublishedError
-from pinboard.mcp import execution, server
+from pinboard.domain import authority_models
+from pinboard.mcp import contracts, execution, server
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -580,6 +581,34 @@ class McpCaptureTest(unittest.TestCase):
     def capture_files(self, directory: Path) -> tuple[Path, ...]:
         return tuple(sorted(directory.glob("pinboard-mcp-*.json")))
 
+    def committed_authority(
+        self, _token: execution.CancellationToken
+    ) -> execution.TypedOperationResult[contracts.AttemptAuthorityCommitted]:
+        return execution.TypedOperationResult(
+            contracts.AttemptAuthorityCommitted(
+                "pinboard-mcp-attempt-authority-result/v1",
+                "attempt-1",
+                "item-1",
+                "task",
+                "host",
+                "lease",
+                1,
+                "2026-01-01T01:00:00+00:00",
+                authority_models.AttemptLeaseStatus.ACTIVE,
+                "2026-01-01T00:00:00+00:00",
+                "committed",
+                7,
+                1,
+                True,
+                "committed",
+                "do-not-retry",
+                ("ledger",),
+                None,
+            ),
+            "committed",
+            "7",
+        )
+
     def test_shared_execution_capture_preserves_exact_semantics_and_interruption(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -594,22 +623,24 @@ class McpCaptureTest(unittest.TestCase):
                 "heterogeneous": [True, 3, None, {"nested": "value"}],
             }
             original_request = json.loads(json.dumps(request))
-            rejected: dict[str, execution.JsonValue] = {
-                "schema": "pinboard-mcp-item-status-result/v3",
-                "status": "rejected",
-                "code": "ITEM_NOT_FOUND",
-                "message": "Missing.",
-                "state_changed": False,
-                "effect": "unchanged",
-                "retry": "correct-input",
-                "changed_surfaces": [],
-                "observed": [],
-                "mismatches": [],
-            }
+            rejected = contracts.ItemStatusUnavailable(
+                "pinboard-mcp-item-status-result/v3",
+                "rejected",
+                "ITEM_NOT_FOUND",
+                "Missing.",
+                False,
+                "unchanged",
+                "correct-input",
+                (),
+                (),
+                (),
+            )
 
-            def mutate_after_admission(_token: execution.CancellationToken) -> execution.OperationResult:
+            def mutate_after_admission(
+                _token: execution.CancellationToken,
+            ) -> execution.TypedOperationResult[contracts.ItemStatusUnavailable]:
                 request["item_id"] = "changed-inside-callback"
-                return execution.OperationResult(rejected, "rejected", None)
+                return execution.TypedOperationResult(rejected, "rejected", None)
 
             result = asyncio.run(
                 execution._run_request(
@@ -623,13 +654,13 @@ class McpCaptureTest(unittest.TestCase):
                     capture=capture,
                 )
             )
-            self.assertEqual(rejected, result)
+            self.assertEqual(execution.wire_content(rejected), result)
             first = self.capture_files(directory)
             self.assertEqual(1, len(first))
             self.assertEqual(0o600, stat.S_IMODE(first[0].stat().st_mode))
             record = json.loads(first[0].read_bytes())
             self.assertEqual(original_request, record["request"])
-            self.assertEqual(rejected, record["result"]["value"])
+            self.assertEqual(result, record["result"]["value"])
             self.assertEqual("unavailable", record["transport_bytes"])
             self.assertEqual("unavailable", record["pre_callback_events"])
             digest, size = first[0].stem.rsplit("-", 2)[-2:]
@@ -659,15 +690,8 @@ class McpCaptureTest(unittest.TestCase):
             self.assertEqual("unavailable", interrupted["result"]["availability"])
             self.assertEqual("interrupted", interrupted["result"]["reason"])
 
-    def test_capture_write_failures_do_not_obscure_a_validated_committed_result(self) -> None:
-        committed: dict[str, execution.JsonValue] = {
-            "schema": "test-result/v1",
-            "status": "committed",
-            "state_changed": True,
-            "effect": "committed",
-            "retry": "do-not-retry",
-            "changed_surfaces": ["immutable-artifact", "ledger"],
-        }
+    def test_capture_write_failures_do_not_obscure_a_committed_result(self) -> None:
+        expected = json.loads(msgspec.json.encode(self.committed_authority(execution.CancellationToken()).record))
         with tempfile.TemporaryDirectory() as temporary:
             capture = execution.SemanticCapture(Path(temporary))
             executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
@@ -675,16 +699,10 @@ class McpCaptureTest(unittest.TestCase):
             diagnostics_stream = io.StringIO()
             diagnostics = execution.Diagnostics(diagnostics_stream, event_limit=4, line_limit=512)
 
-            def callback(_token: execution.CancellationToken) -> execution.OperationResult:
-                return execution.OperationResult(committed, "committed", "revision-7")
-
-            with (
-                patch.object(execution.contract_schemas, "validate_result", return_value=committed),
-                patch.object(
-                    execution,
-                    "create_immutable",
-                    side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "Capture directory is not writable."),
-                ),
+            with patch.object(
+                execution,
+                "create_immutable",
+                side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "Capture directory is not writable."),
             ):
                 result = asyncio.run(
                     execution._run_request(
@@ -693,64 +711,21 @@ class McpCaptureTest(unittest.TestCase):
                         3,
                         server.ATTEMPT_AUTHORITY_TOOL,
                         "/project",
-                        callback,
+                        self.committed_authority,
                         arguments={"request": {"operation": "acquire"}},
                         capture=capture,
                     )
                 )
 
-            self.assertEqual(committed, result)
+            self.assertEqual(expected, result)
+            self.assertEqual("committed", result["effect"])
+            self.assertEqual(["ledger"], result["changed_surfaces"])
+            self.assertEqual(7, result["committed_revision"])
             self.assertIn("event=capture-unavailable", diagnostics_stream.getvalue())
             self.assertIn("classification=committed", diagnostics_stream.getvalue())
-            self.assertIn("commit=revision-7", diagnostics_stream.getvalue())
-
-    def test_result_validation_failure_preserves_unavailable_capture_context(self) -> None:
-        invalid: dict[str, execution.JsonValue] = {"schema": "pinboard-item-status/v5"}
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            capture = execution.SemanticCapture(directory)
-            executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
-            self.addCleanup(executor.shutdown)
-
-            def callback(_token: execution.CancellationToken) -> execution.OperationResult:
-                return execution.OperationResult(invalid, "committed", "revision-7")
-
-            with self.assertRaisesRegex(msgspec.ValidationError, "missing required field"):
-                asyncio.run(
-                    execution._run_request(
-                        executor,
-                        execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=512),
-                        4,
-                        server.ITEM_STATUS_TOOL,
-                        "/project",
-                        callback,
-                        arguments={"project_root": "/project", "item_id": "item"},
-                        capture=capture,
-                    )
-                )
-
-            [published] = self.capture_files(directory)
-            record = json.loads(published.read_bytes())
-            self.assertEqual({"project_root": "/project", "item_id": "item"}, record["request"])
-            self.assertEqual(
-                {
-                    "availability": "unavailable",
-                    "reason": "result-validation-error",
-                    "classification": "committed",
-                    "commit_reference": "revision-7",
-                },
-                record["result"],
-            )
+            self.assertIn("commit=7", diagnostics_stream.getvalue())
 
     def test_capture_failure_diagnostics_have_a_reserved_bounded_budget(self) -> None:
-        committed: dict[str, execution.JsonValue] = {
-            "schema": "test-result/v1",
-            "status": "committed",
-            "state_changed": True,
-            "effect": "committed",
-            "retry": "do-not-retry",
-            "changed_surfaces": ["ledger"],
-        }
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             capture = execution.SemanticCapture(directory)
@@ -769,9 +744,6 @@ class McpCaptureTest(unittest.TestCase):
                     commit_reference=None,
                     capture_selector=None,
                 )
-
-            def callback(_token: execution.CancellationToken) -> execution.OperationResult:
-                return execution.OperationResult(committed, "committed", "revision-7")
 
             def publish_then_warn(path: Path, content: bytes) -> bool:
                 path.write_bytes(content)
@@ -793,10 +765,7 @@ class McpCaptureTest(unittest.TestCase):
                     )
                 return publish_then_warn(path, content)
 
-            with (
-                patch.object(execution.contract_schemas, "validate_result", return_value=committed),
-                patch.object(execution, "create_immutable", side_effect=fail_each_way),
-            ):
+            with patch.object(execution, "create_immutable", side_effect=fail_each_way):
                 for request_id in (3, 4):
                     asyncio.run(
                         execution._run_request(
@@ -805,7 +774,7 @@ class McpCaptureTest(unittest.TestCase):
                             request_id,
                             server.ATTEMPT_AUTHORITY_TOOL,
                             "/project",
-                            callback,
+                            self.committed_authority,
                             arguments={"request": {"operation": "acquire"}},
                             capture=capture,
                         )
@@ -817,23 +786,13 @@ class McpCaptureTest(unittest.TestCase):
             self.assertEqual(4, len(diagnostics_value.splitlines()))
 
     def test_published_capture_sync_failure_preserves_committed_identity(self) -> None:
-        committed: dict[str, execution.JsonValue] = {
-            "schema": "test-result/v1",
-            "status": "committed",
-            "state_changed": True,
-            "effect": "committed",
-            "retry": "do-not-retry",
-            "changed_surfaces": ["immutable-artifact", "ledger"],
-        }
+        expected = json.loads(msgspec.json.encode(self.committed_authority(execution.CancellationToken()).record))
         with tempfile.TemporaryDirectory() as temporary:
             capture = execution.SemanticCapture(Path(temporary))
             executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
             self.addCleanup(executor.shutdown)
             diagnostics_stream = io.StringIO()
             diagnostics = execution.Diagnostics(diagnostics_stream, event_limit=4, line_limit=512)
-
-            def callback(_token: execution.CancellationToken) -> execution.OperationResult:
-                return execution.OperationResult(committed, "committed", "revision-7")
 
             def publish_then_warn(path: Path, content: bytes) -> bool:
                 path.write_bytes(content)
@@ -843,10 +802,7 @@ class McpCaptureTest(unittest.TestCase):
                     FileIOError(FileIOErrorCode.DIRECTORY_SYNC_FAILED, "Capture directory sync failed."),
                 )
 
-            with (
-                patch.object(execution.contract_schemas, "validate_result", return_value=committed),
-                patch.object(execution, "create_immutable", side_effect=publish_then_warn),
-            ):
+            with patch.object(execution, "create_immutable", side_effect=publish_then_warn):
                 result = asyncio.run(
                     execution._run_request(
                         executor,
@@ -854,14 +810,16 @@ class McpCaptureTest(unittest.TestCase):
                         4,
                         server.ATTEMPT_AUTHORITY_TOOL,
                         "/project",
-                        callback,
+                        self.committed_authority,
                         arguments={"request": {"operation": "acquire"}},
                         capture=capture,
                     )
                 )
 
-            self.assertEqual(committed, result)
             [published] = self.capture_files(Path(temporary))
+            self.assertEqual(expected, result)
+            self.assertEqual("committed", result["effect"])
+            self.assertEqual(result, json.loads(published.read_bytes())["result"]["value"])
             digest, size = published.stem.rsplit("-", 2)[-2:]
             self.assertEqual(hashlib.sha256(published.read_bytes()).hexdigest(), digest)
             self.assertEqual(len(published.read_bytes()), int(size))
@@ -870,7 +828,7 @@ class McpCaptureTest(unittest.TestCase):
             self.assertIn(f"capture_selector={published.name}", diagnostics_value)
             self.assertNotIn("event=capture-unavailable", diagnostics_value)
             self.assertIn("classification=committed", diagnostics_value)
-            self.assertIn("commit=revision-7", diagnostics_value)
+            self.assertIn("commit=7", diagnostics_value)
 
     def test_every_registered_callback_passes_its_decoded_argument_object_to_shared_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

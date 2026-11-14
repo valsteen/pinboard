@@ -282,7 +282,9 @@ def validate_startup_composition() -> dict[str, int]:
         values = {value.arg: value.value for value in node.keywords}
         if "instructions" in values:
             mcp_bytes += len(str(ast.literal_eval(values["instructions"])).encode())
-        if "meta" in values and ast.literal_eval(values["meta"]) == {"anthropic/alwaysLoad": True}:
+        if isinstance(meta := values.get("meta"), ast.Dict) and ast.literal_eval(meta) == {
+            "anthropic/alwaysLoad": True
+        }:
             mcp_bytes += len(str(ast.literal_eval(values["description"])).encode())
     sizes: dict[str, int] = {}
     for entry in COORDINATOR_ENTRIES:

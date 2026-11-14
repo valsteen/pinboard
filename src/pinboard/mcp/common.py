@@ -16,25 +16,18 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     candidate_snapshots,
     ports,
-    queries,
-    query_models,
     stored_state,
     work_brief_models,
     work_briefs,
 )
-from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
-from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import GeneratedViewReader
+from pinboard.domain import work_models
 from pinboard.domain.errors import (
     ChangedSurface,
-    EffectDisposition,
     FailureDetails,
-    FailureFact,
-    FailureMismatch,
-    RetryDisposition,
 )
 from pinboard.domain.identifiers import AttemptId
-from pinboard.mcp import contracts, execution, tool_names
+from pinboard.mcp import contracts, tool_names
 from pinboard.mcp.contracts import JsonValue
 
 # Shared by every lease-protected worker rejection so an expired lease is never replaced over another owner.
@@ -45,78 +38,6 @@ ATTEMPT_LEASE_RECOVERY = (
     "generation. If another owner holds live authority, or the lease was released or revoked, stop and report it; "
     "never revoke it or reuse the old lease."
 )
-
-
-def _item_status_failure(
-    code: str,
-    message: str,
-    details: FailureDetails | None,
-) -> execution.OperationResult:
-    rendered = _details_json(details)
-    return execution.OperationResult(
-        {
-            "schema": "pinboard-mcp-item-status-result/v3",
-            "status": "rejected",
-            "code": code,
-            "message": message,
-            "state_changed": False,
-            **rendered,
-        },
-        "rejected",
-        None,
-    )
-
-
-def _damaged_receipt_failure(schema: str, damaged: query_models.DamagedTransitionReceipt) -> execution.OperationResult:
-    """Name a consumed receipt whose outcome does not decode, with a diagnosis-only next step."""
-
-    return execution.OperationResult(
-        {
-            "schema": schema,
-            "status": "rejected",
-            "code": "TRANSITION_RECEIPT_DAMAGED",
-            "message": queries.damaged_receipt_message(damaged),
-            "state_changed": False,
-            **_details_json(
-                FailureDetails(
-                    observed=(
-                        FailureFact("attempt_id", str(damaged.attempt_id)),
-                        FailureFact("history_id", int(damaged.history_id)),
-                        FailureFact("committed_at", damaged.committed_at.isoformat()),
-                        FailureFact("action_kind", damaged.action_kind.value),
-                    ),
-                    mismatches=(FailureMismatch("receipt", "decodable current-format receipt", damaged.defect),),
-                    retry=RetryDisposition.DO_NOT_RETRY,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
-                )
-            ),
-            "recovery": queries.damaged_receipt_recovery(damaged),
-        },
-        "rejected",
-        None,
-    )
-
-
-def _read_failure(
-    schema: str,
-    code: str,
-    message: str,
-    details: FailureDetails | None,
-) -> execution.OperationResult:
-    return execution.OperationResult(
-        {
-            "schema": schema,
-            "status": "rejected",
-            "code": code,
-            "message": message,
-            "state_changed": False,
-            **_details_json(details),
-        },
-        "rejected",
-        None,
-    )
 
 
 def _resolve_durable(project_root: str, work_root: str) -> DurableRoots:
@@ -200,58 +121,14 @@ def _candidate_recovery_view(
     )
 
 
-def _details_json(details: FailureDetails | None) -> dict[str, JsonValue]:
+def _failure_evidence(
+    details: FailureDetails | None,
+) -> tuple[tuple[contracts.FailureObservation, ...], tuple[contracts.FailureMismatch, ...]]:
     if details is None:
-        return {
-            "effect": EffectDisposition.UNCHANGED.value,
-            "retry": RetryDisposition.CORRECT_INPUT.value,
-            "changed_surfaces": [],
-            "observed": [],
-            "mismatches": [],
-        }
-    return {
-        "effect": details.effect.value,
-        "retry": details.retry.value,
-        "changed_surfaces": [surface.value for surface in details.changed_surfaces],
-        "observed": [{"field": fact.field, "value": fact.value} for fact in details.observed],
-        "mismatches": [
-            {"field": mismatch.field, "expected": mismatch.expected, "observed": mismatch.observed}
-            for mismatch in details.mismatches
-        ],
-    }
-
-
-def _artifact_publication_failure(
-    schema: str,
-    failure: ArtifactAcceptanceFailure | ArtifactWriteFailure,
-    *,
-    acceptance_message: str,
-    publication_message: str,
-    acceptance_recovery: str,
-    publication_recovery: str,
-) -> execution.OperationResult:
-    acceptance_failed = isinstance(failure, ArtifactAcceptanceFailure)
-    return execution.OperationResult(
-        {
-            "schema": schema,
-            "status": (
-                "failed-after-publication"
-                if failure.details.effect == EffectDisposition.COMMITTED
-                else "infrastructure-failure"
-            ),
-            "code": "ARTIFACT_ACCEPTANCE_FAILED" if acceptance_failed else "ARTIFACT_PUBLICATION_FAILED",
-            "message": f"{acceptance_message if acceptance_failed else publication_message} {failure.cause}",
-            "state_changed": failure.details.effect == EffectDisposition.COMMITTED,
-            "effect": failure.details.effect.value,
-            "retry": failure.details.retry.value,
-            "changed_surfaces": [surface.value for surface in failure.details.changed_surfaces],
-            "observed": [],
-            "mismatches": [],
-            "published_selector": failure.selector,
-            "recovery": acceptance_recovery if acceptance_failed else publication_recovery,
-        },
-        "infrastructure-failure",
-        failure.selector,
+        return (), ()
+    return (
+        tuple(contracts.FailureObservation(fact.field, fact.value) for fact in details.observed),
+        tuple(contracts.FailureMismatch(fact.field, fact.expected, fact.observed) for fact in details.mismatches),
     )
 
 
@@ -291,35 +168,19 @@ def _refresh_published_ledger(
     return _refresh_affected_views(durable, store, AffectedViews((), (), ()), now).warning
 
 
-def _artifact_reference_json(reference: stored_state.ArtifactReference) -> dict[str, JsonValue]:
-    return {
-        "artifact_ref_id": int(reference.artifact_ref_id),
-        "kind": reference.kind.value,
-        "key": reference.key,
-        "revision": reference.revision,
-        "selector": reference.selector,
-        "sha256": reference.content_sha256,
-        "size_bytes": reference.size_bytes,
-        "accepted_revision": reference.accepted_revision,
-    }
-
-
-def _transition_action_json(action_id: contracts.ActionIdentity) -> dict[str, JsonValue]:
-    return {"kind": action_id.kind.value, "subject": action_id.subject}
-
-
-def _committed_authority_fields(effect: CommittedEffect, warning: ViewWarning | None) -> dict[str, JsonValue]:
-    """Render the durable receipt and optional warning; callers refresh views explicitly."""
-    return {
-        "status": "committed" if warning is None else "committed-with-warning",
-        "committed_revision": effect.receipt.project_revision,
-        "history_id": int(effect.receipt.history_id),
-        "state_changed": True,
-        "effect": EffectDisposition.COMMITTED.value,
-        "retry": RetryDisposition.DO_NOT_RETRY.value,
-        "changed_surfaces": [ChangedSurface.LEDGER.value],
-        "warning": None if warning is None else {"message": warning.message, "recovery": warning.repair},
-    }
+def _review_evidence_reference(reference: stored_state.ArtifactReference) -> contracts.ReviewEvidenceReference:
+    if reference.kind != work_models.ArtifactKind.EVIDENCE:
+        raise ValueError(f"Expected an accepted evidence reference, got {reference.kind.value}.")
+    return contracts.ReviewEvidenceReference(
+        int(reference.artifact_ref_id),
+        "evidence",
+        reference.key,
+        reference.revision,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+        reference.accepted_revision,
+    )
 
 
 def _require_initialized_durable(shared_repository: Path, work_root: Path) -> DurableRoots:

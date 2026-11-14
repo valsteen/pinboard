@@ -24,7 +24,7 @@ from pinboard.mcp import contracts, execution, host_profiles, read_operations
 
 def _rejected(
     resource: str, message: str, budget: int | None, page_bytes: int, profile: host_profiles.HostProfile
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.StartupTextResult]:
     result = contracts.StartupTextRejected(
         "pinboard-startup-text-result/v1",
         "rejected",
@@ -37,12 +37,10 @@ def _rejected(
         "correct-input",
         (),
     )
-    content: dict[str, contracts.JsonValue] = msgspec.to_builtins(result)
     representation = host_profiles.representation(profile)
-    if budget is not None and host_profiles.envelope_size(content, representation) > budget:
+    if budget is not None and host_profiles.envelope_size(msgspec.to_builtins(result), representation) > budget:
         result = msgspec.structs.replace(result, message="Selected source or continuation is invalid.")
-        content = msgspec.to_builtins(result)
-        if host_profiles.envelope_size(content, representation) > budget:
+        if host_profiles.envelope_size(msgspec.to_builtins(result), representation) > budget:
             result = msgspec.structs.replace(
                 result,
                 resource="max_batch_bytes",
@@ -52,8 +50,7 @@ def _rejected(
                     "or shorten selected paths, then restart the exact source."
                 ),
             )
-            content = msgspec.to_builtins(result)
-    return execution.OperationResult(content, "rejected", None)
+    return execution.TypedOperationResult(result, "rejected", None)
 
 
 def _page(
@@ -63,13 +60,13 @@ def _page(
     text: str,
     start: int,
     end: int,
-) -> dict[str, contracts.JsonValue]:
+) -> contracts.StartupTextPage:
     continuation = (
         contracts.StartupContinue(request.project_root, request.work_root, source, end, budget)
         if end < len(text)
         else None
     )
-    result = contracts.StartupTextPage(
+    return contracts.StartupTextPage(
         "pinboard-startup-text-page/v1",
         "ok",
         source,
@@ -84,8 +81,6 @@ def _page(
         "safe-to-repeat",
         (),
     )
-    content: dict[str, contracts.JsonValue] = msgspec.to_builtins(result)
-    return content
 
 
 def _correction(path: Path, key: str, cause: SettingFailureCause) -> tuple[str, str]:
@@ -125,7 +120,7 @@ def _sentence(text: str) -> str:
 
 def _host_setting_failure(
     path: Path | None, key: str, error: SettingResolutionError | RuntimeError, directory_created: bool
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.StartupTextResult]:
     """Name the setting, the failed resource, this call's settings effects, retry and one safe next step."""
     if isinstance(error, RuntimeError):
         effects = SettingEffects("none", "none", "none")
@@ -163,10 +158,12 @@ def _host_setting_failure(
         retry,
         ("user-settings",) if confirmed else (),
     )
-    return execution.OperationResult(msgspec.to_builtins(result), "rejected", None)
+    return execution.TypedOperationResult(result, "rejected", None)
 
 
-def _page_bytes(profile: host_profiles.HostProfile) -> int | execution.OperationResult:
+def _page_bytes(
+    profile: host_profiles.HostProfile,
+) -> int | execution.TypedOperationResult[contracts.StartupTextResult]:
     """The unmeasured size, or the recognized host's stored per-user setting seeded with its measured default."""
     host = host_profiles.setting_host(profile)
     if host is None:
@@ -186,8 +183,8 @@ def _page_bytes(profile: host_profiles.HostProfile) -> int | execution.Operation
 
 
 def read(
-    raw: Mapping[str, contracts.JsonValue], profile: host_profiles.HostProfile, token: execution.CancellationToken
-) -> execution.OperationResult:
+    raw: Mapping[str, contracts.JsonValue], token: execution.CancellationToken, profile: host_profiles.HostProfile
+) -> execution.TypedOperationResult[contracts.StartupTextResult]:
     token.checkpoint()
     try:
         request = msgspec.convert(raw, type=contracts.StartupTextEnvelope, strict=True).request
@@ -195,7 +192,7 @@ def read(
     except (msgspec.ValidationError, ValueError) as error:
         return _rejected("request", str(error), None, host_profiles.measured_page_bytes(profile), profile)
     page_bytes = _page_bytes(profile)
-    if isinstance(page_bytes, execution.OperationResult):
+    if isinstance(page_bytes, execution.TypedOperationResult):
         return page_bytes
     budget = host_profiles.effective_budget(request.max_batch_bytes, page_bytes)
     return _read_selected(request, budget, page_bytes, profile, token)
@@ -207,7 +204,7 @@ def _read_selected(
     page_bytes: int,
     profile: host_profiles.HostProfile,
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.StartupTextResult]:
     start = request.start_character if isinstance(request, contracts.StartupContinue) else 0
     expected: contracts.StartupSource | None
     match request:
@@ -219,18 +216,18 @@ def _read_selected(
             match expected:
                 case contracts.StartupArtifactSource():
                     verified = read_operations._verify_artifact(
-                        request.project_root,
-                        request.work_root,
-                        expected.artifact_ref_id,
-                        expected.selector,
-                        expected.sha256,
-                        expected.size_bytes,
+                        {
+                            "project_root": request.project_root,
+                            "work_root": request.work_root,
+                            "artifact_ref_id": expected.artifact_ref_id,
+                            "selector": expected.selector,
+                            "sha256": expected.sha256,
+                            "size_bytes": expected.size_bytes,
+                        },
                         token,
                     )
-                    if verified.content.get("verified") is not True:
-                        return _rejected(
-                            expected.selector, str(verified.content.get("message")), budget, page_bytes, profile
-                        )
+                    if not isinstance(verified.record, contracts.ArtifactVerified):
+                        return _rejected(expected.selector, verified.record.message, budget, page_bytes, profile)
                     path = Path(request.work_root) / expected.selector
                 case contracts.StartupFileSource():
                     path = Path(expected.path)
@@ -268,16 +265,16 @@ def _bounded_page(
     text: str,
     start: int,
     token: execution.CancellationToken,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.StartupTextResult]:
     representation = host_profiles.representation(profile)
     final = _page(request, budget, source, text, start, len(text))
-    if host_profiles.envelope_size(final, representation) <= budget:
-        return execution.OperationResult(final, "read", None)
+    if host_profiles.envelope_size(msgspec.to_builtins(final), representation) <= budget:
+        return execution.TypedOperationResult(final, "read", None)
     low, high = start, min(len(text) - 1, start + budget)
     while low < high:
         end = (low + high + 1) // 2
         candidate = _page(request, budget, source, text, start, end)
-        if host_profiles.envelope_size(candidate, representation) <= budget:
+        if host_profiles.envelope_size(msgspec.to_builtins(candidate), representation) <= budget:
             low = end
         else:
             high = end - 1
@@ -290,4 +287,4 @@ def _bounded_page(
             profile,
         )
     token.checkpoint()
-    return execution.OperationResult(_page(request, budget, source, text, start, low), "read", None)
+    return execution.TypedOperationResult(_page(request, budget, source, text, start, low), "read", None)

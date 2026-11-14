@@ -6,14 +6,14 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode, RootError, RootErrorCode
+from pinboard.adapters.files.errors import ArtifactError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import ports, stored_state, work_brief_models
 from pinboard.cli import cli_commands, work_views
 from pinboard.cli.cli_output import write_json
-from pinboard.cli.errors import CliResult, InitializationAfterCommittedEffects
+from pinboard.cli.errors import CliEffectFailure, CliResult, InitializationAfterCommittedEffects, ViewRefreshFailure
 from pinboard.cli.work_state import (
     initialize_work_state,
     read_state_for_validation,
@@ -193,7 +193,7 @@ def initialize_state(
         store=store,
         now=operation_time,
     )
-    if isinstance(receipt, (work_brief_models.WorkBriefFailure, InitializationAfterCommittedEffects)):
+    if isinstance(receipt, (work_brief_models.WorkBriefFailure, InitializationAfterCommittedEffects, CliEffectFailure)):
         return receipt
     optional_next_skills = (
         () if receipt.resumed else ("repository-readiness", "slop-cleanup", "maintaining-agent-guidance")
@@ -228,11 +228,11 @@ def rebuild_views(
     durable: DurableRoots,
     store: ports.GeneratedViewSetReader,
     _command: cli_commands.RebuildViewsCommand,
-) -> int:
+) -> int | ViewRefreshFailure:
     operation_time = datetime.now(UTC)
     rebuild_result = work_views.rebuild(durable, store, operation_time)
     if rebuild_result.warning is not None:
-        raise FileIOError(
+        return CliEffectFailure(
             FileIOErrorCode.VIEW_REFRESH_FAILED,
             f"{rebuild_result.warning.message} {rebuild_result.warning.repair} Some replaceable views may already have refreshed; the authoritative ledger is unchanged.",
         )

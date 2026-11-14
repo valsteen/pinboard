@@ -35,7 +35,9 @@ from pinboard.application.work_briefs import (
     build_selected_attempt_brief_views,
 )
 from pinboard.cli.errors import (
+    CliEffectFailure,
     InitializationAfterCommittedEffects,
+    ViewRefreshFailure,
 )
 from pinboard.cli.work_state_models import Diagnostic, Severity, ValidationDiagnosticCode, ValidationReport
 from pinboard.cli.work_views import ComposedBoardReader, archive_attempt_views
@@ -50,7 +52,7 @@ def initialize_work_state(
     default_work_root: bool,
     store: ports.GeneratedViewSetReader,
     now: datetime | None = None,
-) -> work_brief_models.WorkBriefResult[InitReceipt | InitializationAfterCommittedEffects]:
+) -> work_brief_models.WorkBriefResult[InitReceipt | InitializationAfterCommittedEffects] | ViewRefreshFailure:
     git_exclude_path = ensure_git_exclude(shared_repository_root) if default_work_root else None
     database_path: Path | None = None
     try:
@@ -87,8 +89,13 @@ def initialize_work_state(
             projection_facts, roots.work_root, archived_briefs, ComposedBoardReader(roots, store), operation_time
         )
         if rebuild_result.warning is not None:
-            raise FileIOError(
+            failure: ViewRefreshFailure = CliEffectFailure(
                 FileIOErrorCode.VIEW_REFRESH_FAILED, f"{rebuild_result.warning.message} {rebuild_result.warning.repair}"
+            )
+            return (
+                failure
+                if git_exclude_path is None and database_path is None
+                else InitializationAfterCommittedEffects(git_exclude_path, database_path, failure)
             )
     except (StorageError, ArtifactError, FileIOError) as error:
         if isinstance(error, StorageError) and error.invariant_violation:

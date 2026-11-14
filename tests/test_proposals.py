@@ -97,16 +97,18 @@ class ProposalInputTest(unittest.TestCase):
         for value, field in cases:
             with self.subTest(field=field), patch.object(mcp_mutations.common, "_resolve_durable") as durable:
                 failure = mcp_mutations._proposal_created(
-                    "/project",
-                    "/work",
-                    value,
-                    "task",
-                    "host",
+                    {
+                        "project_root": "/project",
+                        "work_root": "/work",
+                        "proposal": value,
+                        "actor_task_id": "task",
+                        "actor_host_id": "host",
+                    },
                     mcp_execution.CancellationToken(),
                 )
-                self.assertEqual("PROPOSAL_INVALID", failure.content["code"])
-                message = failure.content["message"]
-                assert isinstance(message, str)
+                assert isinstance(failure.record, contracts.ProposalRejected)
+                self.assertEqual("PROPOSAL_INVALID", failure.record.code)
+                message = failure.record.message
                 self.assertIn(field, message)
                 durable.assert_not_called()
 

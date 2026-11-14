@@ -14,9 +14,10 @@ from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode, RootError, RootErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.files.root import (
-    CandidateRestoreAfterMutationError,
     CandidateRestoreRejection,
+    CandidateRestoreResult,
     CandidateRestoreSuccess,
+    CandidateRestoreVerificationFailure,
     CurrentHeadCandidate,
     DifferentHeadCandidate,
     DirtyHeadCandidate,
@@ -239,7 +240,7 @@ class CandidateSnapshotTest(unittest.TestCase):
         self.git(target.parent, "clone", "--quiet", str(source), str(target))
         return target
 
-    def rejection(self, result: CandidateRestoreSuccess | CandidateRestoreRejection) -> CandidateRestoreRejection:
+    def rejection(self, result: CandidateRestoreResult) -> CandidateRestoreRejection:
         if not isinstance(result, CandidateRestoreRejection):
             self.fail(f"Expected candidate restore rejection, received {result!r}")
         return result
@@ -749,9 +750,8 @@ class CandidateSnapshotTest(unittest.TestCase):
                 "pinboard.adapters.files.root.subprocess.run",
                 return_value=subprocess.CompletedProcess(["git", "apply"], 0, b"", b""),
             ),
-            self.assertRaises(CandidateRestoreAfterMutationError),
         ):
-            restore_working_tree_candidate(
+            failed = restore_working_tree_candidate(
                 target,
                 expected_branch="main",
                 preimage_revision=base,
@@ -759,6 +759,8 @@ class CandidateSnapshotTest(unittest.TestCase):
                 diff=observed.diff,
                 excluded_untracked_paths=(),
             )
+        assert isinstance(failed, CandidateRestoreVerificationFailure)
+        self.assertIn("did not produce the exact snapshot", failed.message)
 
     def test_commit_snapshot_fast_forwards_only_from_exact_clean_preimage(self) -> None:
         source, base = self.repository()
@@ -842,7 +844,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             expected_branch: str = "restore-matrix",
             candidate_revision: str = candidate,
             candidate_diff: bytes = diff,
-        ) -> CandidateRestoreSuccess | CandidateRestoreRejection:
+        ) -> CandidateRestoreResult:
             return restore_commit_candidate(
                 target,
                 expected_branch=expected_branch,
@@ -891,9 +893,10 @@ class CandidateSnapshotTest(unittest.TestCase):
                 "pinboard.adapters.files.root.observe_checkout_identity",
                 side_effect=(("restore-matrix", base), ("restore-matrix", base)),
             ),
-            self.assertRaises(CandidateRestoreAfterMutationError),
         ):
-            restore()
+            failed = restore()
+        assert isinstance(failed, CandidateRestoreVerificationFailure)
+        self.assertIn("did not produce the exact clean commit", failed.message)
 
     def test_review_candidate_observation_covers_supported_candidate_shapes(self) -> None:
         store = self.initialized_store()
@@ -1005,7 +1008,7 @@ class CandidateSnapshotTest(unittest.TestCase):
 
         rejection = CandidateRestoreRejection("wrong-head", "branch", "head")
         root_error = RootError(RootErrorCode.PROJECT_GIT_CHECKOUT_UNAVAILABLE, "unavailable")
-        mutated = CandidateRestoreAfterMutationError(RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE, "changed")
+        mutated = CandidateRestoreVerificationFailure(RootErrorCode.PROJECT_GIT_ROOT_UNAVAILABLE, "changed")
         working_outcomes = (
             (rejection, DecisionFailure),
             (root_error, DecisionFailure),

@@ -25,7 +25,7 @@ from pinboard.application.artifacts import NewArtifact
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId
-from pinboard.mcp import common, contract_schemas, contracts, execution, host_profiles, server, startup_text
+from pinboard.mcp import common, contracts, execution, host_profiles, server, startup_text
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import CheckpointPackageSupport
 from tests.support import SQLITE_NOW
@@ -66,8 +66,8 @@ class StartupTextTest(CheckpointPackageSupport):
         request: dict[str, contracts.JsonValue],
         profile: host_profiles.HostProfile = host_profiles.HostProfile.UNMEASURED,
     ) -> dict[str, contracts.JsonValue]:
-        result = startup_text.read({"request": request}, profile, execution.CancellationToken())
-        return contract_schemas.validate_result("pinboard_startup_text", result.content)
+        result = startup_text.read({"request": request}, execution.CancellationToken(), profile)
+        return execution.wire_content(result.record)
 
     def test_complete_unicode_escaping_long_lines_and_empty_inputs(self) -> None:
         for text in ('{"long":"' + 'café 音\\"\n' * 4000 + '"}', "short\n", ""):
@@ -134,7 +134,7 @@ class StartupTextTest(CheckpointPackageSupport):
         invalid = dict(page)
         invalid["end_character"] = 0
         with self.assertRaises(msgspec.ValidationError):
-            contract_schemas.validate_result("pinboard_startup_text", invalid)
+            msgspec.convert(invalid, type=contracts.StartupTextPage, strict=True)
 
     def test_exact_accepted_artifact_tuple_and_bytes_are_required(self) -> None:
         fixture = self.checkpoint_fixture()
@@ -380,8 +380,8 @@ class HostProfileTest(unittest.TestCase):
     def read(
         self, request: dict[str, contracts.JsonValue], profile: host_profiles.HostProfile
     ) -> dict[str, contracts.JsonValue]:
-        result = startup_text.read({"request": request}, profile, execution.CancellationToken())
-        return contract_schemas.validate_result("pinboard_startup_text", result.content)
+        result = startup_text.read({"request": request}, execution.CancellationToken(), profile)
+        return execution.wire_content(result.record)
 
     def test_recognized_hosts_select_their_profile_at_every_version_and_others_stay_unmeasured(self) -> None:
         for name, version, profile in MEASURED_CLIENTS:

@@ -33,10 +33,13 @@ from pinboard.cli import (
     work_state_commands,
 )
 from pinboard.cli.errors import (
+    CliEffectFailure,
     CliErrorCode,
     CliResult,
     CommandFailure,
+    ExportMediaFailure,
     InitializationAfterCommittedEffects,
+    ViewRefreshFailure,
     WorkBriefFailure,
     initialization_failure_details,
     storage_failure_details,
@@ -115,7 +118,7 @@ def _parse_arguments(
         return 2
 
 
-def _failure_exit_code(result: CliResult[int]) -> int:
+def _failure_exit_code(result: int | CommandFailure | WorkBriefFailure | InitializationAfterCommittedEffects) -> int:
     match result:
         case int():
             return result
@@ -130,7 +133,7 @@ def _failure_exit_code(result: CliResult[int]) -> int:
 
 
 def _present_expected_result(
-    result: CliResult[int],
+    result: int | CommandFailure | WorkBriefFailure | InitializationAfterCommittedEffects,
     operation: str,
     roots: cli_commands.ResolvedRoots | None,
     *,
@@ -167,6 +170,38 @@ def _present_expected_result(
     else:
         print(str(result), file=sys.stderr)
     return exit_code
+
+
+def _present_unchanged_effect_failure(operation: str, code: str, message: str, json_requested: bool) -> None:
+    if json_requested:
+        cli_output.write_operation_rejection(
+            operation,
+            code,
+            message,
+            FailureDetails(
+                observed=(),
+                mismatches=(),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+            (),
+        )
+    else:
+        print(message, file=sys.stderr)
+
+
+def _present_direct_effect_failure(
+    operation: str, result: ExportMediaFailure | ViewRefreshFailure, json_requested: bool
+) -> None:
+    try:
+        _present_unchanged_effect_failure(operation, result.code.value, str(result), json_requested)
+    except OSError:
+        if json_requested:
+            with contextlib.suppress(OSError):
+                print(result, file=sys.stderr)
+        raise
 
 
 class _ResultOutput(io.TextIOBase):
@@ -313,14 +348,11 @@ def _classified_invocation(  # noqa: PLR0912 - preserve persisted-state invarian
     try:
         if not isinstance(invocation.command, (cli_commands.ToolContractCommand, cli_commands.CodeCatalogCommand)):
             roots = work_state_commands.resolve_roots(invocation.roots)
-        status = _present_expected_result(
-            _dispatch(invocation, roots),
-            operation,
-            roots,
-            json_requested=json_requested,
-        )
-        sys.stdout.flush()
-        return status
+        result = _dispatch(invocation, roots)
+        if not isinstance(result, CliEffectFailure):
+            status = _present_expected_result(result, operation, roots, json_requested=json_requested)
+            sys.stdout.flush()
+            return status
     except ImmutableFilePublishedError as error:
         details = FailureDetails(
             observed=(FailureFact("selected_output_path", str(error.path)),),
@@ -368,30 +400,15 @@ def _classified_invocation(  # noqa: PLR0912 - preserve persisted-state invarian
     except (StorageError, ArtifactError, FileIOError) as error:
         if isinstance(error, StorageError) and error.invariant_violation:
             raise
-        if json_requested:
-            if isinstance(error, StorageError):
-                details = storage_failure_details(error, operation, roots, EffectDisposition.UNCHANGED, (), ())
-                recovery = ()
-            else:
-                details = FailureDetails(
-                    observed=(),
-                    mismatches=(),
-                    retry=RetryDisposition.DO_NOT_RETRY,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
-                )
-                recovery = ()
-            cli_output.write_operation_rejection(
-                operation,
-                error.code.value,
-                str(error),
-                details,
-                recovery,
-            )
+        if isinstance(error, StorageError) and json_requested:
+            details = storage_failure_details(error, operation, roots, EffectDisposition.UNCHANGED, (), ())
+            cli_output.write_operation_rejection(operation, error.code.value, str(error), details, ())
         else:
-            print(str(error), file=sys.stderr)
+            _present_unchanged_effect_failure(operation, error.code.value, str(error), json_requested)
         return 12
+    # Direct effect failures retain the output boundary of adapter rejections.
+    _present_direct_effect_failure(operation, result, json_requested)
+    return 12
 
 
 def _run_cli(arguments: tuple[str, ...]) -> int:

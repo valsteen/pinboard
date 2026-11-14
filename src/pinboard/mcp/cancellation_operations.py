@@ -1,48 +1,24 @@
 """Exact cancellation preview and confirmation; human authorship remains trusted-local attribution."""
 
-from collections.abc import Iterator
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from functools import partial
 from typing import Literal, assert_never
 
 import msgspec
-from mcp.server.mcpserver import MCPServer
 
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.models import AffectedViews
 from pinboard.application import cancellation
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import HostId, TaskId, WorkItemId
-from pinboard.mcp import common, contracts, execution, tool_names
+from pinboard.mcp import common, contracts, execution
 from pinboard.mcp.contracts import JsonValue
+from pinboard.mcp.tool_names import CANCEL_TOOL
 
 
-def register(
-    server: MCPServer,
-    executor: execution.BoundedExecutor,
-    diagnostics: execution.Diagnostics,
-    request_ids: Iterator[int],
-    capture: execution.SemanticCapture | execution.AutomaticCapture | None,
-) -> None:
-    @server.tool(
-        name=tool_names.CANCEL_TOOL,
-        description="Preview one live item's cancellation without effects, then confirm only after a separate explicit human confirmation for the exact shown item and consequences. Put all fields inside request. Never initiate cancellation or infer it from cleanup, completion, ambiguity or silence. Every sharing client must use a cancellation-aware build before first cancellation.",
-    )
-    async def cancel(request: dict[str, JsonValue]) -> dict[str, JsonValue]:
-        arguments: dict[str, JsonValue] = {"request": request}
-        return await execution._run_request(
-            executor,
-            diagnostics,
-            next(request_ids),
-            tool_names.CANCEL_TOOL,
-            str(request.get("project_root", "")),
-            partial(operate, arguments),
-            arguments=arguments,
-            capture=None if request.get("operation") == "preview" else capture,
-        )
-
-
-def operate(arguments: dict[str, JsonValue], token: execution.CancellationToken) -> execution.OperationResult:
+def operate(
+    arguments: Mapping[str, JsonValue], token: execution.CancellationToken
+) -> execution.TypedOperationResult[contracts.CancellationResult]:
     try:
         request = msgspec.convert(arguments, type=contracts.CancellationEnvelope, strict=True).request
     except (msgspec.ValidationError, ValueError) as error:
@@ -97,7 +73,7 @@ def operate(arguments: dict[str, JsonValue], token: execution.CancellationToken)
                 "safe-to-repeat",
                 (),
             )
-            return execution.OperationResult(msgspec.to_builtins(result), "ok", None)
+            return execution.TypedOperationResult(result, "ok", None)
         case contracts.CancellationConfirmRequest():
             token.checkpoint()
             now = datetime.now(UTC)
@@ -138,8 +114,8 @@ def operate(arguments: dict[str, JsonValue], token: execution.CancellationToken)
                 ("ledger",),
                 None if warning is None else contracts.WarningResult(warning.message, warning.repair),
             )
-            return execution.OperationResult(
-                msgspec.to_builtins(result),
+            return execution.TypedOperationResult(
+                result,
                 "committed" if warning is None else "committed-warning",
                 str(effect.receipt.project_revision),
             )
@@ -152,7 +128,7 @@ def rejected(
     message: str,
     retry: Literal["correct-input", "refresh-action"],
     recovery: str,
-) -> execution.OperationResult:
+) -> execution.TypedOperationResult[contracts.CancellationResult]:
     result = contracts.CancellationRejected(
         "pinboard-cancellation-result/v1",
         "rejected",
@@ -164,4 +140,14 @@ def rejected(
         retry,
         (),
     )
-    return execution.OperationResult(msgspec.to_builtins(result), "rejected", None)
+    return execution.TypedOperationResult(result, "rejected", None)
+
+
+CANCEL: execution.ToolContract[contracts.CancellationEnvelope, contracts.CancellationResult] = execution.ToolContract(
+    name=CANCEL_TOOL,
+    description="Preview one live item's cancellation without effects, then confirm only after a separate explicit human confirmation for the exact shown item and consequences. Put all fields inside request. Never initiate cancellation or infer it from cleanup, completion, ambiguity or silence. Every sharing client must use a cancellation-aware build before first cancellation.",
+    request=contracts.CancellationEnvelope,
+    results=contracts.CancellationResult,
+    operate=operate,
+    meta=None,
+)

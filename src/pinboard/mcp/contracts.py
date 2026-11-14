@@ -641,8 +641,6 @@ class FixtureReviewPage(_UnchangedResult, msgspec.Struct, frozen=True, forbid_un
         super().__post_init__()
         if self.end_character != self.start_character + len(self.text):
             raise ValueError("Page character bounds must match the text")
-        if len(msgspec.json.encode(self)) > self.max_batch_bytes:
-            raise ValueError("The complete serialized page exceeds max_batch_bytes")
         if self.continuation is not None and (
             self.continuation.start_character != self.end_character
             or self.continuation.view_sha256 != self.view_sha256
@@ -1538,271 +1536,184 @@ class FailureMismatch(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     observed: JsonScalar
 
 
-class ItemStatusInvalid(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-item-status-result/v3"]
-    status: Literal["rejected"]
-    code: diagnostic_codes.ItemStatusInvalidCode
-    message: NonEmptyText
-    state_changed: bool
-    effect: Literal["unchanged"]
-    retry: Literal["correct-input"]
-    changed_surfaces: Empty
-    observed: Empty
-    mismatches: Empty
-
-
-class ItemStatusUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-item-status-result/v3"]
-    status: Literal["rejected"]
-    code: diagnostic_codes.ItemStatusUnavailableCode
-    message: NonEmptyText
-    state_changed: bool
-    effect: Literal["unchanged"]
-    retry: Literal["correct-input"]
-    changed_surfaces: Empty
-    observed: Empty
-    mismatches: Empty
-
-
-class ItemStatusInconsistent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-item-status-result/v3"]
-    status: Literal["rejected"]
-    code: diagnostic_codes.ItemStatusInconsistentCode
-    message: NonEmptyText
-    state_changed: bool
-    effect: Literal["unchanged"]
-    retry: Literal["do-not-retry"]
-    changed_surfaces: Empty
-    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
-    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
-
-
-class BranchOwnerNotFound(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-item-status-result/v3"]
-    status: Literal["rejected"]
-    code: diagnostic_codes.BranchOwnerNotFoundCode
-    message: NonEmptyText
-    state_changed: bool
-    effect: Literal["unchanged"]
-    retry: Literal["correct-input"]
-    changed_surfaces: Empty
-    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=2)]
-    mismatches: Empty
-    recovery: NonEmptyText
-
-
-class _DamagedEvidenceResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """An unchanged, do-not-retry rejection naming damaged stored evidence, with a diagnosis-only recovery."""
-
+class _UnchangedReadRejection(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: NonEmptyText
     status: Literal["rejected"]
     code: NonEmptyText
     message: NonEmptyText
     state_changed: bool
     effect: Literal["unchanged"]
-    retry: Literal["do-not-retry"]
+    retry: Literal["correct-input", "do-not-retry", "refresh-action", "reacquire-authority"]
     changed_surfaces: Empty
-    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=4)]
+    observed: tuple[FailureObservation, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+
+class _InvalidReadRequest(_UnchangedReadRejection, frozen=True):
+    retry: Literal["correct-input"]
+    observed: Empty
+    mismatches: Empty
+
+
+class _ReadEvidenceUnavailable(_UnchangedReadRejection, frozen=True):
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
     mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
+
+
+class _DamagedReadEvidence(_ReadEvidenceUnavailable, frozen=True):
+    retry: Literal["do-not-retry"]
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=4)]
     recovery: NonEmptyText
 
 
-class DamagedReceiptResult(_DamagedEvidenceResult, frozen=True):
-    code: diagnostic_codes.DamagedReceiptResultCode
-
-
-class ItemStatusReceiptDamaged(DamagedReceiptResult, frozen=True):
+class ItemStatusInvalid(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-item-status-result/v3"]
+    code: diagnostic_codes.ItemStatusInvalidCode
 
 
-class IntegrationTargetUnresolved(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ItemStatusUnavailable(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-item-status-result/v3"]
-    status: Literal["rejected"]
-    code: diagnostic_codes.IntegrationTargetUnresolvedCode
-    message: NonEmptyText
-    state_changed: bool
-    effect: Literal["unchanged"]
+    code: diagnostic_codes.ItemStatusUnavailableCode
+
+
+class ItemStatusInconsistent(_ReadEvidenceUnavailable, frozen=True):
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
+    code: diagnostic_codes.ItemStatusInconsistentCode
+    retry: Literal["do-not-retry"]
+
+
+class BranchOwnerNotFound(_UnchangedReadRejection, frozen=True):
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
+    code: diagnostic_codes.BranchOwnerNotFoundCode
     retry: Literal["correct-input"]
-    changed_surfaces: Empty
     observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=2)]
     mismatches: Empty
     recovery: NonEmptyText
 
 
-class IntegrationCandidateUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ItemStatusReceiptDamaged(_DamagedReadEvidence, frozen=True):
     schema: Literal["pinboard-mcp-item-status-result/v3"]
-    status: Literal["rejected"]
-    code: diagnostic_codes.IntegrationCandidateUnavailableCode
-    message: NonEmptyText
-    state_changed: bool
-    effect: Literal["unchanged"]
+    code: diagnostic_codes.DamagedReceiptResultCode
+
+
+class IntegrationTargetUnresolved(_UnchangedReadRejection, frozen=True):
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
+    code: diagnostic_codes.IntegrationTargetUnresolvedCode
     retry: Literal["correct-input"]
-    changed_surfaces: Empty
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=2)]
+    mismatches: Empty
+    recovery: NonEmptyText
+
+
+class IntegrationCandidateUnavailable(_UnchangedReadRejection, frozen=True):
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
+    code: diagnostic_codes.IntegrationCandidateUnavailableCode
+    retry: Literal["correct-input"]
     observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=4)]
     mismatches: Empty
     recovery: NonEmptyText
 
 
-class IntegrationCandidateEvidenceInvalid(_DamagedEvidenceResult, frozen=True):
+class IntegrationCandidateEvidenceInvalid(_DamagedReadEvidence, frozen=True):
+    schema: Literal["pinboard-mcp-item-status-result/v3"]
     code: diagnostic_codes.IntegrationCandidateEvidenceInvalidCode
-    schema: Literal["pinboard-mcp-item-status-result/v3"]
 
 
-class ItemStatusGitUnavailable(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class ItemStatusGitUnavailable(_UnchangedReadRejection, frozen=True):
     schema: Literal["pinboard-mcp-item-status-result/v3"]
-    status: Literal["rejected"]
     code: diagnostic_codes.ItemStatusGitCode
-    message: NonEmptyText
-    state_changed: bool
-    effect: Literal["unchanged"]
     retry: Literal["correct-input"]
-    changed_surfaces: Empty
     observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
     mismatches: Empty
     recovery: NonEmptyText
 
 
-class OverviewRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class OverviewRejected(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-overview-result/v1"]
-    status: Literal["rejected"]
     code: diagnostic_codes.OverviewRejectedCode
-    message: NonEmptyText
-    state_changed: bool
-    effect: Literal["unchanged"]
-    retry: Literal["correct-input"]
-    changed_surfaces: Empty
-    observed: Empty
-    mismatches: Empty
 
 
-class RejectedReadResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    status: Literal["rejected"]
-    message: NonEmptyText
-    state_changed: bool
-    effect: Literal["unchanged"]
-    changed_surfaces: Empty
-
-
-class ActionsInvalid(RejectedReadResult, frozen=True):
+class ActionsInvalid(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-actions-result/v1"]
     code: diagnostic_codes.ActionsInvalidCode
-    retry: Literal["correct-input"]
-    observed: Empty
-    mismatches: Empty
 
 
-class ItemDefinitionRejected(RejectedReadResult, frozen=True):
+class ItemDefinitionRejected(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-item-definition-result/v1"]
     code: diagnostic_codes.ItemDefinitionRejectedCode
-    retry: Literal["correct-input"]
-    observed: Empty
-    mismatches: Empty
 
 
-class ActionUnavailable(RejectedReadResult, frozen=True):
+class ActionUnavailable(_UnchangedReadRejection, frozen=True):
     schema: Literal["pinboard-mcp-actions-result/v1"]
     code: diagnostic_codes.ActionUnavailableCode
     retry: Literal["refresh-action"]
-    observed: tuple[FailureObservation, ...]
-    mismatches: tuple[FailureMismatch, ...]
 
 
-class ActionRouteClassificationRequired(RejectedReadResult, frozen=True):
+class ActionRouteClassificationRequired(_ReadEvidenceUnavailable, frozen=True):
     schema: Literal["pinboard-mcp-actions-result/v1"]
     code: Literal["ROUTE_CLASSIFICATION_REQUIRED"]
     retry: Literal["correct-input"]
-    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
-    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
 
 
-class AttemptLeaseRequired(RejectedReadResult, frozen=True):
+class AttemptLeaseRequired(_ReadEvidenceUnavailable, frozen=True):
     schema: Literal["pinboard-mcp-actions-result/v1"]
     code: diagnostic_codes.AttemptLeaseRequiredCode
     retry: Literal["reacquire-authority"]
-    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
-    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
 
 
-class AttemptInspectInvalid(RejectedReadResult, frozen=True):
+class AttemptInspectInvalid(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
     code: diagnostic_codes.AttemptInspectInvalidCode
-    retry: Literal["correct-input"]
-    observed: Empty
-    mismatches: Empty
 
 
-class AttemptNotFound(RejectedReadResult, frozen=True):
+class AttemptNotFound(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
     code: diagnostic_codes.AttemptNotFoundCode
-    retry: Literal["correct-input"]
-    observed: Empty
-    mismatches: Empty
 
 
-class AttemptBriefInvalid(RejectedReadResult, frozen=True):
+class AttemptBriefInvalid(_ReadEvidenceUnavailable, frozen=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
     code: diagnostic_codes.AttemptBriefInvalidCode
     retry: Literal["do-not-retry"]
-    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
-    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
 
 
-class AttemptReceiptDamaged(DamagedReceiptResult, frozen=True):
+class AttemptReceiptDamaged(_DamagedReadEvidence, frozen=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    code: diagnostic_codes.DamagedReceiptResultCode
 
 
-class AttemptActionUnavailable(RejectedReadResult, frozen=True):
+class AttemptActionUnavailable(_UnchangedReadRejection, frozen=True):
     schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
     code: diagnostic_codes.ActionUnavailableCode
     retry: Literal["refresh-action"]
-    observed: tuple[FailureObservation, ...]
-    mismatches: tuple[FailureMismatch, ...]
 
 
-class ArtifactVerificationInvalid(RejectedReadResult, frozen=True):
+class ArtifactVerificationInvalid(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-artifact-verification-result/v1"]
     code: diagnostic_codes.ArtifactVerificationInvalidCode
-    retry: Literal["correct-input"]
-    observed: Empty
-    mismatches: Empty
 
 
-class ArtifactReferenceMismatch(RejectedReadResult, frozen=True):
+class ArtifactReferenceMismatch(_ReadEvidenceUnavailable, frozen=True):
     schema: Literal["pinboard-mcp-artifact-verification-result/v1"]
     code: diagnostic_codes.ArtifactReferenceMismatchCode
     retry: Literal["correct-input"]
-    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
-    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
 
 
-class ArtifactBytesInvalid(RejectedReadResult, frozen=True):
+class ArtifactBytesInvalid(_ReadEvidenceUnavailable, frozen=True):
     schema: Literal["pinboard-mcp-artifact-verification-result/v1"]
     code: diagnostic_codes.ArtifactBytesInvalidCode
     retry: Literal["do-not-retry"]
-    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
-    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
 
 
-class BriefLookupInvalid(RejectedReadResult, frozen=True):
+class BriefLookupInvalid(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-brief-lookup-result/v1"]
     code: diagnostic_codes.BriefLookupInvalidCode
-    retry: Literal["correct-input"]
-    observed: Empty
-    mismatches: Empty
 
 
-class BriefNotFound(RejectedReadResult, frozen=True):
+class BriefNotFound(_ReadEvidenceUnavailable, frozen=True):
     schema: Literal["pinboard-mcp-brief-lookup-result/v1"]
     code: diagnostic_codes.BriefNotFoundCode
     retry: Literal["correct-input"]
-    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
-    mismatches: Annotated[tuple[FailureMismatch, ...], msgspec.Meta(min_length=1)]
-
-
-class NoPayloadInputContract(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Decode an omitted lifecycle schema before constructing the exact internal record."""
-
-    action_kind: decision_models.ActionKind
-    semantics: action_models.ActionSemanticsView
 
 
 class CloseCallStarter(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2541,12 +2452,10 @@ class CorrectionContextReady(_UnchangedResult, CorrectionReviewEvidence, frozen=
         CorrectionReviewEvidence.__post_init__(self)
 
 
-class CorrectionContextRejected(RejectedReadResult, frozen=True):
+class CorrectionContextRejected(_UnchangedReadRejection, frozen=True):
     schema: Literal["pinboard-correction-context/v2"]
     code: NonEmptyText
     retry: Literal["correct-input", "refresh-action", "do-not-retry"]
-    observed: tuple[FailureObservation, ...]
-    mismatches: tuple[FailureMismatch, ...]
 
 
 class ReturnReceiptEvidence(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2596,12 +2505,10 @@ class ReturnContextReady(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
     changed_surfaces: Empty
 
 
-class ReturnContextRejected(RejectedReadResult, frozen=True):
+class ReturnContextRejected(_UnchangedReadRejection, frozen=True):
     schema: Literal["pinboard-return-context/v2"]
     code: NonEmptyText
     retry: Literal["correct-input", "refresh-action", "do-not-retry"]
-    observed: tuple[FailureObservation, ...]
-    mismatches: tuple[FailureMismatch, ...]
 
 
 class ArtifactVerified(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2727,9 +2634,9 @@ class ExecutorBusyResult(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
     mismatches: Empty
 
 
-PR_REVIEW_RESULT_TYPES = (PrReviewSuccess, PrReviewRejected, ExecutorBusyResult)
-CORRECTION_CONTEXT_RESULT_TYPES = (CorrectionContextReady, CorrectionContextRejected, ExecutorBusyResult)
-RETURN_CONTEXT_RESULT_TYPES = (ReturnContextReady, ReturnContextRejected, ExecutorBusyResult)
+type PrReviewResult = PrReviewSuccess | PrReviewRejected
+type CorrectionContextResult = CorrectionContextReady | CorrectionContextRejected
+type ReturnContextResult = ReturnContextReady | ReturnContextRejected
 
 
 class WarningResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2779,12 +2686,9 @@ class OrderCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown
 type OrderResult = OrderCommitted | OrderRejected
 
 
-class ParallelPreviewRejected(RejectedReadResult, frozen=True):
+class ParallelPreviewRejected(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-parallel-preview-result/v1"]
     code: diagnostic_codes.ParallelPreviewRejectedCode
-    retry: Literal["correct-input"]
-    observed: Empty
-    mismatches: Empty
 
 
 class ParallelPreviewSuccess(_UnchangedResult, query_models.ParallelPreviewView, frozen=True):
@@ -2870,9 +2774,16 @@ class LocalCleanupPlanView(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     disposition: Literal["remove", "retain"]
 
 
-class CommittedTransitionResult(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+def _require_committed_warning(status: str, warning: WarningResult | None) -> None:
+    if (status == "committed-with-warning") != (warning is not None):
+        raise ValueError("committed-with-warning must carry one warning")
+
+
+class CommittedTransitionResult[StatusT: str, WarningT: WarningResult | None, ItemStatusT](
+    _ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True
+):
     schema: Literal["pinboard-mcp-transition-result/v1"]
-    status: Literal["committed", "committed-with-warning"]
+    status: StatusT
     action_id: ActionIdentity
     committed_revision: PositiveInt
     history_id: PositiveInt
@@ -2884,27 +2795,33 @@ class CommittedTransitionResult(_ChangedResult, msgspec.Struct, frozen=True, for
         msgspec.Meta(min_length=1),
     ]
     continuation: NonEmptyText
-    warning: WarningResult | None
-    local_cleanup: LocalCleanupPlanView | msgspec.UnsetType = msgspec.UNSET
+    warning: WarningT
+    item_status: ItemStatusT
+    local_cleanup: LocalCleanupPlanView | msgspec.UnsetType
 
     def __post_init__(self) -> None:
         _require_fixed_state_changed(self)
-        if (self.status == "committed-with-warning") != (self.warning is not None):
-            raise ValueError("committed-with-warning must carry one warning")
+        _require_committed_warning(self.status, self.warning)
         if self.changed_surfaces not in _committed_transition_surfaces(self.action_id.kind):
             raise ValueError("committed transition must pair a mutating action with its exact supported surfaces")
         if self.local_cleanup is not msgspec.UNSET and self.action_id.kind != decision_models.ActionKind.COMPLETE:
             raise ValueError("local cleanup requires a committed completion")
 
 
-class TransitionCommitted(CommittedTransitionResult, frozen=True, kw_only=True):
-    item_status: query_models.ItemStatus
+class TransitionCommitted(
+    CommittedTransitionResult[
+        Literal["committed", "committed-with-warning"], WarningResult | None, query_models.ItemStatus
+    ],
+    frozen=True,
+):
+    pass
 
 
-class TransitionCommittedStatusUnavailable(CommittedTransitionResult, frozen=True, kw_only=True):
-    status: Literal["committed-with-warning"]
-    warning: WarningResult
-    item_status: TransitionItemStatusUnavailable
+class TransitionCommittedStatusUnavailable(
+    CommittedTransitionResult[Literal["committed-with-warning"], WarningResult, TransitionItemStatusUnavailable],
+    frozen=True,
+):
+    pass
 
 
 class TransitionRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2922,23 +2839,18 @@ class TransitionRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_u
     continuation: NonEmptyText
 
 
-class PublishedFailureResult(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Publication already changed durable bytes; exact result leaves own identity and code."""
-
+class TransitionFailedAfterPublication(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-transition-result/v1"]
+    status: Literal["failed-after-publication"]
+    action_id: ActionIdentity
+    code: NonEmptyText
+    message: NonEmptyText
     state_changed: bool
     effect: Literal["committed"]
     retry: Literal["do-not-retry"]
     changed_surfaces: ArtifactSurface
     observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
     mismatches: tuple[FailureMismatch, ...]
-
-
-class TransitionFailedAfterPublication(PublishedFailureResult, frozen=True):
-    schema: Literal["pinboard-mcp-transition-result/v1"]
-    status: Literal["failed-after-publication"]
-    action_id: ActionIdentity
-    code: NonEmptyText
-    message: NonEmptyText
     continuation: NonEmptyText
 
 
@@ -2962,7 +2874,35 @@ class AttemptAuthorityConflict(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class PreparationAuthorityStatusPresent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
+    item_id: PathComponent
     status: Literal["present"]
+    task_id: RuntimeIdentity
+    host_id: RuntimeIdentity
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    expires_at: NonEmptyText
+    authority_status: authority_models.PreparationLeaseStatus
+    acquired_at: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+    definition_revision: PositiveInt
+    definition_digest: Sha256
+
+
+class PreparationAuthorityStatusAbsent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
+    item_id: PathComponent
+    status: Literal["absent"]
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: Empty
+
+
+class PreparationAuthorityCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
     item_id: PathComponent
     definition_revision: PositiveInt
     definition_digest: Sha256
@@ -2970,36 +2910,10 @@ class PreparationAuthorityStatusPresent(_UnchangedResult, msgspec.Struct, frozen
     host_id: RuntimeIdentity
     lease_id: RuntimeIdentity
     generation: PositiveInt
-    acquired_at: NonEmptyText
     expires_at: NonEmptyText
     authority_status: authority_models.PreparationLeaseStatus
-    state_changed: bool
-    effect: Literal["unchanged"]
-    retry: Literal["safe-to-repeat"]
-    changed_surfaces: Empty
-
-
-class PreparationAuthorityStatusAbsent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
-    status: Literal["absent"]
-    item_id: PathComponent
-    state_changed: bool
-    effect: Literal["unchanged"]
-    retry: Literal["safe-to-repeat"]
-    changed_surfaces: Empty
-
-
-class AuthorityCommittedResult[StatusT](_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Reloaded committed authority and its optional replaceable-view warning."""
-
-    status: Literal["committed", "committed-with-warning"]
-    task_id: RuntimeIdentity
-    host_id: RuntimeIdentity
-    lease_id: RuntimeIdentity
-    generation: PositiveInt
     acquired_at: NonEmptyText
-    expires_at: NonEmptyText
-    authority_status: StatusT
+    status: Literal["committed", "committed-with-warning"]
     committed_revision: PositiveInt
     history_id: PositiveInt
     state_changed: bool
@@ -3010,15 +2924,7 @@ class AuthorityCommittedResult[StatusT](_ChangedResult, msgspec.Struct, frozen=T
 
     def __post_init__(self) -> None:
         _require_fixed_state_changed(self)
-        if (self.status == "committed-with-warning") != (self.warning is not None):
-            raise ValueError("committed-with-warning must carry one warning")
-
-
-class PreparationAuthorityCommitted(AuthorityCommittedResult[authority_models.PreparationLeaseStatus], frozen=True):
-    schema: Literal["pinboard-mcp-preparation-authority-result/v1"]
-    item_id: PathComponent
-    definition_revision: PositiveInt
-    definition_digest: Sha256
+        _require_committed_warning(self.status, self.warning)
 
 
 class PreparationAuthorityRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -3038,15 +2944,15 @@ class PreparationAuthorityRejected(_UnchangedResult, msgspec.Struct, frozen=True
 
 class AttemptAuthorityStatusPresent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
-    status: Literal["present"]
     attempt_id: PathComponent
+    status: Literal["present"]
     task_id: RuntimeIdentity
     host_id: RuntimeIdentity
     lease_id: RuntimeIdentity
     generation: PositiveInt
-    acquired_at: NonEmptyText
     expires_at: NonEmptyText
     authority_status: authority_models.AttemptLeaseStatus
+    acquired_at: NonEmptyText
     state_changed: bool
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
@@ -3055,18 +2961,37 @@ class AttemptAuthorityStatusPresent(_UnchangedResult, msgspec.Struct, frozen=Tru
 
 class AttemptAuthorityStatusAbsent(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
-    status: Literal["absent"]
     attempt_id: PathComponent
+    status: Literal["absent"]
     state_changed: bool
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
 
 
-class AttemptAuthorityCommitted(AuthorityCommittedResult[authority_models.AttemptLeaseStatus], frozen=True):
+class AttemptAuthorityCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-attempt-authority-result/v1"]
     attempt_id: PathComponent
     item_id: PathComponent
+    task_id: RuntimeIdentity
+    host_id: RuntimeIdentity
+    lease_id: RuntimeIdentity
+    generation: PositiveInt
+    expires_at: NonEmptyText
+    authority_status: authority_models.AttemptLeaseStatus
+    acquired_at: NonEmptyText
+    status: Literal["committed", "committed-with-warning"]
+    committed_revision: PositiveInt
+    history_id: PositiveInt
+    state_changed: bool
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: LedgerSurface
+    warning: WarningResult | None
+
+    def __post_init__(self) -> None:
+        _require_fixed_state_changed(self)
+        _require_committed_warning(self.status, self.warning)
 
 
 class AttemptAuthorityRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -3299,14 +3224,25 @@ class BriefArchitectureImpactRejected(_UnchangedResult, msgspec.Struct, frozen=T
     recovery: BriefContractStarterInvocation
 
 
-class BriefPublishedRejection(PublishedFailureResult, frozen=True):
-    schema: Literal["pinboard-mcp-brief-publication-result/v1"]
+class _PublishedBriefRejection(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: NonEmptyText
     status: Literal["rejected"]
     code: diagnostic_codes.ActionUnavailableCode
     message: NonEmptyText
+    state_changed: bool
+    effect: Literal["committed"]
+    retry: Literal["do-not-retry"]
+    changed_surfaces: ArtifactSurface
+    observed: Annotated[tuple[FailureObservation, ...], msgspec.Meta(min_length=1)]
+    mismatches: tuple[FailureMismatch, ...]
 
 
-class PublicationInfrastructureFailureResult(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class BriefPublishedRejection(_PublishedBriefRejection, frozen=True):
+    schema: Literal["pinboard-mcp-brief-publication-result/v1"]
+
+
+class _InfrastructureFailure(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: NonEmptyText
     status: Literal["failed-after-publication"]
     code: diagnostic_codes.PublicationInfrastructureFailureResultCode
     message: NonEmptyText
@@ -3320,13 +3256,12 @@ class PublicationInfrastructureFailureResult(_ChangedResult, msgspec.Struct, fro
     recovery: NonEmptyText
 
 
-class BriefPublicationInfrastructureFailure(PublicationInfrastructureFailureResult, frozen=True):
+class BriefPublicationInfrastructureFailure(_InfrastructureFailure, frozen=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
 
 
-class PublicationInfrastructureUnchangedFailureResult(
-    _UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True
-):
+class _InfrastructureUnchangedFailure(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: NonEmptyText
     status: Literal["infrastructure-failure"]
     code: diagnostic_codes.PublicationInfrastructureUnchangedFailureResultCode
     message: NonEmptyText
@@ -3340,7 +3275,7 @@ class PublicationInfrastructureUnchangedFailureResult(
     recovery: NonEmptyText
 
 
-class BriefPublicationInfrastructureUnchangedFailure(PublicationInfrastructureUnchangedFailureResult, frozen=True):
+class BriefPublicationInfrastructureUnchangedFailure(_InfrastructureUnchangedFailure, frozen=True):
     schema: Literal["pinboard-mcp-brief-publication-result/v1"]
 
 
@@ -3363,22 +3298,21 @@ class BriefReviewStatusResult(_UnchangedResult, msgspec.Struct, frozen=True, for
     accepted_brief_sha256: Sha256
     checkpoint_sha256: Sha256
     reviewed_authority_set_sha256: Sha256
+    brief: work_brief_models.WorkBrief
     correction: BriefReviewCorrection
     current_definition: query_models.ItemDefinition
-    retry: Literal["safe-to-repeat"]
     state_changed: bool
     effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
     changed_surfaces: Empty
 
 
 class BriefReviewNoEvidence(BriefReviewStatusResult, frozen=True):
     status: Literal["no-needs-correction-evidence"]
-    brief: work_brief_models.WorkBrief
 
 
 class BriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
     status: Literal["needs-correction"]
-    brief: work_brief_models.WorkBrief
     reference: ReviewEvidenceReference
     review: work_brief_models.WorkBriefReviewNeedsCorrection
 
@@ -3386,14 +3320,13 @@ class BriefReviewNeedsCorrection(BriefReviewStatusResult, frozen=True):
 class BriefReviewCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
     status: Literal["committed", "committed-with-warning"]
+    warning: WarningResult | None
     reference: ReviewEvidenceReference
+    correction: BriefReviewCorrection
     state_changed: bool
     effect: Literal["committed"]
     retry: Literal["do-not-retry"]
     changed_surfaces: Annotated[tuple[JobPublicationSurface, ...], msgspec.Meta(min_length=1)]
-    correction: BriefReviewCorrection
-
-    warning: WarningResult | None
 
     def __post_init__(self) -> None:
         _require_fixed_state_changed(self)
@@ -3403,36 +3336,30 @@ class BriefReviewCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_u
 class BriefReviewUnchanged(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
     status: Literal["unchanged"]
+    warning: WarningResult | None
     reference: ReviewEvidenceReference
+    correction: BriefReviewCorrection
     state_changed: bool
     effect: Literal["unchanged"]
     retry: Literal["retry-same-input"]
     changed_surfaces: Empty
-    correction: BriefReviewCorrection
-
-    warning: WarningResult | None
 
 
-class BriefReviewRejected(RejectedReadResult, frozen=True):
+class BriefReviewRejected(_UnchangedReadRejection, frozen=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
     code: diagnostic_codes.BriefReviewRejectedCode
     retry: Literal["correct-input", "do-not-retry"]
-    observed: tuple[FailureObservation, ...]
-    mismatches: tuple[FailureMismatch, ...]
 
 
-class BriefReviewPublishedRejection(PublishedFailureResult, frozen=True):
-    schema: Literal["pinboard-mcp-brief-review-result/v1"]
-    status: Literal["rejected"]
-    code: diagnostic_codes.ActionUnavailableCode
-    message: NonEmptyText
-
-
-class BriefReviewInfrastructureFailure(PublicationInfrastructureFailureResult, frozen=True):
+class BriefReviewPublishedRejection(_PublishedBriefRejection, frozen=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
 
 
-class BriefReviewInfrastructureUnchangedFailure(PublicationInfrastructureUnchangedFailureResult, frozen=True):
+class BriefReviewInfrastructureFailure(_InfrastructureFailure, frozen=True):
+    schema: Literal["pinboard-mcp-brief-review-result/v1"]
+
+
+class BriefReviewInfrastructureUnchangedFailure(_InfrastructureUnchangedFailure, frozen=True):
     schema: Literal["pinboard-mcp-brief-review-result/v1"]
 
 
@@ -3581,29 +3508,32 @@ class CandidateReviewRecorded(_VariableStateChangedResult, msgspec.Struct, froze
             raise ValueError("Candidate review effect and retry must match its publication surfaces.")
 
 
-class DispatchInvalid(RejectedReadResult, frozen=True):
+class DispatchInvalid(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-dispatch-result/v1"]
     code: diagnostic_codes.DispatchInvalidCode
-    retry: Literal["correct-input"]
-    observed: Empty
-    mismatches: Empty
 
 
-class ReviewJobInvalid(RejectedReadResult, frozen=True):
+class ReviewJobInvalid(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-review-job-result/v1"]
     code: diagnostic_codes.ReviewJobInvalidCode
-    retry: Literal["correct-input"]
-    observed: Empty
-    mismatches: Empty
 
 
-class DispatchRejected(RejectedReadResult, frozen=True):
-    schema: Literal["pinboard-mcp-dispatch-result/v1"]
+class JobRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: NonEmptyText
+    status: Literal["rejected"]
     attempt_id: PathComponent
     code: NonEmptyText
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
     retry: RetryDisposition
+    changed_surfaces: Empty
     observed: tuple[FailureObservation, ...]
     mismatches: tuple[FailureMismatch, ...]
+
+
+class DispatchRejected(JobRejected, frozen=True):
+    schema: Literal["pinboard-mcp-dispatch-result/v1"]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -3613,13 +3543,8 @@ class DispatchRejected(RejectedReadResult, frozen=True):
             DecisionFailureCode(self.code)
 
 
-class ReviewJobRejected(RejectedReadResult, frozen=True):
+class ReviewJobRejected(JobRejected, frozen=True):
     schema: Literal["pinboard-mcp-review-job-result/v1"]
-    attempt_id: PathComponent
-    code: NonEmptyText
-    retry: RetryDisposition
-    observed: tuple[FailureObservation, ...]
-    mismatches: tuple[FailureMismatch, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -3627,6 +3552,7 @@ class ReviewJobRejected(RejectedReadResult, frozen=True):
 
 
 class JobInfrastructureFailure(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: NonEmptyText
     status: Literal["infrastructure-failure"]
     attempt_id: PathComponent
     code: diagnostic_codes.PublicationInfrastructureUnchangedFailureResultCode
@@ -3651,6 +3577,7 @@ class ReviewJobInfrastructureFailure(JobInfrastructureFailure, frozen=True):
 
 
 class JobFailedAfterPublication(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: NonEmptyText
     status: Literal["failed-after-publication"]
     attempt_id: PathComponent
     code: NonEmptyText
@@ -3693,23 +3620,21 @@ class ReviewJobFailedAfterPublication(JobFailedAfterPublication, frozen=True):
             DecisionFailureCode(self.code)
 
 
-DISPATCH_RESULT_TYPES = (
-    DispatchReady,
-    ReplacementReadinessReady,
-    DispatchInvalid,
-    DispatchRejected,
-    DispatchInfrastructureFailure,
-    DispatchFailedAfterPublication,
-    ExecutorBusyResult,
+type DispatchResult = (
+    DispatchReady
+    | ReplacementReadinessReady
+    | DispatchInvalid
+    | DispatchRejected
+    | DispatchInfrastructureFailure
+    | DispatchFailedAfterPublication
 )
-REVIEW_JOB_RESULT_TYPES = (
-    ReviewJobReady,
-    CandidateReviewRecorded,
-    ReviewJobInvalid,
-    ReviewJobRejected,
-    ReviewJobInfrastructureFailure,
-    ReviewJobFailedAfterPublication,
-    ExecutorBusyResult,
+type ReviewJobResult = (
+    ReviewJobReady
+    | CandidateReviewRecorded
+    | ReviewJobInvalid
+    | ReviewJobRejected
+    | ReviewJobInfrastructureFailure
+    | ReviewJobFailedAfterPublication
 )
 
 
@@ -3733,21 +3658,14 @@ class CandidateRestoreReady(_VariableStateChangedResult, msgspec.Struct, frozen=
             raise ValueError("Restoration must retain its exact source effect and retry disposition.")
 
 
-class CandidateRestoreInvalid(RejectedReadResult, frozen=True):
+class CandidateRestoreInvalid(_InvalidReadRequest, frozen=True):
     schema: Literal["pinboard-mcp-candidate-restore-result/v1"]
     code: diagnostic_codes.CandidateRestoreInvalidCode
-    retry: Literal["correct-input"]
-    observed: Empty
-    mismatches: Empty
 
 
-class CandidateRestoreRejected(RejectedReadResult, frozen=True):
+class CandidateRestoreRejected(JobRejected, frozen=True):
     schema: Literal["pinboard-mcp-candidate-restore-result/v1"]
-    attempt_id: PathComponent
     code: DecisionFailureCode
-    retry: RetryDisposition
-    observed: tuple[FailureObservation, ...]
-    mismatches: tuple[FailureMismatch, ...]
 
 
 class CandidateRestoreFailed(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -3767,12 +3685,8 @@ class CandidateRestoreFailed(_ChangedResult, msgspec.Struct, frozen=True, forbid
         _require_fixed_state_changed(self)
 
 
-CANDIDATE_RESTORE_RESULT_TYPES = (
-    CandidateRestoreReady,
-    CandidateRestoreInvalid,
-    CandidateRestoreRejected,
-    CandidateRestoreFailed,
-    ExecutorBusyResult,
+type CandidateRestoreResult = (
+    CandidateRestoreReady | CandidateRestoreInvalid | CandidateRestoreRejected | CandidateRestoreFailed
 )
 
 
@@ -3794,7 +3708,7 @@ class CandidateObserved(_UnchangedResult, msgspec.Struct, frozen=True, forbid_un
     changed_surfaces: Empty
 
 
-class CandidateObservationRejected(RejectedReadResult, frozen=True):
+class CandidateObservationRejected(_UnchangedReadRejection, frozen=True):
     schema: Literal["pinboard-mcp-candidate-observation-result/v1"]
     code: diagnostic_codes.CandidateObservationRejectedCode
     retry: Literal["correct-input"]
@@ -3802,124 +3716,94 @@ class CandidateObservationRejected(RejectedReadResult, frozen=True):
     mismatches: tuple[FailureMismatch, ...]
 
 
-CANDIDATE_OBSERVATION_RESULT_TYPES = (CandidateObserved, CandidateObservationRejected, ExecutorBusyResult)
+type CandidateObservationResult = CandidateObserved | CandidateObservationRejected
 
-ITEM_DEFINITION_RESULT_TYPES = (
-    query_models.ItemDefinition,
-    query_models.ItemDefinitionHistory,
-    ItemDefinitionRejected,
-    ExecutorBusyResult,
-)
-BRIEF_REVIEW_RESULT_TYPES = (
-    BriefReviewNoEvidence,
-    BriefReviewNeedsCorrection,
-    BriefReviewCommitted,
-    BriefReviewUnchanged,
-    BriefReviewRejected,
-    BriefReviewPublishedRejection,
-    BriefReviewInfrastructureFailure,
-    BriefReviewInfrastructureUnchangedFailure,
-    ExecutorBusyResult,
+type ItemDefinitionResult = query_models.ItemDefinition | query_models.ItemDefinitionHistory | ItemDefinitionRejected
+type BriefReviewResult = (
+    BriefReviewNoEvidence
+    | BriefReviewNeedsCorrection
+    | BriefReviewCommitted
+    | BriefReviewUnchanged
+    | BriefReviewRejected
+    | BriefReviewPublishedRejection
+    | BriefReviewInfrastructureFailure
+    | BriefReviewInfrastructureUnchangedFailure
 )
 
 
-ITEM_STATUS_RESULT_TYPES = (
-    query_models.ItemStatus,
-    query_models.BranchOwners,
-    query_models.ItemIntegration,
-    ItemStatusInvalid,
-    ItemStatusUnavailable,
-    ItemStatusInconsistent,
-    BranchOwnerNotFound,
-    ItemStatusReceiptDamaged,
-    IntegrationTargetUnresolved,
-    IntegrationCandidateUnavailable,
-    IntegrationCandidateEvidenceInvalid,
-    ItemStatusGitUnavailable,
-    ExecutorBusyResult,
+type ItemStatusResult = (
+    query_models.ItemStatus
+    | query_models.BranchOwners
+    | query_models.ItemIntegration
+    | ItemStatusInvalid
+    | ItemStatusUnavailable
+    | ItemStatusInconsistent
+    | BranchOwnerNotFound
+    | ItemStatusReceiptDamaged
+    | IntegrationTargetUnresolved
+    | IntegrationCandidateUnavailable
+    | IntegrationCandidateEvidenceInvalid
+    | ItemStatusGitUnavailable
 )
-OVERVIEW_RESULT_TYPES = (query_models.DiscoveryPage, OverviewRejected, ExecutorBusyResult)
-PARALLEL_PREVIEW_RESULT_TYPES = (ParallelPreviewSuccess, ParallelPreviewRejected, ExecutorBusyResult)
-ACTIONS_RESULT_TYPES = (
-    ActionsSuccess,
-    CompletionActionsSuccess,
-    CloseActionsSuccess,
-    ActionsInvalid,
-    ActionUnavailable,
-    ActionRouteClassificationRequired,
-    AttemptLeaseRequired,
-    ExecutorBusyResult,
+type OverviewResult = query_models.DiscoveryPage | OverviewRejected
+type ParallelPreviewResult = ParallelPreviewSuccess | ParallelPreviewRejected
+type ActionsResult = (
+    ActionsSuccess
+    | CompletionActionsSuccess
+    | CloseActionsSuccess
+    | ActionsInvalid
+    | ActionUnavailable
+    | ActionRouteClassificationRequired
+    | AttemptLeaseRequired
 )
-ATTEMPT_INSPECTION_RESULT_TYPES = (
-    TerminalAttemptInspectionSuccess,
-    NonterminalAttemptInspectionSuccess,
-    AttemptInspectInvalid,
-    AttemptNotFound,
-    AttemptBriefInvalid,
-    AttemptReceiptDamaged,
-    AttemptActionUnavailable,
-    ExecutorBusyResult,
+type AttemptInspectionResult = (
+    TerminalAttemptInspectionSuccess
+    | NonterminalAttemptInspectionSuccess
+    | AttemptInspectInvalid
+    | AttemptNotFound
+    | AttemptBriefInvalid
+    | AttemptReceiptDamaged
+    | AttemptActionUnavailable
 )
-ARTIFACT_VERIFICATION_RESULT_TYPES = (
-    ArtifactVerified,
-    ArtifactVerificationInvalid,
-    ArtifactReferenceMismatch,
-    ArtifactBytesInvalid,
-    ExecutorBusyResult,
+type ArtifactVerificationResult = (
+    ArtifactVerified | ArtifactVerificationInvalid | ArtifactReferenceMismatch | ArtifactBytesInvalid
 )
-BRIEF_LOOKUP_RESULT_TYPES = (
-    ArtifactVerified,
-    BriefLookupInvalid,
-    BriefNotFound,
-    ArtifactBytesInvalid,
-    ExecutorBusyResult,
+type BriefLookupResult = ArtifactVerified | BriefLookupInvalid | BriefNotFound | ArtifactBytesInvalid
+type ProposalResult = ProposalCommitted | ProposalCommittedWithWarning | ProposalRejected | ProposalDuplicate
+
+type BriefPublicationResult = (
+    BriefCommitted
+    | BriefReferenceCommitted
+    | BriefArtifactCommitted
+    | BriefCommittedWithWarning
+    | BriefReferenceCommittedWithWarning
+    | BriefArtifactCommittedWithWarning
+    | BriefUnchanged
+    | BriefUnchangedWithWarning
+    | BriefArchitectureImpactRejected
+    | BriefRejected
+    | BriefPublishedRejection
+    | BriefPublicationInfrastructureFailure
+    | BriefPublicationInfrastructureUnchangedFailure
 )
-PROPOSAL_RESULT_TYPES = (
-    ProposalCommitted,
-    ProposalCommittedWithWarning,
-    ProposalRejected,
-    ProposalDuplicate,
-    ExecutorBusyResult,
+
+type PreparationAuthorityResult = (
+    PreparationAuthorityStatusPresent
+    | PreparationAuthorityStatusAbsent
+    | PreparationAuthorityCommitted
+    | PreparationAuthorityRejected
 )
-BRIEF_PUBLICATION_RESULT_TYPES = (
-    BriefCommitted,
-    BriefReferenceCommitted,
-    BriefArtifactCommitted,
-    BriefCommittedWithWarning,
-    BriefReferenceCommittedWithWarning,
-    BriefArtifactCommittedWithWarning,
-    BriefUnchanged,
-    BriefUnchangedWithWarning,
-    BriefArchitectureImpactRejected,
-    BriefRejected,
-    BriefPublishedRejection,
-    BriefPublicationInfrastructureFailure,
-    BriefPublicationInfrastructureUnchangedFailure,
-    ExecutorBusyResult,
+
+type AttemptAuthorityResult = (
+    AttemptAuthorityStatusPresent | AttemptAuthorityStatusAbsent | AttemptAuthorityCommitted | AttemptAuthorityRejected
 )
-PREPARATION_AUTHORITY_RESULT_TYPES = (
-    PreparationAuthorityStatusPresent,
-    PreparationAuthorityStatusAbsent,
-    PreparationAuthorityCommitted,
-    PreparationAuthorityRejected,
-    ExecutorBusyResult,
+
+type TransitionResult = (
+    TransitionCommitted | TransitionCommittedStatusUnavailable | TransitionRejected | TransitionFailedAfterPublication
 )
-ATTEMPT_AUTHORITY_RESULT_TYPES = (
-    AttemptAuthorityStatusPresent,
-    AttemptAuthorityStatusAbsent,
-    AttemptAuthorityCommitted,
-    AttemptAuthorityRejected,
-    ExecutorBusyResult,
-)
-TRANSITION_RESULT_TYPES = (
-    TransitionCommitted,
-    TransitionCommittedStatusUnavailable,
-    TransitionRejected,
-    TransitionFailedAfterPublication,
-    ExecutorBusyResult,
-)
-STARTUP_TEXT_RESULT_TYPES = (StartupTextPage, StartupTextRejected, StartupHostSettingFailed, ExecutorBusyResult)
-FIXTURE_REVIEW_RESULT_TYPES = (FixtureReviewPage, FixtureReviewRejected, ExecutorBusyResult)
+
+type StartupTextResult = StartupTextPage | StartupTextRejected | StartupHostSettingFailed
+type FixtureReviewResult = FixtureReviewPage | FixtureReviewRejected
 
 
 class CancellationPreviewRequest(
@@ -3988,7 +3872,7 @@ class CancellationCommitted(_ChangedResult, msgspec.Struct, frozen=True, forbid_
     warning: WarningResult | None
 
 
-CANCELLATION_RESULT_TYPES = (CancellationPreviewResult, CancellationRejected, CancellationCommitted, ExecutorBusyResult)
+type CancellationResult = CancellationPreviewResult | CancellationRejected | CancellationCommitted
 
 
 class ObligationCoveragePairRequest(
@@ -4031,3 +3915,9 @@ class ObligationCoverageRejected(_UnchangedResult, msgspec.Struct, frozen=True, 
     effect: Literal["unchanged"]
     retry: Literal["correct-input"]
     changed_surfaces: tuple[()]
+
+
+type ObligationCoverageResult = ObligationCoverageSuccess | ObligationCoverageRejected
+type BriefContractResult = WorkBriefContractResult | WorkBriefStarterContractResult | BriefContractRejected
+type BriefSourcesResult = brief_source_models.BriefSourcePlanView | BriefSourceBatchResult | BriefSourcesRejected
+type BriefSourcePlanOutputMcpResult = BriefSourcePlanOutputResult | BriefSourcesRejected | BriefSourcesPublishedFailure

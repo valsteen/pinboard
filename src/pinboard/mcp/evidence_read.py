@@ -1,4 +1,4 @@
-"""Verify selected startup bytes and present one bounded page; never grant authority or write project state.
+"""Verify selected evidence bytes and present one bounded page; never grant authority or write project state.
 
 A recognized host's page size is its per-user host setting, seeded with the measured default on first use.
 """
@@ -9,8 +9,8 @@ from typing import assert_never
 
 import msgspec
 
+from pinboard.adapters.files import evidence_read as files
 from pinboard.adapters.files import host_settings
-from pinboard.adapters.files import startup_text as files
 from pinboard.adapters.files.setting_resolution import (
     EntryProblem,
     InvalidEntry,
@@ -24,11 +24,11 @@ from pinboard.mcp import contracts, execution, host_profiles, read_operations
 
 def _rejected(
     resource: str, message: str, budget: int | None, page_bytes: int, profile: host_profiles.HostProfile
-) -> execution.TypedOperationResult[contracts.StartupTextResult]:
-    result = contracts.StartupTextRejected(
-        "pinboard-startup-text-result/v1",
+) -> execution.TypedOperationResult[contracts.EvidenceReadResult]:
+    result = contracts.EvidenceReadRejected(
+        "pinboard-evidence-read-result/v1",
         "rejected",
-        "STARTUP_TEXT_INVALID",
+        "EVIDENCE_READ_INVALID",
         resource,
         message,
         "Correct the named source or request using the producing response; restart with artifact-start or file-start. Do not acquire authority from incomplete text.",
@@ -60,14 +60,14 @@ def _page(
     text: str,
     start: int,
     end: int,
-) -> contracts.StartupTextPage:
+) -> contracts.EvidenceReadPage:
     continuation = (
         contracts.StartupContinue(request.project_root, request.work_root, source, end, budget)
         if end < len(text)
         else None
     )
-    return contracts.StartupTextPage(
-        "pinboard-startup-text-page/v1",
+    return contracts.EvidenceReadPage(
+        "pinboard-evidence-read-page/v1",
         "ok",
         source,
         start,
@@ -100,7 +100,7 @@ def _correction(path: Path, key: str, cause: SettingFailureCause) -> tuple[str, 
             repair = (
                 f"Set {cause.key} in {path} to a whole number of bytes from {host_settings.MIN_PAGE_BYTES} to "
                 f"{host_settings.MAX_PAGE_BYTES}, or remove that key so its host's measured default is written "
-                "again when that host next reads startup text, then retry."
+                "again when that host next reads an evidence page, then retry."
             )
         case EntryProblem.DUPLICATE_KEY:
             repair = f"Keep one {cause.key} entry in {path} and delete the others, then retry."
@@ -120,7 +120,7 @@ def _sentence(text: str) -> str:
 
 def _host_setting_failure(
     path: Path | None, key: str, error: SettingResolutionError | RuntimeError, directory_created: bool
-) -> execution.TypedOperationResult[contracts.StartupTextResult]:
+) -> execution.TypedOperationResult[contracts.EvidenceReadResult]:
     """Name the setting, the failed resource, this call's settings effects, retry and one safe next step."""
     if isinstance(error, RuntimeError):
         effects = SettingEffects("none", "none", "none")
@@ -142,7 +142,7 @@ def _host_setting_failure(
     confirmed = directory_created or effects.file_creation == "confirmed" or effects.key_write == "acknowledged"
     unconfirmed = effects.file_creation == "unconfirmed" or effects.key_write == "unconfirmed"
     result = contracts.StartupHostSettingFailed(
-        "pinboard-startup-text-result/v1",
+        "pinboard-evidence-read-result/v1",
         "rejected",
         "HOST_PAGE_SETTING_UNAVAILABLE",
         str(path) if path is not None else "~/.config/pinboard/hosts.config",
@@ -163,7 +163,7 @@ def _host_setting_failure(
 
 def _page_bytes(
     profile: host_profiles.HostProfile,
-) -> int | execution.TypedOperationResult[contracts.StartupTextResult]:
+) -> int | execution.TypedOperationResult[contracts.EvidenceReadResult]:
     """The unmeasured size, or the recognized host's stored per-user setting seeded with its measured default."""
     host = host_profiles.setting_host(profile)
     if host is None:
@@ -184,10 +184,10 @@ def _page_bytes(
 
 def read(
     raw: Mapping[str, contracts.JsonValue], token: execution.CancellationToken, profile: host_profiles.HostProfile
-) -> execution.TypedOperationResult[contracts.StartupTextResult]:
+) -> execution.TypedOperationResult[contracts.EvidenceReadResult]:
     token.checkpoint()
     try:
-        request = msgspec.convert(raw, type=contracts.StartupTextEnvelope, strict=True).request
+        request = msgspec.convert(raw, type=contracts.EvidenceReadEnvelope, strict=True).request
         msgspec.json.encode(request)
     except (msgspec.ValidationError, ValueError) as error:
         return _rejected("request", str(error), None, host_profiles.measured_page_bytes(profile), profile)
@@ -204,7 +204,7 @@ def _read_selected(
     page_bytes: int,
     profile: host_profiles.HostProfile,
     token: execution.CancellationToken,
-) -> execution.TypedOperationResult[contracts.StartupTextResult]:
+) -> execution.TypedOperationResult[contracts.EvidenceReadResult]:
     start = request.start_character if isinstance(request, contracts.StartupContinue) else 0
     expected: contracts.StartupSource | None
     match request:
@@ -265,7 +265,7 @@ def _bounded_page(
     text: str,
     start: int,
     token: execution.CancellationToken,
-) -> execution.TypedOperationResult[contracts.StartupTextResult]:
+) -> execution.TypedOperationResult[contracts.EvidenceReadResult]:
     representation = host_profiles.representation(profile)
     final = _page(request, budget, source, text, start, len(text))
     if host_profiles.envelope_size(msgspec.to_builtins(final), representation) <= budget:

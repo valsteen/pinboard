@@ -480,12 +480,12 @@ class StartupContinue(msgspec.Struct, tag="continue", tag_field="operation", fro
     max_batch_bytes: StartupBudget
 
 
-class StartupTextEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class EvidenceReadEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     request: StartupArtifactStart | StartupFileStart | StartupContinue
 
 
-class StartupTextPage(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-startup-text-page/v1"]
+class EvidenceReadPage(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-evidence-read-page/v1"]
     status: Literal["ok"]
     source: StartupSource
     start_character: NonNegativeInt
@@ -510,10 +510,10 @@ class StartupTextPage(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unkn
             raise ValueError("Continuation must preserve source, budget and next character.")
 
 
-class StartupTextRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-startup-text-result/v1"]
+class EvidenceReadRejected(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-evidence-read-result/v1"]
     status: Literal["rejected"]
-    code: diagnostic_codes.StartupTextRejectedCode
+    code: diagnostic_codes.EvidenceReadRejectedCode
     resource: NonEmptyText
     message: NonEmptyText
     recovery: NonEmptyText
@@ -532,7 +532,7 @@ class StartupHostSettingFailed(msgspec.Struct, frozen=True, forbid_unknown_field
     from the unchanged Pinboard project state.
     """
 
-    schema: Literal["pinboard-startup-text-result/v1"]
+    schema: Literal["pinboard-evidence-read-result/v1"]
     status: Literal["rejected"]
     code: diagnostic_codes.StartupHostSettingFailedCode
     setting_file: NonEmptyText
@@ -3802,7 +3802,7 @@ type TransitionResult = (
     TransitionCommitted | TransitionCommittedStatusUnavailable | TransitionRejected | TransitionFailedAfterPublication
 )
 
-type StartupTextResult = StartupTextPage | StartupTextRejected | StartupHostSettingFailed
+type EvidenceReadResult = EvidenceReadPage | EvidenceReadRejected | StartupHostSettingFailed
 type FixtureReviewResult = FixtureReviewPage | FixtureReviewRejected
 
 

@@ -1,4 +1,4 @@
-"""Identify the connected MCP host and select its startup-text page profile.
+"""Identify the connected MCP host and select its evidence page profile.
 
 The MCP initialize clientInfo is an accepted externally owned boundary: only its name and version are
 decoded and validated, and every other field is ignored. A recognized host is identified by name for every
@@ -29,7 +29,7 @@ class HostProfile(Enum):
 
 
 class Representation(Enum):
-    """Which tool-result representations a startup page carries."""
+    """Which tool-result representations an evidence page carries."""
 
     STRUCTURED_AND_TEXT = "structured-and-text"
     STRUCTURED_ONLY = "structured-only"
@@ -119,7 +119,7 @@ def setting_host(profile: HostProfile) -> str | None:
 
 
 def representation(profile: HostProfile) -> Representation:
-    """Claude Code and Codex startup pages carry one structured representation.
+    """Claude Code and Codex evidence pages carry one structured representation.
 
     Antigravity shows only the text block; its advertised output schema also requires structuredContent.
     Codex native visibility requires version-bound evidence beyond SDK reconstruction.

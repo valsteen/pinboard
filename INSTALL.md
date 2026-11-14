@@ -272,7 +272,7 @@ See [MCP architecture](ARCHITECTURE.md#mcp) for the tool and schema boundary.
 
 ## Startup page size per host
 
-The `startup-page-bytes` setting controls how much oversized evidence Pinboard returns per page. See [startup text and fixture review](ARCHITECTURE.md#mcp) for how agents read instructions and evidence.
+The `startup-page-bytes` setting controls how much oversized evidence Pinboard returns per page. See [evidence paging and fixture review](ARCHITECTURE.md#mcp) for how agents read instructions and evidence.
 
 The default page sizes for Claude Code and Codex fit within each host's default tool output limit. Antigravity saves text blocks above about 4 KB to a file and shows its path. Each spilled page fits in one native `read_file` call at the default size. Pinboard recognizes the host by the client name it sends when it connects and keeps one page size per recognized host across versions in `~/.config/pinboard/hosts.config`.
 
@@ -285,7 +285,7 @@ The default page sizes for Claude Code and Codex fit within each host's default 
 	startup-page-bytes = 92000
 ```
 
-The first page read from a recognized host creates `~/.config/pinboard` (mode `0700`) and the file (mode `0600`) when they are missing, writes that host's measured default as one key, and reads it back, the same way Pinboard seeds contributor-trace settings. If `~/.config/pinboard` or `hosts.config` is a symbolic link, for example from a dotfile manager, Pinboard reads and writes the file it points to and leaves the link in place. That per-user write is the only one `pinboard_startup_text` makes; it never writes your project or board. After that the value is yours; Pinboard never rewrites it. Any other MCP client gets 8000-byte pages and no setting.
+The first page read from a recognized host creates `~/.config/pinboard` (mode `0700`) and the file (mode `0600`) when they are missing, writes that host's measured default as one key, and reads it back, the same way Pinboard seeds contributor-trace settings. If `~/.config/pinboard` or `hosts.config` is a symbolic link, for example from a dotfile manager, Pinboard reads and writes the file it points to and leaves the link in place. That per-user write is the only one `pinboard_evidence_read` makes; it never writes your project or board. After that the value is yours; Pinboard never rewrites it. Any other MCP client gets 8000-byte pages and no setting.
 
 | Host | Client name | Seeded default | Measured on | Host limit the default assumes |
 | --- | --- | --- | --- | --- |

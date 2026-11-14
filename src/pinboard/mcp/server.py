@@ -26,6 +26,7 @@ from pinboard.mcp import (
     consolidation_operations,
     contract_schemas,
     contracts,
+    evidence_read,
     execution,
     host_profiles,
     initiative_contracts,
@@ -35,7 +36,6 @@ from pinboard.mcp import (
     obligation_operations,
     pr_review_operations,
     read_operations,
-    startup_text,
 )
 from pinboard.mcp.contracts import JsonValue
 from pinboard.mcp.tool_names import (
@@ -55,6 +55,7 @@ from pinboard.mcp.tool_names import (
     CLOSE_TOOL,
     CORRECTION_CONTEXT_TOOL,
     DISPATCH_TOOL,
+    EVIDENCE_READ_TOOL,
     FIXTURE_REVIEW_TOOL,
     INITIATIVE_TOOL,
     ITEM_DEFINITION_TOOL,
@@ -68,7 +69,6 @@ from pinboard.mcp.tool_names import (
     PROPOSAL_CREATE_TOOL,
     RETURN_CONTEXT_TOOL,
     REVIEW_JOB_TOOL,
-    STARTUP_TEXT_TOOL,
     TRANSITION_TOOL,
 )
 from pinboard.mcp.tool_names import (
@@ -107,7 +107,7 @@ PR_REVIEW: execution.ToolContract[contracts.PrReviewEnvelope, contracts.PrReview
 DISPATCH: execution.ToolContract[contracts.DispatchRequest, contracts.DispatchResult] = execution.ToolContract(
     name=DISPATCH_TOOL,
     description=(
-        "Publish verified Pinboard worker launch instructions or independently assessed replacement-brief readiness; creates no worker or worker authority. If compact host type metadata shows unknown, read the complete construction fields below; do not guess unspecified inputs or infer missing capability or a regression from that display. Action discovery omits payload_schema for dispatch because it has no lifecycle-transition payload. Construct its separate launch request from the fields below.\nArguments are top-level project_root, work_root and dispatch (no request wrapper). Unknown fields reject.\nThe six worker-launch leaves require kind, receipt, checkpoint_id, environment and prompt; replacement-readiness has its distinct fields below. receipt contains ONLY action_id:{kind:'dispatch',subject:<attempt_id>} and subject_revision copied from the fresh project dispatch action returned by pinboard_actions, not the whole action. checkpoint_id is the accepted brief's stable checkpoint ID. Use explicit prompt:null for canonical prompt construction. A supplied prompt string must match the canonical prompt.\nenvironment requires all ten fields: schema:'pinboard-dispatch/v2', runtime:'codex', 'claude-code' or 'antigravity', background:<boolean>, checkout:<exact source checkout>, branch:<recorded branch>, starting_revision:<accepted attempt base>, host_id:<trusted runtime host>, fresh_context:true, lease_ttl_seconds:<positive integer>, permissions:<array of already-authorized 'repository-read', 'repository-write', 'network', 'external-write' or 'live-application' declarations>. Declarations grant no runtime access.\nkind:'ordinary' has only those common fields; a cross-boundary checkpoint reuses its exact accepted ready review. kind:'reviewed' additionally requires review_id and brief_review:<complete independent ready WorkBriefReview>. kind:'correction' additionally requires review_id, correction_history_id:<positive ID of the selected current canonical return-for-correction/v1 receipt>, and brief_review:<CorrectionSourceReview>, not an initial review. kind:'reuse-correction' takes the same correction fields with brief_review:<ReusedCoverageCorrectionReview> only when the accepted brief, every reviewed source, and accepted ready review are unchanged. kind:'local-correction' takes the same correction fields with brief_review:<LocalCorrectionSourceReview> for a local checkpoint.\nFile counterparts are reviewed-file, correction-file, reuse-correction-file, local-correction-file, candidate-correction-file and replacement-readiness-file. Replace only brief_review with brief_review_path:<exact selected file> and brief_review_sha256:<raw SHA-256>; keep the corresponding leaf's controls inline, including current_candidate for replacement-readiness-file. candidate-correction-file contains the complete outer CurrentCorrectionReview, including boundary, source_review and current_candidate, for either boundary variant. Selected bytes are verified once before exact decoding and the same independent checks.\nreview_id is a caller-chosen label, not an ID that Pinboard issues or any context read returns: one path component (nonempty; no '/', CR, LF or NUL; not '.' or '..'), for example 'correction-review-1'. It only names the preserved rejected evidence when supplied review evidence differs from evidence already accepted for the same review subject; first publication and byte-identical reuse ignore it. Retry identical evidence with the same label. Differing evidence rejects as a do-not-retry review collision, preserves the later evidence at the returned selector and changes no lifecycle; use a new label for each distinct submission.\nkind:'replacement-readiness' requires ONLY kind, receipt, checkpoint_id, review_id, correction_history_id, brief_review:<full CorrectionSourceReview>, and current_candidate:<assessed working-tree identity or clean commit>. Select the latest returned round made historical by replacement/rebind; pinboard_return_context historical selection supplies its original receipt and starting snapshot. Independently assess the current replacement brief and candidate. Pass no environment or prompt. Success publishes proof and plain readiness only, with no worker launch, authority, lifecycle change or implementation verdict; protect the current candidate and commission its complete review next.\nWorkBriefReview requires schema:'pinboard-work-brief-review/v3', attempt_id, checkpoint_id, accepted_brief_sha256, checkpoint_sha256, reviewed_authority_set_sha256, reviewer_task_id, status:'complete', verdict:'ready', and nonempty coverage. Copy the three digest bindings from pinboard_brief_review status for the exact accepted brief reference. Bind the current checkpoint and ordered reviewed authority set; the reviewer must be independent. Every coverage record requires authority_id, family, owner, verdict:'covered' and counterexample_result. owner is exactly one of {disposition:'contract',contract_invariant:<text>}, {disposition:'acceptance',criterion:<positive integer>}, {disposition:'deferred',deferral_id:<ID>} or {disposition:'not-applicable',reason:<text>}, matching the brief's complete coverage. Needs-correction evidence is not ready evidence.\ncandidate-correction takes all worker-launch fields plus review_id, correction_history_id and brief_review:{schema:'pinboard-current-correction-source-review/v1',boundary:'cross-boundary' or 'local',source_review:<full CorrectionSourceReview or LocalCorrectionSourceReview>,current_candidate:{candidate:<observed working-tree-state identity>,omitted_untracked_paths:<sorted exact omitted names>}}. Read pinboard_return_context current-candidate selection and obtain fresh independent assessment first. It permits reviewed tracked diff/path drift while preserving current return and returned branch/HEAD/base; historical selection supplies provenance only for replacement readiness, never current correction authority.\nCorrectionSourceReview requires schema:'pinboard-correction-source-review/v1', contract_review:<current effective WorkBriefReview>, starting_candidate:<exact accepted candidate identity>, correction_input:{reason:<exact selected correction reason>}, and assessment:<nonempty JSON string containing independent prose assessment>. starting_candidate requires role:'candidate', kind:'evidence', key, revision:<positive integer>, selector, content_sha256 and size_bytes:<nonnegative integer>. Preserve candidate/history binding and fresh source review.\nReusedCoverageCorrectionReview requires schema:'pinboard-correction-source-review/v2', accepted_brief_sha256:<exact accepted brief digest>, reviewer_task_id:<independent task>, starting_candidate:<exact accepted candidate identity>, correction_input:{reason:<exact selected correction reason>}, and assessment:<nonempty JSON string containing fresh independent candidate-bound prose>. Changed or missing ready coverage requires kind:'correction' with a complete new contract review.\nLocalCorrectionSourceReview requires schema:'pinboard-local-correction-source-review/v1', accepted_brief_sha256:<exact accepted brief digest>, reviewer_task_id:<independent task>, starting_candidate:<exact accepted candidate identity>, correction_input:{reason:<exact selected correction reason>}, and assessment:<nonempty JSON string containing independent candidate-bound prose>.\nThe negotiated strict schema and decoder remain authoritative. Dispatch publication may change immutable-artifact, accepted-artifact-reference and ledger surfaces, never lifecycle or worker authority; honor returned effect/retry facts. On ready, call the exact returned native_launch.tool with exactly native_launch.arguments. Do not add, remove or rewrite an argument. prompt_reference remains independently required immutable provenance, not an alternative launch input. Missing native launch capability stops execution; publication alone is not a launch. A worker launched from other arguments is invalid: stop it and use a fresh native launch from the returned recipe."
+        "Publish verified Pinboard worker launch instructions or independently assessed replacement-brief readiness; creates no worker or worker authority. pinboard_actions returns no payload_schema for dispatch; build the request from this tool's input schema, which states every leaf, required field and constant. Do not guess an input that neither the schema nor the rules below settle.\nreceipt copies ONLY action_id and subject_revision from the fresh project dispatch action returned by pinboard_actions, not the whole action. checkpoint_id is the accepted brief's stable checkpoint ID. project_root and environment.checkout must both be the source checkout the attempt's accepted brief records (for an isolated attempt, its linked worktree, not the primary checkout); environment.branch and starting_revision are the attempt's recorded branch and base, and host_id is the trusted runtime host. Use prompt:null for canonical prompt construction; a supplied prompt string must match the canonical prompt. permissions declare only access already authorized; declarations grant no runtime access.\nChoose the leaf by situation. ordinary: no new review evidence; a cross-boundary checkpoint reuses its exact accepted ready review. reviewed: a complete independent ready WorkBriefReview. correction: a CorrectionSourceReview for the selected current canonical return-for-correction/v1 receipt named by correction_history_id, not an initial review. reuse-correction: only when the accepted brief, every reviewed source and the accepted ready review are unchanged. local-correction: a local checkpoint. candidate-correction: read pinboard_return_context current-candidate selection and obtain fresh independent assessment first; its current_candidate binds that observed working-tree-state identity and the sorted exact omitted untracked names, and it permits reviewed tracked diff/path drift while preserving the current return and returned branch/HEAD/base. Historical selection supplies provenance only for replacement readiness, never current correction authority.\nEach -file leaf replaces only brief_review with brief_review_path:<exact selected file> and brief_review_sha256:<raw SHA-256> and keeps that leaf's other controls inline; candidate-correction-file's file holds the complete outer CurrentCorrectionReview. Selected bytes are verified once before exact decoding and the same independent checks.\nreview_id is a caller-chosen label, not an ID that Pinboard issues or any context read returns, for example 'correction-review-1'. It only names the preserved rejected evidence when supplied review evidence differs from evidence already accepted for the same review subject; first publication and byte-identical reuse ignore it. Retry identical evidence with the same label. Differing evidence rejects as a do-not-retry review collision, preserves the later evidence at the returned selector and changes no lifecycle; use a new label for each distinct submission.\nreplacement-readiness selects the latest returned round made historical by replacement/rebind; pinboard_return_context historical selection supplies its original receipt and starting snapshot. Independently assess the current replacement brief and current_candidate (assessed working-tree identity or clean commit). Success publishes proof and plain readiness only, with no worker launch, authority, lifecycle change or implementation verdict; protect the current candidate and commission its complete review next.\nWorkBriefReview: copy the three digest bindings from pinboard_brief_review status for the exact accepted brief reference, bind the current checkpoint and ordered reviewed authority set, and use an independent reviewer; coverage must match the brief's complete coverage. Needs-correction evidence is not ready evidence. Correction reviews: contract_review is the current effective WorkBriefReview, reviewer_task_id names an independent reviewer, starting_candidate is the exact accepted candidate identity (role 'candidate', kind 'evidence'), correction_input.reason is the exact selected correction reason, and assessment is fresh independent candidate-bound prose. Changed or missing ready coverage requires kind 'correction' with a complete new contract review.\nThe strict schema and decoder remain authoritative. Dispatch publication may change immutable-artifact, accepted-artifact-reference and ledger surfaces, never lifecycle or worker authority; honor returned effect/retry facts. On ready, call the exact returned native_launch.tool with exactly native_launch.arguments. Do not add, remove or rewrite an argument. prompt_reference remains independently required immutable provenance, not an alternative launch input. Missing native launch capability stops execution; publication alone is not a launch. A worker launched from other arguments is invalid: stop it and use a fresh native launch from the returned recipe."
     ),
     request=contracts.DispatchRequest,
     results=contracts.DispatchResult,
@@ -293,16 +293,16 @@ BRIEF_SOURCES: execution.ToolContract[contracts.BriefSourcesEnvelope, contracts.
 )
 
 
-STARTUP_TEXT: execution.ToolContract[
-    contracts.StartupTextEnvelope, contracts.StartupTextResult, host_profiles.HostProfile
+EVIDENCE_READ: execution.ToolContract[
+    contracts.EvidenceReadEnvelope, contracts.EvidenceReadResult, host_profiles.HostProfile
 ] = execution.ToolContract(
-    name=STARTUP_TEXT_TOOL,
+    name=EVIDENCE_READ_TOOL,
     description=(
-        "Read one verified oversized evidence record in bounded UTF-8 pages; startup never uses this tool. Keep exact artifact/file identity, byte size, digest and contiguous character ranges and follow each returned continuation unchanged to null. Missing, changed or unreadable bytes reject with truthful unchanged effects and exact diagnosis. An evidence read grants no readiness, authority, permission or native launch."
+        "Read one verified evidence record, an accepted artifact or a selected file, in bounded UTF-8 pages. Keep exact artifact/file identity, byte size, digest and contiguous character ranges and follow each returned continuation unchanged to null. Missing, changed or unreadable bytes reject with truthful unchanged effects and exact diagnosis. An evidence read grants no readiness, authority, permission or native launch."
     ),
-    request=contracts.StartupTextEnvelope,
-    results=contracts.StartupTextResult,
-    operate=startup_text.read,
+    request=contracts.EvidenceReadEnvelope,
+    results=contracts.EvidenceReadResult,
+    operate=evidence_read.read,
     meta=None,
 )
 
@@ -489,13 +489,13 @@ async def _compact_json_text(ctx: ServerRequestContext[Any, Any], call_next: Cal
     return result | {"content": [block | {"text": msgspec.json.encode(structured).decode()}]}
 
 
-async def _single_startup_representation(ctx: ServerRequestContext[Any, Any], call_next: CallNext) -> HandlerResult:
-    """Send startup-text results once for a host profile selecting structured-only delivery."""
+async def _single_evidence_representation(ctx: ServerRequestContext[Any, Any], call_next: CallNext) -> HandlerResult:
+    """Send evidence-page results once for a host profile selecting structured-only delivery."""
     result = await call_next(ctx)
     if (
         ctx.method != "tools/call"
         or ctx.params is None
-        or ctx.params.get("name") != STARTUP_TEXT_TOOL
+        or ctx.params.get("name") != EVIDENCE_READ_TOOL
         or not isinstance(result, dict)
         or not isinstance(result.get("structuredContent"), dict)
     ):
@@ -541,7 +541,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
         "pinboard",
         version=__version__,
         log_level="ERROR",
-        middleware=[_compact_json_text, _single_startup_representation],
+        middleware=[_compact_json_text, _single_evidence_representation],
         instructions=(
             "Pinboard is a local process that defaults to the project's own `.pinboard` and sends nothing off-device. "
             "Use the single native Pinboard coordinator core or the verified launch's role/runtime document. Connected tools, attribution and verified bytes grant no permission or authority."
@@ -631,19 +631,19 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
         )
 
     @server.tool(
-        name=STARTUP_TEXT.name,
-        description=STARTUP_TEXT.description,
+        name=EVIDENCE_READ.name,
+        description=EVIDENCE_READ.description,
         annotations=READ_ONLY_ANNOTATIONS,
     )
-    async def startup_read(request: dict[str, JsonValue], ctx: Context) -> dict[str, JsonValue]:
+    async def evidence_page_read(request: dict[str, JsonValue], ctx: Context) -> dict[str, JsonValue]:
         profile = _client_profile(ctx)
         return await execution._run_request(
             executor,
             diagnostics,
             next(request_ids),
-            STARTUP_TEXT.name,
+            EVIDENCE_READ.name,
             str(request.get("project_root", "")),
-            lambda token: STARTUP_TEXT.operate({"request": request}, token, profile),
+            lambda token: EVIDENCE_READ.operate({"request": request}, token, profile),
             arguments={"request": request},
             capture=None,
         )
@@ -1218,9 +1218,9 @@ def _install_boundary_contracts(server: MCPServer) -> None:
             contract_schemas.typed_result_schema(cancellation_operations.CANCEL.results),
         ),
         (
-            STARTUP_TEXT.name,
-            contract_schemas.schema_for(STARTUP_TEXT.request),
-            contract_schemas.typed_result_schema(STARTUP_TEXT.results),
+            EVIDENCE_READ.name,
+            contract_schemas.schema_for(EVIDENCE_READ.request),
+            contract_schemas.typed_result_schema(EVIDENCE_READ.results),
         ),
         (
             FIXTURE_REVIEW.name,

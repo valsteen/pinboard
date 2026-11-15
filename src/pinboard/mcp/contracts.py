@@ -20,6 +20,7 @@ from pinboard.application import (
     work_brief_contract,
     work_brief_models,
 )
+from pinboard.application.candidate_identity import CommitStep
 from pinboard.domain import authority_models, decision_models, ordering
 from pinboard.domain.errors import DecisionFailureCode, RetryDisposition
 from pinboard.domain.history import DependencyPayload, Identity, RecordText
@@ -3656,8 +3657,27 @@ type CandidateRestoreResult = (
 )
 
 
+class CandidateSubmittable(
+    msgspec.Struct, tag="submittable", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    """The observed working-tree identity sits on the accepted base and can be submitted for review."""
+
+
+class CandidateCommitRequired(
+    msgspec.Struct, tag="commit-required", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    """HEAD differs from the accepted base: submit a clean HEAD commit instead of this identity."""
+
+    head_revision: Annotated[str, msgspec.Meta(pattern=r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z")]
+    next_step: CommitStep
+    message: NonEmptyText
+
+
+type CandidateSubmission = CandidateSubmittable | CandidateCommitRequired
+
+
 class CandidateObserved(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-candidate-observation-result/v1"]
+    schema: Literal["pinboard-mcp-candidate-observation-result/v2"]
     status: Literal["observed"]
     attempt_id: PathComponent
     candidate: Annotated[str, msgspec.Meta(pattern=r"\Aworking-tree-state-sha256:[0-9a-f]{64}\z")]
@@ -3668,6 +3688,7 @@ class CandidateObserved(_UnchangedResult, msgspec.Struct, frozen=True, forbid_un
     diff_sha256: Sha256
     diff_size_bytes: NonNegativeInt
     omitted_untracked_paths: tuple[NonEmptyText, ...]
+    submission: CandidateSubmission
     state_changed: bool
     effect: Literal["unchanged"]
     retry: Literal["safe-to-repeat"]
@@ -3675,7 +3696,7 @@ class CandidateObserved(_UnchangedResult, msgspec.Struct, frozen=True, forbid_un
 
 
 class CandidateObservationRejected(_UnchangedReadRejection, frozen=True):
-    schema: Literal["pinboard-mcp-candidate-observation-result/v1"]
+    schema: Literal["pinboard-mcp-candidate-observation-result/v2"]
     code: diagnostic_codes.CandidateObservationRejectedCode
     retry: Literal["correct-input"]
     observed: tuple[FailureObservation, ...]

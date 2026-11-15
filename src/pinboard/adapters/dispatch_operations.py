@@ -34,7 +34,13 @@ from pinboard.application.brief_source_models import (
     BriefSourceFailure,
     authority_selector,
 )
-from pinboard.application.candidate_identity import candidate_diffs_match, working_tree_identity
+from pinboard.application.candidate_identity import (
+    WorkingTreeCommitRequired,
+    WorkingTreeSubmittable,
+    candidate_diffs_match,
+    working_tree_identity,
+    working_tree_submission,
+)
 from pinboard.application.dispatch import (
     find_dispatch_review,
     publish_dispatch_review,
@@ -1111,31 +1117,59 @@ def _validate_replacement_candidate(
     if current_candidate.startswith("working-tree-state-sha256:"):
         current = root.read_working_tree_candidate(source_checkout_root)
         mismatches.append(FailureMismatch("current_candidate", current_candidate, current.identity))
-    else:
-        committed = root.read_current_head_candidate(
-            source_checkout_root,
-            current_candidate,
-            brief.base_revision,
-            excluded_untracked_paths=candidate_snapshots.excluded_untracked_paths(historical_snapshot),
-        )
-        match committed:
-            case root.CurrentHeadCandidate():
-                pass
-            case root.DifferentHeadCandidate():
-                mismatches.append(FailureMismatch("current_candidate", current_candidate, committed.current_head))
-            case root.DirtyHeadCandidate():
-                mismatches.append(FailureMismatch("checkout_state", "clean", "dirty"))
+        if (stale := _stale_replacement_candidate(mismatches)) is not None:
+            return stale
+        match working_tree_submission(brief.base_revision, current.preimage_revision, current.diff):
+            case WorkingTreeSubmittable():
+                return None
+            case WorkingTreeCommitRequired() as required:
+                return DispatchFailure(
+                    DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+                    f"Replacement readiness cannot certify working-tree candidate {current_candidate}: HEAD "
+                    f"{required.head_revision} differs from the replacement brief base "
+                    f"{required.accepted_base_revision}, so submit-review would refuse it. Commit the candidate on "
+                    "the attempt branch so its HEAD is clean, then obtain a fresh independent assessment of that "
+                    "clean HEAD commit identity before a new readiness request.",
+                    _fresh_review_details(
+                        (FailureFact("current_head_revision", required.head_revision),),
+                        (
+                            FailureMismatch(
+                                "preimage_revision", required.accepted_base_revision, required.head_revision
+                            ),
+                        ),
+                    ),
+                )
             case _ as unreachable:
                 assert_never(unreachable)
+    committed = root.read_current_head_candidate(
+        source_checkout_root,
+        current_candidate,
+        brief.base_revision,
+        excluded_untracked_paths=candidate_snapshots.excluded_untracked_paths(historical_snapshot),
+    )
+    match committed:
+        case root.CurrentHeadCandidate():
+            pass
+        case root.DifferentHeadCandidate():
+            mismatches.append(FailureMismatch("current_candidate", current_candidate, committed.current_head))
+        case root.DirtyHeadCandidate():
+            mismatches.append(FailureMismatch("checkout_state", "clean", "dirty"))
+        case _ as unreachable:
+            assert_never(unreachable)
+    return _stale_replacement_candidate(mismatches)
+
+
+def _stale_replacement_candidate(mismatches: list[FailureMismatch]) -> DispatchFailure | None:
+    """Name every observed binding that differs from the assessed replacement candidate; no effects."""
     changed = tuple(value for value in mismatches if value.expected != value.observed)
-    if changed:
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
-            "Replacement review does not identify the exact current candidate on its accepted branch and base. "
-            "Use pinboard_candidate_observe for this attempt and independently assess that identity before a fresh readiness request.",
-            _fresh_review_details((), changed),
-        )
-    return None
+    if not changed:
+        return None
+    return DispatchFailure(
+        DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+        "Replacement review does not identify the exact current candidate on its accepted branch and base. "
+        "Use pinboard_candidate_observe for this attempt and independently assess that identity before a fresh readiness request.",
+        _fresh_review_details((), changed),
+    )
 
 
 def _read_correction_snapshot(

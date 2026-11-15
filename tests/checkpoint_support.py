@@ -18,6 +18,7 @@ import msgspec
 from msgspec.structs import replace as replace_struct
 
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
+from pinboard.adapters.files.root import read_working_tree_candidate
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
@@ -303,21 +304,31 @@ class CheckpointPackageSupport(unittest.TestCase):
         return content
 
     def submit_review(self, fixture: AcceptedPackageFixture, label: str, worker: str) -> str:
+        """Write the labelled change and submit what observation says is submittable, committing past the base."""
+
         tracked = fixture.project / "tracked.txt"
         tracked.write_text(f"{label}\n", encoding="utf-8")
-        candidate_diff = subprocess.run(
-            ["git", "diff", "--binary", "--full-index", "HEAD", "--"],
-            cwd=fixture.project,
-            check=True,
-            capture_output=True,
-        ).stdout
-        preimage = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=fixture.project, check=True, capture_output=True, text=True
-        ).stdout.strip()
-        candidate = working_tree_identity(preimage, candidate_diff)
+        observed = fixture.call_native_tool(
+            mcp_server.CANDIDATE_OBSERVE_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "attempt_id": fixture.brief.attempt_id,
+            },
+        )
+        submission = self.json_object(observed["submission"])
+        match submission["kind"], submission.get("next_step"):
+            case "submittable", None:
+                candidate = str(observed["candidate"])
+            case "commit-required", "commit-tracked-changes":
+                candidate = self.commit_all(fixture.project, label)
+            case "commit-required", "submit-head-commit":
+                candidate = str(submission["head_revision"])
+            case unexpected:
+                self.fail(f"Unexpected candidate submission fact: {unexpected}")
         lease = self.native_attempt_acquire(fixture, worker)
         selected = self.native_actions(fixture, "submit-review", fixture.brief.attempt_id, role="worker", lease=lease)
-        payload = fixture.project / f"submit-{candidate}.json"
+        payload = fixture.work / f"submit-{candidate}.json"
         payload.write_text(json.dumps({"candidate": candidate}), encoding="utf-8")
         self.transition_json(fixture, selected, payload)
         return candidate
@@ -476,6 +487,32 @@ class CheckpointPackageSupport(unittest.TestCase):
             attempt.base_revision,
             SQLITE_NOW,
         )
+        self.protect_recorded_candidate(fixture, candidate)
+
+    def retain_working_tree_review(self, fixture: CheckpointFixture) -> str:
+        """Protect the current working tree as a retained snapshot whose committed preimage may differ from the base.
+
+        Submission now refuses such a preimage; snapshots recorded before that rule stay readable and are built here.
+        """
+
+        observed = read_working_tree_candidate(fixture.project)
+        state = fixture.store.validated_snapshot()
+        attempt = next(value for value in state.lifecycle.attempts if value.attempt_id == AttemptId("work-a-1"))
+        self.accept_candidate_snapshot(
+            resolve_durable_roots(fixture.project, fixture.work),
+            fixture.store,
+            attempt,
+            "working-tree",
+            observed.identity,
+            observed.diff,
+            observed.preimage_revision,
+            attempt.base_revision,
+            SQLITE_NOW,
+        )
+        self.protect_recorded_candidate(fixture, observed.identity)
+        return observed.identity
+
+    def protect_recorded_candidate(self, fixture: CheckpointFixture, candidate: str) -> None:
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             current_state = connection.execute("SELECT state FROM work_items WHERE item_id = 'work-a'").fetchone()[0]
             connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
@@ -503,6 +540,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         candidate_form: Literal["working-tree", "current-head"] = "working-tree",
         accepted_base: str | None = None,
         committed_context: bool = False,
+        base_files: tuple[tuple[str, str], ...] = (),
         checkpoint_id: str | None = None,
         review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner", "original"] = "ready",
     ) -> CheckpointFixture:
@@ -547,6 +585,9 @@ class CheckpointPackageSupport(unittest.TestCase):
         (project / ".git" / "info" / "exclude").write_text("/.pinboard/\n", encoding="utf-8")
         tracked = project / "tracked.txt"
         tracked.write_text("base\n", encoding="utf-8")
+        for relative, contents in base_files:
+            (project / relative).parent.mkdir(parents=True, exist_ok=True)
+            (project / relative).write_text(contents, encoding="utf-8")
         base_revision = self.commit_all(project, "base")
         preimage_revision = base_revision
         if committed_context:

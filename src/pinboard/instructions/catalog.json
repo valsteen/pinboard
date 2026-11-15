@@ -9,8 +9,8 @@
   "documents": {
     "worker-codex": {
       "path": "worker-codex.md",
-      "sha256": "ba6b249c72d49a8b0c571eb84b148882e5e6ff20e20e306a661768bde67ddacb",
-      "size_bytes": 28527,
+      "sha256": "06d2afd709851f46fe36b72cdd475044d5f68dbf6acd1e2a5dc197ba34170199",
+      "size_bytes": 29241,
       "owners": [
         "role.worker",
         "role.worker.engineering-health",
@@ -54,8 +54,8 @@
     },
     "worker-claude-code": {
       "path": "worker-claude-code.md",
-      "sha256": "5eb212e95525db509a0b5899e897dff3aadae9e69051dd746a58c70fb61411e6",
-      "size_bytes": 33280,
+      "sha256": "6e573941778f3fbe31d6b2feec0d65bbaecfa78b677ebcbacb4199c120338d86",
+      "size_bytes": 33994,
       "owners": [
         "role.worker",
         "role.worker.engineering-health",
@@ -104,8 +104,8 @@
     },
     "worker-antigravity": {
       "path": "worker-antigravity.md",
-      "sha256": "cd145d740f3ec418c7df9979c6ef8cbb189206f772a137f1ed3311f06758b53d",
-      "size_bytes": 32004,
+      "sha256": "1b275f96fbbedc1eb6d9b3edf53ec18e6c9bdf39840320b2db0de6a2abcf3d60",
+      "size_bytes": 32718,
       "owners": [
         "role.worker",
         "role.worker.engineering-health",

@@ -913,10 +913,15 @@ class CandidateSnapshotTest(unittest.TestCase):
             DecisionFailure,
         )
 
-        working_candidate = working_tree_identity("head", b"diff")
+        working_candidate = working_tree_identity("base-revision", b"diff")
         working = decision_models.SubmitReviewCommand(
             action(decision_models.SubmitReviewAction, attempt_id),
             work_models.SubmitReviewInput(CandidateId(working_candidate)),
+        )
+        past_base_candidate = working_tree_identity("head", b"diff")
+        past_base = decision_models.SubmitReviewCommand(
+            action(decision_models.SubmitReviewAction, attempt_id),
+            work_models.SubmitReviewInput(CandidateId(past_base_candidate)),
         )
         committed = decision_models.SubmitReviewCommand(
             action(decision_models.SubmitReviewAction, attempt_id),
@@ -960,13 +965,28 @@ class CandidateSnapshotTest(unittest.TestCase):
             patch.object(
                 lifecycle_artifacts,
                 "read_working_tree_candidate",
-                return_value=WorkingTreeCandidate(working_candidate, "head", b"diff"),
+                return_value=WorkingTreeCandidate(working_candidate, "base-revision", b"diff"),
             ),
         ):
             snapshot = lifecycle_artifacts._observe_review_candidate(checkout, store, working, SQLITE_NOW)
         self.assertIsInstance(snapshot, WorkingTreeCandidateSnapshot)
         assert isinstance(snapshot, WorkingTreeCandidateSnapshot)
-        self.assertEqual("head", snapshot.preimage_revision)
+        self.assertEqual("base-revision", snapshot.preimage_revision)
+        with (
+            patch.object(lifecycle_artifacts, "observe_checkout_identity", return_value=observed_identity),
+            patch.object(
+                lifecycle_artifacts,
+                "read_working_tree_candidate",
+                return_value=WorkingTreeCandidate(past_base_candidate, "head", b"diff"),
+            ),
+        ):
+            refused = lifecycle_artifacts._observe_review_candidate(checkout, store, past_base, SQLITE_NOW)
+        assert isinstance(refused, DecisionFailure) and refused.details is not None
+        self.assertIn("HEAD head differs from the accepted base base-revision", refused.message)
+        self.assertEqual(
+            (RetryDisposition.CORRECT_INPUT, EffectDisposition.UNCHANGED),
+            (refused.details.retry, refused.details.effect),
+        )
 
         commit_observations = (
             (CurrentHeadCandidate("commit", b"diff"), CommitCandidateSnapshot),

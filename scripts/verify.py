@@ -28,6 +28,11 @@ class Group(Enum):
     TYPES = "verify-types"
     TESTS = "verify-tests"
     PACKAGE = "verify-package"
+    PLATFORM = "verify-platform"
+
+
+# verify-platform repeats a subset of verify-tests for macOS CI, so the full local run leaves it out.
+ALL_GROUPS = (Group.REPO, Group.TYPES, Group.TESTS, Group.PACKAGE)
 
 
 @dataclass(frozen=True)
@@ -94,6 +99,13 @@ def check_guide_paragraphs(root: Path, log: TextIO, stream: bool) -> int:
     return int(failed)
 
 
+def run_tests(selection: str, root: Path, log: TextIO, stream: bool, jobs: int | None) -> int:
+    command = ["uv", "run", "--locked", "python", "-m", "tests.runner", selection]
+    if jobs is not None:
+        command.extend(("--jobs", str(jobs)))
+    return run_command(command, root, log, stream)
+
+
 def verify_group(group: Group, root: Path, log: TextIO, stream: bool, jobs: int | None) -> int:
     match group:
         case Group.REPO:
@@ -124,10 +136,9 @@ def verify_group(group: Group, root: Path, log: TextIO, stream: bool, jobs: int 
         case Group.TYPES:
             return run_command(("scripts/check-types",), root, log, stream)
         case Group.TESTS:
-            command = ["uv", "run", "--locked", "python", "-m", "tests.runner", "--coverage"]
-            if jobs is not None:
-                command.extend(("--jobs", str(jobs)))
-            return run_command(command, root, log, stream)
+            return run_tests("--coverage", root, log, stream, jobs)
+        case Group.PLATFORM:
+            return run_tests("--platform-contract", root, log, stream, jobs)
         case Group.PACKAGE:
             with tempfile.TemporaryDirectory(prefix="pinboard-wheel-smoke-") as directory:
                 build_directory = Path(directory) / "dist"
@@ -227,7 +238,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     parser.add_argument("--sequential", action="store_true", help="stream group output in order")
     parser.add_argument("--jobs", type=positive_jobs, help="pass the worker count to tests.runner")
     options = parser.parse_args(arguments)
-    groups = tuple(Group) if options.group == "verify-all" else (Group(options.group),)
+    groups = ALL_GROUPS if options.group == "verify-all" else (Group(options.group),)
     return run(groups, Path(__file__).resolve().parent.parent, options.sequential or len(groups) == 1, options.jobs)
 
 

@@ -14,7 +14,7 @@ from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import native_tools
-from tests.support import JsonObject, JsonValue
+from tests.support import HOLD_UNBLOCKER, JsonObject, JsonValue
 from tests.test_proposals import proposal
 
 
@@ -308,10 +308,11 @@ class ObligationCoverageTest(CheckpointPackageSupport):
                 if acquire_worker:
                     self.native_attempt_acquire(fixture, "absorbed-worker")
                 action_id = "pause:work-a-1" if state == "paused" else "block:work-a-1"
-                payload: JsonObject = {"reason": "This work moved to its replacement."}
-                if state == "blocked":
-                    depends_on: list[JsonValue] = []
-                    payload["depends_on"] = depends_on
+                payload: JsonObject = (
+                    {"reason": "This work moved to its replacement.", "unblocker": HOLD_UNBLOCKER}
+                    if state == "paused"
+                    else {"unblocker": HOLD_UNBLOCKER}
+                )
                 stopped = self.transition_result(fixture, self.project_action(fixture, action_id), payload)
                 self.assertEqual("committed", stopped["status"], stopped)
                 created = self.create(fixture, "replacement-work", [{**self.own("deliver"), "origin": None}], "work-a")

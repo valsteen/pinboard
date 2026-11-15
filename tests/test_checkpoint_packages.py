@@ -50,6 +50,7 @@ from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import AcceptedPackageFixture, CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_native_tool, native_tools
+from tests.sqlite_support import sync_test_unblocker
 from tests.support import SQLITE_NOW, JsonObject, JsonValue
 
 
@@ -994,7 +995,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         result, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
         self.assertEqual(0, result, stderr)
         project_export = msgspec.json.decode(stdout, type=ProjectExport, strict=True)
-        self.assertEqual("pinboard-project-export/v4", project_export.schema)
+        self.assertEqual("pinboard-project-export/v5", project_export.schema)
         self.assertEqual((), project_export.completion_packages)
         self.assertEqual(1, len(project_export.checkpoint_packages))
         exported = project_export.checkpoint_packages[0]
@@ -1109,6 +1110,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         self.assertNotEqual(0, self.run_cli(*fixture.common, "export", "--json")[0])
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             connection.execute("UPDATE work_items SET state = 'active' WHERE item_id = 'work-a'")
+            sync_test_unblocker(connection, "work-a")
             connection.execute("UPDATE attempts SET state = 'active' WHERE attempt_id = 'work-a-1'")
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'paused'")
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'active'")
@@ -1177,6 +1179,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         connection = sqlite3.connect(fixture.work / "state.sqlite3")
         try:
             connection.execute("UPDATE work_items SET state = 'active' WHERE item_id = 'work-a'")
+            sync_test_unblocker(connection, "work-a")
             connection.execute("UPDATE attempts SET state = 'active' WHERE attempt_id = 'work-a-1'")
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'paused'")
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'active'")

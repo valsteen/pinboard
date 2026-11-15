@@ -9,7 +9,7 @@ from typing import (
 
 import msgspec
 
-from pinboard.application import decision_batches, pr_reviews
+from pinboard.application import decision_batches, pr_reviews, unblockers
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.history import DefinitionPayload, RecordText
 
@@ -32,11 +32,6 @@ type CanonicalRepoRelativeFile = Annotated[str, msgspec.Meta(pattern=rf"\A{_PATH
 def require_canonical_excluded_paths(paths: tuple[str, ...]) -> None:
     if paths != tuple(sorted(set(paths))):
         raise ValueError("excluded_untracked_paths must be unique and sorted")
-
-
-def _require_unique_dependencies(depends_on: tuple[Identity, ...]) -> None:
-    if len(set(depends_on)) != len(depends_on):
-        raise ValueError("depends_on must contain unique identities")
 
 
 class ResumeInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -67,9 +62,16 @@ class DeclaredSubmitReviewInputPayload(msgspec.Struct, frozen=True, forbid_unkno
 
 
 class ReasonInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Plain pause and return-for-correction input; its reason is human-read record text."""
+    """Return-for-correction input; its reason is human-read record text."""
 
     reason: RecordText
+
+
+class PlainPauseInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Plain pause input: the human-read reason and exactly one thing the paused work waits for."""
+
+    reason: RecordText
+    unblocker: unblockers.UnblockerPayload
 
 
 class RejectProposalInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -77,11 +79,13 @@ class RejectProposalInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fie
 
 
 class BlockInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    reason: NonEmptyLine
-    depends_on: tuple[Identity, ...] = ()
+    """Block and block-item input: exactly one thing the held work waits for.
 
-    def __post_init__(self) -> None:
-        _require_unique_dependencies(self.depends_on)
+    Items name accepted dependencies of the item's current definition; a human decision states its question; an
+    outside condition states in one line what must become true, which Pinboard does not check.
+    """
+
+    unblocker: unblockers.UnblockerPayload
 
 
 class EvidenceInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -166,11 +170,6 @@ class CloseInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     human_decision: NonEmptyLine
 
 
-class DeferInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    timing: work_models.Timing
-    reopen_condition: NonEmptyLine
-
-
 class MergeProposalInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     target: Identity
 
@@ -198,6 +197,7 @@ type InputPayload = (
     | SubmitReviewInputPayload
     | DeclaredSubmitReviewInputPayload
     | ReasonInputPayload
+    | PlainPauseInputPayload
     | RejectProposalInputPayload
     | BlockInputPayload
     | EvidenceInputPayload
@@ -206,7 +206,6 @@ type InputPayload = (
     | RecordPlannedReplacementInputPayload
     | RetainTemporarilyInputPayload
     | CloseInputPayload
-    | DeferInputPayload
     | MergeProposalInputPayload
     | ReviseItemInputPayload
     | ReviewedCompleteInputPayload
@@ -238,15 +237,13 @@ def action_input_model(kind: decision_models.ActionKind) -> InputModel | None:  
             return BlockInputPayload
         case decision_models.ActionKind.CLOSE:
             return CloseInputPayload
-        case decision_models.ActionKind.REOPEN:
-            return EvidenceInputPayload
         case decision_models.ActionKind.RECORD_REPLACEMENT:
             return RecordPlannedReplacementInputPayload
         case decision_models.ActionKind.RETAIN_TEMPORARILY:
             return RetainTemporarilyInputPayload
-        case decision_models.ActionKind.DEFER:
-            return DeferInputPayload
-        case decision_models.ActionKind.PAUSE | decision_models.ActionKind.RETURN_FOR_CORRECTION:
+        case decision_models.ActionKind.PAUSE:
+            return PlainPauseInputPayload
+        case decision_models.ActionKind.RETURN_FOR_CORRECTION:
             return ReasonInputPayload
         case decision_models.ActionKind.REJECT_PROPOSAL:
             return RejectProposalInputPayload
@@ -285,7 +282,7 @@ def action_payload_schema(kind: decision_models.ActionKind) -> JsonSchema | None
 
     if kind in {decision_models.ActionKind.PAUSE, decision_models.ActionKind.RESUME}:
         plain = msgspec.json.schema(
-            ReasonInputPayload if kind == decision_models.ActionKind.PAUSE else ResumeInputPayload
+            PlainPauseInputPayload if kind == decision_models.ActionKind.PAUSE else ResumeInputPayload
         )
         batch = msgspec.json.schema(
             decision_batches.PauseDecisionsInput

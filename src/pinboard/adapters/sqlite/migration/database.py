@@ -118,6 +118,8 @@ def current_schema_logical_digest(path: Path) -> str:
                 database._verify_v10_schema(connection)
             elif version == 11:
                 database._verify_v11_schema(connection)
+            elif version == 12:
+                database._verify_v12_schema(connection)
             else:
                 database._verify_current_schema(connection)
             database.verify_database_integrity(connection)

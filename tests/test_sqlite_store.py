@@ -48,7 +48,7 @@ from pinboard.domain.identifiers import (
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.decision_support import project_decision_snapshot
-from tests.domain_support import expect_success
+from tests.domain_support import expect_success, plain_pause
 from tests.domain_support import replace as replace_dataclass
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, mutation_allocation
 
@@ -918,7 +918,7 @@ class SQLiteStoreTest(unittest.TestCase):
         assert isinstance(action, decision_models.PauseAction)
         decision = decide(
             snapshot,
-            decision_models.PauseCommand(action, work_models.ReasonInput("Pause at the checkpoint boundary.")),
+            decision_models.PauseCommand(action, plain_pause("Pause at the checkpoint boundary.")),
             SQLITE_NOW,
         )
         mutation = project_transition_mutation(mutation_allocation(initial), decision)
@@ -971,7 +971,7 @@ class SQLiteStoreTest(unittest.TestCase):
         assert isinstance(failed_action, decision_models.PauseAction)
         failed_decision = decide(
             failed_snapshot,
-            decision_models.PauseCommand(failed_action, work_models.ReasonInput("This write is interrupted.")),
+            decision_models.PauseCommand(failed_action, plain_pause("This write is interrupted.")),
             SQLITE_NOW,
         )
         failed_mutation = project_transition_mutation(mutation_allocation(failed_initial), failed_decision)
@@ -1081,7 +1081,7 @@ class SQLiteStoreTest(unittest.TestCase):
         assert isinstance(action, decision_models.PauseAction)
         decision = decide(
             snapshot,
-            decision_models.PauseCommand(action, work_models.ReasonInput("This write raises a programming failure.")),
+            decision_models.PauseCommand(action, plain_pause("This write raises a programming failure.")),
             SQLITE_NOW,
         )
         mutation = project_transition_mutation(mutation_allocation(before), decision)
@@ -1114,9 +1114,7 @@ class SQLiteStoreTest(unittest.TestCase):
         assert isinstance(action, decision_models.PauseAction)
         decision = decide(
             snapshot,
-            decision_models.PauseCommand(
-                action, work_models.ReasonInput("Pause without rewriting unrelated relations.")
-            ),
+            decision_models.PauseCommand(action, plain_pause("Pause without rewriting unrelated relations.")),
             SQLITE_NOW,
         )
 

@@ -229,7 +229,7 @@ class DependencyMigrationTest(unittest.TestCase):
                 self.assertEqual(0, connection.execute("SELECT count(*) FROM checkpoint_acceptances").fetchone()[0])
             plan = schema_procedure.preview_schema(roots.database_path)
             assert isinstance(plan, schema_procedure.PlannedSchema), plan
-            self.assertIsInstance(plan.plan, schema_procedure.MembershipCurrentPlan)
+            self.assertIsInstance(plan.plan, schema_procedure.UnblockerCurrentPlan)
             unchanged = schema_procedure.apply_schema(roots.database_path, plan.plan_id)
             assert isinstance(unchanged, schema_procedure.AppliedSchema), unchanged
-            self.assertEqual((12, ()), (unchanged.resulting_version, unchanged.changed_surfaces))
+            self.assertEqual((13, ()), (unchanged.resulting_version, unchanged.changed_surfaces))

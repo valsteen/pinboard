@@ -70,7 +70,7 @@ def read_overview_page(
     next_row = connection.execute(
         """
         SELECT item.item_id FROM work_items AS item
-        WHERE item.queue_position IS NOT NULL AND item.state IN ('intake', 'ready', 'blocked', 'deferred')
+        WHERE item.queue_position IS NOT NULL AND item.state IN ('intake', 'ready', 'blocked')
           AND NOT EXISTS (SELECT 1 FROM attempts WHERE attempts.item_id = item.item_id AND state != 'done')
         ORDER BY item.queue_position LIMIT 1
         """

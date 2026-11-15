@@ -1,10 +1,12 @@
 import contextlib
+import hashlib
 import io
 import json
 import sqlite3
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,11 +19,15 @@ from pinboard.adapters.files.errors import (
 from pinboard.adapters.files.file_io import _sync_directory, create_immutable, resolve_durable_roots
 from pinboard.adapters.sqlite import database as sqlite_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.migration import schema_unblockers_v12
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
+from pinboard.application import stored_state
 from pinboard.application.artifacts import ArtifactPublication, NewArtifact
 from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
+from pinboard.domain.identifiers import WorkItemId
 from tests.domain_support import expect_success
+from tests.sqlite_support import downgrade_to_v12
 from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initialize_store
 
 
@@ -35,6 +41,7 @@ class StorageMigrationTests(unittest.TestCase):
                     "artifact_ownership",
                     "checkpoint_acceptances",
                     "attempt_decision_batches",
+                    "work_item_unblockers",
                 }:
                     continue
                 columns = tuple(
@@ -48,11 +55,15 @@ class StorageMigrationTests(unittest.TestCase):
                 )
                 selected = ", ".join(f'"{column}"' for column in columns)
                 facts.extend(
-                    repr((table, tuple(row))) for row in connection.execute(f'SELECT {selected} FROM "{table}"')
+                    repr((table, tuple(row)))
+                    for row in connection.execute(f'SELECT {selected} FROM "{table}"')
+                    # v12 and earlier count the retired deferred state; an empty count is no predecessor fact.
+                    if (table, tuple(row)) != ("work_item_state_counts", ("deferred", 0))
                 )
             return tuple(sorted(facts))
 
     def downgrade_v11(self, path: Path) -> None:
+        downgrade_to_v12(path)
         with contextlib.closing(sqlite3.connect(path)) as connection, connection:
             connection.execute("DROP TABLE item_off_roadmap_episodes")
             connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v12")
@@ -161,11 +172,10 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
             with contextlib.closing(sqlite3.connect(path)) as connection:
                 sqlite_database._verify_v10_schema(connection)
-            current = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
-            self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
-            current = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
-            self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
-            self.assertEqual(12, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
+            for _step in ("v10-to-v11", "v11-to-v12", "v12-to-v13"):
+                current = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
+                self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
+            self.assertEqual(13, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
             roots = resolve_durable_roots(project)
             publication = ArtifactRepository(roots).publish(
                 NewArtifact(work_models.ArtifactKind.EVIDENCE, "later", 1, ".txt", b"later")
@@ -212,6 +222,226 @@ class StorageMigrationTests(unittest.TestCase):
                    FROM project_meta_v7"""
             )
             connection.execute("DROP TABLE project_meta_v7")
+
+    def v12_ledger(self, project: Path) -> Path:
+        subprocess.run(["git", "init", "-b", "main", str(project)], check=True, capture_output=True)
+        self.assertEqual(0, self.run_cli(project, "init")[0])
+        path = resolve_durable_roots(project).database_path
+        initialize_store(SQLiteWorkStore(path), complete_sqlite_state())
+        downgrade_to_v12(path)
+        return path
+
+    def hold_v12(self, path: Path, item_id: str, state: str) -> None:
+        with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+            before = connection.execute("SELECT state FROM work_items WHERE item_id = ?", (item_id,)).fetchone()[0]
+            connection.execute("UPDATE work_items SET state = ? WHERE item_id = ?", (state, item_id))
+            connection.execute(
+                "UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = ?", (before,)
+            )
+            connection.execute(
+                "UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = ?", (state,)
+            )
+
+    def write_labels(self, path: Path, source: str, labels: Sequence[object]) -> Path:
+        content = json.dumps({"schema": "pinboard-hold-labels/v1", "source_sha256": source, "labels": labels})
+        label_file = path.parent.parent / f"labels-{hashlib.sha256(content.encode()).hexdigest()[:12]}.json"
+        label_file.write_text(content)
+        return label_file
+
+    def test_v12_step_refuses_unlabelled_holds_applies_exact_labels_and_reverses_until_a_new_write(self) -> None:  # noqa: PLR0915 - one labelled migration, resume and reversal journey
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory).resolve()
+            path = self.v12_ledger(project)
+            self.hold_v12(path, "work-c", "blocked")
+            self.hold_v12(path, "zz-proposal-a", "deferred")
+            original = path.read_bytes()
+            source = hashlib.sha256(original).hexdigest()
+            code, refused = self.run_cli(project, "migrate-schema")
+            self.assertNotEqual(0, code)
+            message = str(refused["message"])
+            self.assertIn("work-c (blocked)", message)
+            self.assertIn("zz-proposal-a (deferred)", message)
+            self.assertIn("--labels", message)
+            self.assertEqual(original, path.read_bytes())
+            question: JsonObject = {"kind": "human-decision", "question": "Should work C wait for the new survey?"}
+            condition: JsonObject = {"kind": "outside-condition", "condition": "The vendor publishes its v2 API."}
+            for labels, refusal in (
+                ([{"item_id": "work-c", "attempt_id": None, "unblocker": question}], "zz-proposal-a (deferred)"),
+                (
+                    [
+                        {"item_id": "work-c", "attempt_id": None, "unblocker": {"kind": "items", "items": ["work-a"]}},
+                        {"item_id": "zz-proposal-a", "attempt_id": None, "unblocker": condition},
+                    ],
+                    "not its accepted dependencies",
+                ),
+                (
+                    [
+                        {"item_id": "work-c", "attempt_id": None, "unblocker": question},
+                        {"item_id": "zz-proposal-a", "attempt_id": None, "unblocker": question},
+                    ],
+                    "outside condition",
+                ),
+            ):
+                with self.subTest(refusal=refusal):
+                    label_file = self.write_labels(path, source, labels)
+                    code, rejected = self.run_cli(project, "migrate-schema", "--labels", str(label_file))
+                    self.assertNotEqual(0, code)
+                    self.assertIn(refusal, str(rejected["message"]))
+            complete = [
+                {"item_id": "work-c", "attempt_id": None, "unblocker": question},
+                {"item_id": "zz-proposal-a", "attempt_id": None, "unblocker": condition},
+            ]
+            stale = self.write_labels(path, "0" * 64, complete)
+            code, rejected = self.run_cli(project, "migrate-schema", "--labels", str(stale))
+            self.assertNotEqual(0, code)
+            self.assertIn("another ledger state", str(rejected["message"]))
+            label_file = self.write_labels(path, source, complete)
+            code, planned = self.run_cli(project, "migrate-schema", "--labels", str(label_file))
+            self.assertEqual(0, code, planned)
+            plan = planned["plan"]
+            assert isinstance(plan, dict)
+            self.assertEqual("unblockers-advance", plan["kind"])
+            self.assertEqual(hashlib.sha256(label_file.read_bytes()).hexdigest(), plan["labels_sha256"])
+            plan_id = str(planned["plan_id"])
+            other = self.write_labels(path, source, list(reversed(complete)))
+            code, rejected = self.run_cli(project, "migrate-schema", "--apply", plan_id, "--labels", str(other))
+            self.assertNotEqual(0, code)
+            self.assertIn("request a new preview", str(rejected["message"]))
+            self.assertEqual(original, path.read_bytes())
+            code, migrated = self.run_cli(project, "migrate-schema", "--apply", plan_id, "--labels", str(label_file))
+            self.assertEqual(0, code, migrated)
+            self.assertEqual(("migrated", "sqlite-v13"), (migrated["status"], migrated["authority"]))
+            evidence = path.parent / "migration"
+            self.assertEqual(original, (evidence / f"{plan_id}.v12").read_bytes())
+            self.assertEqual(label_file.read_bytes(), (evidence / f"{plan_id}.labels.json").read_bytes())
+            reloaded = SQLiteWorkStore(path).validated_snapshot()
+            self.assertEqual(
+                {
+                    WorkItemId("work-c"): work_models.WaitingForHumanDecision("Should work C wait for the new survey?"),
+                    WorkItemId("zz-proposal-a"): work_models.WaitingForOutsideCondition(
+                        "The vendor publishes its v2 API."
+                    ),
+                },
+                {value.item_id: value.unblocker for value in reloaded.lifecycle.unblockers},
+            )
+            self.assertEqual(
+                stored_state.StoredWorkItemState.BLOCKED,
+                next(value.state for value in reloaded.lifecycle.work_items if value.item_id == "zz-proposal-a"),
+            )
+            resumed = self.run_cli(project, "migrate-schema", "--apply", plan_id, "--labels", str(label_file))[1]
+            self.assertEqual("unchanged", resumed["status"])
+            reverse = self.run_cli(project, "migrate-schema", "--reverse", plan_id)[1]
+            reversed_result = self.run_cli(project, "migrate-schema", "--apply", str(reverse["plan_id"]))[1]
+            self.assertEqual(("reversed", "sqlite-v12"), (reversed_result["status"], reversed_result["authority"]))
+            self.assertEqual(original, path.read_bytes())
+            self.assertEqual(
+                0, self.run_cli(project, "migrate-schema", "--apply", plan_id, "--labels", str(label_file))[0]
+            )
+            with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("UPDATE project_meta SET revision = revision + 1")
+            code, later = self.run_cli(project, "migrate-schema", "--reverse", plan_id)
+            self.assertNotEqual(0, code)
+            self.assertIn("changed after schema migration", str(later["message"]))
+
+    def test_v12_paused_attempts_are_labelled_from_their_receipts_or_listed_for_a_label(self) -> None:
+        pending = {
+            "schema": "pinboard-pause-decisions/v1",
+            "reason": "Two choices remain.",
+            "decisions": [
+                {
+                    "decision_id": "audience",
+                    "question": "Who reads it?",
+                    "options": ["Users", "Admins"],
+                    "recommendation": "Users",
+                    "unblocks": "Scope",
+                    "deferral_cost": "Delay",
+                }
+            ],
+        }
+        plain: dict[str, object] = {"evidence": "Wait for the legal review.", "outcome": "pause"}
+        empty: dict[str, object] = {}
+        checkpoint = {
+            "candidate": "candidate-a",
+            "checkpoint": "routes",
+            "evidence": "Verified.",
+            "outcome": "accept-checkpoint",
+        }
+        for case, action, input_schema, input_json, outcome_schema, outcome_json, batch in (
+            ("plain", "pause", "decision/v1", empty, "transition-receipt/v1", plain, None),
+            ("pending", "pause", "pinboard-pause-decisions/v1", pending, "transition-receipt/v1", plain, "pending"),
+            ("resolved", "pause", "decision/v1", empty, "transition-receipt/v1", plain, "resolved"),
+            ("checkpoint", "accept-checkpoint", "decision/v1", empty, "checkpoint-acceptance/v2", checkpoint, None),
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                path = self.v12_ledger(Path(directory).resolve())
+                self.hold_v12(path, "work-a", "paused")
+                with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+                    revision = connection.execute("SELECT revision + 1 FROM project_meta").fetchone()[0]
+                    history = connection.execute(
+                        "SELECT coalesce(max(history_id), 0) + 1 FROM transition_history"
+                    ).fetchone()[0]
+                    if batch is not None:
+                        connection.execute(
+                            """INSERT INTO transition_history (history_id, project_revision, action_id, action_kind,
+                               subject_id, authorization_kind, input_schema, input_json, outcome_schema, outcome_json,
+                               committed_at) VALUES (?, ?, 'pause:work-a-1', 'pause', 'work-a-1', 'project',
+                               'pinboard-pause-decisions/v1', ?, 'transition-receipt/v1', ?, ?)""",
+                            (history, revision, json.dumps(pending), json.dumps(plain), SQLITE_NOW.isoformat()),
+                        )
+                        connection.execute(
+                            "INSERT INTO attempt_decision_batches VALUES ('work-a-1', ?, ?)",
+                            (history, None if batch == "pending" else history + 1),
+                        )
+                        history, revision = history + 1, revision + 1
+                    if batch != "pending":
+                        connection.execute(
+                            """INSERT INTO transition_history (history_id, project_revision, action_id, action_kind,
+                               subject_id, authorization_kind, input_schema, input_json, outcome_schema, outcome_json,
+                               committed_at) VALUES (?, ?, ?, ?, 'work-a-1', 'project', ?, ?, ?, ?, ?)""",
+                            (
+                                history,
+                                revision,
+                                f"{action}:work-a-1",
+                                "resume" if batch == "resolved" else action,
+                                input_schema,
+                                json.dumps(input_json),
+                                outcome_schema,
+                                json.dumps(outcome_json),
+                                SQLITE_NOW.isoformat(),
+                            ),
+                        )
+                        if batch == "resolved":
+                            connection.execute(
+                                """INSERT INTO transition_history (history_id, project_revision, action_id, action_kind,
+                                   subject_id, authorization_kind, input_schema, input_json, outcome_schema,
+                                   outcome_json, committed_at) VALUES (?, ?, 'pause:work-a-1', 'pause', 'work-a-1',
+                                   'project', 'decision/v1', '{}', 'transition-receipt/v1', ?, ?)""",
+                                (history + 1, revision + 1, json.dumps(plain), SQLITE_NOW.isoformat()),
+                            )
+                            revision += 1
+                    connection.execute("UPDATE project_meta SET revision = ?", (revision,))
+                    connection.execute(
+                        "UPDATE attempts SET state = 'paused', subject_revision = ? WHERE attempt_id = 'work-a-1'",
+                        (revision,),
+                    )
+                with contextlib.closing(sqlite3.connect(path)) as connection:
+                    connection.row_factory = sqlite3.Row
+                    automatic, needed = schema_unblockers_v12.classify_holds(connection)
+                match case:
+                    case "pending":
+                        self.assertEqual((), needed)
+                        derived = automatic[WorkItemId("work-a")]
+                        assert isinstance(derived, work_models.WaitingForHumanDecision)
+                        self.assertIn("audience", derived.question)
+                    case "checkpoint":
+                        self.assertEqual((), needed)
+                        derived = automatic[WorkItemId("work-a")]
+                        assert isinstance(derived, work_models.WaitingForHumanDecision)
+                        self.assertIn("routes", derived.question)
+                    case _:
+                        self.assertEqual({}, automatic)
+                        self.assertEqual(("work-a",), tuple(str(value.item_id) for value in needed))
+                        self.assertIn("Wait for the legal review.", needed[0].proposal)
 
     def test_populated_v6_ledger_migrates_explicitly_and_failed_upgrade_rolls_back(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

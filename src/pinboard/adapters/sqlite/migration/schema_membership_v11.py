@@ -12,12 +12,12 @@ def _upgrade_v11_connection(connection: sqlite3.Connection, expected_postimage: 
     connection.row_factory = sqlite3.Row
     with database.write_transaction(connection):
         if database._read_pinboard_schema_version(connection) == 12:
-            database._verify_current_schema(connection)
+            database._verify_v12_schema(connection)
             return False
         database._verify_v11_schema(connection)
         database.verify_database_integrity(connection)
         connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v11")
-        statements = {name: statement for _, name, _, statement in database._build_expected_schema_signature()}
+        statements = {name: statement for _, name, _, statement in database._build_v12_schema_signature()}
         for name in ("project_meta", "item_off_roadmap_episodes", "item_active_off_roadmap"):
             statement = statements[name]
             assert statement is not None
@@ -26,7 +26,7 @@ def _upgrade_v11_connection(connection: sqlite3.Connection, expected_postimage: 
             "INSERT INTO project_meta SELECT singleton, application, 12, revision, host_epoch, created_at, updated_at FROM project_meta_v11"
         )
         connection.execute("DROP TABLE project_meta_v11")
-        database._verify_current_schema(connection)
+        database._verify_v12_schema(connection)
         database.verify_database_integrity(connection)
         if (
             expected_postimage is not None

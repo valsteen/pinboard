@@ -10,7 +10,7 @@ from dataclasses import replace
 
 from pinboard.adapters.files import roadmap as renderer
 from pinboard.application import roadmap, stored_state
-from pinboard.domain import initiatives
+from pinboard.domain import initiatives, work_models
 from pinboard.domain.identifiers import HostId, TaskId, WorkItemId
 from tests.support import SQLITE_NOW
 
@@ -64,6 +64,11 @@ class RoadmapTest(unittest.TestCase):
                 else stored_state.StoredWorkItemState.READY,
                 tuple(WorkItemId(value) for value in prerequisites),
                 None if identity in completed else position,
+                False,
+                work_models.WaitingForItemsToFinish(tuple(WorkItemId(value) for value in prerequisites))
+                if identity == "b" and identity not in completed
+                else None,
+                None,
             )
             for position, (identity, prerequisites) in enumerate(dependencies.items(), start=1)
         )
@@ -102,6 +107,48 @@ class RoadmapTest(unittest.TestCase):
                 self.assertIn(b"Not assessed", html)
                 self.assertTrue(all(not lane.assessments for lane in facts.initiatives))
                 self.assertEqual(stored_state.StoredWorkItemState.BLOCKED, facts.items[-1].state)
+
+    def test_a_held_item_states_its_hold_and_never_presents_dependency_order_as_the_hold(self) -> None:
+        for completed, started, replacement, expected, resume_needed in (
+            (frozenset(), False, None, "Work has not started. It waits for [v](items/v.md) to finish.", False),
+            (
+                frozenset({"o", "d", "v"}),
+                False,
+                None,
+                "It waited for [v](items/v.md), which has finished, so it can continue once someone resumes it.",
+                True,
+            ),
+            (
+                frozenset({"o", "d", "v"}),
+                True,
+                None,
+                "Work started, but nobody is working on it now because it is on hold.",
+                True,
+            ),
+            (
+                frozenset({"o", "d", "v"}),
+                False,
+                WorkItemId("t"),
+                "but it still waits for its planned replacement by [t](items/t.md) to be resolved.",
+                False,
+            ),
+        ):
+            with self.subTest(completed=sorted(completed), started=started, replacement=replacement):
+                facts = self.facts(completed)
+                held = tuple(
+                    replace(item, started=started, unresolved_replacement=replacement)
+                    if item.item_id == WorkItemId("b")
+                    else item
+                    for item in facts.items
+                )
+                value = roadmap.project(replace(facts, items=held))
+                self.assertEqual(resume_needed, value.holds[WorkItemId("b")].resume_needed)
+                markdown, html = renderer.render(value)
+                line = next(row for row in markdown.decode().splitlines() if row.startswith("- [b](items/b.md)"))
+                self.assertIn(expected, line)
+                self.assertNotIn("blocked · Remaining wave", line)
+                self.assertNotIn("Remaining wave", line)
+                self.assertIn('href="items/v.md"', html.decode())
 
     def test_offline_theme_choices_default_to_system_and_keep_content_escaped(self) -> None:
         facts = self.facts(frozenset())
@@ -194,7 +241,14 @@ class RoadmapTest(unittest.TestCase):
         ended = replace(first.memberships[0], item_id=WorkItemId("retired-history"), removed=first.memberships[0].added)
         first = replace(first, memberships=(*first.memberships, ended))
         historical = roadmap.Item(
-            WorkItemId("retired-history"), "Retired history", stored_state.StoredWorkItemState.DONE, (), None
+            WorkItemId("retired-history"),
+            "Retired history",
+            stored_state.StoredWorkItemState.DONE,
+            (),
+            None,
+            False,
+            None,
+            None,
         )
         value = roadmap.project(replace(facts, initiatives=(first, *others), items=(*facts.items, historical)))
         self.assertNotIn(WorkItemId("retired-history"), value.external_prerequisites)

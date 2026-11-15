@@ -4,7 +4,7 @@ from typing import assert_never, overload
 
 import msgspec
 
-from pinboard.application import obligation_coverage, query_models, stored_state
+from pinboard.application import obligation_coverage, query_models, stored_state, unblockers
 from pinboard.application.actions import action_subject_ids
 from pinboard.application.artifact_publication import validate_transition_work_brief
 from pinboard.application.artifacts import (
@@ -638,7 +638,9 @@ def _transition_decision_scope(
             if value.brief_artifact_ref_id is not None:
                 artifact_ids = (value.brief_artifact_ref_id,)
         case decision_models.BlockCommand(value=value) | decision_models.BlockWorkItemCommand(value=value):
-            related_item_ids = value.depends_on
+            related_item_ids = unblockers.waited_items(value.unblocker)
+        case decision_models.PauseCommand(value=work_models.PlainPauseInput(unblocker=unblocker)):
+            related_item_ids = unblockers.waited_items(unblocker)
         case decision_models.MergeProposalCommand(value=value):
             related_item_ids = (value.target,)
         case decision_models.ReviseWorkItemCommand(value=value):
@@ -664,8 +666,6 @@ def _transition_decision_scope(
             | decision_models.PauseCommand()
             | decision_models.SubmitReviewCommand()
             | decision_models.ReturnForCorrectionCommand()
-            | decision_models.ReopenCommand()
-            | decision_models.DeferCommand()
             | decision_models.RejectProposalCommand()
             | decision_models.RetainTemporarilyCommand()
         ):

@@ -143,6 +143,7 @@ def persist(
             revision,
             now,
             mutation.receipt.transition.evidence,
+            unblocker=None,
         )
     ) is not None:
         return failure

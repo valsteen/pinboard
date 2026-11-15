@@ -87,6 +87,7 @@ def _project_work_item(
         value.notes,
         value.queue_position,
         value.outcome_evidence,
+        unblocker=None,
     )
 
 
@@ -121,6 +122,7 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
         if (live_state := stored_state.live_work_state(item.state)) is not None
     )
     stored_items_by_id = {item.item_id: item for item in state.lifecycle.work_items}
+    held = {value.item_id: value.unblocker for value in state.lifecycle.unblockers}
     dependency_groups: dict[WorkItemId, list[WorkItemId]] = {item_id: [] for item_id in stored_items_by_id}
     for link in sorted(state.lifecycle.dependencies, key=_dependency_order):
         dependency_groups[link.item_id].append(link.dependency_id)
@@ -146,6 +148,7 @@ def project_decision_snapshot(state: stored_state.StoredWorkState, now: datetime
             item.notes,
             item.queue_position,
             item.outcome_evidence,
+            unblocker=held.get(item.work_item_id),
         )
         for item in live_items
     )

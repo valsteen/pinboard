@@ -51,7 +51,7 @@ from tests import test_dispatch
 from tests.candidate_diff_support import historical_candidate_diffs
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import native_tools
-from tests.support import SQLITE_NOW, JsonObject
+from tests.support import HOLD_UNBLOCKER, SQLITE_NOW, JsonObject
 from tests.work_brief_support import ready_review, work_a_brief
 
 
@@ -342,7 +342,9 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual("committed", closed["status"], closed)
         for _ in range(rounds):
             paused = self.transition_result(
-                fixture, self.project_action(fixture, "pause:work-a-1"), {"reason": "Wait for the maintainer."}
+                fixture,
+                self.project_action(fixture, "pause:work-a-1"),
+                {"reason": "Wait for the maintainer.", "unblocker": HOLD_UNBLOCKER},
             )
             self.assertEqual("committed", paused["status"], paused)
             resumed = self.transition_result(fixture, self.project_action(fixture, "resume:work-a"), {})
@@ -1204,7 +1206,9 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             result = publish(store, artifacts, attempt_id, key, content, review_id, accepted_at)
             if not key.startswith("replacement-readiness-"):
                 paused = self.transition_result(
-                    fixture, self.project_action(fixture, "pause:work-a-1"), {"reason": "Controlled concurrent action."}
+                    fixture,
+                    self.project_action(fixture, "pause:work-a-1"),
+                    {"reason": "Controlled concurrent action.", "unblocker": HOLD_UNBLOCKER},
                 )
                 self.assertEqual("committed", paused["status"], paused)
             return result
@@ -2388,7 +2392,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                         paused = self.transition_result(
                             fixture,
                             self.project_action(fixture, "pause:work-a-1"),
-                            {"reason": "Wait for the maintainer."},
+                            {"reason": "Wait for the maintainer.", "unblocker": HOLD_UNBLOCKER},
                         )
                         self.assertEqual("committed", paused["status"], paused)
                     case "review":

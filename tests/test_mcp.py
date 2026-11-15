@@ -45,6 +45,7 @@ from pinboard.application import (
     queries,
     query_models,
     stored_state,
+    unblockers,
     work_brief_models,
     work_briefs,
 )
@@ -78,7 +79,7 @@ from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.domain_support import action
 from tests.native_support import call_native_tool, native_tools
-from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store, status_artifacts
+from tests.support import HOLD_UNBLOCKER, SQLITE_NOW, complete_sqlite_state, initialize_store, status_artifacts
 from tests.test_proposals import proposal as proposal_input
 from tests.work_brief_support import example_work_brief, needs_correction_review, work_a_brief, work_c_brief
 
@@ -121,6 +122,13 @@ def _representative_transition_requests() -> tuple[dict[str, contracts.JsonValue
     """Return one valid raw request for each exact transition leaf the decoder selects."""
 
     reason: dict[str, contracts.JsonValue] = {"reason": "Accepted reason."}
+    hold: dict[str, contracts.JsonValue] = {
+        "unblocker": {"kind": "outside-condition", "condition": "A supported consumer needs it."}
+    }
+    plain_pause: dict[str, contracts.JsonValue] = {
+        "reason": "Accepted reason.",
+        "unblocker": {"kind": "human-decision", "question": "Which consumer comes first?"},
+    }
     batch: dict[str, contracts.JsonValue] = {
         "schema": "pinboard-pause-decisions/v1",
         "reason": "Choose the input policy.",
@@ -161,8 +169,8 @@ def _representative_transition_requests() -> tuple[dict[str, contracts.JsonValue
         ("accept-checkpoint", "project", {"checkpoint": "checkpoint-1", "candidate": "candidate", **evidence}),
         ("accept-review-and-continue", "project", {"candidate": "candidate", **evidence}),
         ("activate", "preparer", {"brief_artifact_ref_id": 1}),
-        ("block", "project", reason),
-        ("block-item", "project", reason),
+        ("block", "project", hold),
+        ("block-item", "project", {"unblocker": {"kind": "items", "items": ["item-2"]}}),
         ("complete", "project", evidence),
         (
             "complete",
@@ -178,14 +186,12 @@ def _representative_transition_requests() -> tuple[dict[str, contracts.JsonValue
                 "packages": [],
             },
         ),
-        ("defer", "project", {"timing": "safe-to-defer", "reopen_condition": "A supported consumer needs it."}),
         ("merge-proposal", "project", {"target": "item-2"}),
-        ("pause", "project", reason),
-        ("pause", "worker", reason),
+        ("pause", "project", plain_pause),
+        ("pause", "worker", plain_pause),
         ("pause", "project", batch),
         ("pause", "worker", batch),
         ("reject-proposal", "project", reason),
-        ("reopen", "project", evidence),
         (
             "record-replacement",
             "project",
@@ -1162,7 +1168,7 @@ class McpTransportTest(unittest.TestCase):
                 {"request": common | {"role": "worker", "lease_id": "lease ", "generation": 1}},
             )
             assert isinstance(accepted, CallToolResult) and isinstance(accepted.structured_content, dict)
-            self.assertEqual("pinboard-item-status/v5", accepted.structured_content["schema"])
+            self.assertEqual("pinboard-item-status/v6", accepted.structured_content["schema"])
             for result, code in (
                 (invalid_path, "ITEM_STATUS_INVALID"),
                 (invalid_identity, "ACTIONS_INVALID"),
@@ -1701,7 +1707,7 @@ class McpTransportTest(unittest.TestCase):
                     **roots,
                     "role": "project",
                     "receipt": {"action_id": {"kind": "pause", "subject": "attempt"}, "subject_revision": "1"},
-                    "payload": {"reason": "Pause."},
+                    "payload": {"reason": "Pause.", "unblocker": HOLD_UNBLOCKER},
                     "actor_task_id": "project",
                     "actor_host_id": "local",
                 },
@@ -1931,7 +1937,7 @@ class McpTransportTest(unittest.TestCase):
                                 "action_id": {"kind": "pause", "subject": "work-a-1"},
                                 "subject_revision": "8",
                             },
-                            "payload": {"reason": "Invalid leaf.", "unknown": True},
+                            "payload": {"reason": "Invalid leaf.", "unknown": True, "unblocker": HOLD_UNBLOCKER},
                             "actor_task_id": "project-task",
                             "actor_host_id": "local",
                         },
@@ -1949,7 +1955,10 @@ class McpTransportTest(unittest.TestCase):
                                 "action_id": {"kind": "pause", "subject": "work-a-1"},
                                 "subject_revision": "8",
                             },
-                            "payload": {"reason": "Pause through the MCP lifecycle boundary."},
+                            "payload": {
+                                "reason": "Pause through the MCP lifecycle boundary.",
+                                "unblocker": HOLD_UNBLOCKER,
+                            },
                             "actor_task_id": "project-task",
                             "actor_host_id": "local",
                         },
@@ -1967,7 +1976,7 @@ class McpTransportTest(unittest.TestCase):
                                 "action_id": {"kind": "pause", "subject": "work-a-1"},
                                 "subject_revision": "8",
                             },
-                            "payload": {"reason": "This stale receipt must not commit."},
+                            "payload": {"reason": "This stale receipt must not commit.", "unblocker": HOLD_UNBLOCKER},
                             "actor_task_id": "project-task",
                             "actor_host_id": "local",
                         },
@@ -2398,18 +2407,18 @@ class McpTransportTest(unittest.TestCase):
                 "action_id": {"kind": "pause", "subject": "attempt-1"},
                 "subject_revision": "7",
             },
-            "payload": {"reason": "Pause for correction."},
+            "payload": {"reason": "Pause for correction.", "unblocker": HOLD_UNBLOCKER},
             "actor_task_id": "project-task",
             "actor_host_id": "local",
         }
         request = contracts.decode_transition_request({"request": raw})
         self.assertIsInstance(request, contracts.ProjectTransitionRequest)
-        self.assertIsInstance(request.payload, contracts.action_models.ReasonInputPayload)
+        self.assertIsInstance(request.payload, contracts.action_models.PlainPauseInputPayload)
 
         wrong_role: dict[str, contracts.JsonValue] = {**raw, "role": "worker"}
         unknown_payload: dict[str, contracts.JsonValue] = {
             **raw,
-            "payload": {"reason": "Pause for correction.", "unknown": True},
+            "payload": {"reason": "Pause for correction.", "unknown": True, "unblocker": HOLD_UNBLOCKER},
         }
         advisory: dict[str, contracts.JsonValue] = {
             **raw,
@@ -2858,7 +2867,7 @@ class McpTransportTest(unittest.TestCase):
                     "action_id": {"kind": "pause", "subject": "work-a-1"},
                     "subject_revision": "8",
                 },
-                "payload": {"reason": "Invalid leaf.", "unknown": True},
+                "payload": {"reason": "Invalid leaf.", "unknown": True, "unblocker": HOLD_UNBLOCKER},
                 "actor_task_id": "project-task",
                 "actor_host_id": "local",
             }
@@ -2870,7 +2879,7 @@ class McpTransportTest(unittest.TestCase):
                     "action_id": {"kind": "pause", "subject": "work-a-1"},
                     "subject_revision": "8",
                 },
-                "payload": {"reason": "Pause through the direct MCP handler."},
+                "payload": {"reason": "Pause through the direct MCP handler.", "unblocker": HOLD_UNBLOCKER},
                 "actor_task_id": "project-task",
                 "actor_host_id": "local",
             }
@@ -3754,6 +3763,7 @@ class McpTransportTest(unittest.TestCase):
                 forbidden,
                 None,
                 "Waiting for the maintainer's choice.",
+                unblockers.HumanDecisionPayload("Which option does the maintainer choose?"),
             ),
             query_models.BlockedAttemptContinuation(
                 *common,
@@ -3761,6 +3771,7 @@ class McpTransportTest(unittest.TestCase):
                 ("resume:item-1",),
                 forbidden,
                 decision_batch=None,
+                unblocker=unblockers.ItemsToFinishPayload(("dependency-1",)),
             ),
             query_models.TerminalAttemptContinuation(
                 "pinboard-attempt-continuation/v1",
@@ -3915,7 +3926,7 @@ class McpTransportTest(unittest.TestCase):
         overview_content = overview.structured_content
         assert isinstance(overview_content, dict)
         self.assertEqual("pinboard-overview/v9", overview_content["schema"])
-        self.assertEqual("sqlite-v12", overview_content["authority"])
+        self.assertEqual("sqlite-v13", overview_content["authority"])
         self.assertEqual(
             ["work-a-1"], [row["attempt_id"] for row in overview_content["items"] if row["state"] == "active"]
         )

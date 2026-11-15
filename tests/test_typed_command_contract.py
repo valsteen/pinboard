@@ -19,7 +19,7 @@ from pinboard.domain.identifiers import (
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.decision_support import project_decision_snapshot
-from tests.domain_support import action, expect_success
+from tests.domain_support import action, expect_success, held_unblocker
 from tests.support import SQLITE_NOW, complete_sqlite_state, test_definition
 
 
@@ -76,7 +76,16 @@ class TypedTransitionContractTest(unittest.TestCase):
 
     def test_activation_requires_one_existing_brief_artifact_reference(self) -> None:
         ready = work_models.WorkItem(
-            WorkItemId("ready-item"), work_models.WorkState.READY, None, (), None, "test", "activate", "", 1
+            WorkItemId("ready-item"),
+            work_models.WorkState.READY,
+            None,
+            (),
+            None,
+            "test",
+            "activate",
+            "",
+            1,
+            unblocker=held_unblocker(work_models.WorkState.READY),
         )
         snapshot = LedgerSnapshot(
             "project-revision",
@@ -161,6 +170,7 @@ class TypedTransitionContractTest(unittest.TestCase):
                     "resume",
                     "",
                     1,
+                    unblocker=held_unblocker(work_models.WorkState.PAUSED),
                 ),
             ),
             artifacts=(work_models.ArtifactRecord(ArtifactRefId(1), work_models.ArtifactKind.BRIEF),),
@@ -189,6 +199,7 @@ class TypedTransitionContractTest(unittest.TestCase):
             "resume",
             "",
             1,
+            unblocker=held_unblocker(work_models.WorkState.PAUSED),
         )
         snapshot = LedgerSnapshot(
             "project-revision",

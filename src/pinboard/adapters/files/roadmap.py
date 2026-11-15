@@ -4,7 +4,7 @@ from html import escape
 from typing import assert_never
 from urllib.parse import quote, urlsplit
 
-from pinboard.application import query_models, roadmap, stored_state
+from pinboard.application import query_models, roadmap, stored_state, unblockers
 from pinboard.domain import history, initiatives, work_models
 from pinboard.domain.identifiers import WorkItemId
 
@@ -72,6 +72,26 @@ def _placement(value: roadmap.Placement | None) -> str:
             assert_never(unreachable)
 
 
+def _item_target(item_id: WorkItemId) -> str:
+    return f"items/{quote(item_id, safe='')}.md"
+
+
+def _markdown_item(item_id: WorkItemId) -> str:
+    return f"[{item_id}]({_item_target(item_id)})"
+
+
+def _html_item(item_id: WorkItemId) -> str:
+    return _link(_item_target(item_id), item_id)
+
+
+def _hold_markdown(parts: tuple[unblockers.SentencePart, ...]) -> str:
+    return unblockers.render_sentence(parts, unblockers.sentence_text_identity, _markdown_item)
+
+
+def _hold_html(parts: tuple[unblockers.SentencePart, ...]) -> str:
+    return unblockers.render_sentence(parts, escape, _html_item)
+
+
 def _counts(value: roadmap.Counts) -> str:
     return f"{value.delivered} Delivered · {value.unfinished} unfinished · {value.cancelled} cancelled · {value.superseded} superseded"
 
@@ -119,10 +139,19 @@ def render(projection: roadmap.Projection) -> tuple[bytes, bytes]:  # noqa: C901
         )
         shared = " · Shared across initiatives" if appearances.get(item_id, 0) > 1 else ""
         target = f"items/{quote(item_id, safe='')}.md"
-        text.append(f"- [{item.title}]({target}) · {item.state.value} · {position}{shared}")
-        page.append(
-            f'<article><strong>{_link(target, item.title)}</strong><p class="muted">{escape(item.state.value + " · " + position + shared)}</p>'
-        )
+        hold = projection.holds.get(item_id)
+        if hold is None:
+            text.append(f"- [{item.title}]({target}) · {item.state.value} · {position}{shared}")
+            page.append(
+                f'<article><strong>{_link(target, item.title)}</strong><p class="muted">{escape(item.state.value + " · " + position + shared)}</p>'
+            )
+        else:
+            # A held item states what it waits for; its dependency order is context, never the hold itself.
+            text.append(f"- [{item.title}]({target}) · {_hold_markdown(hold.parts)}{shared}")
+            text.append(f"  Dependency order: {position}")
+            page.append(
+                f'<article><strong>{_link(target, item.title)}</strong><p>{_hold_html(hold.parts)}</p><p class="muted">{escape("Recorded state: " + item.state.value + " · Dependency order: " + position + shared)}</p>'
+            )
         if item.dependencies:
             labels = tuple(
                 query_models.dependency_label(history.dependency_payload(dependency))

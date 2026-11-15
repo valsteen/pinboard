@@ -1,17 +1,62 @@
 """Test-only insertion of complete SQLite aggregate fixtures."""
 
+import contextlib
 import sqlite3
+from dataclasses import replace
+from pathlib import Path
 
 import msgspec
 
+from pinboard.adapters.sqlite import database as sqlite_database
 from pinboard.adapters.sqlite.artifact_ownership import accept_ownership
 from pinboard.adapters.sqlite.database import APPLICATION, SCHEMA_VERSION
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import _definition_revision_values
 from pinboard.adapters.sqlite.proposals import _encode_proposal_disposition_columns
 from pinboard.adapters.sqlite.state import _validate_current_state, append_history
-from pinboard.application import stored_state
+from pinboard.application import stored_state, unblockers
 from pinboard.domain import work_models
+from tests.domain_support import TEST_HOLD
+
+
+def downgrade_to_v12(path: Path) -> None:
+    """Rewrite an unheld current ledger into the exact v12 predecessor schema for migration journeys."""
+
+    statements = {name: sql for _, name, _, sql in sqlite_database._build_v12_schema_signature()}
+    with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT count(*) FROM work_item_unblockers").fetchone()[0]:
+            raise AssertionError("Only a ledger without held items can be rewritten as a v12 fixture.")
+        connection.execute("DROP TABLE work_item_unblockers")
+        for table in ("work_items", "work_item_state_counts"):
+            connection.execute(f"CREATE TEMP TABLE {table}_v13 AS SELECT * FROM {table}")
+            connection.execute(f"DROP TABLE {table}")
+            connection.execute(str(statements[table]))
+            connection.execute(f"INSERT INTO {table} SELECT * FROM temp.{table}_v13")
+            connection.execute(f"DROP TABLE temp.{table}_v13")
+        connection.execute("INSERT INTO work_item_state_counts (state, item_count) VALUES ('deferred', 0)")
+        connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v13")
+        connection.execute(str(statements["project_meta"]))
+        connection.execute(
+            "INSERT INTO project_meta SELECT singleton, application, 12, revision, host_epoch, created_at, updated_at FROM project_meta_v13"
+        )
+        connection.execute("DROP TABLE project_meta_v13")
+        sqlite_database._verify_v12_schema(connection)
+        connection.execute("COMMIT")
+        connection.execute("PRAGMA foreign_keys = ON")
+
+
+def sync_test_unblocker(connection: sqlite3.Connection, item_id: str) -> None:
+    """Keep a fixture that forces an item's state by SQL consistent with its current-unblocker row."""
+
+    state = connection.execute("SELECT state FROM work_items WHERE item_id = ?", (item_id,)).fetchone()[0]
+    connection.execute("DELETE FROM work_item_unblockers WHERE item_id = ?", (item_id,))
+    if state in ("paused", "blocked"):
+        connection.execute(
+            "INSERT INTO work_item_unblockers (item_id, unblocker_json) VALUES (?, ?)",
+            (item_id, unblockers.encode_unblocker(TEST_HOLD).decode("utf-8")),
+        )
 
 
 def _insert_artifacts(
@@ -114,6 +159,13 @@ def _insert_lifecycle(connection: sqlite3.Connection, records: stored_state.Life
                 value.updated_at.isoformat(),
             )
             for value in records.attempts
+        ),
+    )
+    connection.executemany(
+        "INSERT INTO work_item_unblockers (item_id, unblocker_json) VALUES (?, ?)",
+        tuple(
+            (value.item_id, unblockers.encode_unblocker(value.unblocker).decode("utf-8"))
+            for value in records.unblockers
         ),
     )
 
@@ -232,6 +284,24 @@ def _insert_authority(connection: sqlite3.Connection, records: stored_state.Auth
 
 
 def insert_initial_state(connection: sqlite3.Connection, state: stored_state.StoredWorkState) -> None:
+    recorded = {value.item_id for value in state.lifecycle.unblockers}
+    # A fixture that holds an item without naming its unblocker waits for the shared test condition.
+    state = replace(
+        state,
+        lifecycle=replace(
+            state.lifecycle,
+            unblockers=(
+                *state.lifecycle.unblockers,
+                *(
+                    stored_state.StoredUnblocker(value.item_id, TEST_HOLD)
+                    for value in state.lifecycle.work_items
+                    if value.state
+                    in {stored_state.StoredWorkItemState.PAUSED, stored_state.StoredWorkItemState.BLOCKED}
+                    and value.item_id not in recorded
+                ),
+            ),
+        ),
+    )
     project = state.lifecycle.project
     if project.application != APPLICATION or project.schema_version != SCHEMA_VERSION:
         raise StorageError(

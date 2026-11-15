@@ -23,7 +23,7 @@ from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, P
 from pinboard.mcp import server as mcp_server
 from tests.domain_support import action
 from tests.native_support import native_tools
-from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
+from tests.support import HOLD_UNBLOCKER, SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 
 
 def expect_transition_command(
@@ -308,7 +308,19 @@ class TransitionInputTest(unittest.TestCase):
             ),
             (
                 action(decision_models.BlockWorkItemAction, WorkItemId("work-a")),
-                {"reason": "blocked", "depends_on": ["work-b", "work-b"]},
+                {"unblocker": {"kind": "items", "items": ["work-b", "work-b"]}},
+            ),
+            (
+                action(decision_models.BlockWorkItemAction, WorkItemId("work-a")),
+                {"unblocker": {"kind": "items", "items": []}},
+            ),
+            (
+                action(decision_models.BlockAttemptAction, AttemptId("attempt-1")),
+                {"reason": "A free reason without a kind."},
+            ),
+            (
+                action(decision_models.PauseAction, AttemptId("attempt-1")),
+                {"reason": "A plain pause must name what it waits for."},
             ),
         )
         for selected_action, value in cases:
@@ -343,25 +355,26 @@ class TransitionInputTest(unittest.TestCase):
             ),
             (
                 action(decision_models.BlockAttemptAction, AttemptId("attempt-1")),
-                {"reason": "blocked", "depends_on": ["work-b"]},
+                {"unblocker": {"kind": "items", "items": ["work-b"]}},
             ),
             (
                 action(decision_models.BlockWorkItemAction, WorkItemId("work-a")),
-                {"reason": "blocked", "depends_on": []},
+                {"unblocker": {"kind": "outside-condition", "condition": "The vendor publishes its v2 API."}},
             ),
             (
                 action(decision_models.CloseAction, WorkItemId("work-a")),
                 {"outcome": "done", "reason": "complete", "human_decision": "Close it."},
             ),
             (action(decision_models.CompleteAction, AttemptId("attempt-1")), {"evidence": "complete"}),
-            (
-                action(decision_models.DeferAction, WorkItemId("work-a")),
-                {"timing": "safe-to-defer", "reopen_condition": "when needed"},
-            ),
             (action(decision_models.MergeProposalAction, ProposalId("proposal-1")), {"target": "work-a"}),
-            (action(decision_models.PauseAction, AttemptId("attempt-1")), {"reason": "pause"}),
-            (action(decision_models.RejectProposalAction, ProposalId("proposal-1")), {"reason": "reject"}),
-            (action(decision_models.ReopenAction, WorkItemId("work-a")), {"evidence": "reopen"}),
+            (
+                action(decision_models.PauseAction, AttemptId("attempt-1")),
+                {"reason": "pause", "unblocker": HOLD_UNBLOCKER},
+            ),
+            (
+                action(decision_models.RejectProposalAction, ProposalId("proposal-1")),
+                {"reason": "reject"},
+            ),
             (
                 action(decision_models.RebindAttemptAction, AttemptId("attempt-1")),
                 {
@@ -492,7 +505,10 @@ def _record_text(command: decision_models.TransitionCommand) -> str:
 class RecordTextInputTest(unittest.TestCase):
     def record_payloads(self, text: str) -> tuple[tuple[decision_models.Action, JsonObject], ...]:
         return (
-            (action(decision_models.PauseAction, AttemptId("attempt-1")), {"reason": text}),
+            (
+                action(decision_models.PauseAction, AttemptId("attempt-1")),
+                {"reason": text, "unblocker": HOLD_UNBLOCKER},
+            ),
             (action(decision_models.ReturnForCorrectionAction, AttemptId("attempt-1")), {"reason": text}),
             (
                 action(decision_models.AcceptCheckpointAction, AttemptId("attempt-1")),
@@ -537,7 +553,7 @@ class RecordTextInputTest(unittest.TestCase):
             (action(decision_models.RejectProposalAction, ProposalId("proposal-1")), {"reason": RECORD_TEXT}),
             (
                 action(decision_models.BlockAttemptAction, AttemptId("attempt-1")),
-                {"reason": RECORD_TEXT, "depends_on": []},
+                {"unblocker": {"kind": "human-decision", "question": RECORD_TEXT}},
             ),
             (
                 action(decision_models.CloseAction, WorkItemId("work-a")),
@@ -553,10 +569,13 @@ class RecordTextInputTest(unittest.TestCase):
                 reviewed_complete | {"evidence": RECORD_TEXT},
             ),
             (
-                action(decision_models.DeferAction, WorkItemId("work-a")),
-                {"timing": "safe-to-defer", "reopen_condition": RECORD_TEXT},
+                action(decision_models.BlockWorkItemAction, WorkItemId("work-a")),
+                {"unblocker": {"kind": "outside-condition", "condition": RECORD_TEXT}},
             ),
-            (action(decision_models.ReopenAction, WorkItemId("work-a")), {"evidence": RECORD_TEXT}),
+            (
+                action(decision_models.PauseAction, AttemptId("attempt-1")),
+                {"reason": "pause", "unblocker": {"kind": "human-decision", "question": RECORD_TEXT}},
+            ),
             (
                 action(decision_models.AcceptCheckpointAction, AttemptId("attempt-1")),
                 {"checkpoint": "checkpoint-a", "candidate": "candidate\nother", "evidence": "accepted"},
@@ -621,7 +640,7 @@ class RecordTextInputTest(unittest.TestCase):
                         "work_root": str(roots.work_root),
                         "role": "project",
                         "action": pause_action,
-                        "payload": {"reason": "Wait for human input."},
+                        "payload": {"reason": "Wait for human input.", "unblocker": HOLD_UNBLOCKER},
                         "actor_task_id": "coordinator-task",
                         "actor_host_id": "local",
                     },
@@ -635,7 +654,7 @@ class RecordTextInputTest(unittest.TestCase):
                         "role": "project",
                         "action_id": pause_action["action_id"],
                         "subject_revision": pause_action["subject_revision"],
-                        "payload": {"reason": "Wait for human input."},
+                        "payload": {"reason": "Wait for human input.", "unblocker": HOLD_UNBLOCKER},
                         "actor_task_id": "coordinator-task",
                         "actor_host_id": "local",
                     },
@@ -730,7 +749,7 @@ class RecordTextInputTest(unittest.TestCase):
                             "action_id": pause_action["action_id"],
                             "subject_revision": pause_action["subject_revision"],
                         },
-                        "payload": {"reason": "Wait for human input."},
+                        "payload": {"reason": "Wait for human input.", "unblocker": HOLD_UNBLOCKER},
                         "actor_task_id": "coordinator-task",
                         "actor_host_id": "local",
                     }

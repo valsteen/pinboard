@@ -12,8 +12,9 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
     definition_compatibility,
     query_models,
-    released_v6_compatibility,
+    released_receipt_compatibility,
     stored_state,
+    unblockers,
     work_brief_models,
 )
 from pinboard.application.actions import discover_current_actions
@@ -39,7 +40,7 @@ from pinboard.domain.identifiers import (
     WorkItemId,
 )
 from tests.decision_support import BOARD, discover_actions
-from tests.domain_support import expect_success
+from tests.domain_support import expect_success, held_unblocker
 from tests.support import (
     SQLITE_NOW,
     LedgerOnlyStatusArtifacts,
@@ -113,7 +114,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         proposal = state.proposals.proposals[0]
         returned = replace(
             proposal,
-            disposition=released_v6_compatibility.HistoricalReturnedProposalDisposition(
+            disposition=released_receipt_compatibility.HistoricalReturnedProposalDisposition(
                 "Clarify the retained boundary.", SQLITE_NOW
             ),
         )
@@ -264,8 +265,8 @@ class SQLiteQueriesTest(unittest.TestCase):
 
         self.assertEqual(
             query_models.ItemStatus(
-                "pinboard-item-status/v5",
-                "sqlite-v12",
+                "pinboard-item-status/v6",
+                "sqlite-v13",
                 "12",
                 "work-a",
                 "Work work-a",
@@ -296,13 +297,14 @@ class SQLiteQueriesTest(unittest.TestCase):
                 dependency_reasons=(query_models.DependencyReason("work-c", "Recorded dependency.", None, False),),
                 proposal_origin=None,
                 planned_replacement=None,
+                hold=None,
             ),
             live,
         )
         self.assertEqual(
             query_models.ItemStatus(
-                "pinboard-item-status/v5",
-                "sqlite-v12",
+                "pinboard-item-status/v6",
+                "sqlite-v13",
                 "12",
                 "work-b",
                 "Work work-b",
@@ -321,6 +323,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                 dependency_reasons=(),
                 proposal_origin=None,
                 planned_replacement=None,
+                hold=None,
             ),
             done,
         )
@@ -382,7 +385,6 @@ class SQLiteQueriesTest(unittest.TestCase):
             (stored_state.StoredWorkItemState.PAUSED, work_models.AttemptState.PAUSED),
             (stored_state.StoredWorkItemState.BLOCKED, None),
             (stored_state.StoredWorkItemState.BLOCKED, work_models.AttemptState.BLOCKED),
-            (stored_state.StoredWorkItemState.DEFERRED, None),
             (stored_state.StoredWorkItemState.REVIEW, work_models.AttemptState.REVIEW),
             (stored_state.StoredWorkItemState.DONE, None),
             (stored_state.StoredWorkItemState.SUPERSEDED, None),
@@ -426,10 +428,14 @@ class SQLiteQueriesTest(unittest.TestCase):
                 None,
                 None,
                 dependencies=(),
+                dependency_outcomes=(),
                 batches_by_attempt={},
                 proposals=(),
                 replacement=None,
                 replacement_disposition=None,
+                unblocker=held_unblocker(work_models.WorkState(item_state.value))
+                if item_state in {stored_state.StoredWorkItemState.PAUSED, stored_state.StoredWorkItemState.BLOCKED}
+                else None,
             )
 
             with self.subTest(item_state=item_state.value, attempt_state=attempt_state):
@@ -502,10 +508,12 @@ class SQLiteQueriesTest(unittest.TestCase):
                 None,
                 None,
                 dependencies=(),
+                dependency_outcomes=(),
                 batches_by_attempt={},
                 proposals=(),
                 replacement=None,
                 replacement_disposition=None,
+                unblocker=None,
             )
 
             with self.subTest(item_state=selected_item.state.value, observed=observed):
@@ -627,6 +635,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             forbidden,
             None,
             None,
+            unblockers.HumanDecisionPayload("Which option does the maintainer choose?"),
         )
         blocked = query_models.BlockedAttemptContinuation(
             "pinboard-attempt-continuation/v1",
@@ -640,6 +649,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             ("resume:item-1",),
             forbidden,
             decision_batch=None,
+            unblocker=unblockers.ItemsToFinishPayload(("dependency-1",)),
         )
         terminal = query_models.TerminalAttemptContinuation(
             "pinboard-attempt-continuation/v1",
@@ -897,7 +907,7 @@ READY_AT = SQLITE_NOW + timedelta(hours=2)
 
 
 def _receipt(
-    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind,
+    action_kind: decision_models.ActionKind | released_receipt_compatibility.HistoricalActionKind,
     input_schema: str,
     input_json: str,
     outcome_schema: str,
@@ -989,7 +999,7 @@ class BoardProjectionQueriesTest(unittest.TestCase):
                 _receipt(kinds.BLOCK, "decision/v1", "{}", transition, "{}"),
                 work_models.AttemptState.BLOCKED,
                 None,
-                query_models.BlockedCondition(RECEIPT_AT),
+                query_models.BlockedCondition(RECEIPT_AT, False),
             ),
             (
                 "pause",
@@ -1212,12 +1222,16 @@ class BoardProjectionQueriesTest(unittest.TestCase):
             (
                 "released v6 action",
                 _receipt(
-                    released_v6_compatibility.HistoricalActionKind.MARK_READY, "decision/v1", "{}", transition, "{}"
+                    released_receipt_compatibility.HistoricalActionKind.MARK_READY,
+                    "decision/v1",
+                    "{}",
+                    transition,
+                    "{}",
                 ),
                 work_models.AttemptState.ACTIVE,
                 None,
                 query_models.RecordedActionCondition(
-                    RECEIPT_AT, released_v6_compatibility.HistoricalActionKind.MARK_READY
+                    RECEIPT_AT, released_receipt_compatibility.HistoricalActionKind.MARK_READY
                 ),
             ),
             (

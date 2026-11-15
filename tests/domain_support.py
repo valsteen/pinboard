@@ -16,6 +16,20 @@ from pinboard.domain.identifiers import (
     WorkItemId,
 )
 
+TEST_HOLD = work_models.WaitingForOutsideCondition("The test fixture's outside condition holds.")
+
+
+def held_unblocker(state: work_models.WorkState) -> work_models.Unblocker | None:
+    """Give held fixture items the one unblocker every paused or blocked item records."""
+
+    return TEST_HOLD if state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED} else None
+
+
+def plain_pause(reason: str) -> work_models.PlainPauseInput:
+    """A plain pause that waits for the fixture's outside condition."""
+
+    return work_models.PlainPauseInput(reason, TEST_HOLD)
+
 
 def replace(instance: Any, **changes: Any) -> Any:  # noqa: ANN401
     """Create valid variants and deliberately malformed values for rejection tests."""
@@ -85,7 +99,3 @@ def proposal_record(proposal: str, revision: str) -> work_models.ProposalRecord:
         "The proposal can be evaluated.",
         "No immediate scheduling effect.",
     )
-
-
-def defer_input(timing: str, reopen_condition: str) -> work_models.DeferInput:
-    return work_models.DeferInput(work_models.Timing(timing), reopen_condition)

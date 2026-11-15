@@ -28,7 +28,7 @@ from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import native_tools
-from tests.support import JsonObject, status_artifacts
+from tests.support import HOLD_UNBLOCKER, JsonObject, status_artifacts
 
 CLOSED_AT = datetime(2030, 1, 2, 3, 4, 5, tzinfo=UTC)
 COMPLETED_AT = datetime(2030, 1, 3, 4, 5, 6, tzinfo=UTC)
@@ -61,7 +61,7 @@ class ItemLifecycleSupport(CheckpointPackageSupport):
         """Read the verdict through the advertised item leaf and again from a fresh store."""
 
         status = self.item_leaf(fixture)
-        self.assertEqual("pinboard-item-status/v5", status["schema"], status)
+        self.assertEqual("pinboard-item-status/v6", status["schema"], status)
         for attempt in self.json_array(status["attempts"]):
             self.assertEqual(fixture.brief.branch, self.json_object(attempt)["branch"])
         verdict = self.json_object(status["review_verdict"])
@@ -256,8 +256,8 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
                 else:
                     committed = self.transition(
                         fixture,
-                        "defer:work-c",
-                        {"timing": "safe-to-defer", "reopen_condition": "The prerequisite is needed."},
+                        "block-item:work-c",
+                        {"unblocker": {"kind": "outside-condition", "condition": "The prerequisite is needed."}},
                     )
                     item_id = "work-c"
                 self.assertEqual(self.item_leaf(fixture, item_id), committed["item_status"])
@@ -306,14 +306,18 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
                 match route:
                     case "pause":
                         self.close_prerequisite(fixture)
-                        self.transition(fixture, "pause:work-a-1", {"reason": "Wait for the maintainer."})
+                        self.transition(
+                            fixture,
+                            "pause:work-a-1",
+                            {"reason": "Wait for the maintainer.", "unblocker": HOLD_UNBLOCKER},
+                        )
                         self.assertEqual(returned, self.verdict(fixture))
                         self.transition(fixture, "resume:work-a", {})
                     case "block":
                         self.transition(
                             fixture,
                             "block:work-a-1",
-                            {"reason": "Wait for the prerequisite.", "depends_on": ["work-c"]},
+                            {"unblocker": {"kind": "items", "items": ["work-c"]}},
                         )
                         self.assertEqual(returned, self.verdict(fixture))
                         self.close_prerequisite(fixture)
@@ -502,7 +506,9 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
                 return fixture
             case decision_models.ActionKind.PAUSE:
                 fixture = self.damaged_receipt_fixture(decision_models.ActionKind.RETURN_FOR_CORRECTION)
-                self.transition(fixture, "pause:work-a-1", {"reason": "Wait for the maintainer."})
+                self.transition(
+                    fixture, "pause:work-a-1", {"reason": "Wait for the maintainer.", "unblocker": HOLD_UNBLOCKER}
+                )
                 return fixture
             case decision_models.ActionKind.REBIND_ATTEMPT:
                 fixture = self.damaged_receipt_fixture(decision_models.ActionKind.PAUSE)
@@ -641,7 +647,9 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
             with self.subTest(damage=label):
                 fixture = self.native_fixture(self.checkpoint_fixture())
                 self.return_for_review(fixture, "Rework the candidate.")
-                self.transition(fixture, "pause:work-a-1", {"reason": "Wait for the maintainer."})
+                self.transition(
+                    fixture, "pause:work-a-1", {"reason": "Wait for the maintainer.", "unblocker": HOLD_UNBLOCKER}
+                )
                 history_id = self.latest_history_id(fixture)
                 revised = self.revise_with_damage_before_refresh(fixture, history_id, columns)
                 self.assertEqual("committed-with-warning", revised["status"], revised)

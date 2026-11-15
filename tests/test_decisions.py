@@ -21,15 +21,15 @@ from pinboard.domain.identifiers import (
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from tests.domain_support import (
+    TEST_HOLD,
     action,
     expect_success,
+    held_unblocker,
+    plain_pause,
     replace,
 )
 from tests.domain_support import (
     attempt_record as AttemptRecord,
-)
-from tests.domain_support import (
-    defer_input as DeferInput,
 )
 from tests.domain_support import (
     proposal_record as ProposalRecord,
@@ -85,6 +85,7 @@ def item(item_id: str, state: work_models.WorkState, *, attempt: str | None = No
         "continue",
         "",
         1,
+        unblocker=held_unblocker(state),
     )
 
 
@@ -724,24 +725,28 @@ class LifecycleDecisionTest(unittest.TestCase):
                 "block:target-1",
                 "Block active attempt for target",
                 (
-                    "Stop an active attempt on dependencies already accepted in its definition.",
+                    "Hold an active attempt until named accepted dependencies finish, a human answers a question, "
+                    "or a stated outside condition becomes true.",
                     "mutating",
                     ("project",),
                     "attempt",
                     "active-attempt",
-                    "Move the item and attempt to blocked without changing accepted dependencies.",
+                    "Move the item and attempt to blocked and record exactly one unblocker without changing "
+                    "accepted dependencies.",
                 ),
             ),
             decision_models.ActionKind.BLOCK_ITEM: (
                 "block-item:prerequisite",
-                "Block unstarted work item prerequisite",
+                "Hold unstarted work item prerequisite with what it waits for",
                 (
-                    "Stop unstarted work on dependencies already accepted in its definition.",
+                    "Hold unstarted work until named accepted dependencies finish, a human answers a question, "
+                    "or a stated outside condition becomes true; setting work aside uses an outside condition.",
                     "mutating",
                     ("project",),
                     "item",
                     "ready-item",
-                    "Move the item to blocked without changing accepted dependencies or creating an attempt.",
+                    "Move the item to blocked and record exactly one unblocker without changing accepted "
+                    "dependencies or creating an attempt.",
                 ),
             ),
         }
@@ -770,32 +775,32 @@ class LifecycleDecisionTest(unittest.TestCase):
             snapshot,
             decision_models.BlockCommand(
                 block_action,
-                work_models.BlockInput("Waiting for prerequisite.", (WorkItemId("prerequisite"),)),
+                work_models.BlockInput(work_models.WaitingForItemsToFinish((WorkItemId("prerequisite"),))),
             ),
             NOW,
         )
         self.assertIsInstance(blocked.change, decision_models.BlockAttemptChange)
         assert isinstance(blocked.change, decision_models.BlockAttemptChange)
-        self.assertEqual((WorkItemId("prerequisite"),), blocked.change.dependencies_after)
+        self.assertEqual(work_models.WaitingForItemsToFinish((WorkItemId("prerequisite"),)), blocked.change.unblocker)
         rejected_dependency = decision_outcome(
             snapshot,
             decision_models.BlockCommand(
                 block_action,
-                work_models.BlockInput("Waiting for an unaccepted prerequisite.", (WorkItemId("unstarted"),)),
+                work_models.BlockInput(work_models.WaitingForItemsToFinish((WorkItemId("unstarted"),))),
             ),
             NOW,
         )
         self.assertIsInstance(rejected_dependency, DecisionFailure)
         assert isinstance(rejected_dependency, DecisionFailure)
-        self.assertEqual(DecisionFailureCode.DEPENDENCY_NOT_SATISFIED, rejected_dependency.code)
+        self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected_dependency.code)
+        self.assertIn("unstarted", rejected_dependency.message)
 
-    def test_resume_and_reopen_actions_name_their_distinct_contextual_results(self) -> None:
+    def test_resume_actions_name_their_distinct_contextual_results(self) -> None:
         snapshot = LedgerSnapshot(
             "revision",
             (
                 item("paused-attempt", work_models.WorkState.PAUSED, attempt="paused-attempt-1"),
                 item("blocked-unstarted", work_models.WorkState.BLOCKED),
-                item("deferred", work_models.WorkState.DEFERRED),
             ),
             attempts=(AttemptRecord("paused-attempt-1", "paused-attempt", work_models.AttemptState.PAUSED),),
             accepted_checkpoints=frozenset(),
@@ -819,14 +824,9 @@ class LifecycleDecisionTest(unittest.TestCase):
         self.assertEqual(
             "Return blocked-unstarted to ready", actions[ActionId("resume:blocked-unstarted")].capability.label
         )
-        self.assertEqual("Reopen deferred to ready", actions[ActionId("reopen:deferred")].capability.label)
         self.assertEqual(
             "Return paused or blocked work to active when an attempt exists, otherwise ready.",
             decision_models.action_semantics(decision_models.ActionKind.RESUME).practical_result,
-        )
-        self.assertEqual(
-            "Return deferred work to ready.",
-            decision_models.action_semantics(decision_models.ActionKind.REOPEN).practical_result,
         )
 
     def test_missing_attempt_is_a_returned_failure(self) -> None:
@@ -834,7 +834,7 @@ class LifecycleDecisionTest(unittest.TestCase):
             "revision", (), accepted_checkpoints=frozenset(), dependency_facts=(), dropped_item_ids=frozenset()
         )
         command = decision_models.PauseCommand(
-            action(decision_models.PauseAction, AttemptId("missing-attempt")), work_models.ReasonInput("pause")
+            action(decision_models.PauseAction, AttemptId("missing-attempt")), plain_pause("pause")
         )
 
         outcome = decision_outcome(snapshot, command, NOW)
@@ -1176,7 +1176,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     dropped_item_ids=frozenset(),
                 ),
                 decision_models.PauseCommand(
-                    action(decision_models.PauseAction, AttemptId("missing-1")), work_models.ReasonInput("pause")
+                    action(decision_models.PauseAction, AttemptId("missing-1")), plain_pause("pause")
                 ),
                 "ATTEMPT_NOT_FOUND",
             ),
@@ -1190,7 +1190,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     dropped_item_ids=frozenset(),
                 ),
                 decision_models.PauseCommand(
-                    action(decision_models.PauseAction, AttemptId("target-1")), work_models.ReasonInput("pause")
+                    action(decision_models.PauseAction, AttemptId("target-1")), plain_pause("pause")
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
@@ -1350,33 +1350,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     dropped_item_ids=frozenset(),
                 ),
                 decision_models.BlockWorkItemCommand(
-                    action(decision_models.BlockWorkItemAction, WorkItemId("target")), work_models.BlockInput("blocked")
-                ),
-                "ACTION_NOT_AVAILABLE",
-            ),
-            (
-                LedgerSnapshot(
-                    "r",
-                    (item("target", work_models.WorkState.READY),),
-                    accepted_checkpoints=frozenset(),
-                    dependency_facts=(),
-                    dropped_item_ids=frozenset(),
-                ),
-                decision_models.ReopenCommand(
-                    action(decision_models.ReopenAction, WorkItemId("target")), work_models.EvidenceInput("reopen")
-                ),
-                "ACTION_NOT_AVAILABLE",
-            ),
-            (
-                LedgerSnapshot(
-                    "r",
-                    (active,),
-                    accepted_checkpoints=frozenset(),
-                    dependency_facts=(),
-                    dropped_item_ids=frozenset(),
-                ),
-                decision_models.DeferCommand(
-                    action(decision_models.DeferAction, WorkItemId("target")), DeferInput("safe-to-defer", "later")
+                    action(decision_models.BlockWorkItemAction, WorkItemId("target")), work_models.BlockInput(TEST_HOLD)
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
@@ -1425,7 +1399,7 @@ class LifecycleDecisionTest(unittest.TestCase):
         actor = decision_models.ActorAuthority(
             decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
         )
-        for state in (work_models.WorkState.READY, work_models.WorkState.BLOCKED, work_models.WorkState.DEFERRED):
+        for state in (work_models.WorkState.READY, work_models.WorkState.BLOCKED):
             with self.subTest(state=state):
                 snapshot = LedgerSnapshot(
                     "r",

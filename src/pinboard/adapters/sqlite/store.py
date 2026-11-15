@@ -43,7 +43,6 @@ from pinboard.adapters.sqlite.database import (
 )
 from pinboard.adapters.sqlite.decision_batches import read_decision_batches
 from pinboard.adapters.sqlite.decision_reads import (
-    read_current_replacements,
     read_current_snapshot,
     read_selected_decision_facts,
 )
@@ -61,6 +60,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_definition_histories,
     read_item_closure,
     read_item_status,
+    read_item_unblockers,
     read_latest_checkpoint_acceptance,
     read_parallel_preview_lifecycle,
     read_receipts_at_revisions,
@@ -88,6 +88,7 @@ from pinboard.adapters.sqlite.persistence import accept_artifact_reference as pe
 from pinboard.adapters.sqlite.proposals import (
     read_proposals_by_ids,
 )
+from pinboard.adapters.sqlite.replacements import read_current_replacements
 from pinboard.application import (
     artifact_identity,
     cancellation_models,
@@ -214,7 +215,27 @@ def _read_archive_projections(
     }
 
 
-def _read_generated_view_facts(
+def _read_selected_attempts(
+    connection: sqlite3.Connection, attempt_ids: tuple[AttemptId, ...]
+) -> dict[AttemptId, stored_state.StoredAttempt]:
+    return {
+        attempt.attempt_id: attempt
+        for attempt in (
+            decode_row(row, stored_state.StoredAttempt)
+            for row in select_by_ids(
+                connection,
+                """SELECT attempt_id, item_id, state, branch, base_revision, provenance,
+                          brief_artifact_ref_id, result_artifact_ref_id, candidate_revision,
+                          candidate_recorded_at, accepted_scope_revision, accepted_scope_digest,
+                          subject_revision, recorded_at, updated_at
+                   FROM attempts WHERE attempt_id IN ({ids})""",
+                attempt_ids,
+            )
+        )
+    }
+
+
+def _read_generated_view_facts(  # noqa: PLR0915 - one selected read of every projection a view refresh renders
     connection: sqlite3.Connection,
     item_ids: tuple[WorkItemId, ...],
     attempt_ids: tuple[AttemptId, ...],
@@ -225,6 +246,22 @@ def _read_generated_view_facts(
     if project_row is None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Project metadata is missing.")
     project_revision = decode_row(project_row, ProjectRevisionRow).revision
+    selected_attempt_records = _read_selected_attempts(connection, attempt_ids)
+    view_item_ids = item_ids
+    # A held attempt's view carries its item's hold sentence, so its item is projected even when that item's own
+    # view is not refreshed.
+    item_ids = tuple(
+        dict.fromkeys(
+            (
+                *item_ids,
+                *(
+                    attempt.item_id
+                    for attempt in selected_attempt_records.values()
+                    if attempt.state in {work_models.AttemptState.PAUSED, work_models.AttemptState.BLOCKED}
+                ),
+            )
+        )
+    )
     selected_items = {
         item.item_id: item
         for item in (
@@ -272,6 +309,7 @@ def _read_generated_view_facts(
     selected_proposals_by_id = read_proposals_by_ids(connection, proposal_ids)
     selected_preparations = read_preparation_authority_statuses(connection, live_item_ids)
     replacements, dispositions = read_current_replacements(connection, live_item_ids)
+    held = read_item_unblockers(connection, live_item_ids)
     replacements_by_item = {value.affected_item: value for value in replacements}
     dispositions_by_item = {value.affected_item: value for value in dispositions}
     review_history_by_item = sqlite_state.read_review_history_for_items(connection, item_ids)
@@ -310,15 +348,9 @@ def _read_generated_view_facts(
                         item.notes,
                         item.queue_position,
                         item.outcome_evidence,
+                        unblocker=held.get(item_id),
                     ),
-                    tuple(
-                        (
-                            value.target,
-                            value.state
-                            not in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED},
-                        )
-                        for value in dependency_rows
-                    ),
+                    tuple((value.target, stored_state.prerequisite_outcome(value.state)) for value in dependency_rows),
                     accepted,
                     current_definition_anchor(definition),
                     selected_proposals,
@@ -339,21 +371,8 @@ def _read_generated_view_facts(
                 None if attempt_id is None else batches.get(attempt_id),
             )
         )
-    selected_attempt_records = {
-        attempt.attempt_id: attempt
-        for attempt in (
-            decode_row(row, stored_state.StoredAttempt)
-            for row in select_by_ids(
-                connection,
-                """SELECT attempt_id, item_id, state, branch, base_revision, provenance,
-                          brief_artifact_ref_id, result_artifact_ref_id, candidate_revision,
-                          candidate_recorded_at, accepted_scope_revision, accepted_scope_digest,
-                          subject_revision, recorded_at, updated_at
-                   FROM attempts WHERE attempt_id IN ({ids})""",
-                attempt_ids,
-            )
-        )
-    }
+    holds = {value.work_item.item_id: value.overview.hold for value in items if value.overview is not None}
+    items = [value for value in items if value.work_item.item_id in view_item_ids]
     brief_references = read_artifact_references_by_ids(
         connection,
         tuple(
@@ -394,6 +413,9 @@ def _read_generated_view_facts(
                     reference.kind,
                 ),
                 archives.get(attempt_id),
+                holds.get(attempt.item_id)
+                if attempt.state in {work_models.AttemptState.PAUSED, work_models.AttemptState.BLOCKED}
+                else None,
             )
         )
     selected_receipts = sqlite_state.read_history_receipts_by_ids(connection, history_ids)
@@ -856,7 +878,7 @@ class SQLiteWorkStore:
                         """
                         SELECT state, item_count
                         FROM work_item_state_counts
-                        WHERE state IN (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        WHERE state IN (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ORDER BY state
                         """,
                         tuple(state.value for state in stored_state.StoredWorkItemState),
@@ -1152,10 +1174,12 @@ class SQLiteWorkStore:
                     lifecycle.closure,
                     preparation,
                     lifecycle.dependencies,
+                    lifecycle.dependency_outcomes,
                     read_decision_batches(connection, (attempt.attempt_id for attempt in lifecycle.attempts)),
                     tuple(selected_proposals.values()),
                     None if not replacements else replacements[0],
                     None if not dispositions else dispositions[0],
+                    read_item_unblockers(connection, (work_item_id,)).get(work_item_id),
                 )
         finally:
             connection.close()

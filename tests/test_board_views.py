@@ -53,6 +53,7 @@ from tests.checkpoint_support import CheckpointFixture
 from tests.domain_support import expect_success
 from tests.native_support import call_advertised_tool, call_native_tool
 from tests.support import (
+    HOLD_UNBLOCKER,
     SQLITE_NOW,
     TEST_ROUTE_FACTS,
     JsonObject,
@@ -112,7 +113,7 @@ def _every_state() -> stored_state.StoredWorkState:
     paused = WorkItemId("paused-work")
     review = WorkItemId("review-work")
     blocked = WorkItemId("blocked-work")
-    deferred = WorkItemId("deferred-work")
+    set_aside = WorkItemId("set-aside-work")
     needed = WorkItemId("needed-first")
     paused_definition = _definition(paused, ())
     review_definition = _definition(review, ())
@@ -142,7 +143,16 @@ def _every_state() -> stored_state.StoredWorkState:
                 _item(paused, stored_state.StoredWorkItemState.PAUSED, 6),
                 _item(needed, stored_state.StoredWorkItemState.READY, 7, source="proposal:needed-first"),
                 _item(blocked, stored_state.StoredWorkItemState.BLOCKED, 8),
-                _item(deferred, stored_state.StoredWorkItemState.DEFERRED, 9),
+                _item(set_aside, stored_state.StoredWorkItemState.BLOCKED, 9),
+            ),
+            unblockers=(
+                stored_state.StoredUnblocker(
+                    paused, work_models.WaitingForHumanDecision("Which audience should the guide address first?")
+                ),
+                stored_state.StoredUnblocker(blocked, work_models.WaitingForItemsToFinish((needed,))),
+                stored_state.StoredUnblocker(
+                    set_aside, work_models.WaitingForOutsideCondition("The vendor publishes its v2 API.")
+                ),
             ),
             dependencies=(
                 *lifecycle.dependencies,
@@ -180,7 +190,7 @@ def _every_state() -> stored_state.StoredWorkState:
                 paused_definition,
                 _definition(needed, ()),
                 _definition(blocked, (needed,)),
-                _definition(deferred, ()),
+                _definition(set_aside, ()),
             ),
         ),
         proposals=replace(
@@ -268,11 +278,11 @@ def _validatable_state() -> stored_state.StoredWorkState:
 
 
 def _with_solved_dependencies() -> stored_state.StoredWorkState:
-    """Give the deferred item solved and live dependencies interleaved, and the review item only a solved one."""
+    """Give the set-aside item solved and live dependencies interleaved, and the review item only a solved one."""
 
     state = with_definition_dependencies(
         _every_state(),
-        WorkItemId("deferred-work"),
+        WorkItemId("set-aside-work"),
         (WorkItemId("work-b"), WorkItemId("work-c"), WorkItemId("needed-first")),
     )
     return with_definition_dependencies(state, WorkItemId("review-work"), (WorkItemId("work-b"),))
@@ -411,7 +421,7 @@ class BoardProjectionTest(unittest.TestCase):
                     ("zz-proposal-a", "ready"),
                     ("needed-first", "ready"),
                 ],
-                "Blocked or deferred": [("blocked-work", "blocked"), ("deferred-work", "deferred")],
+                "Blocked": [("blocked-work", "blocked"), ("set-aside-work", "blocked")],
             },
             _markdown_groups(markdown),
         )
@@ -421,10 +431,47 @@ class BoardProjectionTest(unittest.TestCase):
             "  - Depends on needed-first: Inferred prerequisite needed-first: Blocked work cannot start without it.\n",
             markdown,
         )
+        self.assertIn(
+            "  - Work has not started. It waits for [needed-first](items/needed-first.md) to finish.\n", markdown
+        )
+        self.assertIn("It waits for this outside condition: The vendor publishes its v2 API.", markdown)
+        self.assertIn("Work started, but nobody is working on it now because it is on hold.", markdown)
         links = re.findall(r"\]\((items/[^)]+)\)", markdown)
-        self.assertEqual(9, len(links))
+        self.assertEqual(10, len(links))
         for link in links:
             self.assertTrue((roots.work_root / "views" / link).is_file(), link)
+
+    def test_held_attempt_views_carry_the_hold_sentence_beside_the_brief_or_summary(self) -> None:
+        _project, roots, store = self._ledger(_every_state())
+        attempt_view = roots.work_root / "views" / "attempts" / "paused-work-1.md"
+        brief = b"# Accepted brief bytes\n"
+        no_briefs: dict[AttemptId, bytes] = {}
+        for briefs in (no_briefs, {AttemptId("paused-work-1"): brief}):
+            with self.subTest(brief_backed=bool(briefs)):
+                result = rebuild_facts(
+                    store.read_all_generated_view_facts(SQLITE_NOW),
+                    roots.work_root,
+                    briefs,
+                    board_reader(roots.work_root, store),
+                    SQLITE_NOW,
+                )
+                self.assertIsNone(result.warning)
+                rendered = attempt_view.read_bytes()
+                text = rendered.decode()
+                if briefs:
+                    self.assertTrue(rendered.startswith(brief))
+                else:
+                    self.assertIn("- State: paused\n", text)
+                self.assertIn("## On hold", text)
+                self.assertIn("Work started, but nobody is working on it now because it is on hold.", text)
+                expected = derive_expected_view_bytes(
+                    store.validated_snapshot(),
+                    briefs,
+                    loaded_board_history(roots.work_root, store.validated_snapshot()),
+                    now=SQLITE_NOW,
+                ).views
+                self.assertEqual(expected["attempts/paused-work-1.md"], rendered)
+                self.assertNotIn("## On hold", (attempt_view.parent / "review-work-1.md").read_text())
 
     def test_board_derives_only_live_items_and_is_independent_of_operation_time(self) -> None:
         _project, roots, store = self._ledger(_every_state())
@@ -448,7 +495,7 @@ class BoardProjectionTest(unittest.TestCase):
                 "paused-work",
                 "needed-first",
                 "blocked-work",
-                "deferred-work",
+                "set-aside-work",
             ],
             [value.item_id for value in _page_items(html)],
         )
@@ -572,9 +619,9 @@ class BoardProjectionTest(unittest.TestCase):
             match.group(1): match.group(0)
             for match in re.finditer(r"^- \[.*\]\(items/.*\.md\) `([^`]+)`.*\n(?:  - .*\n)*", markdown, re.MULTILINE)
         }
-        self.assertIn("  - Depends on work-c: Recorded dependency.\n", entries["deferred-work"])
-        self.assertIn("  - Depends on needed-first: ", entries["deferred-work"])
-        self.assertNotIn("work-b", entries["deferred-work"])
+        self.assertIn("  - Depends on work-c: Recorded dependency.\n", entries["set-aside-work"])
+        self.assertIn("  - Depends on needed-first: ", entries["set-aside-work"])
+        self.assertNotIn("work-b", entries["set-aside-work"])
         self.assertNotIn("Depends on", entries["review-work"])
         self.assertNotIn("`work-b`", markdown)
         self.assertNotIn("Depends on work-b", markdown)
@@ -588,7 +635,7 @@ class BoardProjectionTest(unittest.TestCase):
         items = {value.item_id: value for value in _page_items(html)}
         self.assertEqual(
             [("work-c", True), ("needed-first", True), ("work-b", False)],
-            _page_dependencies(items["deferred-work"]),
+            _page_dependencies(items["set-aside-work"]),
         )
         self.assertEqual(
             [("work-b", False)],
@@ -787,7 +834,8 @@ class BoardProjectionTest(unittest.TestCase):
             (query_models.ResumedCondition(receipt_at), ("resumed", receipt_at, None, False)),
             (query_models.PausedCondition(receipt_at, "Wait."), ("paused", receipt_at, "Wait.", False)),
             (query_models.PausedCondition(receipt_at, None), ("paused", receipt_at, None, True)),
-            (query_models.BlockedCondition(receipt_at), ("blocked", receipt_at, None, True)),
+            (query_models.BlockedCondition(receipt_at, False), ("blocked", receipt_at, None, True)),
+            (query_models.BlockedCondition(receipt_at, True), ("blocked", receipt_at, None, False)),
             (
                 query_models.ReboundCondition(receipt_at, work_models.AttemptState.PAUSED, None),
                 ("rebound", receipt_at, None, True),
@@ -1207,7 +1255,7 @@ class BoardPagePathTest(unittest.TestCase):
 
                 self.assertEqual("pinboard-overview/v9", overview["schema"])
                 self.assertEqual(expected, overview["board"])
-                self.assertEqual("pinboard-item-status/v5", status["schema"])
+                self.assertEqual("pinboard-item-status/v6", status["schema"])
                 self.assertEqual(expected, status["board"])
                 self.assertNotEqual(project_root, work_root.parent)
                 self.assertFalse((work_root / "views" / "board.md").exists())
@@ -1413,7 +1461,7 @@ class BoardHistoryTest(ItemLifecycleSupport):
         self.assert_board_parity(fixture)
 
         self.close_prerequisite(fixture)
-        self.transition(fixture, "pause:work-a-1", {"reason": "Wait for the maintainer."})
+        self.transition(fixture, "pause:work-a-1", {"reason": "Wait for the maintainer.", "unblocker": HOLD_UNBLOCKER})
         paused = self.condition(fixture)
         self.assertEqual(
             ("paused", self.committed_at(fixture, self.latest_history_id(fixture)), "Wait for the maintainer."),
@@ -1723,7 +1771,7 @@ class BoardHistoryTest(ItemLifecycleSupport):
             "resume:work-a",
             {"brief_artifact_ref_id": self.json_object(published["reference"])["artifact_ref_id"]},
         )
-        self.transition(fixture, "pause:work-a-1", {"reason": record("pause")})
+        self.transition(fixture, "pause:work-a-1", {"reason": record("pause"), "unblocker": HOLD_UNBLOCKER})
         self.assertEqual(record("pause"), self.condition(fixture)["text"])
         self.publish_rebind(fixture, replace_struct(fixture.brief, artifact_revision=3))
         self.assertEqual(

@@ -50,8 +50,6 @@ def action_subject_ids(
             | decision_models.BlockWorkItemAction(capability=capability)
             | decision_models.CancelAction(capability=capability)
             | decision_models.CloseAction(capability=capability)
-            | decision_models.DeferAction(capability=capability)
-            | decision_models.ReopenAction(capability=capability)
             | decision_models.RecordReplacementAction(capability=capability)
             | decision_models.ResumeAction(capability=capability)
             | decision_models.RetainTemporarilyAction(capability=capability)

@@ -171,7 +171,7 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
             postcondition = "Return work_root, resumed state, and optional next guidance; default initialization also owns its exact local Git exclusion."
             retry = "inspect-current-state-before-retry"
         case "migrate-schema":
-            purpose = "Preview exact v7-to-v8 advancement, retained v6-to-v7 upgrade, or current-schema no-op."
+            purpose = "Preview the exact next supported schema advancement, retained v6-to-v7 upgrade, or current-schema no-op; a v12 ledger with unlabelled holds is refused with the exact subjects to label."
             mutation = "read-only"
             scope = "explicit-project-wide"
             roles = ("local-caller",)
@@ -189,6 +189,30 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
             subject = "ledger"
             precondition = "matching-preview-or-persisted-plan-with-unchanged-authoritative-database"
             postcondition = "Retain verified predecessor bytes and atomically advance or restore the selected database."
+            retry = "resume-only-the-same-plan-after-inspecting-effects"
+        case "migrate-schema/labelled":
+            purpose = "Preview the v12-to-v13 step with one hold label file bound to the exact source ledger."
+            mutation = "read-only"
+            scope = "explicit-project-wide"
+            roles = ("local-caller",)
+            authority = "read-access-and-quiescent-ledger"
+            subject = "ledger"
+            precondition = "exact-v12-ledger-with-every-live-hold-labelled-or-derivable"
+            postcondition = (
+                "Return one canonical plan binding the ledger and label digests without changing files or Git metadata."
+            )
+            retry = "safe-to-repeat"
+        case "migrate-schema/labelled-apply":
+            purpose = "Apply or resume the named v12-to-v13 plan with the exact label file it was previewed with."
+            mutation = "mutates-ledger"
+            scope = "explicit-project-wide"
+            roles = ("local-caller",)
+            authority = "filesystem-access-and-quiescent-ledger"
+            subject = "ledger"
+            precondition = "matching-labelled-preview-or-persisted-plan-with-unchanged-authoritative-database"
+            postcondition = (
+                "Retain the exact v12 backup and label evidence and atomically advance to v13 with every hold named."
+            )
             retry = "resume-only-the-same-plan-after-inspecting-effects"
         case "migrate-schema/reverse":
             purpose = "Preview exact predecessor restoration while the selected migrated postimage is unchanged."

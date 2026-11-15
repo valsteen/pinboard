@@ -11,7 +11,7 @@ from typing import assert_never, override
 import msgspec
 
 from pinboard.application import action_models as transition_models
-from pinboard.application import decision_batches
+from pinboard.application import decision_batches, unblockers
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailureCode, EffectDisposition, FailureDetails, RetryDisposition
 from pinboard.domain.identifiers import (
@@ -63,6 +63,15 @@ def _decode[PayloadT: transition_models.InputPayload](
         )
 
 
+def _names_schema(data: bytes | str | transition_models.InputPayload) -> bool:
+    if isinstance(data, msgspec.Struct):
+        return isinstance(data, decision_batches.PauseDecisionsInput)
+    try:
+        return "schema" in msgspec.json.decode(data, type=dict[str, msgspec.Raw])
+    except msgspec.DecodeError:
+        return False
+
+
 def _revise_item_input(payload: transition_models.ReviseItemInputPayload) -> work_models.ReviseWorkItemDefinitionInput:
     return work_models.ReviseWorkItemDefinitionInput(
         payload.expected_revision,
@@ -107,9 +116,7 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
         case decision_models.BlockAttemptAction() | decision_models.BlockWorkItemAction():
             if isinstance(payload := _decode(data, transition_models.BlockInputPayload), TransitionInputFailure):
                 return payload
-            block_input = work_models.BlockInput(
-                payload.reason, tuple(WorkItemId(value) for value in payload.depends_on)
-            )
+            block_input = work_models.BlockInput(unblockers.unblocker_from_payload(payload.unblocker))
             match action:
                 case decision_models.BlockAttemptAction():
                     return decision_models.BlockCommand(action, block_input)
@@ -167,10 +174,6 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             if isinstance(payload := _decode(data, transition_models.EvidenceInputPayload), TransitionInputFailure):
                 return payload
             return decision_models.CompleteCommand(action, work_models.EvidenceInput(payload.evidence))
-        case decision_models.ReopenAction():
-            if isinstance(payload := _decode(data, transition_models.EvidenceInputPayload), TransitionInputFailure):
-                return payload
-            return decision_models.ReopenCommand(action, work_models.EvidenceInput(payload.evidence))
         case decision_models.RecordReplacementAction():
             if isinstance(
                 payload := _decode(data, transition_models.RecordPlannedReplacementInputPayload),
@@ -202,18 +205,16 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                     TaskId(payload.recorded_by),
                 ),
             )
-        case decision_models.DeferAction():
-            if isinstance(payload := _decode(data, transition_models.DeferInputPayload), TransitionInputFailure):
-                return payload
-            return decision_models.DeferCommand(
-                action, work_models.DeferInput(payload.timing, payload.reopen_condition)
-            )
         case decision_models.PauseAction():
-            plain = _decode(data, transition_models.ReasonInputPayload)
+            plain = _decode(data, transition_models.PlainPauseInputPayload)
             if not isinstance(plain, TransitionInputFailure):
-                return decision_models.PauseCommand(action, work_models.ReasonInput(plain.reason))
+                return decision_models.PauseCommand(
+                    action,
+                    work_models.PlainPauseInput(plain.reason, unblockers.unblocker_from_payload(plain.unblocker)),
+                )
             if isinstance(payload := _decode(data, decision_batches.PauseDecisionsInput), TransitionInputFailure):
-                return payload
+                # Report the plain-pause failure unless the caller selected the decision-batch shape by its schema.
+                return payload if _names_schema(data) else plain
             return decision_models.PauseCommand(action, decision_batches.decisions_from_payload(payload))
         case decision_models.ReturnForCorrectionAction():
             if isinstance(payload := _decode(data, transition_models.ReasonInputPayload), TransitionInputFailure):

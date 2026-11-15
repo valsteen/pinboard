@@ -12,8 +12,9 @@ from pinboard.application import (
     artifact_identity,
     initiative_records,
     query_models,
-    released_v6_compatibility,
+    released_receipt_compatibility,
     stored_state,
+    unblockers,
     work_brief_models,
 )
 from pinboard.domain import decision_models, work_models
@@ -28,7 +29,7 @@ class ContentEncoding(Enum):
 
 class ProjectExportProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[12]
+    schema_version: Literal[13]
     created_at: str
     updated_at: str
 
@@ -45,6 +46,13 @@ class ProjectExportWorkItem(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     recorded_at: str
     updated_at: str
     queue_position: int | None
+
+
+class ProjectExportUnblocker(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """What one held item currently waits for."""
+
+    item_id: str
+    unblocker: unblockers.UnblockerPayload
 
 
 class ProjectExportDefinitionRevision(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -227,7 +235,7 @@ class ProjectExportTransition(msgspec.Struct, frozen=True, forbid_unknown_fields
     committed_at: str
 
     def __post_init__(self) -> None:
-        released_v6_compatibility.decode_released_v6_action_kind(self.action_kind)
+        released_receipt_compatibility.decode_released_action_kind(self.action_kind)
 
 
 class ProjectExportItemArtifactLink(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -398,11 +406,12 @@ class ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_u
 
 
 class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-project-export/v4"]
-    authority: Literal["sqlite-v12"]
+    schema: Literal["pinboard-project-export/v5"]
+    authority: Literal["sqlite-v13"]
     revision: int
     project: ProjectExportProject
     work_items: tuple[ProjectExportWorkItem, ...]
+    unblockers: tuple[ProjectExportUnblocker, ...]
     definition_revisions: tuple[ProjectExportDefinitionRevision, ...]
     dependencies: tuple[ProjectExportDependency, ...]
     attempts: tuple[ProjectExportAttempt, ...]
@@ -453,6 +462,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
     attempts = list(lifecycle.attempts)
     definition_revisions = list(lifecycle.definition_revisions)
     batch_references = list(lifecycle.decision_batch_references)
+    held = list(lifecycle.unblockers)
     proposal_values = list(proposals.proposals)
     evidence = list(proposals.evidence)
     freshness = list(proposals.freshness)
@@ -466,6 +476,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
         attempts.extend(batch.lifecycle.attempts)
         definition_revisions.extend(batch.lifecycle.definition_revisions)
         batch_references.extend(batch.lifecycle.decision_batch_references)
+        held.extend(batch.lifecycle.unblockers)
         proposal_values.extend(batch.proposals.proposals)
         evidence.extend(batch.proposals.evidence)
         freshness.extend(batch.proposals.freshness)
@@ -484,6 +495,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
             tuple(definition_revisions),
             checkpoint_acceptances=(),
             decision_batch_references=tuple(batch_references),
+            unblockers=tuple(held),
         ),
         stored_state.ProposalRecords(tuple(proposal_values), tuple(evidence), tuple(freshness)),
         stored_state.ReplacementRecords(tuple(planned_replacements), tuple(replacement_dispositions)),
@@ -589,8 +601,8 @@ def project_export_from_state(
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
     return ProjectExport(
-        "pinboard-project-export/v4",
-        "sqlite-v12",
+        "pinboard-project-export/v5",
+        "sqlite-v13",
         state.lifecycle.project.revision,
         ProjectExportProject(
             state.lifecycle.project.application,
@@ -613,6 +625,10 @@ def project_export_from_state(
                 value.queue_position,
             )
             for value in state.lifecycle.work_items
+        ),
+        tuple(
+            ProjectExportUnblocker(str(value.item_id), unblockers.unblocker_payload(value.unblocker))
+            for value in state.lifecycle.unblockers
         ),
         tuple(
             ProjectExportDefinitionRevision(

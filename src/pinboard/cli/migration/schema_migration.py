@@ -1,10 +1,12 @@
 """Present the bound, quiescent SQLite schema migration procedure."""
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal, assert_never
 
 import msgspec
 
+from pinboard.adapters.files.errors import ArtifactError, FileIOError
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.database import SCHEMA_VERSION
 from pinboard.adapters.sqlite.migration.schema_ownership_v8 import inspect_current_schema_migration
@@ -37,7 +39,9 @@ class SchemaMigrationView(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     plan_id: str
     plan: SchemaPlan | None
     database_path: str
-    authority: Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9", "sqlite-v10", "sqlite-v11", "sqlite-v12"]
+    authority: Literal[
+        "sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9", "sqlite-v10", "sqlite-v11", "sqlite-v12", "sqlite-v13"
+    ]
     state_changed: bool
     effect: Literal["committed", "unchanged"]
     retry: Literal["do-not-retry", "safe-to-repeat"]
@@ -75,7 +79,9 @@ def migrate_schema(
     store: ports.GeneratedViewSetReader,
     command: cli_commands.MigrateSchemaPreviewCommand
     | cli_commands.MigrateSchemaApplyCommand
-    | cli_commands.MigrateSchemaReverseCommand,
+    | cli_commands.MigrateSchemaReverseCommand
+    | cli_commands.MigrateSchemaLabelledPreviewCommand
+    | cli_commands.MigrateSchemaLabelledApplyCommand,
 ) -> CommandResult[int]:
     path = roots.database_path
     match command:
@@ -91,6 +97,14 @@ def migrate_schema(
             selected = apply_schema(path, plan_id)
             requested_id = plan_id
             recovery = f"Inspect the named database and migration evidence first. Resume pinboard migrate-schema --apply {plan_id} with the same roots only after resolving the reported cause and confirming the recorded plan still matches; preserve later writes."
+        case cli_commands.MigrateSchemaLabelledPreviewCommand(labels=labels):
+            selected = preview_schema(path, None, Path(labels))
+            requested_id = ""
+            recovery = f"Correct or complete the hold label file {labels} for the exact current ledger as INSTALL.md describes, then rerun pinboard migrate-schema --labels {labels} with the same roots. No plan ID is available until preview succeeds."
+        case cli_commands.MigrateSchemaLabelledApplyCommand(apply=plan_id, labels=labels):
+            selected = apply_schema(path, plan_id, Path(labels))
+            requested_id = plan_id
+            recovery = f"Inspect the named database and migration evidence first. Resume pinboard migrate-schema --apply {plan_id} --labels {labels} with the same roots and the exact label file previewed with that plan; preserve later writes."
         case _ as unreachable:
             assert_never(unreachable)
     if isinstance(selected, SchemaProcedureFailure):
@@ -116,14 +130,11 @@ def migrate_schema(
         assert isinstance(selected, AppliedSchema)
         changed = bool(selected.changed_surfaces)
         version = selected.resulting_version
-        warning: str | None = None
-        if "ledger" in selected.changed_surfaces and version == SCHEMA_VERSION:
-            try:
-                refreshed = work_views.rebuild(roots, store, datetime.now(UTC))
-                if refreshed.warning is not None:
-                    warning = f"{refreshed.warning.message} {refreshed.warning.repair} Do not replay the committed schema change."
-            except WorkStoreError as error:
-                warning = f"Schema migration committed at '{path}', but generated views could not be read: {error}. Repair the named state condition, then run pinboard views rebuild; do not replay the migration."
+        warning = (
+            _refresh_committed_views(roots, store)
+            if "ledger" in selected.changed_surfaces and version == SCHEMA_VERSION
+            else None
+        )
         write_json(
             SchemaMigrationView(
                 "pinboard-schema-migration/v2",
@@ -142,9 +153,30 @@ def migrate_schema(
     return 0
 
 
+def _refresh_committed_views(roots: DurableRoots, store: ports.GeneratedViewSetReader) -> str | None:
+    """Refresh generated views after a committed schema change and return a warning when that fails.
+
+    The schema change has already committed, so an expected state, artifact or file failure here leaves the ledger
+    untouched: the migration is reported as committed with a warning to rebuild views and never to replay it.
+    """
+
+    path = roots.database_path
+    try:
+        refreshed = work_views.rebuild(roots, store, datetime.now(UTC))
+    except WorkStoreError as error:
+        return f"Schema migration committed at '{path}', but generated views could not be read: {error}. Repair the named state condition, then run pinboard views rebuild; do not replay the migration."
+    except (ArtifactError, FileIOError) as error:
+        return f"Schema migration committed at '{path}', but generated views could not be refreshed: {error}. Repair the named artifact or file condition, then run pinboard views rebuild; do not replay the migration."
+    if refreshed.warning is not None:
+        return f"{refreshed.warning.message} {refreshed.warning.repair} Do not replay the committed schema change."
+    return None
+
+
 def _authority(
     version: int,
-) -> Literal["sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9", "sqlite-v10", "sqlite-v11", "sqlite-v12"]:
+) -> Literal[
+    "sqlite-v6", "sqlite-v7", "sqlite-v8", "sqlite-v9", "sqlite-v10", "sqlite-v11", "sqlite-v12", "sqlite-v13"
+]:
     match version:
         case 6:
             return "sqlite-v6"
@@ -160,5 +192,7 @@ def _authority(
             return "sqlite-v11"
         case 12:
             return "sqlite-v12"
+        case 13:
+            return "sqlite-v13"
         case _:
             raise ValueError(f"Unsupported schema authority version: {version}")

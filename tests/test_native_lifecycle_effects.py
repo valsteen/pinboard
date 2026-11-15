@@ -15,23 +15,24 @@ from msgspec.structs import replace as replace_struct
 from pinboard.adapters import lifecycle_operations
 from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
 from pinboard.adapters.files.file_io import resolve_durable_roots
+from pinboard.adapters.sqlite import persistence
 from pinboard.adapters.sqlite import state as sqlite_state
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import work_brief_models, work_briefs
+from pinboard.application import stored_state, work_brief_models, work_briefs
 from pinboard.application.artifacts import NewArtifact, WorkBriefIdentity
 from pinboard.application.dependency_authoring import DependencyCheckpointPin
-from pinboard.application.mutation_models import CommittedEffect
+from pinboard.application.mutation_models import CommittedEffect, StoredStateMutation
 from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionResult
-from pinboard.domain.identifiers import HostId, TaskId, WorkItemId
+from pinboard.domain.identifiers import AttemptId, HostId, TaskId, WorkItemId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import native_tools
-from tests.support import SQLITE_NOW, JsonObject
+from tests.support import HOLD_UNBLOCKER, SQLITE_NOW, JsonObject, JsonValue
 from tests.work_brief_support import work_c_brief
 
 
@@ -190,9 +191,11 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                         pause = self.project_action(fixture, "pause:work-a-1")
                         self.assertEqual(
                             "committed",
-                            self.transition_result(fixture, pause, {"reason": "Exercise revised-brief resume."})[
-                                "status"
-                            ],
+                            self.transition_result(
+                                fixture,
+                                pause,
+                                {"reason": "Exercise revised-brief resume.", "unblocker": HOLD_UNBLOCKER},
+                            )["status"],
                         )
                         actions = self.actions_result(fixture, {"role": "project"})
                         candidates = actions["actions"]
@@ -276,7 +279,9 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
     def test_paused_attempt_close_returns_review_recovery_without_an_escape_action(self) -> None:
         fixture = self.native_fixture(self.active_fixture())
         pause = self.project_action(fixture, "pause:work-a-1")
-        paused = self.transition_result(fixture, pause, {"reason": "Preserve the accepted attempt."})
+        paused = self.transition_result(
+            fixture, pause, {"reason": "Preserve the accepted attempt.", "unblocker": HOLD_UNBLOCKER}
+        )
         self.assertEqual("committed", paused["status"])
 
         rejected, stdout, stderr = self.run_cli(
@@ -350,7 +355,10 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         reason = "Needs the maintainer to choose rejecting or replacing invalid input."
 
         pause = self.project_action(fixture, "pause:work-a-1")
-        self.assertEqual("committed", self.transition_result(fixture, pause, {"reason": reason})["status"])
+        self.assertEqual(
+            "committed",
+            self.transition_result(fixture, pause, {"reason": reason, "unblocker": HOLD_UNBLOCKER})["status"],
+        )
         self.assert_pause_reason(fixture, reason)
 
         brief = replace_struct(fixture.brief, artifact_revision=2)
@@ -433,7 +441,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
 
     def test_retained_human_close_rejects_selected_subject_change_under_shared_lock(self) -> None:
         fixture = self.native_fixture(self.active_fixture())
-        competing = self.project_action(fixture, "defer:work-c")
+        competing = self.project_action(fixture, "block-item:work-c")
         before = fixture.store.validated_snapshot()
         commit = lifecycle_operations.service.decide_and_commit_transition
         interleaved = False
@@ -453,7 +461,9 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             if not interleaved:
                 interleaved = True
                 result = self.transition_result(
-                    fixture, competing, {"timing": "safe-to-defer", "reopen_condition": "Resume after human review."}
+                    fixture,
+                    competing,
+                    {"unblocker": {"kind": "outside-condition", "condition": "Resume after human review."}},
                 )
                 self.assertEqual("committed", result["status"])
             return commit(
@@ -502,7 +512,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         self.assertEqual(before.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
         item = next(value for value in reloaded.lifecycle.work_items if str(value.item_id) == "work-c")
-        self.assertEqual("deferred", item.state.value)
+        self.assertEqual("blocked", item.state.value)
         self.assertFalse(
             any(
                 value.action_kind == decision_models.ActionKind.CLOSE
@@ -528,7 +538,10 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assertEqual(0, closed, f"{stdout}\n{stderr}")
         pause = self.project_action(fixture, "pause:work-a-1")
         self.assertEqual(
-            "committed", self.transition_result(fixture, pause, {"reason": "Accept revised scope."})["status"]
+            "committed",
+            self.transition_result(fixture, pause, {"reason": "Accept revised scope.", "unblocker": HOLD_UNBLOCKER})[
+                "status"
+            ],
         )
         current = fixture.call_native_tool(
             mcp_server.ITEM_DEFINITION_TOOL,
@@ -762,7 +775,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                 result = self.transition_result(fixture, action, payload)
                 self.assertEqual("committed", result["status"])
                 returned_status = self.json_object(result["item_status"])
-                self.assertEqual("pinboard-item-status/v5", returned_status["schema"])
+                self.assertEqual("pinboard-item-status/v6", returned_status["schema"])
                 self.assertEqual("zz-proposal-a", returned_status["item_id"])
                 self.assertEqual(
                     returned_status,
@@ -787,10 +800,24 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         fixture = self.native_fixture(self.active_fixture())
         before = fixture.store.validated_snapshot()
         action = self.project_action(fixture, "block:work-a-1")
-        result = self.transition_result(
-            fixture, action, {"reason": "Wait for the accepted prerequisite.", "depends_on": ["work-c"]}
+        unnamed_payloads: tuple[JsonObject, ...] = (
+            {"reason": "Wait for the accepted prerequisite.", "depends_on": ["work-c"]},
+            {"unblocker": {"kind": "items", "items": ["zz-proposal-a"]}},
+            {"unblocker": {"kind": "outside-condition", "condition": "Two\nlines."}},
         )
+        for unnamed in unnamed_payloads:
+            with self.subTest(unnamed=unnamed):
+                refused = self.transition_result(fixture, action, unnamed)
+                self.assertEqual(("rejected", "TRANSITION_INPUT_INVALID"), (refused["status"], refused["code"]))
+                self.assertEqual(before, fixture.store.validated_snapshot())
+        result = self.transition_result(fixture, action, {"unblocker": {"kind": "items", "items": ["work-c"]}})
         self.assertEqual("committed", result["status"])
+        hold = self.json_object(self.json_object(result["item_status"])["hold"])
+        self.assertEqual({"kind": "items", "items": ["work-c"]}, hold["unblocker"])
+        self.assertEqual(["work-c"], hold["linked_items"])
+        self.assertFalse(hold["resume_needed"])
+        self.assertIn("Work started, but nobody is working on it now", str(hold["sentence"]))
+        self.assertIn("It waits for work-c to finish.", str(hold["sentence"]))
         blocked = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         attempt = next(value for value in blocked.lifecycle.attempts if str(value.attempt_id) == "work-a-1")
         self.assertEqual(work_models.AttemptState.BLOCKED, attempt.state)
@@ -813,12 +840,31 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             "local",
         )
         self.assertEqual(0, closed, f"{stdout}\n{stderr}")
+        status = fixture.call_native_tool(
+            mcp_server.ITEM_STATUS_TOOL,
+            {
+                "request": {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "operation": "item",
+                    "item_id": "work-a",
+                }
+            },
+        )
+        finished = self.json_object(status["hold"])
+        self.assertTrue(finished["resume_needed"])
+        self.assertIn("can continue once someone resumes it", str(finished["sentence"]))
+        item_view = (fixture.work / "views" / "items" / "work-a.md").read_text()
+        self.assertIn("- What it waits for: Work started, but nobody is working on it now", item_view)
+        self.assertIn("[work-c](work-c.md)", item_view)
+        self.assertIn("can continue once someone resumes it", item_view)
         resume = self.project_action(fixture, "resume:work-a")
         self.assertEqual("committed", self.transition_result(fixture, resume, {})["status"])
         reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         attempt = next(value for value in reloaded.lifecycle.attempts if str(value.attempt_id) == "work-a-1")
         prior_attempt = next(value for value in before.lifecycle.attempts if str(value.attempt_id) == "work-a-1")
         self.assertEqual(work_models.AttemptState.ACTIVE, attempt.state)
+        self.assertEqual((), reloaded.lifecycle.unblockers)
         self.assertEqual(
             (
                 prior_attempt.brief_artifact_ref_id,
@@ -827,6 +873,147 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             ),
             (attempt.brief_artifact_ref_id, attempt.accepted_scope_revision, attempt.accepted_scope_digest),
         )
+
+    def held_work_a(self) -> CheckpointFixture:
+        fixture = self.native_fixture(self.active_fixture())
+        action = self.project_action(fixture, "block:work-a-1")
+        result = self.transition_result(fixture, action, {"unblocker": {"kind": "items", "items": ["work-c"]}})
+        self.assertEqual("committed", result["status"], result)
+        attempt_view = (fixture.work / "views" / "attempts" / "work-a-1.md").read_text()
+        self.assertIn("Work started, but nobody is working on it now", attempt_view)
+        self.assertIn("It waits for [work-c](../items/work-c.md) to finish.", attempt_view)
+        return fixture
+
+    def held_views(self, fixture: CheckpointFixture) -> tuple[str, str]:
+        views = fixture.work / "views"
+        return (views / "items" / "work-a.md").read_text(), (views / "attempts" / "work-a-1.md").read_text()
+
+    def recorded_effects(self) -> tuple[list[CommittedEffect], contextlib.AbstractContextManager[object]]:
+        effects: list[CommittedEffect] = []
+        commit = persistence.SQLiteWorkTransaction.commit
+
+        def recording(
+            transaction: persistence.SQLiteWorkTransaction, mutation: StoredStateMutation
+        ) -> DecisionResult[CommittedEffect]:
+            committed = commit(transaction, mutation)
+            if isinstance(committed, CommittedEffect):
+                effects.append(committed)
+            return committed
+
+        return effects, patch.object(persistence.SQLiteWorkTransaction, "commit", recording)
+
+    def test_held_attempt_view_follows_waited_for_and_held_item_changes_without_rebuild(self) -> None:
+        held = AttemptId("work-a-1")
+        fixture = self.held_work_a()
+        effects, recording = self.recorded_effects()
+        with recording:
+            closed, stdout, stderr = self.run_cli(
+                *fixture.common,
+                "close",
+                "work-c",
+                "--outcome",
+                "done",
+                "--reason",
+                "The accepted prerequisite is satisfied.",
+                "--task-id",
+                "review-owner",
+                "--host-id",
+                "local",
+            )
+        self.assertEqual(0, closed, f"{stdout}\n{stderr}")
+        self.assertIn(held, effects[-1].attempt_ids)
+        self.assertIsNone(effects[-1].continuation_attempt_id)
+        for view in self.held_views(fixture):
+            self.assertIn("It waited for [work-c]", view)
+            self.assertIn("can continue once someone resumes it", view)
+
+        fixture = self.held_work_a()
+        preview = fixture.call_native_tool(
+            mcp_server.CANCEL_TOOL,
+            {
+                "request": {
+                    "operation": "preview",
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "item_id": "work-c",
+                }
+            },
+        )
+        self.assertEqual("ok", preview["status"], preview)
+        with recording:
+            cancelled = fixture.call_native_tool(
+                mcp_server.CANCEL_TOOL,
+                {
+                    "request": {
+                        "operation": "confirm",
+                        "project_root": str(fixture.project),
+                        "work_root": str(fixture.work),
+                        "item_id": "work-c",
+                        "binding": preview["binding"],
+                        "human_confirmation": "Yes, cancel work-c. Retain its work and history.",
+                        "actor_task_id": "human-coordinator",
+                        "actor_host_id": "local",
+                    }
+                },
+            )
+        self.assertEqual("committed", cancelled["status"], cancelled)
+        self.assertIn(held, effects[-1].attempt_ids)
+        self.assertNotEqual(held, effects[-1].continuation_attempt_id)
+        for view in self.held_views(fixture):
+            self.assertIn("[work-c](", view)
+            self.assertIn("was cancelled and will not finish", view)
+            self.assertNotIn("work-c.md) to finish", view)
+            self.assertNotIn("has finished", view)
+
+        fixture = self.held_work_a()
+        current = next(
+            value
+            for value in reversed(fixture.store.validated_snapshot().lifecycle.definition_revisions)
+            if value.item_id == WorkItemId("work-a")
+        )
+        definition_bytes = stored_state.stored_definition_bytes(current.definition)
+        assert isinstance(definition_bytes, bytes)
+        definition = self.json_object(msgspec.json.decode(definition_bytes))
+        no_dependencies: list[JsonValue] = []
+        definition["dependencies"] = no_dependencies
+        with recording:
+            revised = self.transition_result(
+                fixture,
+                self.project_action(fixture, "revise-item:work-a"),
+                {
+                    "schema": "pinboard-item-revision/v1",
+                    "expected_revision": current.revision,
+                    "expected_digest": current.digest,
+                    "source_task": "review-owner",
+                    "reason": "The held work no longer needs work-c.",
+                    "definition": definition,
+                },
+            )
+        self.assertEqual("committed", revised["status"], revised)
+        self.assertIn(held, effects[-1].attempt_ids)
+        for view in self.held_views(fixture):
+            self.assertIn("is no longer one of this item's dependencies", view)
+            self.assertNotIn("has finished", view)
+            self.assertIn("can continue once someone resumes it", view)
+
+        fixture = self.held_work_a()
+        with recording:
+            replaced = self.transition_result(
+                fixture,
+                self.project_action(fixture, "record-replacement:work-a"),
+                {
+                    "schema": "pinboard-planned-replacement/v1",
+                    "expected_relation_revision": 0,
+                    "replacement_item": "zz-proposal-a",
+                    "replacement_cost": "The replacement removes this work.",
+                    "status": "current",
+                    "recorded_by": "planner",
+                },
+            )
+        self.assertEqual("committed", replaced["status"], replaced)
+        self.assertIn(held, effects[-1].attempt_ids)
+        for view in self.held_views(fixture):
+            self.assertIn("planned replacement by [zz-proposal-a]", view)
 
     def test_native_renewal_preserves_unchanged_generated_file_identity(self) -> None:
         fixture = self.native_fixture(self.active_fixture())
@@ -911,7 +1098,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         # The callback starts a competing native request while the outer executor is occupied.
         fixture = self.active_fixture()
         action = self.project_action(fixture, "pause:work-a-1")
-        competing = self.project_action(fixture, "defer:work-c")
+        competing = self.project_action(fixture, "block-item:work-c")
         before = fixture.store.validated_snapshot()
         commit = lifecycle_operations.service.decide_and_commit_transition
         interleaved = False
@@ -934,7 +1121,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                 result = self.transition_result(
                     fixture,
                     competing,
-                    {"timing": "safe-to-defer", "reopen_condition": "Resume after current evidence."},
+                    {"unblocker": {"kind": "outside-condition", "condition": "Resume after current evidence."}},
                 )
                 self.assertEqual("committed", result["status"])
             committed = commit(
@@ -951,13 +1138,15 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                 result = self.transition_result(
                     fixture,
                     competing,
-                    {"timing": "safe-to-defer", "reopen_condition": "Resume after current evidence."},
+                    {"unblocker": {"kind": "outside-condition", "condition": "Resume after current evidence."}},
                 )
                 self.assertEqual("committed", result["status"])
             return committed
 
         with patch.object(lifecycle_operations.service, "decide_and_commit_transition", commit_with_competitor):
-            result = self.transition_result(fixture, action, {"reason": "Pause at a stable checkpoint."})
+            result = self.transition_result(
+                fixture, action, {"reason": "Pause at a stable checkpoint.", "unblocker": HOLD_UNBLOCKER}
+            )
         self.assertEqual("committed", result["status"])
         reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         own_receipt = next(
@@ -969,7 +1158,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         self.assertEqual(int(own_receipt.history_id), result["history_id"])
         self.assertEqual(before.lifecycle.project.revision + 2, reloaded.lifecycle.project.revision)
         work_c = next(value for value in reloaded.lifecycle.work_items if str(value.item_id) == "work-c")
-        self.assertEqual("deferred", work_c.state.value)
+        self.assertEqual("blocked", work_c.state.value)
 
     def test_post_commit_view_failure_reports_warning_and_repairs_without_replay(self) -> None:
         fixture = self.native_fixture(self.active_fixture())
@@ -979,7 +1168,9 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             "pinboard.adapters.files.views.atomic_replace",
             side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "controlled view failure"),
         ):
-            result = self.transition_result(fixture, action, {"reason": "Pause before repairing views."})
+            result = self.transition_result(
+                fixture, action, {"reason": "Pause before repairing views.", "unblocker": HOLD_UNBLOCKER}
+            )
         self.assertEqual("committed-with-warning", result["status"])
         warning = self.json_object(result["warning"])
         self.assertIn("pinboard views rebuild", str(warning["recovery"]))
@@ -998,7 +1189,9 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             patch.object(mcp_common, "_refresh_affected_views", side_effect=error),
             self.assertRaises(UnexpectedToolError) as failure,
         ):
-            self.transition_result(fixture, action, {"reason": "Pause before exceptional reply loss."})
+            self.transition_result(
+                fixture, action, {"reason": "Pause before exceptional reply loss.", "unblocker": HOLD_UNBLOCKER}
+            )
         self.assertIs(error, failure.exception.__cause__)
         reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         self.assertEqual(before.lifecycle.project.revision + 1, reloaded.lifecycle.project.revision)
@@ -1011,7 +1204,9 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
         action = self.project_action(fixture, "pause:work-a-1")
         original_refresh = mcp_common._refresh_affected_views
         with patch.object(mcp_common, "_refresh_affected_views", wraps=original_refresh) as refreshed:
-            result = self.transition_result(fixture, action, {"reason": "Pause before bounded inspection."})
+            result = self.transition_result(
+                fixture, action, {"reason": "Pause before bounded inspection.", "unblocker": HOLD_UNBLOCKER}
+            )
         self.assertEqual("committed", result["status"])
         refreshed.assert_called_once()
         with (
@@ -1050,7 +1245,9 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             assert isinstance(error, StorageError)
             self.assertEqual(StorageErrorCode.INVALID_STATE, error.code)
         with self.assertRaises(UnexpectedToolError) as failure:
-            self.transition_result(fixture, action, {"reason": "Pause before corrupt dependency writes."})
+            self.transition_result(
+                fixture, action, {"reason": "Pause before corrupt dependency writes.", "unblocker": HOLD_UNBLOCKER}
+            )
         self.assertIsInstance(failure.exception.__cause__, StorageError)
         with contextlib.closing(sqlite3.connect(database)) as connection, connection:
             self.assertEqual(before, tuple(connection.iterdump()))

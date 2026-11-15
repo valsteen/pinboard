@@ -98,6 +98,9 @@ class InitiativeMigrationTest(CheckpointPackageSupport):
         membership = schema_procedure.preview_schema(path)
         assert isinstance(membership, schema_procedure.PlannedSchema), membership
         self.assertIsInstance(schema_procedure.apply_schema(path, membership.plan_id), schema_procedure.AppliedSchema)
+        unblockers = schema_procedure.preview_schema(path)
+        assert isinstance(unblockers, schema_procedure.PlannedSchema), unblockers
+        self.assertIsInstance(schema_procedure.apply_schema(path, unblockers.plan_id), schema_procedure.AppliedSchema)
         operations = test_initiatives.InitiativeTest()
         operations.create(fixture)
         operations.mutate(fixture, "member-add", {"expected_revision": 1, "item_id": "work-a"})

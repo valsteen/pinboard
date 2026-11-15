@@ -51,7 +51,8 @@ from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
 from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
-from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
+from tests.sqlite_support import sync_test_unblocker
+from tests.support import HOLD_UNBLOCKER, SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 from tests.test_proposals import proposal as proposal_input
 from tests.work_brief_support import work_a_brief
 
@@ -809,6 +810,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 "proposals",
                 "planned_replacements",
                 "replacement_dispositions",
+                "work_item_unblockers",
             },
             read_tables,
         )
@@ -825,7 +827,6 @@ class AuthorityStatusReadTest(unittest.TestCase):
             (stored_state.StoredWorkItemState.PAUSED, work_models.AttemptState.PAUSED),
             (stored_state.StoredWorkItemState.BLOCKED, None),
             (stored_state.StoredWorkItemState.BLOCKED, work_models.AttemptState.BLOCKED),
-            (stored_state.StoredWorkItemState.DEFERRED, None),
             (stored_state.StoredWorkItemState.REVIEW, work_models.AttemptState.REVIEW),
         )
         for item_state, attempt_state in legal_shapes:
@@ -1173,6 +1174,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 "replacement_dispositions",
                 "work_item_definition_revisions",
                 "work_items",
+                "work_item_unblockers",
             },
             read_tables,
         )
@@ -1589,6 +1591,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
                     "UPDATE work_items SET state = ? WHERE item_id = ?",
                     (state_after, item_id),
                 )
+                sync_test_unblocker(connection, item_id)
                 connection.commit()
             finally:
                 connection.close()
@@ -1864,7 +1867,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
             "work_root": str(work),
             "role": "worker",
             "receipt": {"action_id": {"kind": "pause", "subject": "work-a-1"}, "subject_revision": "11"},
-            "payload": {"reason": "Waiting on a human decision."},
+            "payload": {"reason": "Waiting on a human decision.", "unblocker": HOLD_UNBLOCKER},
             **lease,
         }
         try:

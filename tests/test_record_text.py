@@ -25,7 +25,7 @@ from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture
 from tests.native_support import native_tools
-from tests.support import JsonObject, JsonValue
+from tests.support import HOLD_UNBLOCKER, JsonObject, JsonValue
 from tests.test_item_status_facts import ItemLifecycleSupport
 
 RETURN_REASON = (
@@ -158,7 +158,7 @@ class RecordTextJourneyTest(RecordTextSupport):
         self.close_prerequisite(fixture)
         next_brief = replace_struct(fixture.brief, artifact_revision=2)
         self.transition(fixture, "resume:work-a", {"brief_artifact_ref_id": self.publish_brief(fixture, next_brief)})
-        self.transition(fixture, "pause:work-a-1", {"reason": PAUSE_REASON})
+        self.transition(fixture, "pause:work-a-1", {"reason": PAUSE_REASON, "unblocker": HOLD_UNBLOCKER})
         self.assertEqual(PAUSE_REASON, self.pause_reason(fixture))
         self.assertEqual(PAUSE_REASON, self.condition_text(fixture))
         self.assert_item_view_pause_reason(fixture)
@@ -373,7 +373,7 @@ class RecordTextProjectionTest(RecordTextSupport):
             with self.subTest(reason=reason):
                 fixture = self.native_fixture(self.checkpoint_fixture())
                 self.return_for_review(fixture, "Rework the candidate.")
-                self.transition(fixture, "pause:work-a-1", {"reason": reason})
+                self.transition(fixture, "pause:work-a-1", {"reason": reason, "unblocker": HOLD_UNBLOCKER})
                 attempts = self.json_array(self.item_leaf(fixture)["attempts"])
                 self.assertEqual(reason, self.json_object(attempts[-1])["pause_reason"])
                 view = (fixture.work / "views" / "items" / "work-a.md").read_bytes().decode()

@@ -1,10 +1,10 @@
--- SQLite authority schema version 12.
+-- SQLite authority schema version 13.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE project_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     application TEXT NOT NULL CHECK (application = 'pinboard'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 12),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 13),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
     created_at TEXT NOT NULL,
@@ -45,7 +45,7 @@ CREATE INDEX artifact_ownership_by_identity ON artifact_ownership(ownership_json
 CREATE TABLE work_items (
     item_id TEXT PRIMARY KEY,
     state TEXT NOT NULL CHECK (state IN (
-        'intake', 'ready', 'active', 'paused', 'blocked', 'deferred', 'review',
+        'intake', 'ready', 'active', 'paused', 'blocked', 'review',
         'done', 'superseded', 'dropped'
     )),
     timing TEXT CHECK (timing IN ('must-now', 'cheaper-now', 'safe-to-defer')),
@@ -62,9 +62,14 @@ CREATE TABLE work_items (
     CHECK ((state IN ('done', 'superseded', 'dropped')) = (queue_position IS NULL))
 ) STRICT;
 
+CREATE TABLE work_item_unblockers (
+    item_id TEXT PRIMARY KEY REFERENCES work_items(item_id),
+    unblocker_json TEXT NOT NULL CHECK (length(unblocker_json) >= 2)
+) STRICT;
+
 CREATE TABLE work_item_state_counts (
     state TEXT PRIMARY KEY CHECK (state IN (
-        'intake', 'ready', 'active', 'paused', 'blocked', 'deferred', 'review',
+        'intake', 'ready', 'active', 'paused', 'blocked', 'review',
         'done', 'superseded', 'dropped'
     )),
     item_count INTEGER NOT NULL CHECK (item_count >= 0)

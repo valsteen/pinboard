@@ -92,7 +92,11 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                 columns = ", ".join(
                     f'"{row[1]}"' for row in connection.execute(f'PRAGMA predecessor.table_info("{name}")')
                 )
-                connection.execute(f'INSERT INTO "{name}" ({columns}) SELECT {columns} FROM predecessor."{name}"')
+                # The released counts include the retired deferred state, which these fixtures never used.
+                retained = " WHERE state != 'deferred'" if name == "work_item_state_counts" else ""
+                connection.execute(
+                    f'INSERT INTO "{name}" ({columns}) SELECT {columns} FROM predecessor."{name}"{retained}'
+                )
             connection.execute(
                 "INSERT INTO project_meta SELECT singleton, application, ?, revision, host_epoch, created_at, updated_at FROM predecessor.project_meta",
                 (SCHEMA_VERSION,),

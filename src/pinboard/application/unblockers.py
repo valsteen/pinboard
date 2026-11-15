@@ -347,6 +347,10 @@ def _finished(value: NamedItemFate) -> bool:
     return isinstance(value, DependencyCondition) and value.fate == work_models.DependencyFate.ITEM_FINISHED
 
 
+def _punctuated(text: str) -> str:
+    return text if text.endswith((".", "?", "!")) else f"{text}."
+
+
 def describe_hold(facts: HoldFacts) -> HoldDescription:
     """Say in plain words whether work started, whether anyone works on it now, and what it waits for.
 
@@ -433,13 +437,15 @@ def describe_hold(facts: HoldFacts) -> HoldDescription:
         case work_models.WaitingForHumanDecision(question=question):
             body: tuple[SentencePart, ...] = (
                 opening,
-                SentenceText(f"It waits for a human decision: {question} Someone resumes it after that decision."),
+                SentenceText(
+                    f"It waits for a human decision: {_punctuated(question)} Someone resumes it after that decision."
+                ),
             )
         case work_models.WaitingForOutsideCondition(condition=condition):
             body = (
                 opening,
                 SentenceText(
-                    f"It waits for this outside condition: {condition} Pinboard does not check it; "
+                    f"It waits for this outside condition: {_punctuated(condition)} Pinboard does not check it; "
                     "someone resumes the work once it holds."
                 ),
             )

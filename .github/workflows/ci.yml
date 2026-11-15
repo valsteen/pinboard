@@ -19,9 +19,16 @@ jobs:
     timeout-minutes: 15
     strategy:
       fail-fast: false
+      # Linux runs every group. macOS skips the platform-independent repository and type checks and runs the
+      # platform-contract test modules on pull requests, keeping the full test suite for main-branch updates.
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        group: [verify-repo, verify-types, verify-tests, verify-package]
+        include:
+          - { os: ubuntu-latest, group: verify-repo }
+          - { os: ubuntu-latest, group: verify-types }
+          - { os: ubuntu-latest, group: verify-tests }
+          - { os: ubuntu-latest, group: verify-package }
+          - { os: macos-latest, group: "${{ github.event_name == 'push' && 'verify-tests' || 'verify-platform' }}" }
+          - { os: macos-latest, group: verify-package }
     steps:
       - uses: actions/checkout@v5
         with:

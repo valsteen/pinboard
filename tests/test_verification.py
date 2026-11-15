@@ -137,8 +137,12 @@ class VerificationTest(unittest.TestCase):
             self.assertEqual(0, verify.main(["verify-types"]))
             self.assertEqual((verify.Group.TYPES,), run.call_args.args[0])
             self.assertTrue(run.call_args.args[2])
+            self.assertEqual(0, verify.main(["verify-platform"]))
+            self.assertEqual((verify.Group.PLATFORM,), run.call_args.args[0])
             self.assertEqual(0, verify.main([]))
-            self.assertEqual(tuple(verify.Group), run.call_args.args[0])
+            full_groups = run.call_args.args[0]
+            self.assertIn(verify.Group.TESTS, full_groups)
+            self.assertNotIn(verify.Group.PLATFORM, full_groups)
             self.assertFalse(run.call_args.args[2])
             self.assertEqual(0, verify.main(["verify-all", "--sequential", "--jobs", "3"]))
             self.assertTrue(run.call_args.args[2])

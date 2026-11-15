@@ -431,6 +431,22 @@ class HoldSentenceTest(unittest.TestCase):
                 )
                 self.assertIn("Resuming also waits for survey to finish", unblockers.sentence_text(pending.parts))
 
+    def test_unpunctuated_typed_hold_text_ends_with_a_full_stop_in_the_sentence(self) -> None:
+        for unblocker, expected in (
+            (
+                work_models.WaitingForHumanDecision("Which policy"),
+                "It waits for a human decision: Which policy. Someone resumes it after that decision.",
+            ),
+            (
+                work_models.WaitingForOutsideCondition("The vendor publishes its v2 API"),
+                "It waits for this outside condition: The vendor publishes its v2 API. Pinboard does not check it;",
+            ),
+        ):
+            with self.subTest(unblocker=type(unblocker).__name__):
+                text, description = _sentence(_facts(unblocker, started=False, dependencies=()))
+                self.assertIn(expected, text)
+                self.assertEqual(unblocker, description.unblocker)
+
     def test_stored_unblockers_round_trip_through_their_canonical_record(self) -> None:
         for unblocker in (ITEMS, QUESTION, CONDITION):
             with self.subTest(unblocker=type(unblocker).__name__):

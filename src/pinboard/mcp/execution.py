@@ -14,11 +14,10 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TextIO, assert_never
+from typing import Literal, TextIO, TypeForm, assert_never
 
 import msgspec
 from mcp.server.mcpserver.exceptions import ToolError
-from typing_extensions import TypeForm
 
 from pinboard import __version__
 from pinboard.adapters.files import contributor_traces, git_config

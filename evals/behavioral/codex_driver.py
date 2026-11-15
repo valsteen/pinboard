@@ -634,9 +634,12 @@ def rollout_refusals(text: str) -> RolloutRefusals:
             failures, rejections = primary_tool_refusals(record.payload, turns)
             git_writes.extend(failures)
             approvals.extend(rejections)
-        elif record.type == "event_msg" and msgspec.json.decode(record.payload, type=Event).type == "item_completed":
-            if (denied := reviewer_refusal(record.payload, turns)) is not None:
-                approvals.append(denied)
+        elif (
+            record.type == "event_msg"
+            and msgspec.json.decode(record.payload, type=Event).type == "item_completed"
+            and (denied := reviewer_refusal(record.payload, turns)) is not None
+        ):
+            approvals.append(denied)
 
     return RolloutRefusals(git_writes=git_writes, approvals=approvals)
 

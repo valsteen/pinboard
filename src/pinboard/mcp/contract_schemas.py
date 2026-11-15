@@ -1,10 +1,9 @@
 """Generate negotiated MCP request and result schemas."""
 
 from types import UnionType
-from typing import TypeAliasType, assert_never, get_args
+from typing import TypeAliasType, TypeForm, assert_never, get_args
 
 import msgspec
-from typing_extensions import TypeForm
 
 from pinboard.adapters import dispatch_operations
 from pinboard.application import action_models, dispatch_models

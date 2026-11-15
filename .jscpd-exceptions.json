@@ -1,6 +1,6 @@
 {
   "schema": "pinboard-duplication-exceptions/v1",
-  "detector_version": "5.4.1",
+  "detector_version": "5.4.3",
   "records": [
     {
       "identity": {

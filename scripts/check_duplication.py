@@ -107,7 +107,7 @@ class ExceptionRecord(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class Exceptions(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-duplication-exceptions/v1"]
-    detector_version: Literal["5.4.1"]
+    detector_version: Literal["5.4.3"]
     records: tuple[ExceptionRecord, ...]
 
 
@@ -244,8 +244,8 @@ def run_detector(
 ) -> NativeReport:
     binary = detector_root / "node_modules/.bin/jscpd"
     version = subprocess.check_output([str(binary), "--version"], text=True).strip()
-    if version != "jscpd 5.4.1":
-        raise ValueError("Duplication certification requires pinned native jscpd 5.4.1")
+    if version != "jscpd 5.4.3":
+        raise ValueError("Duplication certification requires pinned native jscpd 5.4.3")
     subprocess.run(
         [
             str(binary),

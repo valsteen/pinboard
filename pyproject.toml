@@ -9,12 +9,11 @@ description = "Validated coordination for one repository-owned work ledger"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.14,<3.15"
+requires-python = ">=3.15,<3.16"
 dependencies = [
-    "anyio>=4.15.1",
-    "mcp==2.2.0",
-    "msgspec>=0.21.1",
-    "typing-extensions>=4.16.0",
+    "anyio>=4.16.0",
+    "mcp==2.3.0",
+    "msgspec>=0.22.0",
 ]
 
 [project.scripts]
@@ -27,14 +26,14 @@ pinboard-antigravity-session-start = "pinboard.antigravity_hook:session_start_ma
 pinboard-antigravity-pre-tool-use = "pinboard.antigravity_hook:pre_tool_use_main"
 
 [tool.uv]
-required-version = "==0.13.6"
+required-version = "==0.13.8"
 
 [tool.uv.build-backend]
 module-name = "pinboard"
 source-exclude = [".DS_Store"]
 
 [tool.ruff]
-target-version = "py314"
+target-version = "py315"
 line-length = 120
 src = ["src", "tests", "docs/how_it_works", "evals"]
 
@@ -68,7 +67,7 @@ max-complexity = 12
 known-first-party = ["pinboard", "tests", "evals"]
 
 [tool.pyrefly]
-python-version = "3.14"
+python-version = "3.15"
 project-includes = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py", "scripts/verify.py", "evals"]
 search-path = ["."]
 preset = "strict"
@@ -92,7 +91,7 @@ unknown-attribute-type = "warn"
 unknown-variable-type = "warn"
 
 [tool.ty.environment]
-python-version = "3.14"
+python-version = "3.15"
 
 [tool.ty.src]
 include = ["src", "tests", "docs/how_it_works", "scripts/check_duplication.py", "scripts/verify.py", "evals"]
@@ -102,7 +101,7 @@ respect-ignore-files = false
 all = "error"
 # Optional soundness rules reject Any/Unknown from library typing and inference.
 # https://docs.astral.sh/ty/reference/rules/#unsound-assignment
-# https://docs.astral.sh/ty/reference/rules/#unsound-return-statement
+# https://docs.astral.sh/ty/reference/rules/#unsound-return
 # https://docs.astral.sh/ty/reference/rules/#unsound-yield
 # msgspec schema typing: https://github.com/msgspec/msgspec/issues/682
 # ty empty collection inference: https://github.com/astral-sh/ty/issues/4697
@@ -111,10 +110,10 @@ all = "error"
 # and inference can express the existing validated boundaries without duplicate validation.
 # Opt in by replacing the corresponding ignore values with these error values:
 # unsound-assignment = "error"
-# unsound-return-statement = "error"
+# unsound-return = "error"
 # unsound-yield = "error"
 unsound-assignment = "ignore"
-unsound-return-statement = "ignore"
+unsound-return = "ignore"
 unsound-yield = "ignore"
 
 [tool.ty.analysis]
@@ -138,11 +137,11 @@ show_missing = true
 
 [dependency-groups]
 dev = [
-    "coverage>=7.10.4",
-    "mcp-types>=2.2.0",
+    "coverage>=7.17.3",
+    "mcp-types>=2.3.0",
     "pyyaml>=6.0.3",
-    "pyrefly>=1.4.0",
-    "ruff>=0.16.3",
-    "ty>=0.0.90",
+    "pyrefly>=1.4.1",
+    "ruff>=0.17.5",
+    "ty>=0.0.104",
     "markdown-it-py>=4.3.0",
 ]

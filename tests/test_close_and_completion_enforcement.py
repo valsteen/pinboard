@@ -163,7 +163,19 @@ class HumanConfirmedCloseTest(NativeFixtureSupport):
         self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
         self.run_json_cli(*fixture.common, "export")
         for label, schema, value in (
+            ("not-an-object", "pinboard-close-decision/v1", '["done","r","y"]'),
+            ("wrong-field-type", "pinboard-close-decision/v1", '{"human_decision":"y","outcome":"done","reason":7}'),
             ("missing-decision", "pinboard-close-decision/v1", '{"outcome":"done","reason":"Covered elsewhere."}'),
+            (
+                "unknown-outcome",
+                "pinboard-close-decision/v1",
+                '{"human_decision":"y","outcome":"abandoned","reason":"r"}',
+            ),
+            (
+                "noncanonical-whitespace",
+                "pinboard-close-decision/v1",
+                '{"human_decision": "y", "outcome": "dropped", "reason": "r"}',
+            ),
             (
                 "unknown-field",
                 "pinboard-close-decision/v1",
@@ -197,6 +209,37 @@ class HumanConfirmedCloseTest(NativeFixtureSupport):
                             "WHERE action_id = 'close:work-c'",
                             original,
                         )
+
+    def test_validate_and_export_keep_a_retained_dropped_close_decision_byte_identical(self) -> None:
+        fixture = self.native_fixture(self.checkpoint_fixture())
+        committed = fixture.call_native_tool(
+            mcp_server.CLOSE_TOOL,
+            self.close_arguments(
+                fixture, "zz-proposal-a", {"outcome": "done", "reason": "No longer needed.", "human_decision": "y"}
+            ),
+        )
+        self.assertEqual("committed", committed["status"], committed)
+        released = b'{"human_decision":"Drop it.","outcome":"dropped","reason":"No longer needed."}'
+        with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
+            connection.execute(
+                "UPDATE transition_history SET input_json = ? WHERE action_id = 'close:zz-proposal-a'",
+                (released.decode("utf-8"),),
+            )
+        self.assertEqual((("pinboard-close-decision/v1", released),), self.close_receipts(fixture))
+        before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+
+        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+        exit_code, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
+        self.assertEqual(0, exit_code, stderr)
+
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+        self.assertEqual((("pinboard-close-decision/v1", released),), self.close_receipts(fixture))
+        exported = msgspec.json.decode(stdout, type=ProjectExport, strict=True)
+        (exported_close,) = (value for value in exported.transitions if value.action_kind == "close")
+        self.assertEqual("pinboard-close-decision/v1", exported_close.input_schema)
+        self.assertEqual(
+            released, msgspec.json.encode(msgspec.json.decode(bytes(exported_close.input)), order="sorted")
+        )
 
     def test_human_decision_relaxes_no_close_condition_for_a_paused_item_with_an_accepted_attempt(self) -> None:
         fixture = self.native_fixture(self.checkpoint_fixture())

@@ -20,9 +20,9 @@ from pinboard.adapters.sqlite.database import initialize_database, open_database
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
 from pinboard.application import (
-    action_models,
     cancellation,
     candidate_snapshots,
+    close_compatibility,
     history_archives,
     lifecycle_packages,
     ports,
@@ -127,7 +127,10 @@ def read_state_for_validation(
 
 
 def _close_decision_failure(receipt: stored_state.StoredTransitionReceipt) -> str | None:
-    """Strictly decode one close receipt's stored decision input; retained decision/v1 closes carry none."""
+    """Strictly decode one close receipt's stored decision input; retained decision/v1 closes carry none.
+
+    Stored pinboard-close-decision/v1 inputs keep the released outcome vocabulary, including dropped.
+    """
 
     match receipt.input_schema:
         case "decision/v1":
@@ -136,7 +139,9 @@ def _close_decision_failure(receipt: stored_state.StoredTransitionReceipt) -> st
             return None
         case "pinboard-close-decision/v1":
             try:
-                value = msgspec.json.decode(bytes(receipt.input_payload), type=action_models.CloseInputPayload)
+                value = msgspec.json.decode(
+                    bytes(receipt.input_payload), type=close_compatibility.StoredCloseDecisionInput
+                )
             except (msgspec.DecodeError, ValueError) as error:
                 return f"Close history {int(receipt.history_id)} has an invalid close decision: {error}"
             if msgspec.json.encode(value, order="sorted") != bytes(receipt.input_payload):

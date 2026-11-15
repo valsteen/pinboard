@@ -153,7 +153,9 @@ class RetainTemporarilyInputPayload(msgspec.Struct, frozen=True, forbid_unknown_
 
 
 class CloseInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Close input and its stored pinboard-close-decision/v1 record.
+    """Current close input, stored as pinboard-close-decision/v1.
+
+    Stored receipts are validated by close_compatibility.StoredCloseDecisionInput, which keeps released outcomes.
 
     human_decision carries the human's explicit close decision in their own words; it is attribution, not
     authentication of the human.

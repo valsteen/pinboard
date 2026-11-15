@@ -596,6 +596,36 @@ class CancellationTest(CheckpointPackageSupport):
         exported_record = msgspec.json.decode(transition.input, type=cancellation_models.CancellationRecord)
         self.assertEqual(historical_bytes, msgspec.json.encode(exported_record, order="sorted"))
 
+    def test_retained_cancellation_that_recorded_a_deferred_state_still_validates_and_exports(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        preview = self.preview(fixture, "work-a")
+        self.assertEqual("committed", self.confirm(fixture, "work-a", preview)["status"])
+        receipt = fixture.store.validated_snapshot().transition_receipts[-1]
+        record = msgspec.json.decode(bytes(receipt.input_payload), type=cancellation_models.CurrentCancellationRecord)
+        preview_value = msgspec.to_builtins(record.preview)
+        preview_value["state"] = "deferred"
+        preview_value["prerequisites"][0]["state"] = "deferred"
+        released_preview = msgspec.convert(preview_value, type=cancellation_models.CancellationPreview)
+        released_record = cancellation_models.CurrentCancellationRecord(
+            cancellation.binding(released_preview, fixture.work), released_preview, record.human_confirmation
+        )
+        released_bytes = msgspec.json.encode(released_record, order="sorted")
+        with fixture.store.write() as transaction:
+            transaction.connection.execute(
+                "UPDATE transition_history SET input_json = ? WHERE history_id = ?",
+                (released_bytes.decode(), receipt.history_id),
+            )
+        retained = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot().transition_receipts[-1]
+        self.assertEqual(released_bytes, bytes(retained.input_payload))
+        self.assertIsNone(cancellation.receipt_failure(retained))
+        self.assertIs(True, self.run_json_cli(*fixture.common, "validate")["valid"])
+        exported, output, error = self.run_cli(*fixture.common, "export", "--json")
+        self.assertEqual(0, exported, (output, error))
+        package = msgspec.json.decode(output, type=project_export.ProjectExport)
+        transition = next(value for value in package.transitions if value.history_id == receipt.history_id)
+        exported_record = msgspec.json.decode(transition.input, type=cancellation_models.CancellationRecord)
+        self.assertEqual(released_bytes, msgspec.json.encode(exported_record, order="sorted"))
+
     def test_changed_item_or_dependency_preview_rejects_and_dropped_dependency_cannot_resume_or_prepare(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
         preview = self.preview(fixture, "work-c")

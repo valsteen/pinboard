@@ -52,7 +52,7 @@ def read_preview(connection: sqlite3.Connection, item_id: WorkItemId) -> models.
         related[value.item_id] = models.CancellationRelatedItem(
             value.item_id,
             current.definition.title,
-            value.state,
+            models.recorded_item_state(value.state),
             value.subject_revision,
             current.revision,
             current.digest,
@@ -91,7 +91,7 @@ def read_preview(connection: sqlite3.Connection, item_id: WorkItemId) -> models.
     return models.CancellationPreview(
         item_id,
         definition.definition.title,
-        item.state,
+        models.recorded_item_state(item.state),
         item.subject_revision,
         definition.revision,
         definition.digest,

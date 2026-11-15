@@ -23,7 +23,7 @@ from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.domain_support import expect_success
 from tests.native_support import NativeTools
-from tests.support import JsonObject, JsonValue
+from tests.support import HOLD_UNBLOCKER, JsonObject, JsonValue
 from tests.test_proposals import proposal
 
 
@@ -518,7 +518,9 @@ class ConsolidationTest(CheckpointPackageSupport):
                         self.transition_result(
                             fixture,
                             self.project_action(fixture, f"{action}:work-a-1"),
-                            {"reason": "Move this work into its campaign."},
+                            {"reason": "Move this work into its campaign.", "unblocker": HOLD_UNBLOCKER}
+                            if action == "pause"
+                            else {"unblocker": HOLD_UNBLOCKER},
                         )["status"],
                     )
                 selection = self.selection(fixture, ("work-a",), "campaign", True)

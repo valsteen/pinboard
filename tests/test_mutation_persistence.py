@@ -1,6 +1,8 @@
 import json
+import sqlite3
 import tempfile
 import unittest
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -70,6 +72,14 @@ class MutationPersistenceTest(unittest.TestCase):
         store = SQLiteWorkStore(roots.database_path)
         initialize_store(store, complete_sqlite_state())
         return store
+
+    def _store_at(self) -> tuple[SQLiteWorkStore, Path]:
+        project = Path(tempfile.mkdtemp()).resolve()
+        roots = resolve_durable_roots(project)
+        initialize_database(roots, SQLITE_NOW)
+        store = SQLiteWorkStore(roots.database_path)
+        initialize_store(store, complete_sqlite_state())
+        return store, roots.database_path
 
     def _store_pair(self) -> tuple[SQLiteWorkStore, SQLiteWorkStore]:
         project = Path(tempfile.mkdtemp()).resolve()
@@ -488,13 +498,14 @@ class MutationPersistenceTest(unittest.TestCase):
         action = next(
             value
             for value in available_actions(snapshot, actor)
-            if value.kind == decision_models.ActionKind.DEFER and value.capability.subject == WorkItemId("intake-work")
+            if value.kind == decision_models.ActionKind.BLOCK_ITEM
+            and value.capability.subject == WorkItemId("intake-work")
         )
-        assert isinstance(action, decision_models.DeferAction)
+        assert isinstance(action, decision_models.BlockWorkItemAction)
         first_decision = decide(
             snapshot,
-            decision_models.DeferCommand(
-                action, work_models.DeferInput(work_models.Timing.SAFE_TO_DEFER, "First writer commits.")
+            decision_models.BlockWorkItemCommand(
+                action, work_models.BlockInput(work_models.WaitingForOutsideCondition("First writer commits."))
             ),
             SQLITE_NOW + timedelta(seconds=1),
         )
@@ -564,8 +575,13 @@ class MutationPersistenceTest(unittest.TestCase):
                 proposal = store.validated_snapshot().proposals.proposals[0]
                 self.assertEqual(expected, proposal.disposition)
 
-    def test_defer_decision_persists_reopen_state(self) -> None:
-        store = self._store()
+    def _commit_hold(
+        self,
+        store: SQLiteWorkStore,
+        kind: decision_models.ActionKind,
+        subject: str,
+        payload: Mapping[str, object],
+    ) -> decision_models.TransitionDecision:
         snapshot = project_decision_snapshot(store.validated_snapshot(), SQLITE_NOW)
         actor = decision_models.ActorAuthority(
             decision_models.Role.PROJECT, decision_models.AuthorizationKind.PROJECT, 0
@@ -573,15 +589,11 @@ class MutationPersistenceTest(unittest.TestCase):
         action = next(
             value
             for value in available_actions(snapshot, actor)
-            if value.kind == decision_models.ActionKind.DEFER and value.capability.subject == WorkItemId("intake-work")
+            if value.kind == kind and value.capability.subject == subject
         )
-        assert isinstance(action, decision_models.DeferAction)
         decision = decide(
             snapshot,
-            decision_models.DeferCommand(
-                action,
-                work_models.DeferInput(work_models.Timing.SAFE_TO_DEFER, "Reopen when the prerequisite is accepted."),
-            ),
+            expect_transition_command(parse_transition_input(action, json.dumps(payload))),
             SQLITE_NOW + timedelta(seconds=1),
         )
         with store.write() as transaction:
@@ -593,8 +605,85 @@ class MutationPersistenceTest(unittest.TestCase):
                     HostId("host-a"),
                 )
             )
-        reopened = store.validated_snapshot()
-        self.assertEqual(stored_state.StoredWorkItemState.DEFERRED, reopened.lifecycle.work_items[0].state)
+        return decision
+
+    def test_each_unblocker_kind_reloads_from_a_fresh_store_for_unstarted_and_started_holds(self) -> None:
+        kinds = (
+            ({"kind": "items", "items": ["work-c"]}, work_models.WaitingForItemsToFinish((WorkItemId("work-c"),))),
+            (
+                {"kind": "human-decision", "question": "Which map projection should the release use?"},
+                work_models.WaitingForHumanDecision("Which map projection should the release use?"),
+            ),
+            (
+                {"kind": "outside-condition", "condition": "The vendor publishes its v2 API."},
+                work_models.WaitingForOutsideCondition("The vendor publishes its v2 API."),
+            ),
+        )
+        for unblocker_payload, expected in kinds:
+            for kind, subject, payload, item_id, item_state, receipt_schema in (
+                (
+                    decision_models.ActionKind.BLOCK_ITEM,
+                    "zz-proposal-a",
+                    {"unblocker": unblocker_payload},
+                    "zz-proposal-a",
+                    stored_state.StoredWorkItemState.BLOCKED,
+                    "pinboard-hold/v1",
+                ),
+                (
+                    decision_models.ActionKind.BLOCK,
+                    "work-a-1",
+                    {"unblocker": unblocker_payload},
+                    "work-a",
+                    stored_state.StoredWorkItemState.BLOCKED,
+                    "pinboard-hold/v1",
+                ),
+                (
+                    decision_models.ActionKind.PAUSE,
+                    "work-a-1",
+                    {"reason": "Pause at a stable boundary.\nKeep the checkout.", "unblocker": unblocker_payload},
+                    "work-a",
+                    stored_state.StoredWorkItemState.PAUSED,
+                    "pinboard-plain-pause/v1",
+                ),
+            ):
+                with self.subTest(kind=kind.value, unblocker=unblocker_payload["kind"]):
+                    store, path = self._store_at()
+                    self._commit_hold(store, kind, subject, payload)
+                    reloaded = SQLiteWorkStore(path).validated_snapshot()
+                    self.assertEqual(
+                        (stored_state.StoredUnblocker(WorkItemId(item_id), expected),), reloaded.lifecycle.unblockers
+                    )
+                    self.assertEqual(
+                        item_state,
+                        next(value.state for value in reloaded.lifecycle.work_items if value.item_id == item_id),
+                    )
+                    receipt = reloaded.transition_receipts[-1]
+                    self.assertEqual(receipt_schema, receipt.input_schema)
+                    self.assertEqual(unblocker_payload, json.loads(bytes(receipt.input_payload))["unblocker"])
+                    held = project_decision_snapshot(reloaded, SQLITE_NOW).work_item(WorkItemId(item_id))
+                    assert held is not None
+                    self.assertEqual(expected, held.unblocker)
+
+    def test_failed_hold_write_rolls_back_state_receipt_and_unblocker(self) -> None:
+        store, path = self._store_at()
+        before = store.validated_snapshot()
+        with (
+            patch(
+                "pinboard.adapters.sqlite.lifecycle.write_item_unblocker",
+                side_effect=sqlite3.OperationalError("injected unblocker write failure"),
+            ),
+            self.assertRaises(StorageError),
+        ):
+            self._commit_hold(
+                store,
+                decision_models.ActionKind.BLOCK_ITEM,
+                "zz-proposal-a",
+                {"unblocker": {"kind": "outside-condition", "condition": "The vendor publishes its v2 API."}},
+            )
+        after = SQLiteWorkStore(path).validated_snapshot()
+        self.assertEqual(before.lifecycle, after.lifecycle)
+        self.assertEqual(before.transition_receipts, after.transition_receipts)
+        self.assertEqual((), after.lifecycle.unblockers)
 
     def test_real_stale_transition_effects_return_failure_and_roll_back(self) -> None:
         ignore_item_update = """
@@ -625,12 +714,12 @@ class MutationPersistenceTest(unittest.TestCase):
         scenarios: tuple[tuple[type[decision_models.Action], bytes, str], ...] = (
             (
                 decision_models.PauseAction,
-                b'{"reason":"Pause at the checkpoint boundary."}',
+                b'{"reason":"Pause at the checkpoint boundary.","unblocker":{"kind":"outside-condition","condition":"The boundary is reviewed."}}',
                 ignore_item_update,
             ),
             (
                 decision_models.PauseAction,
-                b'{"reason":"Pause at the checkpoint boundary."}',
+                b'{"reason":"Pause at the checkpoint boundary.","unblocker":{"kind":"outside-condition","condition":"The boundary is reviewed."}}',
                 stale_attempt_after_item,
             ),
             (

@@ -375,7 +375,9 @@ class SQLiteEffectContractTest(unittest.TestCase):
             assert isinstance(action, decision_models.BlockWorkItemAction)
             decision = decide(
                 snapshot,
-                decision_models.BlockWorkItemCommand(action, work_models.BlockInput("Waiting on a dependency.")),
+                decision_models.BlockWorkItemCommand(
+                    action, work_models.BlockInput(work_models.WaitingForOutsideCondition("Waiting on a dependency."))
+                ),
                 SQLITE_NOW,
             )
             assert not isinstance(decision, DecisionFailure)
@@ -606,23 +608,23 @@ class SQLiteEffectContractTest(unittest.TestCase):
 
         state = complete_sqlite_state()
         _path, store = self._store(state)
-        defer_action = project_action(state, WorkItemId("work-c"), decision_models.ActionKind.DEFER)
-        assert isinstance(defer_action, decision_models.DeferAction)
-        defer_decision = decide(
+        hold_action = project_action(state, WorkItemId("work-c"), decision_models.ActionKind.BLOCK_ITEM)
+        assert isinstance(hold_action, decision_models.BlockWorkItemAction)
+        hold_decision = decide(
             project_decision_snapshot(state, SQLITE_NOW),
-            decision_models.DeferCommand(
-                defer_action,
-                work_models.DeferInput(work_models.Timing.SAFE_TO_DEFER, "Reopen after the current review."),
+            decision_models.BlockWorkItemCommand(
+                hold_action,
+                work_models.BlockInput(work_models.WaitingForOutsideCondition("The current review finishes.")),
             ),
             SQLITE_NOW,
         )
-        assert not isinstance(defer_decision, DecisionFailure)
+        assert not isinstance(hold_decision, DecisionFailure)
         statements: list[str] = []
         with store.write() as transaction:
             transaction.connection.set_trace_callback(statements.append)
-            deferred = transaction.commit(project_transition_mutation(mutation_allocation(state), defer_decision))
-        assert not isinstance(deferred, DecisionFailure)
-        self.assertEqual((WorkItemId("work-c"),), deferred.work_item_ids)
+            held = transaction.commit(project_transition_mutation(mutation_allocation(state), hold_decision))
+        assert not isinstance(held, DecisionFailure)
+        self.assertEqual((WorkItemId("work-c"),), held.work_item_ids)
         self.assertEqual((), reverse_dependency_queries(statements))
 
         _path, store = self._store()

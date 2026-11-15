@@ -15,7 +15,7 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import dependencies as sqlite_dependencies
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import proposal_models, proposals, queries, query_models, roadmap, service
+from pinboard.application import proposal_models, proposals, queries, query_models, roadmap, service, stored_state
 from pinboard.application.dependency_authoring import DependencyDefinitionPin
 from pinboard.domain import history, work_models
 from pinboard.domain.errors import DecisionFailure
@@ -24,7 +24,7 @@ from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.domain_support import expect_success
-from tests.support import JsonObject
+from tests.support import JsonObject, JsonValue
 from tests.test_proposals import proposal
 from tests.test_work_item_definitions import definition
 
@@ -251,6 +251,85 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         after_cancel = fresh.read_roadmap()
         self.assertEqual(roadmap.Wave(1), after_cancel.placements[WorkItemId("after-checkpoint")])
         self.assertIsInstance(after_cancel.placements[WorkItemId("after-campaign")], roadmap.Blocked)
+
+    def hold_sentence(self, fixture: CheckpointFixture, item_id: str) -> str:
+        status = fixture.call_advertised_tool(
+            mcp_server.ITEM_STATUS_TOOL,
+            {
+                "request": {
+                    "operation": "item",
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "item_id": item_id,
+                }
+            },
+        )
+        return str(self.json_object(status["hold"])["sentence"])
+
+    def test_held_work_says_its_checkpoint_was_accepted_and_then_that_it_no_longer_depends_on_the_item(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        checkpoint = fixture.brief.checkpoint.checkpoint_id
+        self.assertEqual(
+            "committed", self.create(fixture, "held-child", {"item": "work-a", "checkpoint": checkpoint})["status"]
+        )
+        held = self.transition_result(
+            fixture,
+            self.project_action(fixture, "block-item:held-child"),
+            {"unblocker": {"kind": "items", "items": ["work-a"]}},
+        )
+        self.assertEqual("committed", held["status"], held)
+        self.assertIn(f"checkpoint {checkpoint} of work-a to be accepted", self.hold_sentence(fixture, "held-child"))
+
+        action = self.project_action(fixture, "accept-checkpoint:work-a-1")
+        accepted = self.transition_result(fixture, action, self.json_object(json.loads(fixture.payload.read_bytes())))
+        self.assertEqual("committed", accepted["status"], accepted)
+        sentence = self.hold_sentence(fixture, "held-child")
+        item_view = (fixture.work / "views/items/held-child.md").read_text()
+        roadmap_view = (fixture.work / "views/roadmap.md").read_text()
+        for text in (sentence, item_view, roadmap_view):
+            self.assertIn(f"Checkpoint {checkpoint} of ", text)
+            self.assertIn("was accepted", text)
+            self.assertIn("can continue once someone resumes it", text)
+            self.assertNotIn("has finished", text)
+        self.assertEqual(
+            "ok",
+            self.actions_result(fixture, {"role": "project", "action_id": {"kind": "resume", "subject": "held-child"}})[
+                "status"
+            ],
+        )
+        views = sorted(path for path in (fixture.work / "views").rglob("*") if path.is_file())
+        before = {path: path.read_bytes() for path in views}
+        rebuilt, output, error = self.run_cli(*fixture.common, "views", "rebuild")
+        self.assertEqual(0, rebuilt, (output, error))
+        self.assertEqual(before, {path: path.read_bytes() for path in views})
+
+        current = next(
+            value
+            for value in reversed(fixture.store.validated_snapshot().lifecycle.definition_revisions)
+            if value.item_id == WorkItemId("held-child")
+        )
+        definition_bytes = stored_state.stored_definition_bytes(current.definition)
+        assert isinstance(definition_bytes, bytes)
+        revised_definition = self.json_object(json.loads(definition_bytes))
+        no_dependencies: list[JsonValue] = []
+        revised_definition["dependencies"] = no_dependencies
+        revised = self.transition_result(
+            fixture,
+            self.project_action(fixture, "revise-item:held-child"),
+            {
+                "schema": "pinboard-item-revision/v1",
+                "expected_revision": current.revision,
+                "expected_digest": current.digest,
+                "source_task": "coordinator",
+                "reason": "The held work no longer depends on work-a.",
+                "definition": revised_definition,
+            },
+        )
+        self.assertEqual("committed", revised["status"], revised)
+        sentence = self.hold_sentence(fixture, "held-child")
+        self.assertIn("work-a is no longer one of this item's dependencies", sentence)
+        self.assertNotIn("was accepted", sentence)
+        self.assertNotIn("has finished", sentence)
 
     def test_closed_checkpoint_child_view_stays_valid_after_rebuild(self) -> None:
         fixture = self.checkpoint_fixture(local=True)

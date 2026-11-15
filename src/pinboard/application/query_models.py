@@ -11,8 +11,9 @@ from pinboard.application import (
     artifacts,
     decision_batches,
     definition_compatibility,
-    released_v6_compatibility,
+    released_receipt_compatibility,
     stored_state,
+    unblockers,
     work_brief_models,
 )
 from pinboard.domain import authority_models, decision_models, history, work_models
@@ -103,7 +104,7 @@ class ItemProjectionFacts:
 @dataclass(frozen=True, slots=True)
 class ItemOverviewFacts:
     work_item: work_models.WorkItem
-    dependency_unsatisfied: tuple[tuple[work_models.Dependency, bool], ...]
+    dependency_outcomes: tuple[tuple[work_models.Dependency, work_models.PrerequisiteOutcome], ...]
     accepted_checkpoints: frozenset[work_models.CheckpointDependency]
     definition: work_models.DefinitionAnchor
     proposals: tuple[stored_state.StoredProposal, ...]
@@ -118,6 +119,8 @@ class AttemptProjectionFacts:
     item_state: stored_state.StoredWorkItemState
     brief_reference: artifacts.BriefArtifactRef | None
     archive: tuple[stored_state.ArtifactReference, stored_state.ArchiveHistoryFacts] | None
+    hold: unblockers.HoldDescription | None
+    """The held attempt's item hold sentence; none while the attempt is not paused or blocked."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,6 +588,8 @@ class PausedAttemptContinuation(
 ):
     pause_reason: str | None
     """The human reason recorded by the current pause; null for a checkpoint pause or an unrecorded reason."""
+    unblocker: unblockers.UnblockerPayload
+    """What the paused attempt waits for: named items finishing, a human decision or an outside condition."""
 
     @property
     def state(self) -> work_models.AttemptState:
@@ -612,6 +617,9 @@ class BlockedAttemptContinuation(
     frozen=True,
     forbid_unknown_fields=True,
 ):
+    unblocker: unblockers.UnblockerPayload
+    """What the blocked attempt waits for: named items finishing, a human decision or an outside condition."""
+
     @property
     def state(self) -> work_models.AttemptState:
         return work_models.AttemptState.BLOCKED
@@ -659,6 +667,7 @@ class AttemptContextItemFacts:
     unsatisfied_dependencies: tuple[work_models.Dependency, ...]
     current_replacement_revision: int | None
     replacement_resolved: bool
+    unblocker: work_models.Unblocker | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -757,8 +766,8 @@ class CompletionRecoveryRequired:
     reason: str
 
 
-type ItemStatusSchema = Literal["pinboard-item-status/v5"]
-type ItemStatusAuthority = Literal["sqlite-v12"]
+type ItemStatusSchema = Literal["pinboard-item-status/v6"]
+type ItemStatusAuthority = Literal["sqlite-v13"]
 
 
 type DamagedReceiptActionKind = Literal[
@@ -798,7 +807,7 @@ class ConsumedTransitionReceipt:
     history_id: HistoryId
     project_revision: int
     action_id: ActionId
-    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind
+    action_kind: decision_models.ActionKind | released_receipt_compatibility.HistoricalActionKind
     subject_id: HistorySubjectId
     artifact_ref_id: ArtifactRefId | None
     authorization: decision_models.AuthorizationKind
@@ -869,7 +878,7 @@ class ClosingAttemptFacts:
 class ItemClosureFacts:
     """Row columns of the receipt at a terminal item's subject revision."""
 
-    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind
+    action_kind: decision_models.ActionKind | released_receipt_compatibility.HistoricalActionKind
     committed_at: datetime
     closing_attempt: ClosingAttemptFacts | None
 
@@ -882,6 +891,7 @@ class ItemStatusLifecycleFacts:
     attempts: tuple[ItemStatusAttemptFacts, ...]
     closure: ItemClosureFacts | None
     dependencies: tuple[DependencyStatus, ...]
+    dependency_outcomes: tuple[tuple[work_models.Dependency, work_models.PrerequisiteOutcome], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -893,10 +903,12 @@ class ItemStatusFacts:
     closure: ItemClosureFacts | None
     preparation: PreparationAuthorityStatus | None
     dependencies: tuple[DependencyStatus, ...]
+    dependency_outcomes: tuple[tuple[work_models.Dependency, work_models.PrerequisiteOutcome], ...]
     batches_by_attempt: dict[AttemptId, decision_batches.DecisionBatchView]
     proposals: tuple[stored_state.StoredProposal, ...]
     replacement: work_models.PlannedReplacement | None
     replacement_disposition: work_models.ReplacementDisposition | None
+    unblocker: work_models.Unblocker | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1071,6 +1083,8 @@ class ItemStatus(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     dependency_reasons: tuple[DependencyReason, ...]
     proposal_origin: ProposalOrigin | None
     planned_replacement: PlannedReplacementWarning | None
+    hold: unblockers.HoldStatus | None
+    """While the item is paused or blocked: the plain hold sentence and what it structurally waits for."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1135,7 +1149,7 @@ class IntegrationFacts:
     work_item_id: WorkItemId
     state: stored_state.StoredWorkItemState
     current_attempt: IntegrationLiveAttemptFacts | None
-    closure_action: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind | None
+    closure_action: decision_models.ActionKind | released_receipt_compatibility.HistoricalActionKind | None
     closing_attempt: IntegrationClosingAttemptFacts | None
 
 
@@ -1357,6 +1371,8 @@ class OverviewItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     notes: str | None
     planned_replacement: PlannedReplacementWarning | None
     preparation: PreparationStatusView | None
+    hold: unblockers.HoldDescription | None
+    """The plain hold sentence while the item is paused or blocked; none for work that is not held."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1450,9 +1466,10 @@ class PausedCondition:
 
 @dataclass(frozen=True, slots=True)
 class BlockedCondition:
-    """A block receipt; blocking records no reason."""
+    """A block receipt; a block released before named unblockers were required recorded no reason at the time."""
 
     at: datetime
+    reason_recorded: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -1525,7 +1542,7 @@ class RecordedActionCondition:
     """A receipt at the attempt's subject revision whose action carries no attempt condition, named as recorded."""
 
     at: datetime
-    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind
+    action_kind: decision_models.ActionKind | released_receipt_compatibility.HistoricalActionKind
 
 
 @dataclass(frozen=True, slots=True)
@@ -1746,7 +1763,7 @@ class OverviewCursor(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class DiscoveryPage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-overview/v9"]
-    authority: Literal["sqlite-v12"]
+    authority: Literal["sqlite-v13"]
     revision: str
     items: Annotated[tuple[DiscoveryItem, ...], msgspec.Meta(max_length=25)]
     total_items: Annotated[int, msgspec.Meta(ge=0)]
@@ -1839,7 +1856,7 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition/v1"]
-    authority: Literal["sqlite-v12"]
+    authority: Literal["sqlite-v13"]
     project_revision: int
     item_id: str
     item_subject_revision: int
@@ -1862,7 +1879,7 @@ class ItemDefinitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class ItemDefinitionHistory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition-history/v1"]
-    authority: Literal["sqlite-v12"]
+    authority: Literal["sqlite-v13"]
     project_revision: int
     item_id: str
     revisions: tuple[ItemDefinitionHistoryRow, ...]

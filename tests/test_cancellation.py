@@ -22,7 +22,8 @@ from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.domain_support import expect_success
 from tests.native_support import call_advertised_tool
-from tests.support import SQLITE_NOW, JsonObject
+from tests.sqlite_support import sync_test_unblocker
+from tests.support import HOLD_UNBLOCKER, SQLITE_NOW, JsonObject
 
 
 class CancellationTest(CheckpointPackageSupport):
@@ -68,6 +69,7 @@ class CancellationTest(CheckpointPackageSupport):
         with fixture.store.write() as transaction:
             connection = transaction.connection
             connection.execute("UPDATE work_items SET state = ? WHERE item_id = 'work-a'", (state.value,))
+            sync_test_unblocker(connection, "work-a")
             connection.execute(
                 "UPDATE attempts SET state = ?, candidate_revision = NULL, candidate_recorded_at = NULL WHERE attempt_id = 'work-a-1'",
                 (state.value,),
@@ -309,7 +311,7 @@ class CancellationTest(CheckpointPackageSupport):
             (retained.brief, retained.brief_review, retained.rounds, retained.latest_observation),
         )
         self.assertIs(True, self.run_json_cli(*fixture.common, "validate")["valid"])
-        self.assertEqual("pinboard-project-export/v4", self.run_json_cli(*fixture.common, "export")["schema"])
+        self.assertEqual("pinboard-project-export/v5", self.run_json_cli(*fixture.common, "export")["schema"])
 
     def test_preparation_is_fenced_and_dropped_prerequisite_remains_unsatisfied_everywhere(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
@@ -462,10 +464,9 @@ class CancellationTest(CheckpointPackageSupport):
         self.assertEqual("rejected", refusal["status"], refusal)
         self.assertEqual(before, second.store.validated_snapshot())
 
-    def test_ready_deferred_and_unstarted_blocked_items_can_be_cancelled(self) -> None:
+    def test_ready_and_unstarted_blocked_items_can_be_cancelled(self) -> None:
         for state in (
             stored_state.StoredWorkItemState.READY,
-            stored_state.StoredWorkItemState.DEFERRED,
             stored_state.StoredWorkItemState.BLOCKED,
         ):
             with self.subTest(state=state):
@@ -475,6 +476,7 @@ class CancellationTest(CheckpointPackageSupport):
                         transaction.connection.execute(
                             "UPDATE work_items SET state = ? WHERE item_id = 'work-c'", (state.value,)
                         )
+                        sync_test_unblocker(transaction.connection, "work-c")
                         move_item_state_count(transaction.connection, stored_state.StoredWorkItemState.READY, state)
                 preview = self.preview(fixture, "work-c")
                 result = self.confirm(fixture, "work-c", preview)
@@ -549,7 +551,7 @@ class CancellationTest(CheckpointPackageSupport):
         validated = self.run_json_cli(*fixture.common, "validate")
         self.assertIs(True, validated["valid"])
         exported = self.run_json_cli(*fixture.common, "export")
-        self.assertEqual("pinboard-project-export/v4", exported["schema"])
+        self.assertEqual("pinboard-project-export/v5", exported["schema"])
 
     def test_historical_v1_cancellation_keeps_exact_preview_binding_and_exported_bytes(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
@@ -604,7 +606,9 @@ class CancellationTest(CheckpointPackageSupport):
         preview = self.preview(fixture, "work-c")
         self.assertEqual("committed", self.confirm(fixture, "work-c", preview)["status"])
         paused = self.transition_result(
-            fixture, self.project_action(fixture, "pause:work-a-1"), {"reason": "Wait on the prerequisite decision."}
+            fixture,
+            self.project_action(fixture, "pause:work-a-1"),
+            {"reason": "Wait on the prerequisite decision.", "unblocker": HOLD_UNBLOCKER},
         )
         self.assertEqual("committed", paused["status"], paused)
         resume = self.actions_result(fixture, {"role": "project", "action_id": {"kind": "resume", "subject": "work-a"}})

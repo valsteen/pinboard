@@ -60,62 +60,6 @@
     },
     {
       "identity": {
-        "id": "independent-action-routing-and-result-effects",
-        "format": "python",
-        "tokens": 71,
-        "lines": 12,
-        "occurrences": [
-          {
-            "endpoint": {
-              "name": "mcp/contracts.py",
-              "start": 1805,
-              "end": 1816,
-              "startLoc": {
-                "line": 1805,
-                "column": 12,
-                "position": 66436
-              },
-              "endLoc": {
-                "line": 1816,
-                "column": 41,
-                "position": 67060
-              }
-            },
-            "sha256": "e54a1405a58524dbdfe3ad0abe967a248930f6613091456b72f5ff76d2d3d16d"
-          },
-          {
-            "endpoint": {
-              "name": "mcp/contracts.py",
-              "start": 2695,
-              "end": 2706,
-              "startLoc": {
-                "line": 2695,
-                "column": 12,
-                "position": 100820
-              },
-              "endLoc": {
-                "line": 2706,
-                "column": 41,
-                "position": 101444
-              }
-            },
-            "sha256": "e54a1405a58524dbdfe3ad0abe967a248930f6613091456b72f5ff76d2d3d16d"
-          }
-        ],
-        "owners": [
-          "src/pinboard/mcp/contracts.py: action_invocation_tool selects supported MCP request destinations",
-          "src/pinboard/mcp/contracts.py: _committed_transition_surfaces validates committed result effect combinations"
-        ],
-        "rationale": "Independent review: retain this exact detector pair. action_invocation_tool classifies supported MCP request destinations; _committed_transition_surfaces validates allowed committed-result effects. These are independent supported protocol decisions, not two copies of one classification. Concrete counterexamples: CLOSE and CANCEL both permit ledger-only committed effects, but CLOSE routes to pinboard_close while CANCEL has no starter. ACCEPT_CHECKPOINT and ACTIVATE both route to pinboard_transition but permit different committed surfaces. SUBMIT_REVIEW routes to transition and permits artifact effects, unlike the ledger-only PR actions in the second list. Sharing the matched list would couple request routing to effect validation or introduce an artificial common subset without a shared product decision. Existing exhaustive branches keep newly introduced action kinds visible at both independently relevant boundaries. No decoder relaxation, dispatch change, state mutation, or new generic routing table is justified. Reopen if a single accepted protocol owner genuinely determines both classifications or either branch loses its supported consumer. This certificate covers only the present native pair and source bytes; it is not candidate acceptance or a blanket future exemption. No tests were run for this read-only semantic assessment."
-      },
-      "certification": {
-        "reviewer_task_id": "01a196c0-26a5-7d11-b8b0-b3af77fdcae3",
-        "reviewed_pair_sha256": "6d9bd12919433ec17c4a01df653f9c5f212e56ed229bd5251e50c5c94600a934",
-        "evidence_sha256": "de27099456f49fa3546b3e64cc927e7ea42868879518232de9ea0348be8d01e6"
-      }
-    },
-    {
-      "identity": {
         "id": "independent-action-input-and-committed-effects",
         "format": "python",
         "tokens": 62,
@@ -168,62 +112,6 @@
         "reviewer_task_id": "01a1a2a3-19f7-77f3-a3b0-36db3defe3af",
         "reviewed_pair_sha256": "c9e3666572d464dda02920d06701468a4796dfc1c6807820122dd89ca4730213",
         "evidence_sha256": "7d6fd0e7bc115043094f767ee4fb7cd3b82cffb31748a4ee894697601b7f121b"
-      }
-    },
-    {
-      "identity": {
-        "id": "independent-board-progress-and-terminal-closure",
-        "format": "python",
-        "tokens": 65,
-        "lines": 11,
-        "occurrences": [
-          {
-            "endpoint": {
-              "name": "application/queries.py",
-              "start": 1035,
-              "end": 1045,
-              "startLoc": {
-                "line": 1035,
-                "column": 12,
-                "position": 45538
-              },
-              "endLoc": {
-                "line": 1045,
-                "column": 41,
-                "position": 46092
-              }
-            },
-            "sha256": "127a80243427ea1552f459438af14a25fe98f00bf3d2c53437a15d1450b69029"
-          },
-          {
-            "endpoint": {
-              "name": "application/queries.py",
-              "start": 1501,
-              "end": 1511,
-              "startLoc": {
-                "line": 1501,
-                "column": 12,
-                "position": 67098
-              },
-              "endLoc": {
-                "line": 1511,
-                "column": 41,
-                "position": 67652
-              }
-            },
-            "sha256": "127a80243427ea1552f459438af14a25fe98f00bf3d2c53437a15d1450b69029"
-          }
-        ],
-        "owners": [
-          "src/pinboard/application/queries.py: _board_condition projects generic recorded-action progress",
-          "src/pinboard/application/queries.py: _closure_action classifies terminal receipt meaning"
-        ],
-        "rationale": "Independent review: retain this exact pair. Board progress and terminal receipt classification answer different questions. PAUSE and SUBMIT_REVIEW both have no closure, but board progress distinguishes a pause reason from submitted/ready review. COMPLETE and CANCEL are closing receipts while the board open-attempt condition owner does not assign their closure meaning. Sharing the identical negative-arm subset would couple those independent projections without a common product decision. Reopen if a real consumer needs both facts from one newly canonical receipt classification, or either function starts reconstructing the other's decision. This certification covers only the present native pair and source bytes, not candidate acceptance. No tests, edits or lifecycle effects were performed by the reviewer."
-      },
-      "certification": {
-        "reviewer_task_id": "01a1a2a3-19f7-77f3-a3b0-36db3defe3af",
-        "reviewed_pair_sha256": "c55da490d270a8d9bda8e25ab37ee7b893cbed578aca9fc2ce7b1873471239fd",
-        "evidence_sha256": "458e4ea0c021631fe23d8609ebcb7b716b5066f1c1904e08201fcf8e7b4cf694"
       }
     },
     {

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import assert_never
 
-from pinboard.application import stored_state
+from pinboard.application import stored_state, unblockers
 from pinboard.domain import initiatives, work_models
 from pinboard.domain.identifiers import WorkItemId
 
@@ -18,6 +18,9 @@ class Item:
     state: stored_state.StoredWorkItemState
     dependencies: tuple[work_models.Dependency, ...]
     queue_position: int | None
+    started: bool
+    unblocker: work_models.Unblocker | None
+    unresolved_replacement: WorkItemId | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,12 +59,6 @@ class Counts:
 
 
 @dataclass(frozen=True, slots=True)
-class DependencyCondition:
-    target: work_models.Dependency
-    satisfied: bool
-
-
-@dataclass(frozen=True, slots=True)
 class Projection:
     facts: Facts
     placements: Mapping[WorkItemId, Placement]
@@ -70,7 +67,9 @@ class Projection:
     off_roadmap: tuple[WorkItemId, ...]
     external_prerequisites: tuple[WorkItemId, ...]
     totals: Counts
-    dependency_conditions: Mapping[WorkItemId, tuple[DependencyCondition, ...]]
+    dependency_conditions: Mapping[WorkItemId, tuple[unblockers.DependencyCondition, ...]]
+    holds: Mapping[WorkItemId, unblockers.HoldDescription]
+    """The shared hold sentence of each held item; dependency waves never describe what holds the work."""
 
 
 def is_unfinished(state: stored_state.StoredWorkItemState) -> bool:
@@ -87,7 +86,6 @@ def is_unfinished(state: stored_state.StoredWorkItemState) -> bool:
             | stored_state.StoredWorkItemState.ACTIVE
             | stored_state.StoredWorkItemState.PAUSED
             | stored_state.StoredWorkItemState.BLOCKED
-            | stored_state.StoredWorkItemState.DEFERRED
             | stored_state.StoredWorkItemState.REVIEW
         ):
             return True
@@ -125,13 +123,13 @@ def project(facts: Facts) -> Projection:  # noqa: C901, PLR0912 - one global gra
     }
     conditions = {
         item.item_id: tuple(
-            DependencyCondition(
+            unblockers.DependencyCondition(
                 target,
-                work_models.dependency_satisfied(
+                work_models.dependency_fate(
                     target,
-                    (producer := by_id.get(work_models.dependency_item(target))) is not None
-                    and producer.state
-                    in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED},
+                    work_models.PrerequisiteOutcome.LIVE
+                    if (producer := by_id.get(work_models.dependency_item(target))) is None
+                    else stored_state.prerequisite_outcome(producer.state),
                     facts.accepted_checkpoints,
                 ),
             )
@@ -143,7 +141,7 @@ def project(facts: Facts) -> Projection:  # noqa: C901, PLR0912 - one global gra
         item_id: tuple(
             work_models.dependency_item(condition.target)
             for condition in conditions[item_id]
-            if not condition.satisfied
+            if not condition.fate.satisfied
         )
         for item_id in unfinished
     }
@@ -203,6 +201,13 @@ def project(facts: Facts) -> Projection:  # noqa: C901, PLR0912 - one global gra
     external_prerequisites = tuple(
         item.item_id for item in facts.items if item.item_id in prerequisite_ids and item.item_id not in included
     )
+    holds = {
+        item.item_id: unblockers.describe_hold(
+            unblockers.HoldFacts(item.started, item.unblocker, conditions[item.item_id], item.unresolved_replacement)
+        )
+        for item in facts.items
+        if item.unblocker is not None
+    }
     return Projection(
         facts,
         MappingProxyType(placements),
@@ -212,6 +217,7 @@ def project(facts: Facts) -> Projection:  # noqa: C901, PLR0912 - one global gra
         external_prerequisites,
         counts(tuple(item for item in facts.items if item.item_id in included)),
         MappingProxyType(conditions),
+        MappingProxyType(holds),
     )
 
 
@@ -236,6 +242,11 @@ def from_state(state: stored_state.StoredWorkState) -> Projection:
     selected.update(member.item_id for initiative in state.initiatives for member in initiative.memberships)
     selected.update(episode.item_id for episode in state.off_roadmap_episodes)
     items = {item.item_id: item for item in state.lifecycle.work_items}
+    started = frozenset(
+        attempt.item_id for attempt in state.lifecycle.attempts if attempt.state != work_models.AttemptState.DONE
+    )
+    held = {value.item_id: value.unblocker for value in state.lifecycle.unblockers}
+    unresolved = unblockers.stored_unresolved_replacements(state.replacements)
     pending = list(selected)
     while pending:
         item_id = pending.pop()
@@ -258,6 +269,9 @@ def from_state(state: stored_state.StoredWorkState) -> Projection:
                     item.state,
                     tuple(dependencies.get(item.item_id, ())) if is_unfinished(item.state) else (),
                     item.queue_position,
+                    item.item_id in started,
+                    held.get(item.item_id),
+                    unresolved.get(item.item_id),
                 )
                 for item in sorted(state.lifecycle.work_items, key=item_order)
                 if item.item_id in selected

@@ -9,10 +9,11 @@ import msgspec
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.dependencies import DependencyRow, read_accepted_checkpoints
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.adapters.sqlite.lifecycle import read_current_definitions
+from pinboard.adapters.sqlite.lifecycle import read_current_definitions, read_item_unblockers
 from pinboard.adapters.sqlite.models import ItemIdRow, ProjectRevisionRow
+from pinboard.adapters.sqlite.replacements import read_current_replacements
 from pinboard.application import initiative_records as records
-from pinboard.application import roadmap, stored_state
+from pinboard.application import roadmap, stored_state, unblockers
 from pinboard.domain import initiatives as models
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import HostId, TaskId, WorkItemId
@@ -562,6 +563,28 @@ def read_roadmap(connection: sqlite3.Connection) -> roadmap.Facts:
                 discovered.add(dependency.dependency_id)
         selected.update(discovered)
         pending = tuple(sorted(discovered))
+    live = tuple(item.item_id for item in items.values() if roadmap.is_unfinished(item.state))
+    started = frozenset(
+        decode_row(row, ItemIdRow).item_id
+        for row in select_by_ids(
+            connection,
+            "SELECT item_id FROM attempts WHERE item_id IN ({ids}) AND state != 'done'",
+            live,
+        )
+    )
+    held = read_item_unblockers(connection, live)
+    replacements, dispositions = read_current_replacements(connection, live)
+    disposition_by_relation = {(value.affected_item, value.relation_revision): value for value in dispositions}
+    unresolved = {
+        value.affected_item: replacement
+        for value in replacements
+        if (
+            replacement := unblockers.unresolved_replacement_item(
+                value, disposition_by_relation.get((value.affected_item, value.relation_revision))
+            )
+        )
+        is not None
+    }
     return roadmap.Facts(
         project_revision,
         initiatives,
@@ -574,6 +597,9 @@ def read_roadmap(connection: sqlite3.Connection) -> roadmap.Facts:
                         item.state,
                         tuple(dependencies.get(item.item_id, ())),
                         item.queue_position,
+                        item.item_id in started,
+                        held.get(item.item_id),
+                        unresolved.get(item.item_id),
                     )
                     for item in items.values()
                 ),

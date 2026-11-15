@@ -17,7 +17,7 @@ from pinboard.domain.history import decode_work_item_definition, work_item_defin
 from pinboard.domain.identifiers import AttemptId, CheckpointId, LeaseId, TaskId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.domain.proposal_decisions import decide_proposal_creation
-from tests.domain_support import expect_success
+from tests.domain_support import expect_success, held_unblocker
 from tests.support import SQLITE_DEFINITION
 from tests.test_proposals import proposal as proposal_payload
 from tests.work_brief_support import example_work_brief
@@ -190,6 +190,7 @@ class WorkItemDefinitionContractTest(unittest.TestCase):
             "continue",
             "",
             1,
+            unblocker=held_unblocker(work_models.WorkState.READY),
         )
         snapshot = LedgerSnapshot(
             "1",
@@ -289,6 +290,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             "Continue",
             "",
             1,
+            unblocker=held_unblocker(work_models.WorkState.ACTIVE),
         )
         revised = replace(current, objective="Add safe navigable routes")
         snapshot = LedgerSnapshot(
@@ -325,7 +327,16 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
         current = definition()
         current_digest = expect_success(work_item_definition_digest(current))
         build = work_models.WorkItem(
-            WorkItemId("build-map"), work_models.WorkState.PAUSED, None, (), None, "source", "continue", "", 1
+            WorkItemId("build-map"),
+            work_models.WorkState.PAUSED,
+            None,
+            (),
+            None,
+            "source",
+            "continue",
+            "",
+            1,
+            unblocker=held_unblocker(work_models.WorkState.PAUSED),
         )
         survey = work_models.WorkItem(
             WorkItemId("survey-west"),
@@ -337,6 +348,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             "continue",
             "",
             2,
+            unblocker=held_unblocker(work_models.WorkState.READY),
         )
         snapshot = LedgerSnapshot(
             "ledger-revision",
@@ -435,6 +447,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             "continue",
             "",
             1,
+            unblocker=held_unblocker(work_models.WorkState.ACTIVE),
         )
         attempt = work_models.AttemptRecord(
             attempt_id,
@@ -528,6 +541,7 @@ class WorkItemDefinitionRevisionDecisionTest(unittest.TestCase):
             "Continue",
             "",
             1,
+            unblocker=held_unblocker(work_models.WorkState.READY),
         )
         snapshot = LedgerSnapshot(
             "ledger-revision",

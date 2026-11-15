@@ -14,7 +14,7 @@ from pinboard.domain.errors import (
     FailureMismatch,
     RetryDisposition,
 )
-from pinboard.domain.identifiers import AttemptId, LedgerId, ProposalId, SubjectId, WorkItemId
+from pinboard.domain.identifiers import AttemptId, CheckpointId, LedgerId, ProposalId, SubjectId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -287,7 +287,7 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
                     )
         case work_models.WorkState.PAUSED | work_models.WorkState.BLOCKED:
             pass
-        case work_models.WorkState.READY | work_models.WorkState.DEFERRED:
+        case work_models.WorkState.READY:
             raise ValueError("A live attempt requires an active, review, paused, or blocked work item.")
         case _ as unreachable:
             assert_never(unreachable)
@@ -353,7 +353,7 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
                 )
             )
         )
-        if not context.unsatisfied_dependencies and context.replacement_resolved:
+        if work_models.resume_available(context.unsatisfied_dependencies, context.replacement_resolved):
             item_actions.append(
                 decision_models.ResumeAction(
                     factory.make(
@@ -362,7 +362,7 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
                 )
             )
     elif context.item_state == work_models.WorkState.BLOCKED:
-        if not context.unsatisfied_dependencies and context.replacement_resolved:
+        if work_models.resume_available(context.unsatisfied_dependencies, context.replacement_resolved):
             item_actions.append(
                 decision_models.ResumeAction(
                     factory.make(
@@ -410,11 +410,10 @@ def _item_actions(
         case work_models.WorkState.READY:
             actions: tuple[decision_models.Action, ...] = (
                 decision_models.BlockWorkItemAction(
-                    factory.make(item.work_item_id, f"Block unstarted work item {item.work_item_id}", subject_revision)
-                ),
-                decision_models.DeferAction(
                     factory.make(
-                        item.work_item_id, f"Defer {item.work_item_id} with a reopen condition", subject_revision
+                        item.work_item_id,
+                        f"Hold unstarted work item {item.work_item_id} with what it waits for",
+                        subject_revision,
                     )
                 ),
                 close,
@@ -430,27 +429,14 @@ def _item_actions(
                 )
             return actions
         case work_models.WorkState.PAUSED | work_models.WorkState.BLOCKED:
-            dependencies_unsatisfied = bool(snapshot.unsatisfied_dependencies(item.depends_on))
-            if not dependencies_unsatisfied and _replacement_resolved(snapshot, item.work_item_id):
+            if snapshot.resume_available(item):
                 return (
                     decision_models.ResumeAction(
                         factory.make(item.work_item_id, f"Return {item.work_item_id} to ready", subject_revision)
                     ),
-                    decision_models.DeferAction(
-                        factory.make(
-                            item.work_item_id, f"Defer {item.work_item_id} with a reopen condition", subject_revision
-                        )
-                    ),
                     close,
                 )
             return (close,)
-        case work_models.WorkState.DEFERRED:
-            return (
-                decision_models.ReopenAction(
-                    factory.make(item.work_item_id, f"Reopen {item.work_item_id} to ready", subject_revision)
-                ),
-                close,
-            )
         case work_models.WorkState.ACTIVE | work_models.WorkState.REVIEW:
             return ()
         case _ as unreachable:
@@ -809,30 +795,77 @@ def _activate(
     )
 
 
-def _block_dependencies(
+def _invalid_unblocker(message: str) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+        f"{message} The ledger is unchanged.",
+        FailureDetails(
+            observed=(),
+            mismatches=(),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def _hold_unblocker(
     snapshot: LedgerSnapshot,
     item: work_models.WorkItem,
-    value: work_models.BlockInput,
-) -> DecisionResult[tuple[work_models.Dependency, ...]]:
-    if not value.depends_on:
-        return item.depends_on
-    definition = snapshot.definition(item.work_item_id)
-    if definition is None:
-        return DecisionFailure(
-            DecisionFailureCode.ITEM_DEFINITION_INVALID,
-            "The blocked item has no current definition.",
-            None,
-        )
-    if any(
-        dependency not in tuple(work_models.dependency_item(target) for target in definition.definition.dependencies)
-        for dependency in value.depends_on
-    ):
-        return DecisionFailure(
-            DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
-            "Blocker dependencies must be identities from the current definition.",
-            None,
-        )
-    return item.depends_on
+    unblocker: work_models.Unblocker,
+) -> DecisionResult[work_models.Unblocker]:
+    """Accept exactly one named unblocker for holding ``item``, or reject it with the ledger unchanged."""
+
+    match unblocker:
+        case work_models.WaitingForItemsToFinish(items=items):
+            if not items or len(set(items)) != len(items):
+                return _invalid_unblocker("Waiting for items to finish names one or more distinct items.")
+            definition = snapshot.definition(item.work_item_id)
+            if definition is None:
+                return DecisionFailure(
+                    DecisionFailureCode.ITEM_DEFINITION_INVALID,
+                    "The held item has no current definition.",
+                    None,
+                )
+            accepted = frozenset(work_models.dependency_item(target) for target in definition.definition.dependencies)
+            outside = tuple(str(value) for value in items if value not in accepted)
+            if outside:
+                return _invalid_unblocker(
+                    f"Waited-for items must be accepted dependencies of '{item.work_item_id}' in its current "
+                    f"definition; not accepted: {', '.join(outside)}. Revise the item's dependencies first or name "
+                    "a human decision or outside condition instead."
+                )
+            return unblocker
+        case (
+            work_models.WaitingForHumanDecision(question=text) | work_models.WaitingForOutsideCondition(condition=text)
+        ):
+            if not text.strip():
+                return _invalid_unblocker("A human-decision question or outside condition must state its text.")
+            return unblocker
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def decision_batch_unblocker(decisions: tuple[work_models.PauseDecision, ...]) -> work_models.WaitingForHumanDecision:
+    """Name the human decision a structured pause waits for: the answers to its pending batch.
+
+    The batch's own questions stay in its receipt and every surface shows them beside this single-line question.
+    """
+
+    identities = ", ".join(str(decision.decision_id) for decision in decisions)
+    noun = "decision" if len(decisions) == 1 else "decisions"
+    return work_models.WaitingForHumanDecision(
+        f"What does a human answer for the pending {noun} {identities} recorded with this pause?"
+    )
+
+
+def checkpoint_unblocker(work_item_id: WorkItemId, checkpoint: CheckpointId) -> work_models.WaitingForHumanDecision:
+    """Name the human decision a checkpoint-accepted pause waits for without new input."""
+
+    return work_models.WaitingForHumanDecision(
+        f"Checkpoint {checkpoint} is accepted; should work on {work_item_id} continue with its recorded remaining work?"
+    )
 
 
 def _pause_or_block(
@@ -849,6 +882,15 @@ def _pause_or_block(
         return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "The named attempt is not active.", None)
     match command:
         case decision_models.PauseCommand(value=value):
+            match value:
+                case work_models.PlainPauseInput(unblocker=requested):
+                    unblocker = _hold_unblocker(snapshot, item, requested)
+                    if isinstance(unblocker, DecisionFailure):
+                        return unblocker
+                case work_models.DecisionBatchInput(decisions=decisions):
+                    unblocker = decision_batch_unblocker(decisions)
+                case _ as unreachable:
+                    assert_never(unreachable)
             change: decision_models.NonCheckpointDecisionChange = decision_models.AttemptStateChange(
                 item.work_item_id,
                 item.state,
@@ -857,18 +899,19 @@ def _pause_or_block(
                 work_models.AttemptState.ACTIVE,
                 work_models.AttemptState.PAUSED,
                 value,
+                unblocker,
             )
             evidence: str | None = value.reason
         case decision_models.BlockCommand(value=value):
-            dependencies = _block_dependencies(snapshot, item, value)
-            if isinstance(dependencies, DecisionFailure):
-                return dependencies
+            unblocker = _hold_unblocker(snapshot, item, value.unblocker)
+            if isinstance(unblocker, DecisionFailure):
+                return unblocker
             change = decision_models.BlockAttemptChange(
                 item.work_item_id,
                 item.state,
                 attempt_id,
                 work_models.AttemptState.ACTIVE,
-                dependencies,
+                unblocker,
             )
             evidence = None
         case _ as unreachable:
@@ -1036,12 +1079,7 @@ def _close(
     if isinstance(item, DecisionFailure):
         return item
     match item.state:
-        case (
-            work_models.WorkState.READY
-            | work_models.WorkState.PAUSED
-            | work_models.WorkState.BLOCKED
-            | work_models.WorkState.DEFERRED
-        ):
+        case work_models.WorkState.READY | work_models.WorkState.PAUSED | work_models.WorkState.BLOCKED:
             pass
         case work_models.WorkState.ACTIVE | work_models.WorkState.REVIEW:
             return DecisionFailure(
@@ -1139,13 +1177,13 @@ def _resume(
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.work_item_id}' is not paused or blocked.", None
         )
-    if bool(snapshot.unsatisfied_dependencies(item.depends_on)):
-        return DecisionFailure(
-            DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
-            f"Item '{item.work_item_id}' still has an unsatisfied prerequisite.",
-            None,
-        )
-    if not _replacement_resolved(snapshot, item.work_item_id):
+    if not snapshot.resume_available(item):
+        if snapshot.unsatisfied_dependencies(item.depends_on):
+            return DecisionFailure(
+                DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
+                f"Item '{item.work_item_id}' still has an unsatisfied prerequisite.",
+                None,
+            )
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
             f"Item '{item.work_item_id}' has an unresolved planned replacement.",
@@ -1228,12 +1266,7 @@ def _rebind_attempt(
             expected_attempt_state = work_models.AttemptState.ACTIVE
         case work_models.WorkState.PAUSED:
             expected_attempt_state = work_models.AttemptState.PAUSED
-        case (
-            work_models.WorkState.READY
-            | work_models.WorkState.BLOCKED
-            | work_models.WorkState.DEFERRED
-            | work_models.WorkState.REVIEW
-        ):
+        case work_models.WorkState.READY | work_models.WorkState.BLOCKED | work_models.WorkState.REVIEW:
             return DecisionFailure(
                 DecisionFailureCode.ACTION_NOT_AVAILABLE,
                 "Only an active or paused attempt can be rebound.",
@@ -1272,8 +1305,17 @@ def _rebind_attempt(
             None,
         )
     authority = authorities[0]
-    # A paused attempt's latest receipt is its only readable pause reason, so the rebind receipt carries it forward.
-    carried_pause_reason = attempt.pause_reason if expected_attempt_state == work_models.AttemptState.PAUSED else None
+    # A paused attempt's latest receipt is its only readable pause reason, so the rebind receipt carries it forward;
+    # its current unblocker is copied forward unchanged the same way.
+    paused = expected_attempt_state == work_models.AttemptState.PAUSED
+    carried_pause_reason = attempt.pause_reason if paused else None
+    carried_unblocker = item.unblocker if paused else None
+    if paused and carried_unblocker is None:
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "The paused attempt records no current unblocker to carry forward.",
+            None,
+        )
     return _accepted_transition_decision(
         action,
         now,
@@ -1290,6 +1332,7 @@ def _rebind_attempt(
                 authority,
                 replace(authority, lease_id=None, generation=authority.generation + 1),
             ),
+            carried_unblocker,
         ),
         work_item_id=item.work_item_id,
         evidence=carried_pause_reason,
@@ -1431,6 +1474,7 @@ def _accept_checkpoint(
             attempt_id,
             value.candidate,
             authority_change,
+            checkpoint_unblocker(item.work_item_id, value.checkpoint),
         ),
         work_item_id=item.work_item_id,
         evidence=value.evidence,
@@ -1504,57 +1548,13 @@ def _block_item(
             f"Item '{item.work_item_id}' cannot perform '{action.kind.value}' now.",
             None,
         )
-    dependencies = _block_dependencies(snapshot, item, command.value)
-    if isinstance(dependencies, DecisionFailure):
-        return dependencies
+    unblocker = _hold_unblocker(snapshot, item, command.value.unblocker)
+    if isinstance(unblocker, DecisionFailure):
+        return unblocker
     return _accepted_transition_decision(
         action,
         now,
-        decision_models.BlockWorkItemChange(item.work_item_id, item.state, dependencies),
-        work_item_id=item.work_item_id,
-    )
-
-
-def _reopen(
-    snapshot: LedgerSnapshot,
-    command: decision_models.ReopenCommand,
-    now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]:
-    action = command.action
-    item_id = action.capability.subject
-    item = _require_work_item(snapshot, item_id)
-    if isinstance(item, DecisionFailure):
-        return item
-    if item.state != work_models.WorkState.DEFERRED:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            f"Item '{item.work_item_id}' cannot perform '{action.kind.value}' now.",
-            None,
-        )
-    return _accepted_transition_decision(
-        action,
-        now,
-        decision_models.WorkItemStateChange(item.work_item_id, item.state, work_models.WorkState.READY),
-        work_item_id=item.work_item_id,
-    )
-
-
-def _defer(
-    snapshot: LedgerSnapshot, command: decision_models.DeferCommand, now: datetime
-) -> DecisionResult[decision_models.TransitionDecision]:
-    action = command.action
-    item_id = action.capability.subject
-    item = _require_work_item(snapshot, item_id)
-    if isinstance(item, DecisionFailure):
-        return item
-    if item.state not in {work_models.WorkState.READY, work_models.WorkState.BLOCKED} or item.attempt is not None:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, f"Item '{item.work_item_id}' cannot be deferred now.", None
-        )
-    return _accepted_transition_decision(
-        action,
-        now,
-        decision_models.WorkItemStateChange(item.work_item_id, item.state, work_models.WorkState.DEFERRED),
+        decision_models.BlockWorkItemChange(item.work_item_id, item.state, unblocker),
         work_item_id=item.work_item_id,
     )
 
@@ -1567,7 +1567,6 @@ def _unstarted_proposal_item(snapshot: LedgerSnapshot, proposal_id: ProposalId) 
         not in {
             work_models.WorkState.READY,
             work_models.WorkState.BLOCKED,
-            work_models.WorkState.DEFERRED,
         }
         or item.attempt is not None
         or any(authority.work_item_id == item.work_item_id for authority in snapshot.command_preparation_authorities)
@@ -1822,10 +1821,6 @@ def decide(  # noqa: C901, PLR0912
             return _return_for_correction(snapshot, command, now)
         case decision_models.BlockWorkItemCommand():
             return _block_item(snapshot, command, now)
-        case decision_models.ReopenCommand():
-            return _reopen(snapshot, command, now)
-        case decision_models.DeferCommand():
-            return _defer(snapshot, command, now)
         case decision_models.MergeProposalCommand():
             return _merge_proposal(snapshot, command, now)
         case decision_models.RejectProposalCommand():

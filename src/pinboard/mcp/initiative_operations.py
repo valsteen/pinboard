@@ -224,7 +224,7 @@ def _roadmap_result(value: roadmap.Projection) -> execution.TypedOperationResult
                 tuple(
                     query_models.DependencyStatus(
                         history.dependency_payload(condition.target),
-                        condition.satisfied,
+                        condition.fate.satisfied,
                         condition.target in value.facts.accepted_checkpoints,
                     )
                     for condition in value.dependency_conditions[item.item_id]

@@ -19,6 +19,7 @@ from pinboard.adapters.sqlite.migration import database as migration_database
 from pinboard.adapters.sqlite.migration.schema_decisions_v10 import _upgrade_v10_connection
 from pinboard.adapters.sqlite.migration.schema_dependencies_v9 import _upgrade_v9_connection
 from pinboard.adapters.sqlite.migration.schema_membership_v11 import _upgrade_v11_connection
+from pinboard.adapters.sqlite.migration.schema_unblockers_v12 import project_v12_for_current_readers
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.state import read_state
 from pinboard.application import (
@@ -200,6 +201,7 @@ def _read_compatibility_v9_state(connection: sqlite3.Connection) -> stored_state
         _upgrade_v9_connection(projection, None)
         _upgrade_v10_connection(projection, None)
         _upgrade_v11_connection(projection, None)
+        project_v12_for_current_readers(projection)
         return read_state(projection)
 
 
@@ -316,6 +318,11 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
                 return migration_database.inspect_schema_migration(path)
             if version == database.SCHEMA_VERSION:
                 database._verify_current_schema(connection)
+                database.verify_database_integrity(connection)
+                return version, source, None
+            if version == 12:
+                # The v12 postimage depends on hold labels, so its labelled preview predicts it separately.
+                database._verify_v12_schema(connection)
                 database.verify_database_integrity(connection)
                 return version, source, None
             if version == 11:

@@ -44,6 +44,18 @@ class LedgerSnapshot:
             )
         )
 
+    def dependency_fate(self, dependency: work_models.Dependency) -> work_models.DependencyFate:
+        """Classify one dependency from this snapshot: live items are unfinished, dropped items were cancelled."""
+
+        prerequisite = work_models.dependency_item(dependency)
+        if prerequisite in self.dropped_item_ids:
+            outcome = work_models.PrerequisiteOutcome.CANCELLED
+        elif any(item.work_item_id == prerequisite for item in self.items):
+            outcome = work_models.PrerequisiteOutcome.LIVE
+        else:
+            outcome = work_models.PrerequisiteOutcome.FINISHED
+        return work_models.dependency_fate(dependency, outcome, self.accepted_checkpoints)
+
     def work_items_by_id(self) -> Mapping[WorkItemId, work_models.WorkItem]:
         return MappingProxyType({item.work_item_id: item for item in self.items})
 
@@ -133,6 +145,15 @@ class LedgerSnapshot:
         if relation is None:
             return None
         disposition = self.replacement_disposition(work_item_id, relation.relation_revision)
-        if disposition is not None and disposition.accepted_cost == relation.replacement_cost:
+        if not work_models.replacement_withholds_resume(
+            relation.status, relation.replacement_cost, None if disposition is None else disposition.accepted_cost
+        ):
             return None
         return relation
+
+    def resume_available(self, item: work_models.WorkItem) -> bool:
+        """Whether resume of this held item would be offered, by the one shared predicate."""
+
+        return work_models.resume_available(
+            self.unsatisfied_dependencies(item.depends_on), self.unresolved_replacement(item.work_item_id) is None
+        )

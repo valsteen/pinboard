@@ -3,9 +3,9 @@
 import sqlite3
 from itertools import batched
 
-from pinboard.adapters.sqlite.decision_reads import read_current_replacements
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import decode_definition_revision, read_current_definitions
+from pinboard.adapters.sqlite.replacements import read_current_replacements
 from pinboard.application import obligation_coverage as coverage
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure

@@ -30,8 +30,10 @@ from pinboard.application import (
     ports,
     pr_reviews,
     query_models,
+    released_receipt_compatibility,
     roadmap,
     stored_state,
+    unblockers,
 )
 from pinboard.application.queries import (
     damaged_receipt_message,
@@ -39,7 +41,7 @@ from pinboard.application.queries import (
     decode_recorded_pause_reason,
     project_board_portfolio,
 )
-from pinboard.domain import history, work_models
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.identifiers import AttemptId, WorkItemId
 
 NOTICE = "Generated projection; SQLite is authoritative."
@@ -50,7 +52,7 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
 
 
 def _render_header(kind: str) -> str:
-    return f"---\nkind: {kind}\nauthority: sqlite-v12\n---\n\n> {NOTICE}\n\n"
+    return f"---\nkind: {kind}\nauthority: sqlite-v13\n---\n\n> {NOTICE}\n\n"
 
 
 def _render_decision_questions(decisions: tuple[decision_batches.PauseDecision, ...]) -> str:
@@ -202,6 +204,11 @@ def _render_item(
         + "## Current position\n\n"
         + f"- State: {overview_item.state.value if overview_item is not None else item.state.value}\n"
         + f"- Current attempt: {attempt or 'none'}\n"
+        + (
+            ""
+            if overview_item is None or overview_item.hold is None
+            else f"- What it waits for: {markdown_hold_sentence(overview_item.hold.parts, '')}\n"
+        )
         + ("" if pause_reason is None else f"- Pause reason: {history.nest_record_text(pause_reason, '  ')}\n")
         + f"- Dependency eligibility: {'yes' if overview_item is not None and overview_item.eligible else 'no'}\n\n"
         + next_step
@@ -257,9 +264,15 @@ def _render_attempt(
     attempt: stored_state.StoredAttempt,
     item_state: stored_state.StoredWorkItemState,
     attempt_briefs: Mapping[AttemptId, bytes],
+    hold: unblockers.HoldDescription | None,
 ) -> bytes:
+    """Render an attempt view: its accepted brief bytes unchanged, or a summary, and the hold sentence while held."""
+
+    hold_section = (
+        b"" if hold is None else f"\n## On hold\n\n{markdown_hold_sentence(hold.parts, '../items/')}\n".encode()
+    )
     if (brief := attempt_briefs.get(attempt.attempt_id)) is not None:
-        return brief
+        return brief + hold_section
     state = (
         "superseded (item superseded)"
         if item_state == stored_state.StoredWorkItemState.SUPERSEDED
@@ -275,7 +288,7 @@ def _render_attempt(
         + f"- Branch: {attempt.branch}\n"
         + f"- Base revision: {attempt.base_revision}\n"
         + f"- Candidate revision: {attempt.candidate_revision or 'none'}\n"
-    ).encode()
+    ).encode() + hold_section
 
 
 def _render_history_row(receipt: stored_state.StoredTransitionReceipt) -> str:
@@ -284,6 +297,54 @@ def _render_history_row(receipt: stored_state.StoredTransitionReceipt) -> str:
         f"| {receipt.history_id} | {receipt.project_revision} | {receipt.action_id} | {outcome_json} | "
         f"{receipt.subject_id} | {receipt.committed_at.isoformat()} |\n"
     )
+
+
+def _render_unblocker(unblocker: work_models.Unblocker) -> str:
+    match unblocker:
+        case work_models.WaitingForItemsToFinish(items=items):
+            return "Waiting for these items to finish: " + ", ".join(
+                f"[{_markdown_link_text(item)}](../items/{item}.md)" for item in items
+            )
+        case work_models.WaitingForHumanDecision(question=question):
+            return f"Waiting for a human decision: {question}"
+        case work_models.WaitingForOutsideCondition(condition=condition):
+            return f"Waiting for an outside condition: {condition}"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+_RELEASED_HOLD_ACTIONS: frozenset[decision_models.ActionKind | released_receipt_compatibility.HistoricalActionKind] = (
+    frozenset(
+        {
+            decision_models.ActionKind.BLOCK,
+            decision_models.ActionKind.BLOCK_ITEM,
+            released_receipt_compatibility.HistoricalActionKind.DEFER,
+        }
+    )
+)
+
+
+def _render_hold_receipt(receipt: stored_state.StoredTransitionReceipt) -> str:
+    """Name what a hold receipt waited for; a hold released before unblockers were required says so."""
+
+    match receipt.input_schema:
+        case unblockers.HOLD_RECEIPT_SCHEMA:
+            hold = msgspec.json.decode(bytes(receipt.input_payload), type=unblockers.HoldReceiptInput)
+            return (
+                f"\n## What it waited for\n\n{_render_unblocker(unblockers.unblocker_from_payload(hold.unblocker))}\n"
+            )
+        case unblockers.PLAIN_PAUSE_RECEIPT_SCHEMA:
+            pause = msgspec.json.decode(bytes(receipt.input_payload), type=unblockers.PlainPauseReceiptInput)
+            return (
+                f"\n## What it waited for\n\n{_render_unblocker(unblockers.unblocker_from_payload(pause.unblocker))}\n"
+            )
+        case _ if receipt.action_kind in _RELEASED_HOLD_ACTIONS:
+            return (
+                "\n## What it waited for\n\nThis hold was recorded before Pinboard required a reason, "
+                "so its reason was not recorded at the time.\n"
+            )
+        case _:
+            return ""
 
 
 def _render_history(receipt: stored_state.StoredTransitionReceipt) -> bytes:
@@ -307,6 +368,7 @@ def _render_history(receipt: stored_state.StoredTransitionReceipt) -> bytes:
         + "| History | Revision | Action receipt | Recorded outcome | Subject | Committed |\n"
         + "| --- | --- | --- | --- | --- | --- |\n"
         + _render_history_row(receipt)
+        + _render_hold_receipt(receipt)
         + decisions
     ).encode()
 
@@ -331,7 +393,7 @@ class _BoardGroup(Enum):
     WAITING_ON_HUMAN = "Paused or in review"
     IN_PROGRESS = "In progress"
     READY = "Ready"
-    BLOCKED_OR_DEFERRED = "Blocked or deferred"
+    BLOCKED = "Blocked"
 
 
 def _board_group(state: work_models.WorkState) -> _BoardGroup:
@@ -342,8 +404,8 @@ def _board_group(state: work_models.WorkState) -> _BoardGroup:
             return _BoardGroup.IN_PROGRESS
         case work_models.WorkState.READY:
             return _BoardGroup.READY
-        case work_models.WorkState.BLOCKED | work_models.WorkState.DEFERRED:
-            return _BoardGroup.BLOCKED_OR_DEFERRED
+        case work_models.WorkState.BLOCKED:
+            return _BoardGroup.BLOCKED
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -357,13 +419,11 @@ def _board_next_step(state: work_models.WorkState) -> str:
         case work_models.WorkState.ACTIVE:
             return "Let its active attempt continue, or check its progress."
         case work_models.WorkState.PAUSED:
-            return "Read why it is paused and decide whether it should resume."
+            return "Read what it waits for and resume it once that is resolved."
         case work_models.WorkState.REVIEW:
             return "Have its submitted candidate reviewed independently and decide on the verdict."
         case work_models.WorkState.BLOCKED:
-            return "Check whether what blocks it has been resolved."
-        case work_models.WorkState.DEFERRED:
-            return "Check whether its reopen condition is met."
+            return "Read what it waits for and resume it once that is resolved."
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -400,12 +460,26 @@ def _unsatisfied_dependencies(item: query_models.BoardItem) -> tuple[query_model
     )
 
 
+def markdown_hold_sentence(parts: tuple[unblockers.SentencePart, ...], link_prefix: str) -> str:
+    """Render the shared hold sentence as Markdown, linking each waited-for item's generated view."""
+
+    def link(item_id: WorkItemId) -> str:
+        return f"[{_markdown_link_text(item_id)}]({link_prefix}{item_id}.md)"
+
+    return unblockers.render_sentence(parts, unblockers.sentence_text_identity, link)
+
+
 def _render_board_markdown(board: query_models.BoardPortfolio) -> bytes:
     sections: list[str] = []
     for group, grouped in _board_groups(board.items):
         entries = "".join(
             f"- [{_markdown_link_text(item.overview.label)}](items/{item.overview.item_id}.md) "
             + f"`{item.overview.item_id}` ({item.overview.state.value}), changed {_utc_label(item.updated_at)}\n"
+            + (
+                ""
+                if item.overview.hold is None
+                else f"  - {markdown_hold_sentence(item.overview.hold.parts, 'items/')}\n"
+            )
             + "".join(f"  - Depends on {value.item_id}: {value.reason}\n" for value in _unsatisfied_dependencies(item))
             + (
                 ""
@@ -434,6 +508,22 @@ class _BoardPageDependency(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     reason: str
     on_board: bool
     unsatisfied: bool
+
+
+class _BoardPageHoldText(msgspec.Struct, tag="text", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    text: str
+
+
+class _BoardPageHoldItem(msgspec.Struct, tag="item", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    item_id: str
+    on_board: bool
+
+
+class _BoardPageHold(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """The shared hold sentence, with each waited-for item as a link part."""
+
+    parts: tuple[_BoardPageHoldText | _BoardPageHoldItem, ...]
+    resume_needed: bool
 
 
 class _BoardPageCondition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -560,6 +650,7 @@ class _BoardPageItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     effect: str
     unlock: str
     dependencies: tuple[_BoardPageDependency, ...]
+    hold: _BoardPageHold | None
     standing: _BoardPageNextStep | _BoardPageStanding
     intake_next_action: str | None
     intake_notes: str | None
@@ -605,9 +696,16 @@ def _condition(  # noqa: C901, PLR0912 - one exhaustive presentation of the clos
                 reason,
                 "No pause reason is recorded." if reason is None else None,
             )
-        case query_models.BlockedCondition(at=at):
+        case query_models.BlockedCondition(at=at, reason_recorded=reason_recorded):
             return _BoardPageCondition(
-                "blocked", "Blocked", _utc_instant(at), "Block receipt committed", None, "Blocking records no reason."
+                "blocked",
+                "Blocked",
+                _utc_instant(at),
+                "Block receipt committed",
+                None,
+                None
+                if reason_recorded
+                else "This hold was recorded before Pinboard required a reason, so its reason was not recorded at the time.",
             )
         case query_models.ReboundCondition(at=at, attempt_state=attempt_state, pause_reason=reason):
             paused = attempt_state == work_models.AttemptState.PAUSED
@@ -846,6 +944,21 @@ def _page_scope(item: query_models.BoardItem) -> _BoardPageScope:
     )
 
 
+def _page_hold(hold: unblockers.HoldDescription | None, live_item_ids: frozenset[str]) -> _BoardPageHold | None:
+    if hold is None:
+        return None
+    parts: list[_BoardPageHoldText | _BoardPageHoldItem] = []
+    for part in hold.parts:
+        match part:
+            case unblockers.SentenceText(text=text):
+                parts.append(_BoardPageHoldText(text))
+            case unblockers.SentenceItem(item_id=item_id):
+                parts.append(_BoardPageHoldItem(str(item_id), str(item_id) in live_item_ids))
+            case _ as unreachable:
+                assert_never(unreachable)
+    return _BoardPageHold(tuple(parts), hold.resume_needed)
+
+
 def _board_page_item(value: query_models.BoardItem, live_item_ids: frozenset[str]) -> _BoardPageItem:
     item = value.overview
     return _BoardPageItem(
@@ -867,6 +980,7 @@ def _board_page_item(value: query_models.BoardItem, live_item_ids: frozenset[str
                 for dependency in item.dependency_reasons
             )
         ),
+        _page_hold(item.hold, live_item_ids),
         _standing(value),
         item.next_action,
         item.notes,
@@ -927,7 +1041,7 @@ h3 { font-size: 0.95rem; margin: 12px 0 4px; }
 details.item { background: var(--card); border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; }
 details.item > summary { cursor: pointer; padding: 8px 12px; display: grid;
   grid-template-columns: minmax(0, 1fr) var(--badge-width);
-  grid-template-areas: "title state" "meta meta" "standing standing" "deps deps";
+  grid-template-areas: "title state" "meta meta" "hold hold" "standing standing" "deps deps";
   gap: 2px 10px; align-items: baseline; }
 .title { grid-area: title; font-weight: 600; overflow-wrap: anywhere; }
 .state { grid-area: state; width: var(--badge-width); text-align: center; font-size: 0.8rem; padding: 0 6px;
@@ -938,6 +1052,7 @@ details.item > summary { cursor: pointer; padding: 8px 12px; display: grid;
 .id, .deps, .when { color: var(--muted); font-size: 0.85rem; }
 .standing { grid-area: standing; font-size: 0.88rem; overflow-wrap: anywhere; display: -webkit-box;
   -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.hold { grid-area: hold; font-size: 0.9rem; overflow-wrap: anywhere; }
 .checkpoint-title { font-weight: 600; }
 .condition { color: var(--muted); }
 .stamp { cursor: pointer; border-bottom: 1px dotted currentColor; }
@@ -1136,7 +1251,37 @@ _BOARD_PAGE_TAIL = """</script>
     summary.appendChild(line);
   }
 
+  function holdSentence(parent, hold) {
+    hold.parts.forEach(function (part) {
+      if (part.kind === "text") {
+        parent.appendChild(document.createTextNode(part.text));
+        return;
+      }
+      var link = node("a", null, part.item_id);
+      if (part.on_board) {
+        link.href = "#item-" + part.item_id;
+        link.addEventListener("click", function (event) {
+          event.stopPropagation();
+          document.getElementById(link.hash.slice(1)).open = true;
+        });
+      } else {
+        link.href = "items/" + encodeURIComponent(part.item_id) + ".md";
+      }
+      parent.appendChild(link);
+    });
+  }
+
+  function holdText(hold) {
+    return hold.parts.map(function (part) { return part.kind === "text" ? part.text : part.item_id; }).join("");
+  }
+
   function whereItStands(body, item) {
+    if (item.hold) {
+      body.appendChild(node("h3", null, "What it waits for"));
+      var waits = node("p");
+      holdSentence(waits, item.hold);
+      body.appendChild(waits);
+    }
     var standing = item.standing;
     if (standing.kind !== "attempt") {
       field(body, "Next step", standing.text);
@@ -1335,6 +1480,11 @@ _BOARD_PAGE_TAIL = """</script>
     meta.appendChild(node("code", "id", item.item_id));
     meta.appendChild(stamp("stamp item-time", item.updated_at, "Item record changed"));
     summary.appendChild(meta);
+    if (item.hold) {
+      var held = node("span", "hold");
+      holdSentence(held, item.hold);
+      summary.appendChild(held);
+    }
     standingLine(summary, item.standing);
     var applying = item.dependencies.filter(function (value) { return value.unsatisfied; });
     if (applying.length) {
@@ -1389,6 +1539,7 @@ _BOARD_PAGE_TAIL = """</script>
     var standingText = item.standing.kind === "attempt" ? [item.standing.condition.label].concat(
       item.standing.checkpoint.kind === "checkpoint" ? [item.standing.checkpoint.title] : []) : [item.standing.text];
     details.dataset.search = [item.item_id, item.title, item.state, item.effect, item.unlock].concat(standingText)
+      .concat(item.hold ? [holdText(item.hold)] : [])
       .concat(item.dependencies.map(function (value) { return value.item_id + " " + value.reason; }))
       .join(" ").toLowerCase();
     return details;
@@ -1548,7 +1699,8 @@ def _write_facts(
         for selected in facts.attempts:
             attempt = selected.attempt
             atomic_replace(
-                attempt_root / f"{attempt.attempt_id}.md", _render_attempt(attempt, selected.item_state, attempt_briefs)
+                attempt_root / f"{attempt.attempt_id}.md",
+                _render_attempt(attempt, selected.item_state, attempt_briefs, selected.hold),
             )
     if facts.receipts:
         history_root = ensure_child_directory(view_root, "history")
@@ -1654,6 +1806,10 @@ def derive_expected_view_bytes(
                 attempt,
                 next(item.state for item in state.lifecycle.work_items if item.item_id == attempt.item_id),
                 attempt_briefs,
+                overview.hold
+                if attempt.state in {work_models.AttemptState.PAUSED, work_models.AttemptState.BLOCKED}
+                and (overview := view_inputs.overview_items.get(str(attempt.item_id))) is not None
+                else None,
             ),
         )
         for attempt in state.lifecycle.attempts

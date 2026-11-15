@@ -47,6 +47,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     replace_dependencies,
     set_attempt_state,
     set_item_state,
+    write_item_unblocker,
 )
 from pinboard.adapters.sqlite.models import (
     ArtifactIdAllocationRow,
@@ -344,6 +345,27 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
     return tuple(dict.fromkeys(affected_items)), tuple(dict.fromkeys(attempt_ids))
 
 
+def _held_attempt_ids(
+    connection: sqlite3.Connection, item_ids: tuple[WorkItemId, ...], attempt_ids: tuple[AttemptId, ...]
+) -> tuple[AttemptId, ...]:
+    """Append each affected item's paused or blocked attempt, whose view repeats that item's hold sentence.
+
+    The effect's own attempt ids keep their order, so its continuation attempt is unchanged.
+    """
+
+    held = tuple(
+        decode_row(row, AttemptIdRow).attempt_id
+        for row in select_by_ids(
+            connection,
+            """SELECT attempt_id FROM attempts INDEXED BY one_live_attempt_per_item
+               WHERE item_id IN ({ids}) AND state != 'done' AND state IN ('paused', 'blocked')
+               ORDER BY attempt_id""",
+            item_ids,
+        )
+    )
+    return tuple(dict.fromkeys((*attempt_ids, *held)))
+
+
 def _persist_definition_revision(
     connection: sqlite3.Connection,
     facts: _PersistenceFacts,
@@ -388,6 +410,7 @@ def _persist_closure(
             revision,
             now,
             change.evidence,
+            unblocker=None,
         )
     ) is not None:
         return failure
@@ -445,6 +468,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     stored_state.stored_live_work_state(after),
                     revision,
                     now,
+                    unblocker=None,
                 )
             ) is not None:
                 return failure
@@ -457,6 +481,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     stored_state.StoredWorkItemState.ACTIVE,
                     revision,
                     now,
+                    unblocker=None,
                 )
             ) is not None:
                 return failure
@@ -482,6 +507,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             attempt=attempt,
             attempt_before=attempt_before,
             attempt_after=attempt_after,
+            unblocker=unblocker,
         ):
             if (
                 failure := set_item_state(
@@ -491,6 +517,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     stored_state.stored_live_work_state(item_after),
                     revision,
                     now,
+                    unblocker=unblocker,
                 )
             ) is not None:
                 return failure
@@ -505,7 +532,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             item_before=item_before,
             attempt=attempt,
             attempt_before=attempt_before,
-            dependencies_after=dependencies,
+            unblocker=unblocker,
         ):
             if (
                 failure := set_item_state(
@@ -515,6 +542,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     stored_state.StoredWorkItemState.BLOCKED,
                     revision,
                     now,
+                    unblocker=unblocker,
                 )
             ) is not None:
                 return failure
@@ -529,10 +557,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 )
             ) is not None:
                 return failure
-            replace_dependencies(connection, item, dependencies)
-        case decision_models.BlockWorkItemChange(
-            work_item_id=item, item_before=item_before, dependencies_after=dependencies
-        ):
+        case decision_models.BlockWorkItemChange(work_item_id=item, item_before=item_before, unblocker=unblocker):
             if (
                 failure := set_item_state(
                     connection,
@@ -541,15 +566,17 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     stored_state.StoredWorkItemState.BLOCKED,
                     revision,
                     now,
+                    unblocker=unblocker,
                 )
             ) is not None:
                 return failure
-            replace_dependencies(connection, item, dependencies)
-        case decision_models.RebindAttemptChange(authority_change=authority):
+        case decision_models.RebindAttemptChange(authority_change=authority, carried_unblocker=carried):
             if (
                 failure := rebind_attempt(connection, facts.attempt(change.attempt), change, revision, now)
             ) is not None:
                 return failure
+            if carried is not None:
+                write_item_unblocker(connection, change.work_item_id, carried)
             if (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
         case decision_models.ResumeAttemptChange(
@@ -567,6 +594,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     stored_state.StoredWorkItemState.ACTIVE,
                     revision,
                     now,
+                    unblocker=None,
                 )
             ) is not None:
                 return failure
@@ -596,6 +624,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     stored_state.StoredWorkItemState.REVIEW,
                     revision,
                     now,
+                    unblocker=None,
                 )
             ) is not None:
                 return failure
@@ -624,6 +653,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     stored_state.StoredWorkItemState.ACTIVE,
                     revision,
                     now,
+                    unblocker=None,
                 )
             ) is not None:
                 return failure
@@ -657,6 +687,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     revision,
                     now,
                     evidence,
+                    unblocker=None,
                 )
             ) is not None:
                 return failure
@@ -690,6 +721,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     revision,
                     now,
                     f"Merged into {target}.",
+                    unblocker=None,
                 )
             ) is not None:
                 return failure
@@ -714,6 +746,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                     revision,
                     now,
                     reason,
+                    unblocker=None,
                 )
             ) is not None:
                 return failure
@@ -812,6 +845,7 @@ def _persist_checkpoint_acceptance(
             stored_state.StoredWorkItemState.PAUSED,
             revision,
             now,
+            unblocker=change.unblocker,
         )
     ) is not None:
         return failure
@@ -863,6 +897,7 @@ def _persist_completion_acceptance(
             revision,
             now,
             change.evidence,
+            unblocker=None,
         )
     ) is not None:
         return failure
@@ -1262,8 +1297,9 @@ class SQLiteWorkTransaction:
         return 0 if row is None else decode_row(row, GenerationRow).generation_high_water
 
     def commit(self, mutation: StoredStateMutation) -> DecisionResult[CommittedEffect]:
-        item_ids, attempt_ids = _committed_effect_ids(self.connection, mutation)
-        continuation_attempt_id = attempt_ids[0] if attempt_ids else None
+        item_ids, own_attempt_ids = _committed_effect_ids(self.connection, mutation)
+        continuation_attempt_id = own_attempt_ids[0] if own_attempt_ids else None
+        attempt_ids = _held_attempt_ids(self.connection, item_ids, own_attempt_ids)
         if continuation_attempt_id is None and mutation.receipt.transition.work_item_id is not None:
             row = self.connection.execute(
                 "SELECT attempt_id FROM attempts WHERE item_id = ? AND state != 'done'",

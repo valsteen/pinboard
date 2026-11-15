@@ -40,8 +40,8 @@ from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import AcceptedPackageFixture, CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_advertised_tool, native_tools
-from tests.sqlite_support import _insert_lifecycle
-from tests.support import SQLITE_NOW, JsonObject, JsonValue
+from tests.sqlite_support import _insert_lifecycle, sync_test_unblocker
+from tests.support import HOLD_UNBLOCKER, SQLITE_NOW, JsonObject, JsonValue
 
 HUMAN_WORDS = "Yes, close work-c as done: the parser rewrite already covers it."
 
@@ -247,7 +247,9 @@ class HumanConfirmedCloseTest(NativeFixtureSupport):
             fixture, self.project_action(fixture, "return-for-correction:work-a-1"), {"reason": "Continue it."}
         )
         self.assertEqual("committed", returned["status"], returned)
-        paused = self.transition_result(fixture, self.project_action(fixture, "pause:work-a-1"), {"reason": "Wait."})
+        paused = self.transition_result(
+            fixture, self.project_action(fixture, "pause:work-a-1"), {"reason": "Wait.", "unblocker": HOLD_UNBLOCKER}
+        )
         self.assertEqual("committed", paused["status"], paused)
         actions = self.actions_result(fixture, {"role": "project", "action_id": {"kind": "close", "subject": "work-a"}})
         self.assertEqual("rejected", actions["status"], actions)
@@ -398,6 +400,7 @@ class SubmittedCandidateSupport(NativeFixtureSupport):
     def submitted_checkpoint_fixture(self, fixture: AcceptedPackageFixture) -> tuple[AcceptedPackageFixture, str]:
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             connection.execute("UPDATE work_items SET state = 'active' WHERE item_id = ?", (fixture.brief.item_id,))
+            sync_test_unblocker(connection, fixture.brief.item_id)
             connection.execute("UPDATE attempts SET state = 'active' WHERE attempt_id = ?", (fixture.brief.attempt_id,))
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'paused'")
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'active'")
@@ -443,6 +446,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
                     (dataclasses.replace(definition, item_id=item_id),),
                     checkpoint_acceptances=(),
                     decision_batch_references=(),
+                    unblockers=(),
                 ),
             )
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'ready'")
@@ -489,6 +493,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
                     (),
                     checkpoint_acceptances=(),
                     decision_batch_references=(),
+                    unblockers=(),
                 ),
             )
             connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = ?", (str(item_id),))

@@ -7,7 +7,7 @@ from pinboard.domain.decisions import available_actions, decide
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import AttemptId, LeaseId, TaskId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
-from tests.domain_support import action, expect_success
+from tests.domain_support import action, expect_success, held_unblocker
 
 NOW = datetime(2026, 9, 10, tzinfo=UTC)
 
@@ -23,6 +23,7 @@ def work_item(item_id: str, state: work_models.WorkState, attempt: str | None = 
         None,
         None,
         1,
+        unblocker=held_unblocker(state),
     )
 
 
@@ -94,7 +95,7 @@ class PlannedReplacementTests(unittest.TestCase):
         ready = self.action_ids(self.snapshot(relation_value=relation()))
         self.assertNotIn("activate:old-work", ready)
         self.assertIn("revise-item:old-work", ready)
-        self.assertIn("defer:old-work", ready)
+        self.assertIn("block-item:old-work", ready)
         self.assertIn("close:old-work", ready)
         self.assertIn("record-replacement:old-work", ready)
         self.assertIn("retain-temporarily:old-work", ready)

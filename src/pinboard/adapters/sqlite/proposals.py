@@ -20,7 +20,7 @@ from pinboard.adapters.sqlite.lifecycle import (
     make_queue_space,
     replace_dependencies,
 )
-from pinboard.application import released_v6_compatibility, stored_state
+from pinboard.application import released_receipt_compatibility, stored_state
 from pinboard.application.mutation_models import ProposalCreationMutation
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
@@ -159,7 +159,7 @@ def _decode_stored_proposal_disposition(
     target: WorkItemId | None,
     reason: str | None,
     disposed_at: datetime | None,
-) -> released_v6_compatibility.StoredProposalDisposition | None:
+) -> released_receipt_compatibility.StoredProposalDisposition | None:
     match kind:
         case None:
             if target is not None or reason is not None or disposed_at is not None:
@@ -167,7 +167,7 @@ def _decode_stored_proposal_disposition(
             return None
         case work_models.ProposalDispositionKind.ACCEPTED:
             _forbid_disposition_value(kind, "reason", reason)
-            return released_v6_compatibility.HistoricalAcceptedProposalDisposition(
+            return released_receipt_compatibility.HistoricalAcceptedProposalDisposition(
                 _require_disposition_target(kind, target),
                 _require_disposition_time(kind, disposed_at),
             )
@@ -179,7 +179,7 @@ def _decode_stored_proposal_disposition(
             )
         case work_models.ProposalDispositionKind.RETURNED:
             _forbid_disposition_value(kind, "target item", target)
-            return released_v6_compatibility.HistoricalReturnedProposalDisposition(
+            return released_receipt_compatibility.HistoricalReturnedProposalDisposition(
                 _require_disposition_reason(kind, reason),
                 _require_disposition_time(kind, disposed_at),
             )
@@ -194,20 +194,20 @@ def _decode_stored_proposal_disposition(
 
 
 def _encode_proposal_disposition_columns(
-    value: released_v6_compatibility.StoredProposalDisposition | None,
+    value: released_receipt_compatibility.StoredProposalDisposition | None,
 ) -> tuple[str | None, WorkItemId | None, str | None, str | None]:
     match value:
         case None:
             return None, None, None, None
         case (
-            released_v6_compatibility.HistoricalAcceptedProposalDisposition(
+            released_receipt_compatibility.HistoricalAcceptedProposalDisposition(
                 kind=kind, target=target, disposed_at=disposed_at
             )
             | work_models.MergedProposalDisposition(kind=kind, target=target, disposed_at=disposed_at)
         ):
             return kind.value, target, None, disposed_at.isoformat()
         case (
-            released_v6_compatibility.HistoricalReturnedProposalDisposition(
+            released_receipt_compatibility.HistoricalReturnedProposalDisposition(
                 kind=kind, reason=reason, disposed_at=disposed_at
             )
             | work_models.RejectedProposalDisposition(kind=kind, reason=reason, disposed_at=disposed_at)

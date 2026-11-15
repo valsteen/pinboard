@@ -46,7 +46,7 @@ from pinboard.domain.identifiers import (
 from pinboard.domain.proposal_models import CreateProposalOperation, ProposalIntake
 from tests.artifact_support import write_revision
 from tests.decision_support import project_decision_snapshot
-from tests.domain_support import expect_success
+from tests.domain_support import expect_success, plain_pause
 from tests.support import SQLITE_NOW, TEST_ROUTE_FACTS, complete_sqlite_state, initialize_store, mutation_allocation
 
 
@@ -62,7 +62,7 @@ def _commit_same_pause(
     actions = expect_success(available_actions(snapshot, actor))
     action = next(value for value in actions if value.kind == decision_models.ActionKind.PAUSE)
     assert isinstance(action, decision_models.PauseAction)
-    selected_command = decision_models.PauseCommand(action, work_models.ReasonInput("Concurrent pause."))
+    selected_command = decision_models.PauseCommand(action, plain_pause("Concurrent pause."))
     decision = expect_success(decide(snapshot, selected_command, SQLITE_NOW))
     assert isinstance(decision, decision_models.TransitionDecision)
     mutation = project_transition_mutation(

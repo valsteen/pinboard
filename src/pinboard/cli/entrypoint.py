@@ -76,6 +76,8 @@ def _dispatch(  # noqa: C901, PLR0912 - keep the installed command routes visibl
             cli_commands.MigrateSchemaPreviewCommand,
             cli_commands.MigrateSchemaApplyCommand,
             cli_commands.MigrateSchemaReverseCommand,
+            cli_commands.MigrateSchemaLabelledPreviewCommand,
+            cli_commands.MigrateSchemaLabelledApplyCommand,
         ),
     ):
         from pinboard.cli.migration import schema_migration  # noqa: PLC0415 - load migration only on its command route

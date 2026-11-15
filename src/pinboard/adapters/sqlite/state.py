@@ -28,7 +28,7 @@ from pinboard.adapters.sqlite.lifecycle import (
 )
 from pinboard.adapters.sqlite.pr_review import validate_review_history
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
-from pinboard.application import consolidation, decision_batches, project_export, stored_state
+from pinboard.application import consolidation, decision_batches, project_export, stored_state, unblockers
 from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.identifiers import (
     AttemptId,
@@ -351,8 +351,54 @@ def _validate_replacements(
         disposition_keys.add(key)
 
 
+_HELD_STATES = frozenset({stored_state.StoredWorkItemState.PAUSED, stored_state.StoredWorkItemState.BLOCKED})
+
+
+def _validate_held_unblockers(lifecycle: stored_state.LifecycleRecords, error_code: StorageErrorCode) -> None:
+    """Require exactly one current unblocker for every paused or blocked item and none for any other item."""
+
+    held = {value.item_id for value in lifecycle.unblockers}
+    for item in lifecycle.work_items:
+        if item.state in _HELD_STATES and item.item_id not in held:
+            raise StorageError(
+                error_code,
+                f"Held item '{item.item_id}' ({item.state.value}) records no unblocker; it must name the items, "
+                "human decision or outside condition it waits for.",
+            )
+        if item.state not in _HELD_STATES and item.item_id in held:
+            raise StorageError(
+                error_code, f"Item '{item.item_id}' ({item.state.value}) is not held but still records an unblocker."
+            )
+    known = {item.item_id for item in lifecycle.work_items}
+    for value in lifecycle.unblockers:
+        if value.item_id not in known:
+            raise StorageError(error_code, f"Unblocker for '{value.item_id}' names no stored work item.")
+
+
+def _validate_hold_receipts(
+    receipts: tuple[stored_state.StoredTransitionReceipt, ...], error_code: StorageErrorCode
+) -> None:
+    for receipt in receipts:
+        try:
+            match receipt.input_schema:
+                case unblockers.HOLD_RECEIPT_SCHEMA:
+                    msgspec.json.decode(bytes(receipt.input_payload), type=unblockers.HoldReceiptInput, strict=True)
+                case unblockers.PLAIN_PAUSE_RECEIPT_SCHEMA:
+                    msgspec.json.decode(
+                        bytes(receipt.input_payload), type=unblockers.PlainPauseReceiptInput, strict=True
+                    )
+                case _:
+                    continue
+        except (msgspec.DecodeError, ValueError) as error:
+            raise StorageError(
+                error_code, f"Hold receipt {receipt.history_id} does not record a readable unblocker: {error}"
+            ) from error
+
+
 def _validate_current_state(state: stored_state.StoredWorkState, error_code: StorageErrorCode) -> None:
     _validate_consolidation_history(state.transition_receipts, error_code)
+    _validate_held_unblockers(state.lifecycle, error_code)
+    _validate_hold_receipts(state.transition_receipts, error_code)
     validate_attempt_authority(state, error_code)
     positions = sorted(value.queue_position for value in state.lifecycle.work_items if value.queue_position is not None)
     if positions != list(range(1, len(positions) + 1)):
@@ -469,6 +515,8 @@ def read_project_export_state(connection: sqlite3.Connection) -> project_export.
     initiatives.validate_off_roadmap(initiative_values, off_roadmap, project.revision)
     receipts = _read_history(connection)
     _validate_consolidation_history(receipts, StorageErrorCode.INVALID_STATE)
+    _validate_held_unblockers(lifecycle, StorageErrorCode.INVALID_STATE)
+    _validate_hold_receipts(receipts, StorageErrorCode.INVALID_STATE)
     try:
         decision_batches.validate_batch_history(lifecycle, receipts)
     except (ValueError, KeyError) as error:

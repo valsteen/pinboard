@@ -54,7 +54,7 @@ from tests.decision_support import (
     project_decision_snapshot,
     project_inactive_attempt_authority,
 )
-from tests.domain_support import action, expect_transition_command
+from tests.domain_support import action, expect_transition_command, plain_pause
 from tests.support import (
     SQLITE_DIGEST,
     SQLITE_NOW,
@@ -176,7 +176,7 @@ class ServiceTest(unittest.TestCase):
         before = store.validated_snapshot()
         action = self._project_action(store, decision_models.PauseAction)
         result = non_checkpoint_command(
-            decision_models.PauseCommand(action, work_models.ReasonInput("Pause at a stable checkpoint."))
+            decision_models.PauseCommand(action, plain_pause("Pause at a stable checkpoint."))
         )
 
         outcome = self._commit_transition(store, result, SQLITE_NOW + timedelta(seconds=1))
@@ -428,14 +428,8 @@ class ServiceTest(unittest.TestCase):
             (
                 decision_models.BlockWorkItemAction,
                 stored_state.StoredWorkItemState.READY,
-                b'{"reason":"The intake awaits a dependency."}',
+                b'{"unblocker":{"kind":"outside-condition","condition":"The intake awaits a dependency."}}',
                 stored_state.StoredWorkItemState.BLOCKED,
-            ),
-            (
-                decision_models.ReopenAction,
-                stored_state.StoredWorkItemState.DEFERRED,
-                b'{"evidence":"The prerequisite is now available."}',
-                stored_state.StoredWorkItemState.READY,
             ),
         ):
             with self.subTest(action_type=action_type.__name__):
@@ -474,13 +468,13 @@ class ServiceTest(unittest.TestCase):
         for action_type, payload, expected_attempt, expected_item in (
             (
                 decision_models.PauseAction,
-                b'{"reason":"Pause at a stable point."}',
+                b'{"reason":"Pause at a stable point.","unblocker":{"kind":"outside-condition","condition":"The stable point is reviewed."}}',
                 work_models.AttemptState.PAUSED,
                 stored_state.StoredWorkItemState.PAUSED,
             ),
             (
                 decision_models.BlockAttemptAction,
-                b'{"reason":"The attempt awaits a dependency."}',
+                b'{"unblocker":{"kind":"items","items":["work-c"]}}',
                 work_models.AttemptState.BLOCKED,
                 stored_state.StoredWorkItemState.BLOCKED,
             ),
@@ -929,7 +923,7 @@ class ServiceTest(unittest.TestCase):
         store = self._store()
         action = self._project_action(store, decision_models.PauseAction)
         command = non_checkpoint_command(
-            decision_models.PauseCommand(action, work_models.ReasonInput("Pause at a stable checkpoint."))
+            decision_models.PauseCommand(action, plain_pause("Pause at a stable checkpoint."))
         )
 
         first = self._commit_transition(store, command, SQLITE_NOW + timedelta(seconds=1))

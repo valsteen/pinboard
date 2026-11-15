@@ -46,6 +46,7 @@ from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.native_support import call_advertised_tool, call_native_tool
+from tests.sqlite_support import sync_test_unblocker
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 from tests.work_brief_support import ready_review, work_a_brief
 
@@ -516,6 +517,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(fixture.work / "state.sqlite3")) as connection, connection:
             current_state = connection.execute("SELECT state FROM work_items WHERE item_id = 'work-a'").fetchone()[0]
             connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = 'work-a'")
+            sync_test_unblocker(connection, "work-a")
             if current_state != "review":
                 connection.execute(
                     "UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = ?",

@@ -21,7 +21,7 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import released_v6_compatibility, stored_state
+from pinboard.application import released_receipt_compatibility, stored_state
 from pinboard.application.artifacts import ArtifactRef, NewArtifact
 from pinboard.application.project_export import (
     ContentEncoding,
@@ -222,7 +222,7 @@ class ProjectExportTest(unittest.TestCase):
                 "No pending effect.",
                 "Already handled.",
                 "None.",
-                released_v6_compatibility.HistoricalAcceptedProposalDisposition(WorkItemId("work-c"), SQLITE_NOW),
+                released_receipt_compatibility.HistoricalAcceptedProposalDisposition(WorkItemId("work-c"), SQLITE_NOW),
                 5,
             )
         )
@@ -387,10 +387,10 @@ class ProjectExportTest(unittest.TestCase):
         result, stdout, stderr, statements = self.run_project_export_with_trace(common)
         self.assertEqual(0, result, stderr)
         project_export = self.decode_project_export(stdout)
-        self.assertEqual("pinboard-project-export/v4", project_export.schema)
+        self.assertEqual("pinboard-project-export/v5", project_export.schema)
         self.assertEqual((), project_export.completion_packages)
         self.assertEqual((), project_export.checkpoint_packages)
-        self.assertEqual("sqlite-v12", project_export.authority)
+        self.assertEqual("sqlite-v13", project_export.authority)
         self.assertEqual(state_before.lifecycle.project.revision, project_export.revision)
         with patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")):
             self.assertEqual(stdout, self.run_cli(*common)[1])

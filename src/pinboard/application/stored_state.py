@@ -5,7 +5,7 @@ from typing import Literal, assert_never
 
 import msgspec
 
-from pinboard.application import artifact_identity, definition_compatibility, released_v6_compatibility
+from pinboard.application import artifact_identity, definition_compatibility, released_receipt_compatibility
 from pinboard.domain import authority_models, decision_models, initiatives, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.history import (
@@ -58,7 +58,6 @@ class StoredWorkItemState(Enum):
     ACTIVE = "active"
     PAUSED = "paused"
     BLOCKED = "blocked"
-    DEFERRED = "deferred"
     REVIEW = "review"
     DONE = "done"
     SUPERSEDED = "superseded"
@@ -80,12 +79,32 @@ def allowed_current_attempt_states(
         case (
             StoredWorkItemState.INTAKE
             | StoredWorkItemState.READY
-            | StoredWorkItemState.DEFERRED
             | StoredWorkItemState.DONE
             | StoredWorkItemState.SUPERSEDED
             | StoredWorkItemState.DROPPED
         ):
             return (None,)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def prerequisite_outcome(value: StoredWorkItemState) -> work_models.PrerequisiteOutcome:
+    """Where a stored prerequisite stands: finished when done or superseded, cancelled when dropped, else live."""
+
+    match value:
+        case StoredWorkItemState.DONE | StoredWorkItemState.SUPERSEDED:
+            return work_models.PrerequisiteOutcome.FINISHED
+        case StoredWorkItemState.DROPPED:
+            return work_models.PrerequisiteOutcome.CANCELLED
+        case (
+            StoredWorkItemState.INTAKE
+            | StoredWorkItemState.READY
+            | StoredWorkItemState.ACTIVE
+            | StoredWorkItemState.PAUSED
+            | StoredWorkItemState.BLOCKED
+            | StoredWorkItemState.REVIEW
+        ):
+            return work_models.PrerequisiteOutcome.LIVE
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -100,7 +119,6 @@ def live_work_state(value: StoredWorkItemState) -> work_models.WorkState | None:
             | StoredWorkItemState.ACTIVE
             | StoredWorkItemState.PAUSED
             | StoredWorkItemState.BLOCKED
-            | StoredWorkItemState.DEFERRED
             | StoredWorkItemState.REVIEW
         ):
             return work_models.WorkState(value.value)
@@ -119,7 +137,6 @@ def stored_live_work_state(
             | work_models.WorkState.ACTIVE
             | work_models.WorkState.PAUSED
             | work_models.WorkState.BLOCKED
-            | work_models.WorkState.DEFERRED
             | work_models.WorkState.REVIEW
         ):
             return StoredWorkItemState(value.value)
@@ -138,7 +155,7 @@ def stored_close_outcome(value: work_models.CloseOutcome) -> StoredWorkItemState
 @dataclass(frozen=True, slots=True)
 class ProjectRecord:
     application: Literal["pinboard"]
-    schema_version: Literal[12]
+    schema_version: Literal[13]
     revision: int
     host_epoch: int
     created_at: datetime
@@ -241,7 +258,7 @@ class StoredProposal:
     effect: str
     unlock: str
     urgency_evidence: str
-    disposition: released_v6_compatibility.StoredProposalDisposition | None
+    disposition: released_receipt_compatibility.StoredProposalDisposition | None
     subject_revision: int
 
 
@@ -343,7 +360,7 @@ class StoredTransitionReceipt:
     history_id: HistoryId
     project_revision: int
     action_id: ActionId
-    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind
+    action_kind: decision_models.ActionKind | released_receipt_compatibility.HistoricalActionKind
     subject_id: HistorySubjectId
     artifact_ref_id: ArtifactRefId | None
     authorization: decision_models.AuthorizationKind
@@ -357,10 +374,19 @@ class StoredTransitionReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredUnblocker:
+    """A held item's current unblocker, decoded once from its stored canonical form."""
+
+    item_id: WorkItemId
+    unblocker: work_models.Unblocker
+
+
+@dataclass(frozen=True, slots=True)
 class LifecycleRecords:
     project: ProjectRecord
     decision_batch_references: tuple[DecisionBatchReference, ...] = field(kw_only=True)
     checkpoint_acceptances: tuple[CheckpointAcceptance, ...] = field(kw_only=True)
+    unblockers: tuple[StoredUnblocker, ...] = field(kw_only=True)
     work_items: tuple[StoredWorkItem, ...] = ()
     dependencies: tuple[ItemDependency, ...] = ()
     attempts: tuple[StoredAttempt, ...] = ()

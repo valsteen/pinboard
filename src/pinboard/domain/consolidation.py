@@ -352,6 +352,7 @@ def decide(
             None,
             live_count + 1,
             None,
+            unblocker=None,
         )
     )
     graph = replace(

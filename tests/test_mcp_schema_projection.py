@@ -110,6 +110,7 @@ class McpSchemaProjectionTest(unittest.TestCase):
         self.assertEqual(["done", "superseded"], outcome_schema["enum"])
         for schema, definition, field in (
             (transition, "ReasonInputPayload", "reason"),
+            (transition, "PlainPauseInputPayload", "reason"),
             (transition, "AcceptCheckpointInputPayload", "evidence"),
             (transition, "AcceptReviewAndContinueInputPayload", "evidence"),
             (transition, "ReviseItemInputPayload", "reason"),
@@ -132,9 +133,9 @@ class McpSchemaProjectionTest(unittest.TestCase):
                     self.assertTrue(accepts_record_text(reason))
         for schema, definition, field in (
             (transition, "RejectProposalInputPayload", "reason"),
-            (transition, "BlockInputPayload", "reason"),
+            (transition, "HumanDecisionPayload", "question"),
+            (transition, "OutsideConditionPayload", "condition"),
             (transition, "EvidenceInputPayload", "evidence"),
-            (transition, "DeferInputPayload", "reopen_condition"),
             (transition, "AcceptCheckpointInputPayload", "candidate"),
             (close, "CloseInputPayload", "reason"),
             (close, "CloseInputPayload", "human_decision"),
@@ -145,7 +146,7 @@ class McpSchemaProjectionTest(unittest.TestCase):
                 self.assertFalse(advertised_matches(single_line, RECORD_TEXT))
                 self.assertFalse(advertised_matches(single_line, "a\n"))
         for leaf, payload in (
-            ("pause", "ReasonInputPayload"),
+            ("pause", "PlainPauseInputPayload"),
             ("return-for-correction", "ReasonInputPayload"),
             ("reject-proposal", "RejectProposalInputPayload"),
         ):
@@ -187,7 +188,7 @@ class McpSchemaProjectionTest(unittest.TestCase):
 
     def test_actions_payload_schemas_accept_record_text_only_for_record_fields(self) -> None:
         for kind, definition, field in (
-            (decision_models.ActionKind.PAUSE, "ReasonInputPayload", "reason"),
+            (decision_models.ActionKind.PAUSE, "PlainPauseInputPayload", "reason"),
             (decision_models.ActionKind.PAUSE, "PauseDecisionsInput", "reason"),
             (decision_models.ActionKind.RETURN_FOR_CORRECTION, "ReasonInputPayload", "reason"),
             (decision_models.ActionKind.ACCEPT_CHECKPOINT, "AcceptCheckpointInputPayload", "evidence"),
@@ -200,8 +201,9 @@ class McpSchemaProjectionTest(unittest.TestCase):
                 self.assertTrue(accepts_record_text(schema_field(schema, definition, field)))
         for kind, definition, field in (
             (decision_models.ActionKind.REJECT_PROPOSAL, "RejectProposalInputPayload", "reason"),
-            (decision_models.ActionKind.BLOCK, "BlockInputPayload", "reason"),
-            (decision_models.ActionKind.DEFER, "DeferInputPayload", "reopen_condition"),
+            (decision_models.ActionKind.BLOCK, "HumanDecisionPayload", "question"),
+            (decision_models.ActionKind.BLOCK_ITEM, "OutsideConditionPayload", "condition"),
+            (decision_models.ActionKind.PAUSE, "OutsideConditionPayload", "condition"),
         ):
             with self.subTest(kind=kind):
                 schema = action_models.action_payload_schema(kind)

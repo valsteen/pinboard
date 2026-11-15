@@ -214,7 +214,8 @@ class ArchitectureDependencyTest(unittest.TestCase):
         dispatch = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_dispatch")
         migration_guard = ast.parse(
             "isinstance(invocation.command, (cli_commands.MigrateSchemaPreviewCommand, "
-            "cli_commands.MigrateSchemaApplyCommand, cli_commands.MigrateSchemaReverseCommand))",
+            "cli_commands.MigrateSchemaApplyCommand, cli_commands.MigrateSchemaReverseCommand, "
+            "cli_commands.MigrateSchemaLabelledPreviewCommand, cli_commands.MigrateSchemaLabelledApplyCommand))",
             mode="eval",
         ).body
         routes = [

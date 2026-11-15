@@ -2,7 +2,7 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.application import action_models, decision_batches, stored_state
+from pinboard.application import action_models, decision_batches, stored_state, unblockers
 from pinboard.application.artifacts import (
     ArtifactRef,
     CheckpointArtifacts,
@@ -232,12 +232,34 @@ def project_transition_mutation(
 
     input_schema = "decision/v1"
     input_payload = work_models.CanonicalJson(b"{}")
-    if isinstance(decision.change, decision_models.AttemptStateChange) and isinstance(
-        decision.change.pause_input, work_models.DecisionBatchInput
-    ):
-        input_schema = "pinboard-pause-decisions/v1"
+    if isinstance(decision.change, decision_models.AttemptStateChange):
+        match decision.change.pause_input:
+            case work_models.DecisionBatchInput() as batch:
+                input_schema = "pinboard-pause-decisions/v1"
+                input_payload = work_models.CanonicalJson(
+                    msgspec.json.encode(decision_batches.pause_payload(batch), order="sorted")
+                )
+            case work_models.PlainPauseInput(reason=reason, unblocker=unblocker):
+                input_schema = unblockers.PLAIN_PAUSE_RECEIPT_SCHEMA
+                input_payload = work_models.CanonicalJson(
+                    msgspec.json.encode(
+                        unblockers.PlainPauseReceiptInput(
+                            unblockers.PLAIN_PAUSE_RECEIPT_SCHEMA, reason, unblockers.unblocker_payload(unblocker)
+                        ),
+                        order="sorted",
+                    )
+                )
+            case _ as unreachable:
+                assert_never(unreachable)
+    elif isinstance(decision.change, decision_models.BlockAttemptChange | decision_models.BlockWorkItemChange):
+        input_schema = unblockers.HOLD_RECEIPT_SCHEMA
         input_payload = work_models.CanonicalJson(
-            msgspec.json.encode(decision_batches.pause_payload(decision.change.pause_input), order="sorted")
+            msgspec.json.encode(
+                unblockers.HoldReceiptInput(
+                    unblockers.HOLD_RECEIPT_SCHEMA, unblockers.unblocker_payload(decision.change.unblocker)
+                ),
+                order="sorted",
+            )
         )
     elif (
         isinstance(decision.change, decision_models.ResumeAttemptChange)

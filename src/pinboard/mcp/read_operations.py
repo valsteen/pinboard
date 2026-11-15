@@ -1396,7 +1396,7 @@ def _read_overview(
         last = after if not items else items[-1].position
         page = query_models.DiscoveryPage(
             "pinboard-overview/v9",
-            "sqlite-v12",
+            "sqlite-v13",
             facts.revision,
             items,
             facts.total_items,
@@ -2279,10 +2279,10 @@ def _mcp_attempt_continuation(
                     return contracts.ActiveAttemptContinuation(*arguments)
                 case query_models.ReviewAttemptContinuation():
                     return contracts.ReviewAttemptContinuation(*arguments)
-                case query_models.PausedAttemptContinuation(pause_reason=pause_reason):
-                    return contracts.PausedAttemptContinuation(*arguments, pause_reason)
-                case query_models.BlockedAttemptContinuation():
-                    return contracts.BlockedAttemptContinuation(*arguments)
+                case query_models.PausedAttemptContinuation(pause_reason=pause_reason, unblocker=unblocker):
+                    return contracts.PausedAttemptContinuation(*arguments, pause_reason, unblocker)
+                case query_models.BlockedAttemptContinuation(unblocker=unblocker):
+                    return contracts.BlockedAttemptContinuation(*arguments, unblocker)
                 case _ as unreachable:
                     assert_never(unreachable)
         case _ as unreachable:

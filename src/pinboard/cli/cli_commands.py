@@ -99,6 +99,21 @@ class MigrateSchemaReverseCommand(msgspec.Struct, frozen=True, forbid_unknown_fi
     json: bool = False
 
 
+class MigrateSchemaLabelledPreviewCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Preview the v12 step with one hold label file."""
+
+    labels: str
+    json: bool = False
+
+
+class MigrateSchemaLabelledApplyCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Apply or resume the v12 step with the exact hold label file its plan was previewed with."""
+
+    apply: str
+    labels: str
+    json: bool = False
+
+
 class RebuildViewsCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     pass
 
@@ -116,6 +131,8 @@ type CliCommand = (
     | MigrateSchemaPreviewCommand
     | MigrateSchemaApplyCommand
     | MigrateSchemaReverseCommand
+    | MigrateSchemaLabelledPreviewCommand
+    | MigrateSchemaLabelledApplyCommand
     | RebuildViewsCommand
 )
 

@@ -285,6 +285,40 @@ Updating plugin code does not migrate project data. Update every client sharing 
 
 Preview returns a read-only plan and ID. Apply retains the exact predecessor backup before the atomic schema change. Request a fresh preview after each step. Preserve the plan and backup and inspect reported effects before resuming an interrupted apply with the same ID. If the schema change commits with a view warning, run view repair. An apply refusal names the supported schema-recovery operation and exact selected plan. Preserve those inputs for predecessor advancement and unchanged-state reversal.
 
+### Label held work before the v12 step
+
+From v13, every paused or blocked item records what it waits for, and the separate deferred state no longer exists. A v12 ledger can name that only for a pause that still waits for its decision batch and for a pause after an accepted checkpoint. Its preview lists every other live blocked item, blocked or paused attempt and deferred item, each with a proposed starting point, and refuses until a label file names one unblocker for each of them. Pass the file to both preview and apply; the plan binds its digest, and apply copies it next to the plan and backup:
+
+```sh
+<launcher-root>/scripts/pinboard --project-root <managed-project> --work-root <selected-work-root> migrate-schema --labels <label-file> --json
+<launcher-root>/scripts/pinboard --project-root <managed-project> --work-root <selected-work-root> migrate-schema --apply <plan-id> --labels <label-file> --json
+```
+
+The label file is one JSON record:
+
+```json
+{
+  "schema": "pinboard-hold-labels/v1",
+  "source_sha256": "<SHA-256 of the exact v12 state.sqlite3 bytes>",
+  "labels": [
+    {"item_id": "build-map", "attempt_id": null, "unblocker": {"kind": "items", "items": ["survey-roads"]}},
+    {"item_id": "ship-docs", "attempt_id": "ship-docs-1", "unblocker": {"kind": "human-decision", "question": "Which audience should the guide address first?"}},
+    {"item_id": "try-later", "attempt_id": null, "unblocker": {"kind": "outside-condition", "condition": "The vendor publishes its v2 API."}}
+  ]
+}
+```
+
+Each label names a live paused, blocked or deferred item and its live attempt, or `null` for unstarted work. An `items` label names only accepted dependencies of the item's current definition; questions and conditions are one line. A deferred item becomes unstarted work waiting for an outside condition, so its label must use `outside-condition`, usually its reopen condition. A label for a hold the ledger already names replaces the derived unblocker. Any write to the ledger changes its digest, so relabel after it.
+
+An agent prepares the file with the human, and the label file is the only artifact that walk leaves behind:
+
+1. With every Pinboard process stopped, copy `state.sqlite3` to private scratch space and compute the SHA-256 of the original bytes.
+2. Run the preview without `--labels` to list the subjects that need a label and their proposals.
+3. For each subject, propose an unblocker from its accepted dependencies, its pause reason and its receipts and notes, reading only the private copy. Where the evidence does not say what the work waits for, ask the human instead of guessing.
+4. Write the strict label file, rerun the preview with `--labels` until it returns a plan, and apply only with the human's migration approval.
+
+Any helper the agent writes for this walk stays in its own scratch space, runs only through `uv run --locked` against the private copy, and is discarded once the ledger is labelled; Pinboard ships no labelling command.
+
 ## Direct CLI use from a source checkout
 
 Humans who want to run Pinboard directly use a known `<pinboard-source>` checkout as `<launcher-root>` rather than locating an application's installed plugin cache or creating a global alias. Prepare `<pinboard-source>/.venv` once, then invoke the same launcher boundary and name `<managed-project>` explicitly:

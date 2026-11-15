@@ -56,8 +56,6 @@ class ActionLifecyclePrecondition(Enum):
     ACTIVE_OR_PAUSED_ATTEMPT = "active-or-paused-attempt"
     ACTIVE_OR_PAUSED_ATTEMPT_CURRENT_SCOPE = "active-or-paused-attempt-current-scope"
     ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE = "active-or-review-attempt-current-scope"
-    DEFERRED_ITEM = "deferred-item"
-    UNSTARTED_ITEM = "unstarted-item"
     CLOSABLE_ITEM = "closable-item"
     NONTERMINAL_ITEM = "nonterminal-item"
     PAUSED_OR_BLOCKED_ITEM_WITHOUT_LIVE_DEPENDENCIES = "paused-or-blocked-item-without-live-dependencies"
@@ -100,13 +98,11 @@ class ActionKind(Enum):
     CONSOLIDATE = "consolidate"
     CLOSE = "close"
     CONTINUE = "continue"
-    DEFER = "defer"
     DISPATCH = "dispatch"
     INSPECT = "inspect"
     MERGE_PROPOSAL = "merge-proposal"
     PAUSE = "pause"
     REJECT_PROPOSAL = "reject-proposal"
-    REOPEN = "reopen"
     RECORD_REPLACEMENT = "record-replacement"
     REBIND_ATTEMPT = "rebind-attempt"
     REPORT_BLOCKER = "report-blocker"
@@ -291,22 +287,26 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.BLOCK:
             return ActionSemantics(
-                "Stop an active attempt on dependencies already accepted in its definition.",
+                "Hold an active attempt until named accepted dependencies finish, a human answers a question, "
+                "or a stated outside condition becomes true.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT,
-                "Move the item and attempt to blocked without changing accepted dependencies.",
+                "Move the item and attempt to blocked and record exactly one unblocker without changing accepted "
+                "dependencies.",
                 requires_recorded_route=False,
             )
         case ActionKind.BLOCK_ITEM:
             return ActionSemantics(
-                "Stop unstarted work on dependencies already accepted in its definition.",
+                "Hold unstarted work until named accepted dependencies finish, a human answers a question, "
+                "or a stated outside condition becomes true; setting work aside uses an outside condition.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
                 ActionLifecyclePrecondition.READY_ITEM,
-                "Move the item to blocked without changing accepted dependencies or creating an attempt.",
+                "Move the item to blocked and record exactly one unblocker without changing accepted dependencies "
+                "or creating an attempt.",
                 requires_recorded_route=False,
             )
         case ActionKind.COMPLETE:
@@ -341,16 +341,6 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 "Continue the attempt without changing shared lifecycle state.",
                 requires_recorded_route=True,
             )
-        case ActionKind.DEFER:
-            return ActionSemantics(
-                "Set aside unstarted work with an explicit reopen condition.",
-                LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.PROJECT,),
-                ActionSubjectKind.ITEM,
-                ActionLifecyclePrecondition.UNSTARTED_ITEM,
-                "Move the item to deferred and retain its reopen condition.",
-                requires_recorded_route=False,
-            )
         case ActionKind.DISPATCH:
             return ActionSemantics(
                 "Prepare or verify a worker launch for an active attempt.",
@@ -383,12 +373,13 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.PAUSE:
             return ActionSemantics(
-                "Preserve an active attempt without a named dependency condition.",
+                "Preserve an active attempt with a reason and what it waits for, or with a decision batch "
+                "that waits for a human decision.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT, Role.WORKER),
                 ActionSubjectKind.ATTEMPT,
                 ActionLifecyclePrecondition.ACTIVE_ATTEMPT,
-                "Move the item and attempt to paused for later resume.",
+                "Move the item and attempt to paused with exactly one unblocker for later resume.",
                 requires_recorded_route=False,
             )
         case ActionKind.REJECT_PROPOSAL:
@@ -399,16 +390,6 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 ActionSubjectKind.PROPOSAL,
                 ActionLifecyclePrecondition.UNSTARTED_PROPOSAL,
                 "Record rejected disposition and drop its same-identity unstarted item from live work.",
-                requires_recorded_route=False,
-            )
-        case ActionKind.REOPEN:
-            return ActionSemantics(
-                "Return deferred work to ready.",
-                LifecycleEffect.CHANGES_LIFECYCLE,
-                (Role.PROJECT,),
-                ActionSubjectKind.ITEM,
-                ActionLifecyclePrecondition.DEFERRED_ITEM,
-                "Return deferred work to ready.",
                 requires_recorded_route=False,
             )
         case ActionKind.RECORD_REPLACEMENT:
@@ -433,7 +414,7 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.RESUME:
             return ActionSemantics(
-                "Restore paused or blocked work after its dependencies are clear.",
+                "Restore paused or blocked work once what it waits for is resolved and its dependencies are clear.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ITEM,
@@ -561,12 +542,6 @@ class ContinueAction:
 
 
 @dataclass(frozen=True, slots=True)
-class DeferAction:
-    capability: MutationActionCapability[WorkItemId]
-    kind: ActionKind = field(init=False, default=ActionKind.DEFER)
-
-
-@dataclass(frozen=True, slots=True)
 class DispatchAction:
     capability: MutationActionCapability[AttemptId]
     kind: ActionKind = field(init=False, default=ActionKind.DISPATCH)
@@ -639,12 +614,6 @@ class RejectProposalAction:
 
 
 @dataclass(frozen=True, slots=True)
-class ReopenAction:
-    capability: MutationActionCapability[WorkItemId]
-    kind: ActionKind = field(init=False, default=ActionKind.REOPEN)
-
-
-@dataclass(frozen=True, slots=True)
 class RecordReplacementAction:
     capability: MutationActionCapability[WorkItemId]
     kind: ActionKind = field(init=False, default=ActionKind.RECORD_REPLACEMENT)
@@ -700,12 +669,10 @@ type LifecycleAction = (
     | BlockWorkItemAction
     | CompleteAction
     | CloseAction
-    | DeferAction
     | MergeProposalAction
     | PauseAction
     | RejectProposalAction
     | RebindAttemptAction
-    | ReopenAction
     | RecordReplacementAction
     | ResumeAction
     | ReturnForCorrectionAction
@@ -721,12 +688,10 @@ type NonCheckpointTransitionAction = (
     | BlockWorkItemAction
     | CompleteAction
     | CloseAction
-    | DeferAction
     | MergeProposalAction
     | PauseAction
     | RejectProposalAction
     | RebindAttemptAction
-    | ReopenAction
     | RecordReplacementAction
     | ResumeAction
     | ReturnForCorrectionAction
@@ -776,7 +741,7 @@ class ActivateCommand:
 @dataclass(frozen=True, slots=True)
 class PauseCommand:
     action: PauseAction
-    value: work_models.ReasonInput | work_models.DecisionBatchInput
+    value: work_models.PlainPauseInput | work_models.DecisionBatchInput
 
 
 @dataclass(frozen=True, slots=True)
@@ -831,12 +796,6 @@ class ReturnForCorrectionCommand:
 
 
 @dataclass(frozen=True, slots=True)
-class ReopenCommand:
-    action: ReopenAction
-    value: work_models.EvidenceInput
-
-
-@dataclass(frozen=True, slots=True)
 class RecordReplacementCommand:
     action: RecordReplacementAction
     value: work_models.RecordPlannedReplacementInput
@@ -846,12 +805,6 @@ class RecordReplacementCommand:
 class BlockWorkItemCommand:
     action: BlockWorkItemAction
     value: work_models.BlockInput
-
-
-@dataclass(frozen=True, slots=True)
-class DeferCommand:
-    action: DeferAction
-    value: work_models.DeferInput
 
 
 @dataclass(frozen=True, slots=True)
@@ -890,10 +843,8 @@ type TransitionCommand = (
     | ResumeCommand
     | SubmitReviewCommand
     | ReturnForCorrectionCommand
-    | ReopenCommand
     | RecordReplacementCommand
     | BlockWorkItemCommand
-    | DeferCommand
     | MergeProposalCommand
     | RetainTemporarilyCommand
     | ReviseWorkItemCommand
@@ -911,10 +862,8 @@ type NonCheckpointTransitionCommand = (
     | ResumeCommand
     | SubmitReviewCommand
     | ReturnForCorrectionCommand
-    | ReopenCommand
     | RecordReplacementCommand
     | BlockWorkItemCommand
-    | DeferCommand
     | MergeProposalCommand
     | RetainTemporarilyCommand
     | ReviseWorkItemCommand
@@ -971,7 +920,8 @@ class AttemptStateChange:
     attempt: AttemptId
     attempt_before: work_models.AttemptState
     attempt_after: work_models.AttemptState
-    pause_input: work_models.ReasonInput | work_models.DecisionBatchInput
+    pause_input: work_models.PlainPauseInput | work_models.DecisionBatchInput
+    unblocker: work_models.Unblocker
 
 
 @dataclass(frozen=True, slots=True)
@@ -980,14 +930,14 @@ class BlockAttemptChange:
     item_before: work_models.WorkState
     attempt: AttemptId
     attempt_before: work_models.AttemptState
-    dependencies_after: tuple[work_models.Dependency, ...]
+    unblocker: work_models.Unblocker
 
 
 @dataclass(frozen=True, slots=True)
 class BlockWorkItemChange:
     work_item_id: WorkItemId
     item_before: work_models.WorkState
-    dependencies_after: tuple[work_models.Dependency, ...]
+    unblocker: work_models.Unblocker
 
 
 @dataclass(frozen=True, slots=True)
@@ -1018,6 +968,8 @@ class RebindAttemptChange:
     accepted_scope_revision: int
     accepted_scope_digest: str
     authority_change: AttemptAuthorityChange
+    carried_unblocker: work_models.Unblocker | None
+    """The paused attempt's current unblocker, copied forward unchanged; none while the attempt is active."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1119,6 +1071,8 @@ class CheckpointAcceptanceChange:
     attempt: AttemptId
     candidate: CandidateId
     authority_change: AttemptAuthorityChange
+    unblocker: work_models.WaitingForHumanDecision
+    """The derived question the retained pause waits on: whether to continue with the recorded remaining work."""
 
 
 @dataclass(frozen=True, slots=True)

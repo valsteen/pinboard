@@ -17,6 +17,7 @@ from pinboard.application import (
     pr_reviews,
     proposal_models,
     query_models,
+    unblockers,
     work_brief_contract,
     work_brief_models,
 )
@@ -1156,12 +1157,11 @@ type DirectCompleteTransitionRequest = ProjectTransitionRequest[Literal["complet
 type ReviewedCompleteTransitionRequest = ProjectTransitionRequest[
     Literal["complete"], action_models.ReviewedCompleteInputPayload
 ]
-type DeferTransitionRequest = ProjectTransitionRequest[Literal["defer"], action_models.DeferInputPayload]
 type MergeProposalTransitionRequest = ProjectTransitionRequest[
     Literal["merge-proposal"], action_models.MergeProposalInputPayload
 ]
-type PauseTransitionRequest = ProjectTransitionRequest[Literal["pause"], action_models.ReasonInputPayload]
-type WorkerPauseTransitionRequest = WorkerTransitionRequest[Literal["pause"], action_models.ReasonInputPayload]
+type PauseTransitionRequest = ProjectTransitionRequest[Literal["pause"], action_models.PlainPauseInputPayload]
+type WorkerPauseTransitionRequest = WorkerTransitionRequest[Literal["pause"], action_models.PlainPauseInputPayload]
 type DecisionPauseTransitionRequest = ProjectTransitionRequest[Literal["pause"], decision_batches.PauseDecisionsInput]
 type WorkerDecisionPauseTransitionRequest = WorkerTransitionRequest[
     Literal["pause"], decision_batches.PauseDecisionsInput
@@ -1169,7 +1169,6 @@ type WorkerDecisionPauseTransitionRequest = WorkerTransitionRequest[
 type RejectProposalTransitionRequest = ProjectTransitionRequest[
     Literal["reject-proposal"], action_models.RejectProposalInputPayload
 ]
-type ReopenTransitionRequest = ProjectTransitionRequest[Literal["reopen"], action_models.EvidenceInputPayload]
 type RecordReplacementTransitionRequest = ProjectTransitionRequest[
     Literal["record-replacement"], action_models.RecordPlannedReplacementInputPayload
 ]
@@ -1204,14 +1203,12 @@ type TransitionRequest = (
     | BlockItemTransitionRequest
     | DirectCompleteTransitionRequest
     | ReviewedCompleteTransitionRequest
-    | DeferTransitionRequest
     | MergeProposalTransitionRequest
     | PauseTransitionRequest
     | WorkerPauseTransitionRequest
     | DecisionPauseTransitionRequest
     | WorkerDecisionPauseTransitionRequest
     | RejectProposalTransitionRequest
-    | ReopenTransitionRequest
     | RecordReplacementTransitionRequest
     | RebindAttemptTransitionRequest
     | ResumeTransitionRequest
@@ -1307,8 +1304,6 @@ def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest
                 request = msgspec.convert(
                     raw, type=TransitionEnvelope[DirectCompleteTransitionRequest], strict=True
                 ).request
-        case "defer":
-            request = msgspec.convert(raw, type=TransitionEnvelope[DeferTransitionRequest], strict=True).request
         case "merge-proposal":
             request = msgspec.convert(raw, type=TransitionEnvelope[MergeProposalTransitionRequest], strict=True).request
         case "pause":
@@ -1334,8 +1329,6 @@ def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest
             request = msgspec.convert(
                 raw, type=TransitionEnvelope[RejectProposalTransitionRequest], strict=True
             ).request
-        case "reopen":
-            request = msgspec.convert(raw, type=TransitionEnvelope[ReopenTransitionRequest], strict=True).request
         case "record-replacement":
             request = msgspec.convert(
                 raw, type=TransitionEnvelope[RecordReplacementTransitionRequest], strict=True
@@ -1774,11 +1767,9 @@ def action_invocation_tool(
             | decision_models.ActionKind.BLOCK
             | decision_models.ActionKind.BLOCK_ITEM
             | decision_models.ActionKind.COMPLETE
-            | decision_models.ActionKind.DEFER
             | decision_models.ActionKind.MERGE_PROPOSAL
             | decision_models.ActionKind.PAUSE
             | decision_models.ActionKind.REJECT_PROPOSAL
-            | decision_models.ActionKind.REOPEN
             | decision_models.ActionKind.RECORD_REPLACEMENT
             | decision_models.ActionKind.REBIND_ATTEMPT
             | decision_models.ActionKind.RESUME
@@ -2228,6 +2219,7 @@ class PausedAttemptContinuation(
     forbid_unknown_fields=True,
 ):
     pause_reason: NonEmptyText | None
+    unblocker: unblockers.UnblockerPayload
 
     def __post_init__(self) -> None:
         self._validate_paused_or_blocked()
@@ -2241,6 +2233,8 @@ class BlockedAttemptContinuation(
     frozen=True,
     forbid_unknown_fields=True,
 ):
+    unblocker: unblockers.UnblockerPayload
+
     def __post_init__(self) -> None:
         self._validate_paused_or_blocked()
         self._validate_legal_action_kinds(_BLOCKED_CONTINUATION_ACTION_KINDS)
@@ -2704,11 +2698,9 @@ def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tu
             | decision_models.ActionKind.CANCEL
             | decision_models.ActionKind.CONSOLIDATE
             | decision_models.ActionKind.CLOSE
-            | decision_models.ActionKind.DEFER
             | decision_models.ActionKind.MERGE_PROPOSAL
             | decision_models.ActionKind.PAUSE
             | decision_models.ActionKind.REJECT_PROPOSAL
-            | decision_models.ActionKind.REOPEN
             | decision_models.ActionKind.RECORD_REPLACEMENT
             | decision_models.ActionKind.REBIND_ATTEMPT
             | decision_models.ActionKind.RESUME

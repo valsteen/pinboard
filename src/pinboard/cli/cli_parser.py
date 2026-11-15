@@ -89,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     schema_action = migrate_schema.add_mutually_exclusive_group()
     schema_action.add_argument("--apply", metavar="PLAN_ID")
     schema_action.add_argument("--reverse", metavar="FORWARD_PLAN_ID")
+    migrate_schema.add_argument("--labels", metavar="LABEL_FILE")
     _select_command(migrate_schema, cli_commands.MigrateSchemaPreviewCommand)
     views = commands.add_parser("views", help="Repair generated human-readable views.")
     rebuild = views.add_subparsers(required=True).add_parser("rebuild")
@@ -109,17 +110,26 @@ def parse_invocation(argv: Sequence[str] | None = None) -> cli_commands.CliInvoc
     if command_type is cli_commands.MigrateSchemaPreviewCommand:
         apply = untyped_values.pop("apply")
         reverse = untyped_values.pop("reverse")
+        labels = untyped_values.pop("labels")
+        if labels is not None and reverse is not None:
+            selected_parser.error("--labels selects the v12 preview or apply step; a reverse plan takes no labels")
         command_type = (
-            cli_commands.MigrateSchemaApplyCommand
+            cli_commands.MigrateSchemaLabelledApplyCommand
+            if apply is not None and labels is not None
+            else cli_commands.MigrateSchemaApplyCommand
             if apply is not None
             else cli_commands.MigrateSchemaReverseCommand
             if reverse is not None
+            else cli_commands.MigrateSchemaLabelledPreviewCommand
+            if labels is not None
             else cli_commands.MigrateSchemaPreviewCommand
         )
         if apply is not None:
             untyped_values["apply"] = apply
         if reverse is not None:
             untyped_values["reverse"] = reverse
+        if labels is not None:
+            untyped_values["labels"] = labels
     try:
         roots = msgspec.convert(
             {
@@ -148,7 +158,9 @@ def installed_commands() -> tuple[InstalledCommand, ...]:
             leaf_usage = " ".join(parser.format_usage().removeprefix("usage: ").split())
             usage = root_usage + leaf_usage.removeprefix("pinboard")
             if command_type is cli_commands.MigrateSchemaPreviewCommand:
-                preview_usage = usage.removesuffix(" [--apply PLAN_ID | --reverse FORWARD_PLAN_ID]")
+                preview_usage = usage.removesuffix(
+                    " [--apply PLAN_ID | --reverse FORWARD_PLAN_ID] [--labels LABEL_FILE]"
+                )
                 variants = (
                     (operation_id, cli_commands.MigrateSchemaPreviewCommand, preview_usage),
                     (
@@ -160,6 +172,16 @@ def installed_commands() -> tuple[InstalledCommand, ...]:
                         f"{operation_id}/reverse",
                         cli_commands.MigrateSchemaReverseCommand,
                         preview_usage + " --reverse FORWARD_PLAN_ID",
+                    ),
+                    (
+                        f"{operation_id}/labelled",
+                        cli_commands.MigrateSchemaLabelledPreviewCommand,
+                        preview_usage + " --labels LABEL_FILE",
+                    ),
+                    (
+                        f"{operation_id}/labelled-apply",
+                        cli_commands.MigrateSchemaLabelledApplyCommand,
+                        preview_usage + " --apply PLAN_ID --labels LABEL_FILE",
                     ),
                 )
             else:

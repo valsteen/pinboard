@@ -99,6 +99,7 @@ type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValu
 type JsonObject = dict[str, JsonValue]
 
 SQLITE_NOW = datetime(2026, 8, 22, 14, 0, tzinfo=UTC)
+HOLD_UNBLOCKER: JsonObject = {"kind": "outside-condition", "condition": "The test fixture's outside condition holds."}
 SQLITE_OBLIGATIONS = (
     work_models.WorkObligation(
         work_models.ObligationId("next-decision"),
@@ -435,6 +436,7 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
         ),
         checkpoint_acceptances=(),
         decision_batch_references=(),
+        unblockers=(),
     )
     proposal_id = ProposalId(proposal_item)
     proposals = stored_state.ProposalRecords(

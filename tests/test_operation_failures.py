@@ -27,7 +27,15 @@ from pinboard.mcp import mutation_operations as mcp_mutations
 from pinboard.mcp import read_operations as mcp_reads
 from tests.decision_support import discover_actions
 from tests.domain_support import expect_success
-from tests.support import SQLITE_DIGEST, SQLITE_NOW, JsonObject, complete_sqlite_state, decision_facts, initialize_store
+from tests.support import (
+    HOLD_UNBLOCKER,
+    SQLITE_DIGEST,
+    SQLITE_NOW,
+    JsonObject,
+    complete_sqlite_state,
+    decision_facts,
+    initialize_store,
+)
 
 
 class OperationFailureTest(unittest.TestCase):
@@ -56,7 +64,7 @@ class OperationFailureTest(unittest.TestCase):
                         "actor_task_id": "task",
                         "actor_host_id": "host",
                         "receipt": receipt,
-                        "payload": {"reason": "Pause for review."},
+                        "payload": {"reason": "Pause for review.", "unblocker": HOLD_UNBLOCKER},
                     }
                 },
                 mcp_execution.CancellationToken(),

@@ -1,4 +1,4 @@
-from collections.abc import Set
+from collections.abc import Collection, Set
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -42,10 +42,85 @@ def dependency_item(value: Dependency) -> WorkItemId:
             assert_never(unreachable)
 
 
+class PrerequisiteOutcome(Enum):
+    """Where a prerequisite item stands in the snapshot: still live, finished (done or superseded) or cancelled."""
+
+    LIVE = "live"
+    FINISHED = "finished"
+    CANCELLED = "cancelled"
+
+
+class DependencyFate(Enum):
+    """What one accepted dependency is now; the one owner of dependency satisfaction.
+
+    An accepted checkpoint stays accepted whatever later happens to its item, so it takes precedence. A cancelled
+    prerequisite will never finish, so the dependency can never be satisfied until the dependent's definition changes.
+    """
+
+    AWAITING_ITEM = "awaiting-item"
+    AWAITING_CHECKPOINT = "awaiting-checkpoint"
+    ITEM_FINISHED = "item-finished"
+    CHECKPOINT_ACCEPTED = "checkpoint-accepted"
+    ITEM_CANCELLED = "item-cancelled"
+
+    @property
+    def satisfied(self) -> bool:
+        match self:
+            case DependencyFate.ITEM_FINISHED | DependencyFate.CHECKPOINT_ACCEPTED:
+                return True
+            case DependencyFate.AWAITING_ITEM | DependencyFate.AWAITING_CHECKPOINT | DependencyFate.ITEM_CANCELLED:
+                return False
+            case _ as unreachable:
+                assert_never(unreachable)
+
+
+def dependency_fate(
+    value: Dependency, prerequisite: PrerequisiteOutcome, accepted_checkpoints: Set[CheckpointDependency]
+) -> DependencyFate:
+    if isinstance(value, CheckpointDependency) and value in accepted_checkpoints:
+        return DependencyFate.CHECKPOINT_ACCEPTED
+    match prerequisite:
+        case PrerequisiteOutcome.FINISHED:
+            return DependencyFate.ITEM_FINISHED
+        case PrerequisiteOutcome.CANCELLED:
+            return DependencyFate.ITEM_CANCELLED
+        case PrerequisiteOutcome.LIVE:
+            return DependencyFate.AWAITING_ITEM if isinstance(value, str) else DependencyFate.AWAITING_CHECKPOINT
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def dependency_satisfied(
     value: Dependency, prerequisite_satisfied: bool, accepted_checkpoints: Set[CheckpointDependency]
 ) -> bool:
-    return prerequisite_satisfied or value in accepted_checkpoints
+    """Whether a dependency is satisfied, for callers that know only whether its prerequisite finished.
+
+    A live and a cancelled prerequisite are equally unsatisfied, so this derives satisfaction from the fate without
+    distinguishing them; a caller that describes the dependency uses ``dependency_fate`` with the actual outcome.
+    """
+
+    return dependency_fate(
+        value,
+        PrerequisiteOutcome.FINISHED if prerequisite_satisfied else PrerequisiteOutcome.LIVE,
+        accepted_checkpoints,
+    ).satisfied
+
+
+def resume_available(unsatisfied_dependencies: Collection[Dependency], replacement_resolved: bool) -> bool:
+    """The one predicate under which held work may resume and every hold sentence says someone can resume it.
+
+    Every accepted dependency must be satisfied and no current planned replacement may still withhold the work.
+    """
+
+    return not unsatisfied_dependencies and replacement_resolved
+
+
+def replacement_withholds_resume(
+    status: PlannedReplacementStatus, replacement_cost: str, accepted_cost: str | None
+) -> bool:
+    """A current planned replacement withholds resume until a disposition accepts its exact current cost."""
+
+    return status == PlannedReplacementStatus.CURRENT and accepted_cost != replacement_cost
 
 
 class WorkState(Enum):
@@ -53,7 +128,6 @@ class WorkState(Enum):
     ACTIVE = "active"
     PAUSED = "paused"
     BLOCKED = "blocked"
-    DEFERRED = "deferred"
     REVIEW = "review"
 
 
@@ -290,6 +364,30 @@ type ProposalDisposition = MergedProposalDisposition | RejectedProposalDispositi
 
 
 @dataclass(frozen=True, slots=True)
+class WaitingForItemsToFinish:
+    """Held work continues once these accepted dependencies finish; Pinboard detects their completion."""
+
+    items: tuple[WorkItemId, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class WaitingForHumanDecision:
+    """Held work continues once a human answers this question."""
+
+    question: str
+
+
+@dataclass(frozen=True, slots=True)
+class WaitingForOutsideCondition:
+    """Held work continues once this stated condition outside Pinboard becomes true; Pinboard does not check it."""
+
+    condition: str
+
+
+type Unblocker = WaitingForItemsToFinish | WaitingForHumanDecision | WaitingForOutsideCondition
+
+
+@dataclass(frozen=True, slots=True)
 class WorkItem:
     work_item_id: WorkItemId
     state: WorkState
@@ -301,6 +399,8 @@ class WorkItem:
     notes: str | None
     queue_position: int | None
     outcome_evidence: str | None = None
+    unblocker: Unblocker | None = field(kw_only=True)
+    """What the held item waits for; present exactly while the item is paused or blocked."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,8 +493,13 @@ class ReasonInput:
 
 @dataclass(frozen=True, slots=True)
 class BlockInput:
+    unblocker: Unblocker
+
+
+@dataclass(frozen=True, slots=True)
+class PlainPauseInput:
     reason: str
-    depends_on: tuple[WorkItemId, ...] = ()
+    unblocker: Unblocker
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,12 +573,6 @@ class CloseInput:
     outcome: DirectCloseOutcome
     reason: str
     human_decision: str
-
-
-@dataclass(frozen=True, slots=True)
-class DeferInput:
-    timing: Timing
-    reopen_condition: str
 
 
 @dataclass(frozen=True, slots=True)

@@ -20,8 +20,9 @@ from pinboard.application import (
     definition_compatibility,
     ports,
     query_models,
-    released_v6_compatibility,
+    released_receipt_compatibility,
     stored_state,
+    unblockers,
     work_brief_models,
 )
 from pinboard.domain import authority_models, decision_models, history, work_models
@@ -79,7 +80,7 @@ def decode_recorded_pause_reason(
     attempt_state: work_models.AttemptState,
     history_id: HistoryId,
     committed_at: datetime,
-    action_kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind,
+    action_kind: decision_models.ActionKind | released_receipt_compatibility.HistoricalActionKind,
     outcome_schema: str,
     outcome_payload: bytes,
 ) -> query_models.RecordedPauseReason:
@@ -213,7 +214,6 @@ def _terminal_attempt_continuation(
             | stored_state.StoredWorkItemState.ACTIVE
             | stored_state.StoredWorkItemState.PAUSED
             | stored_state.StoredWorkItemState.BLOCKED
-            | stored_state.StoredWorkItemState.DEFERRED
             | stored_state.StoredWorkItemState.REVIEW
             | stored_state.StoredWorkItemState.DONE
         ):
@@ -232,6 +232,12 @@ def _terminal_attempt_continuation(
         (),
         ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
     )
+
+
+def _held_payload(unblocker: work_models.Unblocker | None) -> unblockers.UnblockerPayload:
+    if unblocker is None:
+        raise ValueError("A held continuation requires its recorded unblocker.")
+    return unblockers.unblocker_payload(unblocker)
 
 
 def project_attempt_continuation(
@@ -323,10 +329,20 @@ def project_attempt_continuation(
                     return query_models.ActiveAttemptContinuation(*continuation_arguments)
                 case work_models.AttemptState.REVIEW:
                     return query_models.ReviewAttemptContinuation(*continuation_arguments)
+                case work_models.AttemptState.PAUSED | work_models.AttemptState.BLOCKED if item.unblocker is None:
+                    return DecisionFailure(
+                        DecisionFailureCode.ITEM_STATUS_INCONSISTENT,
+                        f"Held attempt '{context.attempt_id}' records no unblocker; run validation to diagnose it.",
+                        None,
+                    )
                 case work_models.AttemptState.PAUSED:
-                    return query_models.PausedAttemptContinuation(*continuation_arguments, context.pause_reason)
+                    return query_models.PausedAttemptContinuation(
+                        *continuation_arguments, context.pause_reason, _held_payload(item.unblocker)
+                    )
                 case work_models.AttemptState.BLOCKED:
-                    return query_models.BlockedAttemptContinuation(*continuation_arguments)
+                    return query_models.BlockedAttemptContinuation(
+                        *continuation_arguments, _held_payload(item.unblocker)
+                    )
                 case _ as unreachable:
                     assert_never(unreachable)
         case _ as unreachable:
@@ -665,7 +681,8 @@ def _proposal_origin(
         disposition.reason
         if isinstance(
             disposition,
-            released_v6_compatibility.HistoricalReturnedProposalDisposition | work_models.RejectedProposalDisposition,
+            released_receipt_compatibility.HistoricalReturnedProposalDisposition
+            | work_models.RejectedProposalDisposition,
         )
         else None,
     )
@@ -695,15 +712,21 @@ def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tup
         for lease in state.authority.preparation_leases
     }
     live_items = _select_live_items(state)
-    unsatisfied_ids = frozenset(
-        item.item_id
-        for item in state.lifecycle.work_items
-        if item.state not in {stored_state.StoredWorkItemState.DONE, stored_state.StoredWorkItemState.SUPERSEDED}
-    )
+    outcomes = {item.item_id: stored_state.prerequisite_outcome(item.state) for item in state.lifecycle.work_items}
     accepted = frozenset(
         work_models.CheckpointDependency(value.item_id, value.checkpoint_id)
         for value in state.lifecycle.checkpoint_acceptances
     )
+    fates = {
+        item.item_id: tuple(
+            unblockers.DependencyCondition(
+                link.target, work_models.dependency_fate(link.target, outcomes[link.dependency_id], accepted)
+            )
+            for link in links
+        )
+        for item, _ in live_items
+        for links in (dependency_links[item.item_id],)
+    }
     current_replacements: dict[WorkItemId, stored_state.StoredPlannedReplacement] = {}
     for relation in state.replacements.planned_replacements:
         current = current_replacements.get(relation.affected_item_id)
@@ -712,6 +735,8 @@ def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tup
     dispositions = {
         (value.affected_item_id, value.relation_revision): value for value in state.replacements.dispositions
     }
+    held = {value.item_id: value.unblocker for value in state.lifecycle.unblockers}
+    unresolved_replacements = unblockers.stored_unresolved_replacements(state.replacements)
 
     return tuple(
         query_models.OverviewItem(
@@ -721,16 +746,13 @@ def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tup
             definitions[item.item_id].unlock,
             live_state,
             item.queue_position,
-            not any(
-                link.dependency_id in unsatisfied_ids and link.target not in accepted
-                for link in dependency_links[item.item_id]
-            ),
+            all(condition.fate.satisfied for condition in fates[item.item_id]),
             item.timing.value if item.timing is not None else None,
             tuple(history.dependency_payload(link.target) for link in dependency_links[item.item_id]),
             tuple(
-                history.dependency_payload(link.target)
-                for link in dependency_links[item.item_id]
-                if link.dependency_id in unsatisfied_ids and link.target not in accepted
+                history.dependency_payload(condition.target)
+                for condition in fates[item.item_id]
+                if not condition.fate.satisfied
             ),
             tuple(
                 _dependency_reason(proposals, prerequisite_proposals, item.item_id, link.target, accepted)
@@ -751,6 +773,12 @@ def project_portfolio(state: stored_state.StoredWorkState, now: datetime) -> tup
                 (relation.affected_item_id, relation.relation_revision) in dispositions,
             ),
             _project_preparation_status(preparations.get(item.item_id), now),
+            project_hold(
+                item.item_id in attempts,
+                held.get(item.item_id),
+                fates[item.item_id],
+                unresolved_replacements.get(item.item_id),
+            ),
         )
         for item, live_state in live_items
     )
@@ -770,10 +798,23 @@ def _replacement_warning(
     )
 
 
+def project_hold(
+    started: bool,
+    unblocker: work_models.Unblocker | None,
+    dependencies: tuple[unblockers.DependencyCondition, ...],
+    unresolved_replacement: WorkItemId | None,
+) -> unblockers.HoldDescription | None:
+    """Describe held work from snapshot facts; work without a current unblocker is not held."""
+
+    if unblocker is None:
+        return None
+    return unblockers.describe_hold(unblockers.HoldFacts(started, unblocker, dependencies, unresolved_replacement))
+
+
 def _project_overview_item(
     item: work_models.WorkItem,
     definition: work_models.WorkItemDefinition,
-    unsatisfied_dependencies: frozenset[work_models.Dependency],
+    dependency_conditions: tuple[unblockers.DependencyCondition, ...],
     accepted_checkpoints: frozenset[work_models.CheckpointDependency],
     proposals: Mapping[WorkItemId, stored_state.StoredProposal],
     prerequisite_proposals: Mapping[tuple[WorkItemId, WorkItemId], stored_state.StoredProposal],
@@ -782,6 +823,8 @@ def _project_overview_item(
     replacement_disposition: work_models.ReplacementDisposition | None,
     now: datetime,
 ) -> query_models.OverviewItem:
+    """Project one live item; ``dependency_conditions`` are the fates of its accepted dependencies in order."""
+
     return query_models.OverviewItem(
         str(item.work_item_id),
         definition.title,
@@ -789,10 +832,14 @@ def _project_overview_item(
         definition.unlock,
         item.state,
         item.queue_position,
-        not any(dependency in unsatisfied_dependencies for dependency in item.depends_on),
+        all(condition.fate.satisfied for condition in dependency_conditions),
         item.timing,
         tuple(history.dependency_payload(value) for value in item.depends_on),
-        tuple(history.dependency_payload(value) for value in item.depends_on if value in unsatisfied_dependencies),
+        tuple(
+            history.dependency_payload(condition.target)
+            for condition in dependency_conditions
+            if not condition.fate.satisfied
+        ),
         tuple(
             _dependency_reason(proposals, prerequisite_proposals, item.work_item_id, value, accepted_checkpoints)
             for value in item.depends_on
@@ -804,6 +851,12 @@ def _project_overview_item(
         item.notes,
         _replacement_warning(replacement, replacement_disposition),
         _project_selected_preparation_status(preparation, now),
+        project_hold(
+            item.attempt is not None,
+            item.unblocker,
+            dependency_conditions,
+            unblockers.unresolved_replacement_item(replacement, replacement_disposition),
+        ),
     )
 
 
@@ -813,18 +866,13 @@ def _project_current_items(
     snapshot = facts.snapshot
     definitions = {value.work_item_id: value.definition for value in snapshot.definitions}
     proposals, prerequisite_proposals = _proposal_maps(facts.proposals)
-    unsatisfied_ids = snapshot.unsatisfied_dependency_ids
 
     return tuple(
         _project_overview_item(
             item,
             definitions[item.work_item_id],
-            frozenset(
-                target
-                for target in item.depends_on
-                if not work_models.dependency_satisfied(
-                    target, work_models.dependency_item(target) not in unsatisfied_ids, snapshot.accepted_checkpoints
-                )
+            tuple(
+                unblockers.DependencyCondition(target, snapshot.dependency_fate(target)) for target in item.depends_on
             ),
             snapshot.accepted_checkpoints,
             proposals,
@@ -968,7 +1016,7 @@ def _board_condition(facts: query_models.BoardAttemptFacts) -> query_models.Boar
         case decision_models.ActionKind.RESUME:
             return query_models.ResumedCondition(at)
         case decision_models.ActionKind.BLOCK:
-            return query_models.BlockedCondition(at)
+            return query_models.BlockedCondition(at, receipt.input_schema == unblockers.HOLD_RECEIPT_SCHEMA)
         case decision_models.ActionKind.PAUSE:
             reason = decode_recorded_pause_reason(
                 attempt_id,
@@ -1033,7 +1081,6 @@ def _board_condition(facts: query_models.BoardAttemptFacts) -> query_models.Boar
             | decision_models.ActionKind.CONSOLIDATE
             | decision_models.ActionKind.CLOSE
             | decision_models.ActionKind.CONTINUE
-            | decision_models.ActionKind.DEFER
             | decision_models.ActionKind.DISPATCH
             | decision_models.ActionKind.INSPECT
             | decision_models.ActionKind.PREPARE
@@ -1044,14 +1091,15 @@ def _board_condition(facts: query_models.BoardAttemptFacts) -> query_models.Boar
             | decision_models.ActionKind.REVIEW_CANDIDATE
             | decision_models.ActionKind.MERGE_PROPOSAL
             | decision_models.ActionKind.REJECT_PROPOSAL
-            | decision_models.ActionKind.REOPEN
             | decision_models.ActionKind.RECORD_REPLACEMENT
             | decision_models.ActionKind.REPORT_BLOCKER
             | decision_models.ActionKind.RETAIN_TEMPORARILY
             | decision_models.ActionKind.REVISE_ITEM
-            | released_v6_compatibility.HistoricalActionKind.ACCEPT_PROPOSAL
-            | released_v6_compatibility.HistoricalActionKind.MARK_READY
-            | released_v6_compatibility.HistoricalActionKind.RETURN_PROPOSAL
+            | released_receipt_compatibility.HistoricalActionKind.ACCEPT_PROPOSAL
+            | released_receipt_compatibility.HistoricalActionKind.MARK_READY
+            | released_receipt_compatibility.HistoricalActionKind.RETURN_PROPOSAL
+            | released_receipt_compatibility.HistoricalActionKind.DEFER
+            | released_receipt_compatibility.HistoricalActionKind.REOPEN
         ) as recorded:
             return query_models.RecordedActionCondition(at, recorded)
         case _ as unreachable:
@@ -1263,15 +1311,15 @@ def project_item_overview(facts: query_models.ItemOverviewFacts, now: datetime) 
 
     item = facts.work_item
     proposals, prerequisite_proposals = _proposal_maps(facts.proposals)
-    unsatisfied_dependencies = frozenset(
-        dependency_id
-        for dependency_id, is_unsatisfied in facts.dependency_unsatisfied
-        if not work_models.dependency_satisfied(dependency_id, not is_unsatisfied, facts.accepted_checkpoints)
-    )
     return _project_overview_item(
         item,
         facts.definition.definition,
-        unsatisfied_dependencies,
+        tuple(
+            unblockers.DependencyCondition(
+                target, work_models.dependency_fate(target, outcome, facts.accepted_checkpoints)
+            )
+            for target, outcome in facts.dependency_outcomes
+        ),
         facts.accepted_checkpoints,
         proposals,
         prerequisite_proposals,
@@ -1473,7 +1521,7 @@ def _review_verdict(
 
 
 def _closure_action(
-    kind: decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind,
+    kind: decision_models.ActionKind | released_receipt_compatibility.HistoricalActionKind,
 ) -> query_models.ItemClosureAction | None:
     match kind:
         case decision_models.ActionKind.COMPLETE:
@@ -1499,7 +1547,6 @@ def _closure_action(
             | decision_models.ActionKind.BLOCK
             | decision_models.ActionKind.BLOCK_ITEM
             | decision_models.ActionKind.CONTINUE
-            | decision_models.ActionKind.DEFER
             | decision_models.ActionKind.DISPATCH
             | decision_models.ActionKind.INSPECT
             | decision_models.ActionKind.PREPARE
@@ -1510,7 +1557,6 @@ def _closure_action(
             | decision_models.ActionKind.REVIEW_CANDIDATE
             | decision_models.ActionKind.PAUSE
             | decision_models.ActionKind.REJECT_PROPOSAL
-            | decision_models.ActionKind.REOPEN
             | decision_models.ActionKind.RECORD_REPLACEMENT
             | decision_models.ActionKind.REBIND_ATTEMPT
             | decision_models.ActionKind.REPORT_BLOCKER
@@ -1519,9 +1565,11 @@ def _closure_action(
             | decision_models.ActionKind.RETAIN_TEMPORARILY
             | decision_models.ActionKind.REVISE_ITEM
             | decision_models.ActionKind.SUBMIT_REVIEW
-            | released_v6_compatibility.HistoricalActionKind.ACCEPT_PROPOSAL
-            | released_v6_compatibility.HistoricalActionKind.MARK_READY
-            | released_v6_compatibility.HistoricalActionKind.RETURN_PROPOSAL
+            | released_receipt_compatibility.HistoricalActionKind.ACCEPT_PROPOSAL
+            | released_receipt_compatibility.HistoricalActionKind.MARK_READY
+            | released_receipt_compatibility.HistoricalActionKind.RETURN_PROPOSAL
+            | released_receipt_compatibility.HistoricalActionKind.DEFER
+            | released_receipt_compatibility.HistoricalActionKind.REOPEN
         ):
             return None
         case _ as unreachable:
@@ -1623,8 +1671,8 @@ def project_item_status(
         and isinstance((target := history.dependency_from_payload(value.target)), work_models.CheckpointDependency)
     )
     return query_models.ItemStatus(
-        "pinboard-item-status/v5",
-        "sqlite-v12",
+        "pinboard-item-status/v6",
+        "sqlite-v13",
         str(facts.project_revision),
         str(item.work_item_id),
         facts.definition_title,
@@ -1648,6 +1696,20 @@ def project_item_status(
         ),
         _proposal_origin(proposals, work_item_id),
         _replacement_warning(facts.replacement, facts.replacement_disposition),
+        None
+        if (
+            hold := project_hold(
+                attempt is not None,
+                facts.unblocker,
+                tuple(
+                    unblockers.DependencyCondition(target, work_models.dependency_fate(target, outcome, accepted))
+                    for target, outcome in facts.dependency_outcomes
+                ),
+                unblockers.unresolved_replacement_item(facts.replacement, facts.replacement_disposition),
+            )
+        )
+        is None
+        else unblockers.hold_status(hold),
     )
 
 
@@ -1659,7 +1721,7 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
         return None
     return query_models.BranchOwners(
         "pinboard-branch-owners/v1",
-        "sqlite-v12",
+        "sqlite-v13",
         str(facts.project_revision),
         branch,
         tuple(
@@ -1789,7 +1851,7 @@ def select_item_definition(
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
-        "sqlite-v12",
+        "sqlite-v13",
         selected.project_revision,
         work_item_id,
         selected.item_subject_revision,
@@ -1826,7 +1888,7 @@ def select_item_definition_history(
     )
     return query_models.ItemDefinitionHistory(
         "pinboard-item-definition-history/v1",
-        "sqlite-v12",
+        "sqlite-v13",
         selected.project_revision,
         work_item_id,
         rows,
@@ -1842,12 +1904,7 @@ def _classify_parallel_exclusion_reasons(
     match item.state:
         case work_models.WorkState.READY | work_models.WorkState.ACTIVE:
             pass
-        case (
-            work_models.WorkState.PAUSED
-            | work_models.WorkState.BLOCKED
-            | work_models.WorkState.DEFERRED
-            | work_models.WorkState.REVIEW
-        ):
+        case work_models.WorkState.PAUSED | work_models.WorkState.BLOCKED | work_models.WorkState.REVIEW:
             return (
                 query_models.ParallelReason(
                     query_models.ParallelReasonCode.STATE_NOT_LAUNCHABLE,

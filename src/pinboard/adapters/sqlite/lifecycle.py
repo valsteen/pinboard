@@ -19,7 +19,7 @@ from pinboard.adapters.sqlite.artifacts import read_artifact_references_by_ids
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.dependencies import DependencyRow, DependencyTargetRow, read_accepted_checkpoints
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.application import queries, query_models, released_v6_compatibility, stored_state
+from pinboard.application import queries, query_models, released_receipt_compatibility, stored_state, unblockers
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.history import (
@@ -145,9 +145,9 @@ _CONSUMED_RECEIPT_COLUMNS = """history_id, project_revision, action_id, action_k
 
 def decode_history_action_kind(
     value: str,
-) -> decision_models.ActionKind | released_v6_compatibility.HistoricalActionKind:
+) -> decision_models.ActionKind | released_receipt_compatibility.HistoricalActionKind:
     try:
-        return released_v6_compatibility.decode_released_v6_action_kind(value)
+        return released_receipt_compatibility.decode_released_action_kind(value)
     except ValueError as error:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Stored history has an unknown action kind.") from error
 
@@ -773,6 +773,7 @@ def read_item_status(
             )
             for value in dependency_rows
         ),
+        tuple((value.target, stored_state.prerequisite_outcome(value.state)) for value in dependency_rows),
     )
 
 
@@ -1001,6 +1002,7 @@ def read_attempt_context(
             ),
             None,
             True,
+            read_item_unblockers(connection, (item.item_id,)).get(item.item_id),
         ),
         read_recorded_pause_reasons(connection, ((attempt.attempt_id, attempt_state, attempt.subject_revision),)).get(
             attempt.attempt_id
@@ -1160,6 +1162,10 @@ def read_lifecycle(
                 "SELECT attempt_id, pause_history_id, resume_history_id FROM attempt_decision_batches ORDER BY attempt_id"
             )
         ),
+        unblockers=tuple(
+            stored_state.StoredUnblocker(item_id, unblocker)
+            for item_id, unblocker in sorted(read_all_item_unblockers(connection).items())
+        ),
     )
 
 
@@ -1213,6 +1219,63 @@ def make_queue_space(
     return None
 
 
+_HELD_STATES = frozenset({stored_state.StoredWorkItemState.PAUSED, stored_state.StoredWorkItemState.BLOCKED})
+
+
+def write_item_unblocker(
+    connection: sqlite3.Connection, item_id: WorkItemId, unblocker: work_models.Unblocker | None
+) -> None:
+    """Replace the item's current unblocker; none removes it when the item stops being held."""
+
+    connection.execute("DELETE FROM work_item_unblockers WHERE item_id = ?", (item_id,))
+    if unblocker is not None:
+        connection.execute(
+            "INSERT INTO work_item_unblockers (item_id, unblocker_json) VALUES (?, ?)",
+            (item_id, unblockers.encode_unblocker(unblocker).decode("utf-8")),
+        )
+
+
+class _UnblockerRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    unblocker_json: str
+
+
+def read_item_unblockers(
+    connection: sqlite3.Connection, item_ids: Iterable[WorkItemId]
+) -> dict[WorkItemId, work_models.Unblocker]:
+    """Read the selected held items' current unblockers, decoding each stored value once."""
+
+    selected: dict[WorkItemId, work_models.Unblocker] = {}
+    for row in select_by_ids(
+        connection,
+        "SELECT item_id, unblocker_json FROM work_item_unblockers WHERE item_id IN ({ids})",
+        item_ids,
+    ):
+        stored = decode_row(row, _UnblockerRow)
+        try:
+            selected[stored.item_id] = unblockers.decode_unblocker(stored.unblocker_json)
+        except (msgspec.DecodeError, ValueError) as error:
+            raise StorageError(
+                StorageErrorCode.INVALID_STATE,
+                f"Held item '{stored.item_id}' records an unreadable unblocker: {error}",
+            ) from error
+    return selected
+
+
+def read_all_item_unblockers(connection: sqlite3.Connection) -> dict[WorkItemId, work_models.Unblocker]:
+    return read_item_unblockers(
+        connection,
+        (
+            decode_row(row, _UnblockerItemRow).item_id
+            for row in connection.execute("SELECT item_id FROM work_item_unblockers")
+        ),
+    )
+
+
+class _UnblockerItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+
+
 def set_item_state(
     connection: sqlite3.Connection,
     current: stored_state.StoredWorkItem,
@@ -1221,10 +1284,19 @@ def set_item_state(
     revision: int,
     now: datetime,
     outcome_evidence: str | None = None,
+    *,
+    unblocker: work_models.Unblocker | None,
 ) -> DecisionFailure | None:
+    """Move one item between states, writing exactly the unblocker its held after-state requires."""
+
     item_id = current.item_id
     if stored_state.live_work_state(current.state) != before_state:
         return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "The targeted item mutation is stale.", None)
+    if (after_state in _HELD_STATES) != (unblocker is not None):
+        raise StorageError(
+            StorageErrorCode.INVARIANT_VIOLATION,
+            f"Item '{item_id}' must record an unblocker exactly while it is paused or blocked.",
+        )
     terminal = after_state in {
         stored_state.StoredWorkItemState.DONE,
         stored_state.StoredWorkItemState.SUPERSEDED,
@@ -1255,6 +1327,8 @@ def set_item_state(
         )
     ) is not None:
         return failure
+    if unblocker is not None or current.state in _HELD_STATES:
+        write_item_unblocker(connection, item_id, unblocker)
     move_item_state_count(connection, current.state, after_state)
     if terminal and current.queue_position is not None:
         return compact_queue(connection, current.queue_position)

@@ -327,7 +327,7 @@ def validate_review_history(  # noqa: C901, PLR0912, PLR0915
                     case cancellation_models.CompatibilityCancellationRecordV1():
                         if (
                             brief_id is None
-                            or row.payload.preview.state != stored_state.StoredWorkItemState.REVIEW
+                            or row.payload.preview.state != cancellation_models.RecordedItemState.REVIEW
                             or row.payload.preview.attempt is not None
                         ):
                             raise StorageError(

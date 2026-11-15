@@ -1,8 +1,9 @@
 """Exact displayed cancellation facts and the receipt that retains human confirmation."""
 
 from datetime import datetime
+from enum import Enum
 from hashlib import sha256
-from typing import Annotated, Literal
+from typing import Annotated, Literal, assert_never
 
 import msgspec
 
@@ -43,10 +44,54 @@ class CancellationAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=Tru
     authority: CancellationAuthority | None
 
 
+class RecordedItemState(Enum):
+    """An item's state as a cancellation preview records it.
+
+    Current previews record a stored state through ``recorded_item_state``. ``COMPATIBILITY_DEFERRED`` is only
+    decoded from retained receipts previewed before v13 retired the deferred state; remove it when no retained
+    cancellation receipt records that state.
+    """
+
+    INTAKE = "intake"
+    READY = "ready"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    BLOCKED = "blocked"
+    REVIEW = "review"
+    DONE = "done"
+    SUPERSEDED = "superseded"
+    DROPPED = "dropped"
+    COMPATIBILITY_DEFERRED = "deferred"
+
+
+def recorded_item_state(state: stored_state.StoredWorkItemState) -> RecordedItemState:
+    match state:
+        case stored_state.StoredWorkItemState.INTAKE:
+            return RecordedItemState.INTAKE
+        case stored_state.StoredWorkItemState.READY:
+            return RecordedItemState.READY
+        case stored_state.StoredWorkItemState.ACTIVE:
+            return RecordedItemState.ACTIVE
+        case stored_state.StoredWorkItemState.PAUSED:
+            return RecordedItemState.PAUSED
+        case stored_state.StoredWorkItemState.BLOCKED:
+            return RecordedItemState.BLOCKED
+        case stored_state.StoredWorkItemState.REVIEW:
+            return RecordedItemState.REVIEW
+        case stored_state.StoredWorkItemState.DONE:
+            return RecordedItemState.DONE
+        case stored_state.StoredWorkItemState.SUPERSEDED:
+            return RecordedItemState.SUPERSEDED
+        case stored_state.StoredWorkItemState.DROPPED:
+            return RecordedItemState.DROPPED
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 class CancellationRelatedItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: WorkItemId
     title: str
-    state: stored_state.StoredWorkItemState
+    state: RecordedItemState
     subject_revision: int
     definition_revision: int
     definition_digest: Digest
@@ -65,7 +110,7 @@ class CompatibilityCancellationPreviewV1(
 ):
     item_id: WorkItemId
     title: str
-    state: stored_state.StoredWorkItemState
+    state: RecordedItemState
     subject_revision: int
     definition_revision: int
     definition_digest: Digest

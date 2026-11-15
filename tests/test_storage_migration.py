@@ -343,6 +343,46 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertNotEqual(0, code)
             self.assertIn("changed after schema migration", str(later["message"]))
 
+    def test_v12_step_releases_unstarted_holds_labelled_with_no_unblocker_to_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory).resolve()
+            path = self.v12_ledger(project)
+            self.hold_v12(path, "work-c", "blocked")
+            self.hold_v12(path, "zz-proposal-a", "deferred")
+            self.hold_v12(path, "work-a", "blocked")
+            with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("UPDATE attempts SET state = 'blocked' WHERE attempt_id = 'work-a-1'")
+            source = hashlib.sha256(path.read_bytes()).hexdigest()
+            condition: JsonObject = {"kind": "outside-condition", "condition": "The vendor publishes its v2 API."}
+            released = [
+                {"item_id": "work-c", "attempt_id": None, "unblocker": None},
+                {"item_id": "zz-proposal-a", "attempt_id": None, "unblocker": None},
+            ]
+            started = self.write_labels(
+                path, source, [*released, {"item_id": "work-a", "attempt_id": "work-a-1", "unblocker": None}]
+            )
+            code, rejected = self.run_cli(project, "migrate-schema", "--labels", str(started))
+            self.assertNotEqual(0, code)
+            self.assertIn("only unstarted work can be released", str(rejected["message"]))
+            label_file = self.write_labels(
+                path, source, [*released, {"item_id": "work-a", "attempt_id": "work-a-1", "unblocker": condition}]
+            )
+            code, planned = self.run_cli(project, "migrate-schema", "--labels", str(label_file))
+            self.assertEqual(0, code, planned)
+            code, migrated = self.run_cli(
+                project, "migrate-schema", "--apply", str(planned["plan_id"]), "--labels", str(label_file)
+            )
+            self.assertEqual(0, code, migrated)
+            reloaded = SQLiteWorkStore(path).validated_snapshot()
+            states = {value.item_id: value.state for value in reloaded.lifecycle.work_items}
+            self.assertEqual(stored_state.StoredWorkItemState.READY, states[WorkItemId("work-c")])
+            self.assertEqual(stored_state.StoredWorkItemState.READY, states[WorkItemId("zz-proposal-a")])
+            self.assertEqual(stored_state.StoredWorkItemState.BLOCKED, states[WorkItemId("work-a")])
+            self.assertEqual(
+                {WorkItemId("work-a"): work_models.WaitingForOutsideCondition("The vendor publishes its v2 API.")},
+                {value.item_id: value.unblocker for value in reloaded.lifecycle.unblockers},
+            )
+
     def test_v12_paused_attempts_are_labelled_from_their_receipts_or_listed_for_a_label(self) -> None:
         pending = {
             "schema": "pinboard-pause-decisions/v1",

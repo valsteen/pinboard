@@ -4,13 +4,13 @@ v13 records what each paused or blocked item waits for and retires the deferred 
 for only some holds: a still-pending structured pause waits for its decision batch and a checkpoint-accepted
 pause waits for a human decision about the recorded remaining work. Every other live blocked item, blocked or
 paused attempt and deferred item needs a label in a strict ``pinboard-hold-labels/v1`` file bound to the exact
-source ledger digest; INSTALL.md documents the agent-driven walk that prepares it. Deferred items become unstarted
-blocked items waiting for their labelled outside condition. Retain this step, like its predecessors, until an
-authorized decision retires v12 ledgers.
+source ledger digest; INSTALL.md documents the agent-driven walk that prepares it. A label with a null unblocker
+releases unstarted work that waits for nothing to ready. Other deferred items become unstarted blocked items waiting
+for their labelled outside condition. Keep this step, like its predecessors, until an authorized decision retires
+v12 ledgers.
 """
 
 import sqlite3
-from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from hashlib import sha256
@@ -35,11 +35,14 @@ HOLD_LABELS_SCHEMA = "pinboard-hold-labels/v1"
 
 
 class HoldLabel(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """What one live held subject waits for; attempt_id names its live attempt, or null for unstarted work."""
+    """What one live held subject waits for; attempt_id names its live attempt, or null for unstarted work.
+
+    A null unblocker says unstarted work waits for nothing, so the step stores it as ready.
+    """
 
     item_id: Identity
     attempt_id: Identity | None
-    unblocker: unblockers.UnblockerPayload
+    unblocker: unblockers.UnblockerPayload | None
 
 
 class HoldLabels(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -62,6 +65,14 @@ class LabelInput:
     content: bytes
     sha256: str
     labels: HoldLabels
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedHolds:
+    """The v13 unblocker of every item that stays held, and the unstarted items released to ready."""
+
+    held: dict[WorkItemId, work_models.Unblocker]
+    released: frozenset[WorkItemId]
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,15 +264,13 @@ def missing_labels_message(subjects: tuple[LabelSubject, ...]) -> str:
     return (
         f"The v12 ledger has {len(subjects)} live held subject(s) without a named unblocker: {listed}. "
         f"Write a {HOLD_LABELS_SCHEMA} file bound to this ledger's source_sha256 that labels each one as items "
-        "to finish, a human decision or an outside condition, as INSTALL.md describes, then preview again with "
-        "--labels."
+        "to finish, a human decision or an outside condition, or with a null unblocker for unstarted work that "
+        "waits for nothing, as INSTALL.md describes, then preview again with --labels."
     )
 
 
-def resolve_unblockers(
-    connection: sqlite3.Connection, source_sha256: str, labels: LabelInput | None
-) -> dict[WorkItemId, work_models.Unblocker]:
-    """Return the complete v13 unblocker of every live held item, or refuse with the exact missing subjects."""
+def resolve_unblockers(connection: sqlite3.Connection, source_sha256: str, labels: LabelInput | None) -> ResolvedHolds:
+    """Return every live held item's v13 unblocker or release, or refuse with the exact missing subjects."""
 
     automatic, needed = classify_holds(connection)
     held_rows = {
@@ -273,6 +282,7 @@ def resolve_unblockers(
         )
     }
     resolved: dict[WorkItemId, work_models.Unblocker] = dict(automatic)
+    released: set[WorkItemId] = set()
     if labels is not None:
         if labels.labels.source_sha256 != source_sha256:
             raise ValueError(
@@ -289,6 +299,15 @@ def resolve_unblockers(
                 raise ValueError(
                     f"Label for '{item_id}' names attempt {label.attempt_id!r}; its live attempt is {attempt_id!r}."
                 )
+            if label.unblocker is None:
+                if attempt_id is not None:
+                    raise ValueError(
+                        f"Label for '{item_id}' releases work with live attempt {attempt_id!r}; only unstarted "
+                        "work can be released to ready."
+                    )
+                resolved.pop(item_id, None)
+                released.add(item_id)
+                continue
             unblocker = unblockers.unblocker_from_payload(label.unblocker)
             if state == "deferred" and not isinstance(unblocker, work_models.WaitingForOutsideCondition):
                 raise ValueError(f"Deferred item '{item_id}' becomes unstarted work waiting for an outside condition.")
@@ -302,10 +321,12 @@ def resolve_unblockers(
                         f"{', '.join(outside)}."
                     )
             resolved[item_id] = unblocker
-    missing = tuple(subject for subject in needed if subject.item_id not in resolved)
+    missing = tuple(
+        subject for subject in needed if subject.item_id not in resolved and subject.item_id not in released
+    )
     if missing:
         raise ValueError(missing_labels_message(missing))
-    return resolved
+    return ResolvedHolds(resolved, frozenset(released))
 
 
 def _create_statement(name: str) -> str:
@@ -315,7 +336,7 @@ def _create_statement(name: str) -> str:
     return statement
 
 
-def _write_v13(connection: sqlite3.Connection, held: Mapping[WorkItemId, work_models.Unblocker]) -> None:
+def _write_v13(connection: sqlite3.Connection, holds: ResolvedHolds) -> None:
     connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v12")
     connection.execute(_create_statement("project_meta"))
     connection.execute(
@@ -324,6 +345,10 @@ def _write_v13(connection: sqlite3.Connection, held: Mapping[WorkItemId, work_mo
     connection.execute("DROP TABLE project_meta_v12")
     # Retiring 'deferred' changes CHECK constraints, so both tables are rebuilt from a temporary copy.
     connection.execute("CREATE TEMP TABLE work_items_v12 AS SELECT * FROM work_items")
+    connection.executemany(
+        "UPDATE temp.work_items_v12 SET state = 'ready' WHERE item_id = ?",
+        tuple((item_id,) for item_id in sorted(holds.released)),
+    )
     connection.execute("UPDATE temp.work_items_v12 SET state = 'blocked' WHERE state = 'deferred'")
     connection.execute("DROP TABLE work_items")
     connection.execute(_create_statement("work_items"))
@@ -341,7 +366,7 @@ def _write_v13(connection: sqlite3.Connection, held: Mapping[WorkItemId, work_mo
         "INSERT INTO work_item_unblockers (item_id, unblocker_json) VALUES (?, ?)",
         tuple(
             (item_id, unblockers.encode_unblocker(unblocker).decode("utf-8"))
-            for item_id, unblocker in sorted(held.items())
+            for item_id, unblocker in sorted(holds.held.items())
         ),
     )
 
@@ -364,13 +389,16 @@ def project_v12_for_current_readers(connection: sqlite3.Connection) -> None:
             automatic, needed = classify_holds(connection)
             _write_v13(
                 connection,
-                {
-                    **automatic,
-                    **{
-                        subject.item_id: work_models.WaitingForOutsideCondition(_PROJECTION_CONDITION)
-                        for subject in needed
+                ResolvedHolds(
+                    {
+                        **automatic,
+                        **{
+                            subject.item_id: work_models.WaitingForOutsideCondition(_PROJECTION_CONDITION)
+                            for subject in needed
+                        },
                     },
-                },
+                    frozenset(),
+                ),
             )
             database._verify_current_schema(connection)
     finally:
@@ -395,8 +423,7 @@ def upgrade_v12_connection(
                 return False
             database._verify_v12_schema(connection)
             database.verify_database_integrity(connection)
-            held = resolve_unblockers(connection, source_sha256, labels)
-            _write_v13(connection, held)
+            _write_v13(connection, resolve_unblockers(connection, source_sha256, labels))
             database._verify_current_schema(connection)
             database.verify_database_integrity(connection)
             if (

@@ -287,7 +287,7 @@ Preview returns a read-only plan and ID. Apply retains the exact predecessor bac
 
 ### Label held work before the v12 step
 
-From v13, every paused or blocked item records what it waits for, and the separate deferred state no longer exists. A v12 ledger can name that only for a pause that still waits for its decision batch and for a pause after an accepted checkpoint. Its preview lists every other live blocked item, blocked or paused attempt and deferred item, each with a proposed starting point, and refuses until a label file names one unblocker for each of them. Pass the file to both preview and apply; the plan binds its digest, and apply copies it next to the plan and backup:
+From v13, every paused or blocked item records what it waits for, and the separate deferred state no longer exists. A v12 ledger can name that only for a pause that still waits for its decision batch and for a pause after an accepted checkpoint. Its preview lists every other live blocked item, blocked or paused attempt and deferred item, each with a proposed starting point, and refuses until a label file names one unblocker for each of them, or releases unstarted work that waits for nothing. Pass the file to both preview and apply; the plan binds its digest, and apply copies it next to the plan and backup:
 
 ```sh
 <launcher-root>/scripts/pinboard --project-root <managed-project> --work-root <selected-work-root> migrate-schema --labels <label-file> --json
@@ -303,12 +303,13 @@ The label file is one JSON record:
   "labels": [
     {"item_id": "build-map", "attempt_id": null, "unblocker": {"kind": "items", "items": ["survey-roads"]}},
     {"item_id": "ship-docs", "attempt_id": "ship-docs-1", "unblocker": {"kind": "human-decision", "question": "Which audience should the guide address first?"}},
-    {"item_id": "try-later", "attempt_id": null, "unblocker": {"kind": "outside-condition", "condition": "The vendor publishes its v2 API."}}
+    {"item_id": "try-later", "attempt_id": null, "unblocker": {"kind": "outside-condition", "condition": "The vendor publishes its v2 API."}},
+    {"item_id": "not-started", "attempt_id": null, "unblocker": null}
   ]
 }
 ```
 
-Each label names a live paused, blocked or deferred item and its live attempt, or `null` for unstarted work. An `items` label names only accepted dependencies of the item's current definition; questions and conditions are one line. A deferred item becomes unstarted work waiting for an outside condition, so its label must use `outside-condition`, usually its reopen condition. A label for a hold the ledger already names replaces the derived unblocker. Any write to the ledger changes its digest, so relabel after it.
+Each label names a live paused, blocked or deferred item and its live attempt, or `null` for unstarted work. An `items` label names only accepted dependencies of the item's current definition; questions and conditions are one line. A `null` unblocker releases unstarted work that waits for nothing: the item becomes ready like any other unstarted item, which suits a deferral or block that only meant "not started yet". Work with a live attempt can't be released this way. Any other deferred item becomes unstarted work waiting for an outside condition, so its label must use `outside-condition`, usually its reopen condition. A label for a hold the ledger already names replaces the derived unblocker. Any write to the ledger changes its digest, so relabel after it.
 
 An agent prepares the file with the human, and the label file is the only artifact that walk leaves behind:
 

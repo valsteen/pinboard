@@ -33,6 +33,12 @@ from pinboard.application import (
     work_brief_models,
 )
 from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
+from pinboard.application.candidate_identity import (
+    WorkingTreeCommitRequired,
+    WorkingTreeSubmittable,
+    commit_required_message,
+    working_tree_submission,
+)
 from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models
 from pinboard.domain.errors import (
@@ -794,7 +800,7 @@ def _observation_rejected(
 ) -> execution.TypedOperationResult[contracts.CandidateObservationResult]:
     return execution.TypedOperationResult(
         contracts.CandidateObservationRejected(
-            "pinboard-mcp-candidate-observation-result/v1",
+            "pinboard-mcp-candidate-observation-result/v2",
             "rejected",
             code,
             message,
@@ -847,8 +853,17 @@ def _observe_candidate(
         omitted = git_root.read_untracked_paths(source_checkout)
     except (RootError, OSError, ValueError) as error:
         return _observation_rejected("CANDIDATE_GIT_UNAVAILABLE", f"Cannot read candidate checkout: {error}", (), ())
+    match working_tree_submission(context.base_revision, candidate.preimage_revision, candidate.diff):
+        case WorkingTreeSubmittable():
+            submission: contracts.CandidateSubmission = contracts.CandidateSubmittable()
+        case WorkingTreeCommitRequired() as required:
+            submission = contracts.CandidateCommitRequired(
+                required.head_revision, required.step, commit_required_message(required)
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
     result = contracts.CandidateObserved(
-        "pinboard-mcp-candidate-observation-result/v1",
+        "pinboard-mcp-candidate-observation-result/v2",
         "observed",
         request.attempt_id,
         candidate.identity,
@@ -859,6 +874,7 @@ def _observe_candidate(
         hashlib.sha256(candidate.diff).hexdigest(),
         len(candidate.diff),
         omitted,
+        submission,
         False,
         "unchanged",
         "safe-to-repeat",

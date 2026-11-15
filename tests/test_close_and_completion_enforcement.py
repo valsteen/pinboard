@@ -515,7 +515,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
             resolve_durable_roots(fixture.project, fixture.work),
             fixture.store,
             attempt,
-            "working-tree",
+            "working-tree" if candidate_snapshots.candidate_kind(snapshot) == "working-tree" else "current-head",
             candidate,
             snapshot.diff,
             snapshot.preimage_revision,

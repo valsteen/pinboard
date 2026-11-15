@@ -1738,13 +1738,39 @@ class McpTransportTest(unittest.TestCase):
                     read_source.assert_not_called()
                     mutation_source.assert_not_called()
 
-    def _project(self) -> tuple[tempfile.TemporaryDirectory[str], Path, DurableRoots]:
+    def _project(self, *, committed_base: bool = False) -> tuple[tempfile.TemporaryDirectory[str], Path, DurableRoots]:
+        """Initialize work-a; a committed base checks out its branch on a real commit that the attempt binds."""
+
         temporary = tempfile.TemporaryDirectory()
         project = Path(temporary.name).resolve()
         subprocess.run(("git", "init", "--quiet", str(project)), check=True)
         roots = resolve_durable_roots(project)
         initialize_database(roots, SQLITE_NOW)
-        brief_bytes = canonical_work_brief_bytes(work_a_brief(project))
+        brief = work_a_brief(project)
+        if committed_base:
+            subprocess.run(("git", "-C", str(project), "checkout", "-b", brief.branch), check=True, capture_output=True)
+            subprocess.run(
+                (
+                    "git",
+                    "-C",
+                    str(project),
+                    "-c",
+                    "user.name=MCP test",
+                    "-c",
+                    "user.email=mcp@example.invalid",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "Accepted base",
+                ),
+                check=True,
+                capture_output=True,
+            )
+            base = subprocess.run(
+                ("git", "-C", str(project), "rev-parse", "HEAD"), check=True, capture_output=True, text=True
+            ).stdout.strip()
+            brief = replace_struct(brief, base_revision=base)
+        brief_bytes = canonical_work_brief_bytes(brief)
         publication = ArtifactRepository(roots).publish(
             NewArtifact(work_models.ArtifactKind.BRIEF, "work-a-brief", 1, ".opaque", brief_bytes)
         )
@@ -1772,10 +1798,20 @@ class McpTransportTest(unittest.TestCase):
             prior_reference.created_at,
             prior_reference.owners,
         )
+        lifecycle = replace(
+            state.lifecycle,
+            attempts=tuple(
+                replace(value, base_revision=brief.base_revision)
+                if str(value.attempt_id) == brief.attempt_id
+                else value
+                for value in state.lifecycle.attempts
+            ),
+        )
         initialize_store(
             SQLiteWorkStore(roots.database_path),
             replace(
                 state,
+                lifecycle=lifecycle,
                 artifact_references=(brief_reference, *state.artifact_references[1:]),
                 authority=authority,
             ),
@@ -1977,26 +2013,8 @@ class McpTransportTest(unittest.TestCase):
     def test_review_submission_expired_during_publication_preserves_artifact_without_ledger_commit(self) -> None:
         with patch(f"{__name__}.datetime") as fixture_clock:
             fixture_clock.now.return_value = SQLITE_NOW
-            temporary, project, roots = self._project()
+            temporary, project, roots = self._project(committed_base=True)
         self.addCleanup(temporary.cleanup)
-        subprocess.run(("git", "-C", str(project), "checkout", "-b", "codex/work-a"), check=True, capture_output=True)
-        subprocess.run(
-            (
-                "git",
-                "-C",
-                str(project),
-                "-c",
-                "user.name=MCP test",
-                "-c",
-                "user.email=mcp@example.invalid",
-                "commit",
-                "--allow-empty",
-                "-m",
-                "Accepted base",
-            ),
-            check=True,
-            capture_output=True,
-        )
         candidate = lifecycle_artifacts.read_working_tree_candidate(project).identity
         store = SQLiteWorkStore(roots.database_path)
         before = store.validated_snapshot()
@@ -5089,7 +5107,7 @@ class McpTransportTest(unittest.TestCase):
         ) -> mcp_execution.TypedOperationResult[contracts.CandidateObservationResult]:
             return mcp_execution.TypedOperationResult(
                 contracts.CandidateObserved(
-                    "pinboard-mcp-candidate-observation-result/v1",
+                    "pinboard-mcp-candidate-observation-result/v2",
                     "observed",
                     "attempt-1",
                     f"working-tree-state-sha256:{'0' * 64}",
@@ -5100,6 +5118,7 @@ class McpTransportTest(unittest.TestCase):
                     "0" * 64,
                     0,
                     (),
+                    contracts.CandidateSubmittable(),
                     state_changed,
                     "unchanged",
                     "safe-to-repeat",

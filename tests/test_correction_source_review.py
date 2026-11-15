@@ -183,17 +183,22 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         )
 
     def correction_fixture(
-        self, *, review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready"
+        self,
+        *,
+        review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready",
+        test_baseline: str = "assert True\n",
     ) -> CheckpointFixture:
-        fixture = self.native_fixture(self.checkpoint_fixture(review_condition=review_condition))
+        """Return the fixture candidate for correction on an accepted base that already holds the test file."""
+
+        fixture = self.native_fixture(
+            self.checkpoint_fixture(
+                review_condition=review_condition, base_files=(("tests/test_only.py", test_baseline),)
+            )
+        )
         payload = fixture.work / "bootstrap-return.json"
         payload.write_text('{"reason":"Prepare the real correction scenario."}', encoding="utf-8")
         self.transition_json(fixture, self.project_action(fixture, "return-for-correction:work-a-1"), payload)
         (fixture.project / "tracked.txt").write_text("base\n", encoding="utf-8")
-        tests = fixture.project / "tests"
-        tests.mkdir()
-        (tests / "test_only.py").write_text("assert True\n", encoding="utf-8")
-        self.commit_all(fixture.project, "test baseline")
         return fixture
 
     def submit_and_return(
@@ -828,6 +833,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         ).stdout.strip()
         self.assertNotEqual(original, rebased)
         self.assertNotEqual(fixture.brief.base_revision, new_base)
+        rebased_head = rebased
         if candidate_form == "working-tree":
             (fixture.project / "tests" / "test_only.py").write_text("assert 'rebased working tree'\n", encoding="utf-8")
             rebased = root.read_working_tree_candidate(fixture.project).identity
@@ -963,6 +969,24 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         )
         self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", rejected["code"], rejected)
         self.assertEqual(before, fixture.store.validated_snapshot())
+        if candidate_form == "working-tree":
+            refused = self.dispatch_native(fixture, choice)
+            self.assertEqual(
+                ("DISPATCH_BRIEF_REVIEW_STALE", False), (refused["code"], refused["state_changed"]), refused
+            )
+            self.assertIn(rebased_head, str(refused["message"]))
+            self.assertIn("Commit the candidate on the attempt branch", str(refused["message"]))
+            self.assertEqual(
+                [{"field": "preimage_revision", "expected": new_base, "observed": rebased_head}],
+                refused["mismatches"],
+            )
+            self.assertEqual(before, fixture.store.validated_snapshot())
+            self.assertEqual(
+                artifacts,
+                {path: path.read_bytes() for path in (fixture.work / "artifacts").rglob("*") if path.is_file()},
+            )
+            rebased = self.commit_all(fixture.project, "commit the rebased working tree")
+            choice["current_candidate"] = rebased
         ready = fixture.call_native_tool(
             server.DISPATCH_TOOL,
             {
@@ -1517,20 +1541,18 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         test_file.write_text("assert True\n", encoding="utf-8")
         (fixture.project / "tracked.txt").write_text("another committed state\n", encoding="utf-8")
         second_head = self.commit_all(fixture.project, "different starting code")
-        _, second = self.submit_and_return(fixture, "same-test", committed=False)
-        second_candidate = root.read_working_tree_candidate(fixture.project)
+        _, second = self.submit_and_return(fixture, "same-test", committed=True)
         self.assertNotEqual(first_head, second_head)
-        self.assertEqual(first_candidate.diff, second_candidate.diff)
         old_snapshot = deepcopy(second)
         self.json_object(old_snapshot["brief_review"])["starting_candidate"] = self.json_object(first["brief_review"])[
             "starting_candidate"
         ]
-        test_file.write_text("assert True\n", encoding="utf-8")
         subprocess.run(["git", "switch", "--detach", first_head], cwd=fixture.project, check=True, capture_output=True)
         subprocess.run(
             ["git", "switch", "-C", fixture.brief.branch], cwd=fixture.project, check=True, capture_output=True
         )
         test_file.write_text("assert 'same-test'\n", encoding="utf-8")
+        self.assertEqual(first_candidate, root.read_working_tree_candidate(fixture.project))
         before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         artifacts = {
             path.relative_to(fixture.work): path.read_bytes()
@@ -1648,10 +1670,8 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", mcp_execution.wire_content(rejected.record)["code"])
         self.assertEqual(before, fixture.store.validated_snapshot())
 
-    def test_large_correction_evidence_fits_complete_sdk_replies_and_dispatches(self) -> None:  # noqa: PLR0915 - one SDK evidence-to-dispatch journey
-        fixture = self.correction_fixture()
-        (fixture.project / "tests" / "test_only.py").write_text("assert True\n" * 600_000, encoding="utf-8")
-        self.commit_all(fixture.project, "large correction baseline")
+    def test_large_correction_evidence_fits_complete_sdk_replies_and_dispatches(self) -> None:
+        fixture = self.correction_fixture(test_baseline="assert True\n" * 600_000)
         history_id, choice = self.submit_and_return(fixture, "large-return", committed=False)
         expected_diff = root.read_working_tree_candidate(fixture.project).diff
         roots: JsonObject = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
@@ -2044,7 +2064,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                 self.assertEqual("ready", ready["status"], ready)
                 self.assertFalse(source.exists())
                 (fixture.project / "tests" / "test_only.py").write_text("assert 'corrected'\n", encoding="utf-8")
-                corrected = root.read_working_tree_candidate(fixture.project).identity
+                corrected = self.commit_all(fixture.project, "correct the returned commit")
                 lease = self.native_attempt_acquire(fixture, "correction")
                 submitted = self.transition_result(
                     fixture,

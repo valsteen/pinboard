@@ -114,7 +114,7 @@ class McpJobsTest(CheckpointPackageSupport):
                 )
 
     def test_native_candidate_observation_reports_omissions_without_effects_and_submits_exact_state(self) -> None:  # noqa: PLR0915 - one negotiated observation and persisted submission journey
-        fixture = self.checkpoint_fixture(candidate_form="current-head")
+        fixture = self.checkpoint_fixture()
         returned = self.transition_result(
             fixture, self.project_action(fixture, "return-for-correction:work-a-1"), {"reason": "New candidate."}
         )
@@ -162,6 +162,7 @@ class McpJobsTest(CheckpointPackageSupport):
         first = asyncio.run(negotiated_observe())
         self.assertEqual("observed", first["status"], first)
         self.assertEqual(["GREETING.md", "unrelated-note.md"], first["omitted_untracked_paths"])
+        self.assertEqual({"kind": "submittable"}, first["submission"])
         self.assertEqual(root.read_working_tree_candidate(fixture.project).identity, first["candidate"])
         self.assertEqual(before, fixture.store.validated_snapshot())
         self.assertEqual(index_before, (fixture.project / ".git" / "index").read_bytes())

@@ -1340,6 +1340,7 @@
       "includes": [],
       "source": "skills/pinboard/sources/tool-contract.CANDIDATE_OBSERVE_TOOL.md",
       "implementing_tests": [
+        "tests/test_item_integration.py::ItemIntegrationLeafTest.test_working_tree_identity_past_the_accepted_base_is_flagged_and_refused",
         "tests/test_mcp_jobs.py::McpJobsTest.test_native_candidate_observation_reports_omissions_without_effects_and_submits_exact_state"
       ]
     },

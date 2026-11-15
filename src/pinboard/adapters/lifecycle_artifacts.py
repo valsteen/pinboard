@@ -51,6 +51,12 @@ from pinboard.application.artifacts import (
     NewArtifact,
     ResultArtifactRef,
 )
+from pinboard.application.candidate_identity import (
+    WorkingTreeCommitRequired,
+    WorkingTreeSubmittable,
+    commit_required_message,
+    working_tree_submission,
+)
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.work_briefs import (
     canonical_checkpoint_bytes,
@@ -283,6 +289,62 @@ def _review_snapshot(
             assert_never(unreachable)
 
 
+def _observe_working_tree_review_candidate(
+    source_checkout: Path,
+    context: query_models.NonterminalAttemptContextFacts,
+    value: work_models.SubmitReviewInput | work_models.DeclaredSubmitReviewInput,
+    branch: str,
+    recorded_at: datetime,
+) -> DecisionResult[candidate_snapshots.CandidateSnapshot]:
+    """Accept a current working-tree identity only on the accepted base, naming the commit to submit otherwise."""
+
+    candidate = str(value.candidate)
+    try:
+        observed = read_working_tree_candidate(source_checkout)
+    except RootError as error:
+        return _unchanged(f"Cannot read the working-tree candidate: {error}", candidate=candidate)
+    if observed.identity != candidate:
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "Supplied candidate identity differs from the current working-tree HEAD and binary diff. "
+            "Call pinboard_candidate_observe for this attempt and exact roots, then copy its complete candidate "
+            "into a fresh submit-review action.",
+            FailureDetails(
+                observed=(
+                    FailureFact("candidate_revision", candidate),
+                    FailureFact("current_candidate_revision", observed.identity),
+                ),
+                mismatches=(FailureMismatch("candidate_revision", observed.identity, candidate),),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    submission = working_tree_submission(context.base_revision, observed.preimage_revision, observed.diff)
+    match submission:
+        case WorkingTreeSubmittable():
+            return _review_snapshot(context, value, branch, recorded_at, observed)
+        case WorkingTreeCommitRequired():
+            return DecisionFailure(
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                commit_required_message(submission),
+                FailureDetails(
+                    observed=(
+                        FailureFact("candidate_revision", candidate),
+                        FailureFact("current_head_revision", submission.head_revision),
+                    ),
+                    mismatches=(FailureMismatch("preimage_revision", context.base_revision, submission.head_revision),),
+                    retry=RetryDisposition.CORRECT_INPUT,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _observe_review_candidate(
     source_checkout: Path,
     store: ports.WorkStore,
@@ -303,29 +365,7 @@ def _observe_review_candidate(
     if isinstance(excluded, DecisionFailure):
         return excluded
     if candidate.startswith("working-tree-state-sha256:"):
-        try:
-            observed = read_working_tree_candidate(source_checkout)
-        except RootError as error:
-            return _unchanged(f"Cannot read the working-tree candidate: {error}", candidate=candidate)
-        if observed.identity != candidate:
-            return DecisionFailure(
-                DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                "Supplied candidate identity differs from the current working-tree HEAD and binary diff. "
-                "Call pinboard_candidate_observe for this attempt and exact roots, then copy its complete candidate "
-                "into a fresh submit-review action.",
-                FailureDetails(
-                    observed=(
-                        FailureFact("candidate_revision", candidate),
-                        FailureFact("current_candidate_revision", observed.identity),
-                    ),
-                    mismatches=(FailureMismatch("candidate_revision", observed.identity, candidate),),
-                    retry=RetryDisposition.CORRECT_INPUT,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
-                ),
-            )
-        return _review_snapshot(context, command.value, branch, recorded_at, observed)
+        return _observe_working_tree_review_candidate(source_checkout, context, command.value, branch, recorded_at)
     try:
         observed_commit = read_current_head_candidate(
             source_checkout, candidate, context.base_revision, excluded_untracked_paths=excluded

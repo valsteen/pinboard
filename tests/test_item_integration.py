@@ -1,4 +1,4 @@
-"""The integration leaf reports whether a reviewed candidate's accepted diff reached a caller-named target."""
+"""Reviewed candidates record their diff from the accepted base, and integration finds that diff at a named target."""
 
 import contextlib
 import dataclasses
@@ -23,7 +23,7 @@ from pinboard.adapters.files.errors import RootError, RootErrorCode
 from pinboard.adapters.sqlite import store as sqlite_store
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import action_models, work_brief_models
+from pinboard.application import action_models, candidate_snapshots, work_brief_models
 from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import execution as mcp_execution
@@ -262,8 +262,26 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         self.assertEqual("committed", submitted["status"], submitted)
         return candidate
 
+    def observe(self, fixture: CheckpointFixture) -> JsonObject:
+        observed = fixture.call_advertised_tool(
+            mcp_server.CANDIDATE_OBSERVE_TOOL, {**self.roots(fixture), "attempt_id": "work-a-1"}
+        )
+        self.assertEqual(
+            ("pinboard-mcp-candidate-observation-result/v2", "observed"), (observed["schema"], observed["status"])
+        )
+        return observed
+
+    def submit(self, fixture: CheckpointFixture, lease: JsonObject, candidate: str) -> JsonObject:
+        submission = self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease)
+        return self.transition_result(fixture, submission, {"candidate": candidate})
+
+    def protected_snapshot(self, fixture: CheckpointFixture) -> candidate_snapshots.CandidateSnapshot:
+        context = SQLiteWorkStore(fixture.work / "state.sqlite3").read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert context is not None
+        return candidate_snapshots.decode_candidate_snapshot((fixture.work / context.reference.selector).read_bytes())
+
     def multiline_candidate(self) -> tuple[CheckpointFixture, str, str]:
-        """Resubmit a working-tree candidate that edits line 2 of a twelve-line file on a committed preimage."""
+        """Retain a working-tree snapshot that edits line 2 of a twelve-line file on a committed preimage."""
 
         fixture = self.native_fixture(self.checkpoint_fixture())
         self.return_for_review(fixture)
@@ -271,7 +289,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         (fixture.project / "notes.txt").write_text(NOTES, encoding="utf-8")
         preimage = commit(fixture.project, "reviewed context")
         replace_line(fixture.project / "notes.txt", 2, "line 2 reviewed")
-        candidate = self.submit_working_tree(fixture, "worker-multiline")
+        candidate = self.retain_working_tree_review(fixture)
         return fixture, preimage, candidate
 
     def close_prerequisite(self, fixture: CheckpointFixture) -> None:
@@ -503,6 +521,129 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
                 decoded = msgspec.json.decode(receipt_bytes, type=action_models.ReviewedCompletionReceiptPayload)
                 self.assertEqual(receipt_bytes, msgspec.json.encode(decoded, order="sorted"))
                 self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+
+    def test_landed_completion_verifies_work_committed_on_the_attempt_branch(self) -> None:
+        fixture = self.native_fixture(self.checkpoint_fixture())
+        base = fixture.brief.base_revision
+        self.return_for_review(fixture)
+        (fixture.project / "feature.txt").write_text("committed feature\n", encoding="utf-8")
+        head = commit(fixture.project, "commit the reviewed work")
+        observed = self.observe(fixture)
+        self.assertEqual((0, head), (observed["diff_size_bytes"], observed["preimage_revision"]))
+        lease = self.native_attempt_acquire(fixture, "worker-committed")
+        submitted = self.submit(fixture, lease, head)
+        self.assertEqual("committed", submitted["status"], submitted)
+        snapshot = self.protected_snapshot(fixture)
+        self.assertEqual(("commit", head), (candidate_snapshots.candidate_kind(snapshot), snapshot.candidate))
+        self.assertEqual(
+            git_bytes(fixture.project, "diff", "--binary", "--full-index", base, head, "--"), snapshot.diff
+        )
+        self.assertIn(b"feature.txt", snapshot.diff)
+
+        fixture, payload = self.prepare_completion(dataclasses.replace(fixture, candidate_revision=head))
+        target = self.target_worktree(fixture, base)
+        git(target, "merge", "--quiet", "--no-ff", "-m", "merge the reviewed branch", fixture.brief.branch)
+        payload.update(human_decision="It's merged. Close it.", landed={"target": "main"})
+        result = self.complete(fixture, payload)
+        self.assertEqual("committed", result["status"], result)
+        self.assertEqual({"branch": fixture.brief.branch, "disposition": "remove"}, result["local_cleanup"])
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        item = next(item for item in fresh.lifecycle.work_items if item.item_id == "work-a")
+        attempt = next(value for value in fresh.lifecycle.attempts if value.attempt_id == "work-a-1")
+        self.assertEqual(("done", "done", head), (item.state.value, attempt.state.value, attempt.candidate_revision))
+        self.assertEqual(result["history_id"], int(fresh.transition_receipts[-1].history_id))
+
+    def test_working_tree_identity_past_the_accepted_base_is_flagged_and_refused(self) -> None:
+        fixture = self.native_fixture(self.checkpoint_fixture())
+        base = fixture.brief.base_revision
+        self.return_for_review(fixture)
+        head = commit(fixture.project, "commit the reviewed work")
+        lease = self.native_attempt_acquire(fixture, "worker-past-base")
+        cases = (
+            ("zero-byte", None, "submit-head-commit", f"submit HEAD {head} as a commit candidate"),
+            ("non-empty", "uncommitted edit\n", "commit-tracked-changes", "Commit the tracked changes"),
+        )
+        for name, edit, step, instruction in cases:
+            with self.subTest(diff=name):
+                if edit is not None:
+                    (fixture.project / "tracked.txt").write_text(edit, encoding="utf-8")
+                observed = self.observe(fixture)
+                self.assertEqual((head, base), (observed["preimage_revision"], observed["accepted_base_revision"]))
+                self.assertEqual(edit is None, observed["diff_size_bytes"] == 0)
+                submission = self.json_object(observed["submission"])
+                self.assertEqual(
+                    ("commit-required", head, step),
+                    (submission["kind"], submission["head_revision"], submission["next_step"]),
+                )
+                self.assertIn(instruction, str(submission["message"]))
+                before = fixture.store.validated_snapshot()
+                artifacts_before = sorted((fixture.work / "artifacts").rglob("*"))
+                rejected = self.submit(fixture, lease, str(observed["candidate"]))
+                self.assertEqual(
+                    ("rejected", "unchanged", "correct-input", []),
+                    (rejected["status"], rejected["effect"], rejected["retry"], rejected["changed_surfaces"]),
+                    rejected,
+                )
+                self.assertEqual(submission["message"], rejected["message"])
+                self.assertIn(head, str(rejected["message"]))
+                self.assertIn(instruction, str(rejected["message"]))
+                self.assertIn({"field": "current_head_revision", "value": head}, self.json_array(rejected["observed"]))
+                self.assertEqual(
+                    [{"field": "preimage_revision", "expected": base, "observed": head}], rejected["mismatches"]
+                )
+                self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+                self.assertEqual(artifacts_before, sorted((fixture.work / "artifacts").rglob("*")))
+        git(fixture.project, "checkout", "--", "tracked.txt")
+        submitted = self.submit(fixture, lease, head)
+        self.assertEqual("committed", submitted["status"], submitted)
+        self.assertEqual(
+            git_bytes(fixture.project, "diff", "--binary", "--full-index", base, head, "--"),
+            self.protected_snapshot(fixture).diff,
+        )
+
+    def test_working_tree_identity_on_the_accepted_base_stays_submittable(self) -> None:
+        for name, contents in (("non-empty", None), ("zero-byte", "base\n")):
+            with self.subTest(diff=name):
+                fixture = self.native_fixture(self.checkpoint_fixture())
+                self.return_for_review(fixture)
+                if contents is not None:
+                    (fixture.project / "tracked.txt").write_text(contents, encoding="utf-8")
+                observed = self.observe(fixture)
+                self.assertEqual(fixture.brief.base_revision, observed["preimage_revision"])
+                self.assertEqual(contents is not None, observed["diff_size_bytes"] == 0)
+                self.assertEqual({"kind": "submittable"}, observed["submission"])
+                lease = self.native_attempt_acquire(fixture, f"worker-at-base-{name}")
+                submitted = self.submit(fixture, lease, str(observed["candidate"]))
+                self.assertEqual("committed", submitted["status"], submitted)
+                snapshot = self.protected_snapshot(fixture)
+                self.assertEqual(
+                    ("working-tree", observed["candidate"], fixture.brief.base_revision),
+                    (candidate_snapshots.candidate_kind(snapshot), snapshot.candidate, snapshot.preimage_revision),
+                )
+
+    def test_no_change_checkpoint_after_an_accepted_commit_submits_that_head_commit(self) -> None:
+        fixture = self.native_fixture(self.accepted_package_fixture(candidate_form="current-head"))
+        base = fixture.brief.base_revision
+        accepted = fixture.candidate_revision
+        self.close_prerequisite(fixture)
+        self.transition(fixture, "resume:work-a", {})
+        self.rebind(fixture, fixture.brief.artifact_revision + 1)
+        self.assertEqual(accepted, git(fixture.project, "rev-parse", "HEAD"))
+        observed = self.observe(fixture)
+        self.assertEqual((0, accepted), (observed["diff_size_bytes"], observed["preimage_revision"]))
+        self.assertEqual("submit-head-commit", self.json_object(observed["submission"])["next_step"])
+        lease = self.native_attempt_acquire(fixture, "worker-no-change")
+        submitted = self.submit(fixture, lease, accepted)
+        self.assertEqual("committed", submitted["status"], submitted)
+        snapshot = self.protected_snapshot(fixture)
+        self.assertEqual(
+            ("commit", accepted, base),
+            (candidate_snapshots.candidate_kind(snapshot), snapshot.candidate, snapshot.accepted_base_revision),
+        )
+        self.assertEqual(
+            git_bytes(fixture.project, "diff", "--binary", "--full-index", base, accepted, "--"), snapshot.diff
+        )
+        self.assertNotEqual(b"", snapshot.diff)
 
     def test_landed_completion_refuses_wrong_candidate_or_target_and_reports_recovery(self) -> None:
         fixture, payload = self.prepare_completion(self.native_fixture(self.checkpoint_fixture()))

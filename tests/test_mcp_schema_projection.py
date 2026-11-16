@@ -5,14 +5,18 @@ import io
 import re
 import unittest
 from collections.abc import Iterator
+from dataclasses import replace
 from unittest.mock import patch
 
+import msgspec
 from mcp_types import Tool
 
 from pinboard.application import action_models
 from pinboard.domain import decision_models
 from pinboard.mcp import contract_schemas, contracts, execution, server
 from pinboard.mcp.contracts import JsonSchemaValue
+
+type _NarrowCandidateObservationResult = contracts.CandidateObservationRejected
 
 
 def pattern_pairs(
@@ -283,6 +287,69 @@ class McpSchemaProjectionTest(unittest.TestCase):
                                 re.search(canonical, sample) is not None, advertised_matches(field, sample)
                             )
         self.assertTrue(seen)
+
+    def test_boundary_schemas_are_cached_per_process_isolated_per_server_and_sensitive_to_overrides(self) -> None:
+        executor = execution.BoundedExecutor(worker_count=1, unfinished_limit=1)
+        self.addCleanup(executor.shutdown)
+        diagnostics = execution.Diagnostics(io.StringIO(), event_limit=4, line_limit=256)
+
+        first_order_schema = contract_schemas.schema_for(contracts.OrderEnvelope)
+        first_order_schema["title"] = "mutated"
+        self.assertNotEqual("mutated", contract_schemas.schema_for(contracts.OrderEnvelope).get("title"))
+
+        first_dispatch_schema = contract_schemas.dispatch_request_schema(contracts.DispatchRequest)
+        first_dispatch_schema["title"] = "mutated"
+        self.assertNotEqual("mutated", contract_schemas.dispatch_request_schema(contracts.DispatchRequest).get("title"))
+
+        first_transition_schema = contract_schemas.transition_request_schema()
+        first_transition_schema["additionalProperties"] = True
+        self.assertIs(False, contract_schemas.transition_request_schema()["additionalProperties"])
+
+        first_result_schema = contract_schemas.typed_result_schema(contracts.OrderResult)
+        first_result_schema["type"] = "array"
+        self.assertEqual("object", contract_schemas.typed_result_schema(contracts.OrderResult)["type"])
+
+        first_server = server.create_server(executor, diagnostics)
+        with (
+            patch.object(msgspec.json, "schema", side_effect=AssertionError("recomputed request schema")),
+            patch.object(msgspec.json, "schema_components", side_effect=AssertionError("recomputed union schema")),
+            patch.object(
+                contract_schemas, "_portable_pattern", side_effect=AssertionError("reprojected cached schema")
+            ),
+        ):
+            second_server = server.create_server(executor, diagnostics)
+
+        first_tool = first_server._tool_manager.get_tool(server.ORDER_TOOL)
+        second_tool = second_server._tool_manager.get_tool(server.ORDER_TOOL)
+        assert first_tool is not None and second_tool is not None
+        assert first_tool.fn_metadata.output_schema is not None
+        assert second_tool.fn_metadata.output_schema is not None
+        first_tool.parameters["title"] = "mutated-input"
+        first_defs = first_tool.fn_metadata.output_schema["$defs"]
+        assert isinstance(first_defs, dict)
+        first_defs.clear()
+        self.assertNotEqual("mutated-input", second_tool.parameters.get("title"))
+        second_defs = second_tool.fn_metadata.output_schema["$defs"]
+        assert isinstance(second_defs, dict)
+        self.assertIn("OrderCommitted", second_defs)
+
+        with patch.object(
+            server,
+            "CANDIDATE_OBSERVE",
+            replace(server.CANDIDATE_OBSERVE, results=_NarrowCandidateObservationResult),
+        ):
+            narrow_server = server.create_server(executor, diagnostics)
+        restored_server = server.create_server(executor, diagnostics)
+
+        narrow_tool = narrow_server._tool_manager.get_tool(server.CANDIDATE_OBSERVE_TOOL)
+        restored_tool = restored_server._tool_manager.get_tool(server.CANDIDATE_OBSERVE_TOOL)
+        assert narrow_tool is not None and narrow_tool.fn_metadata.output_schema is not None
+        assert restored_tool is not None and restored_tool.fn_metadata.output_schema is not None
+        narrow_defs = narrow_tool.fn_metadata.output_schema["$defs"]
+        restored_defs = restored_tool.fn_metadata.output_schema["$defs"]
+        assert isinstance(narrow_defs, dict) and isinstance(restored_defs, dict)
+        self.assertNotIn("CandidateObserved", narrow_defs)
+        self.assertIn("CandidateObserved", restored_defs)
 
 
 REGEX_UNICODE_ESCAPE = re.compile(r"(?<!\\)(?:\\\\)*\\[uU]")

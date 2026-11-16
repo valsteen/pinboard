@@ -1,5 +1,7 @@
 """Generate negotiated MCP request and result schemas."""
 
+from copy import deepcopy
+from functools import cache
 from types import UnionType
 from typing import TypeAliasType, TypeForm, assert_never, get_args
 
@@ -85,8 +87,8 @@ def project_regex_patterns(schema: dict[str, JsonSchemaValue]) -> None:
     visit(schema)
 
 
-def schema_for(boundary_type: type[msgspec.Struct]) -> dict[str, JsonSchemaValue]:
-    """Return one host-facing MCP request schema from a strict msgspec record."""
+@cache
+def _cached_schema_for(boundary_type: type[msgspec.Struct]) -> dict[str, JsonSchemaValue]:
     schema: dict[str, JsonSchemaValue] = msgspec.json.schema(
         boundary_type, schema_hook=dispatch_models.dispatch_environment_schema_hook
     )
@@ -102,9 +104,13 @@ def schema_for(boundary_type: type[msgspec.Struct]) -> dict[str, JsonSchemaValue
     return {**definition, **schema}
 
 
-def dispatch_request_schema(request: type[DispatchRequest]) -> dict[str, JsonSchemaValue]:
-    """Inline dispatch records so host reference-expansion limits retain every choice."""
+def schema_for(boundary_type: type[msgspec.Struct]) -> dict[str, JsonSchemaValue]:
+    """Return one host-facing MCP request schema from a strict msgspec record."""
+    return deepcopy(_cached_schema_for(boundary_type))
 
+
+@cache
+def _cached_dispatch_request_schema(request: type[DispatchRequest]) -> dict[str, JsonSchemaValue]:
     schema = schema_for(request)
     definitions = schema.pop("$defs")
     assert isinstance(definitions, dict)
@@ -130,15 +136,20 @@ def dispatch_request_schema(request: type[DispatchRequest]) -> dict[str, JsonSch
     return result
 
 
+def dispatch_request_schema(request: type[DispatchRequest]) -> dict[str, JsonSchemaValue]:
+    """Inline dispatch records so host reference-expansion limits retain every choice."""
+
+    return deepcopy(_cached_dispatch_request_schema(request))
+
+
 def actions_request_schema() -> dict[str, JsonSchemaValue]:
     """Return the exact role-discriminated action request schema."""
 
     return schema_for(ActionsEnvelope)
 
 
-def transition_request_schema() -> dict[str, JsonSchemaValue]:
-    """Advertise exactly the leaves of the union that the transition decoder returns."""
-
+@cache
+def _cached_transition_request_schema() -> dict[str, JsonSchemaValue]:
     schemas, definitions = msgspec.json.schema_components(get_args(TransitionRequest.__value__))
     return {
         "type": "object",
@@ -147,6 +158,12 @@ def transition_request_schema() -> dict[str, JsonSchemaValue]:
         "properties": {"request": {"oneOf": list[JsonSchemaValue](schemas)}},
         "$defs": definitions,
     }
+
+
+def transition_request_schema() -> dict[str, JsonSchemaValue]:
+    """Advertise exactly the leaves of the union that the transition decoder returns."""
+
+    return deepcopy(_cached_transition_request_schema())
 
 
 def _apply_result_state_constraints(
@@ -612,8 +629,8 @@ def _apply_job_constraints(definitions: dict[str, JsonSchemaValue]) -> None:
             }
 
 
-def union_schema_for(boundary_types: tuple[type[msgspec.Struct], ...]) -> dict[str, JsonSchemaValue]:
-    """Return one closed MCP result schema from separate correlated records."""
+@cache
+def _cached_union_schema_for(boundary_types: tuple[type[msgspec.Struct], ...]) -> dict[str, JsonSchemaValue]:
     if ExecutorBusyResult in boundary_types:
         boundary_types = (*boundary_types, TracePreflightResult, SchemaUnsupportedResult)
     components = msgspec.json.schema_components(boundary_types)
@@ -666,6 +683,11 @@ def union_schema_for(boundary_types: tuple[type[msgspec.Struct], ...]) -> dict[s
                 {"properties": {"reuse_eligible": {"const": False}, "reuse_blockers": {"minItems": 1}}},
             ]
     return {"type": "object", "anyOf": list[JsonSchemaValue](schemas), "$defs": definitions}
+
+
+def union_schema_for(boundary_types: tuple[type[msgspec.Struct], ...]) -> dict[str, JsonSchemaValue]:
+    """Return one closed MCP result schema from separate correlated records."""
+    return deepcopy(_cached_union_schema_for(boundary_types))
 
 
 def typed_result_schema(results: TypeForm[msgspec.Struct]) -> dict[str, JsonSchemaValue]:

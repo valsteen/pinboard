@@ -5,9 +5,10 @@ from __future__ import annotations
 import itertools
 import sys
 from collections.abc import Callable, Iterator, Sequence
+from copy import deepcopy
 from functools import cache, partial
 from pathlib import Path
-from typing import Any, assert_never  # noqa: TID251 - SDK middleware exposes raw protocol mappings
+from typing import Any, TypeForm, assert_never  # noqa: TID251 - SDK middleware exposes raw protocol mappings
 
 import anyio
 import msgspec
@@ -1199,183 +1200,233 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
     return server
 
 
+type SchemaProjector = Callable[[dict[str, contracts.JsonSchemaValue]], None]
+
+
+@cache
+def _projected_request_schema(
+    request: type[msgspec.Struct],
+    projector: SchemaProjector,
+) -> dict[str, contracts.JsonSchemaValue]:
+    schema = contract_schemas.schema_for(request)
+    projector(schema)
+    return schema
+
+
+@cache
+def _projected_actions_request_schema(
+    projector: SchemaProjector,
+) -> dict[str, contracts.JsonSchemaValue]:
+    schema = contract_schemas.actions_request_schema()
+    projector(schema)
+    return schema
+
+
+@cache
+def _projected_transition_request_schema(
+    projector: SchemaProjector,
+) -> dict[str, contracts.JsonSchemaValue]:
+    schema = contract_schemas.transition_request_schema()
+    projector(schema)
+    return schema
+
+
+@cache
+def _projected_dispatch_request_schema(
+    request: type[contracts.DispatchRequest],
+    projector: SchemaProjector,
+) -> dict[str, contracts.JsonSchemaValue]:
+    schema = contract_schemas.dispatch_request_schema(request)
+    projector(schema)
+    return schema
+
+
+@cache
+def _projected_result_schema(
+    results: TypeForm[msgspec.Struct],
+    projector: SchemaProjector,
+) -> dict[str, contracts.JsonSchemaValue]:
+    schema = contract_schemas.typed_result_schema(results)
+    projector(schema)
+    return schema
+
+
 def _install_boundary_contracts(server: MCPServer) -> None:
     """Install exact schemas through the pinned SDK's mutable tool metadata seam."""
+    projector = contract_schemas.project_regex_patterns
     definitions = (
         (
             INITIATIVE.name,
-            contract_schemas.schema_for(INITIATIVE.request),
-            contract_schemas.typed_result_schema(INITIATIVE.results),
+            _projected_request_schema(INITIATIVE.request, projector),
+            _projected_result_schema(INITIATIVE.results, projector),
         ),
         (
             consolidation_operations.CONSOLIDATE.name,
-            contract_schemas.schema_for(consolidation_operations.CONSOLIDATE.request),
-            contract_schemas.typed_result_schema(consolidation_operations.CONSOLIDATE.results),
+            _projected_request_schema(consolidation_operations.CONSOLIDATE.request, projector),
+            _projected_result_schema(consolidation_operations.CONSOLIDATE.results, projector),
         ),
         (
             cancellation_operations.CANCEL.name,
-            contract_schemas.schema_for(cancellation_operations.CANCEL.request),
-            contract_schemas.typed_result_schema(cancellation_operations.CANCEL.results),
+            _projected_request_schema(cancellation_operations.CANCEL.request, projector),
+            _projected_result_schema(cancellation_operations.CANCEL.results, projector),
         ),
         (
             EVIDENCE_READ.name,
-            contract_schemas.schema_for(EVIDENCE_READ.request),
-            contract_schemas.typed_result_schema(EVIDENCE_READ.results),
+            _projected_request_schema(EVIDENCE_READ.request, projector),
+            _projected_result_schema(EVIDENCE_READ.results, projector),
         ),
         (
             FIXTURE_REVIEW.name,
-            contract_schemas.schema_for(FIXTURE_REVIEW.request),
-            contract_schemas.typed_result_schema(FIXTURE_REVIEW.results),
+            _projected_request_schema(FIXTURE_REVIEW.request, projector),
+            _projected_result_schema(FIXTURE_REVIEW.results, projector),
         ),
         (
             ORDER.name,
-            contract_schemas.schema_for(ORDER.request),
-            contract_schemas.typed_result_schema(ORDER.results),
+            _projected_request_schema(ORDER.request, projector),
+            _projected_result_schema(ORDER.results, projector),
         ),
         (
             PARALLEL_PREVIEW.name,
-            contract_schemas.schema_for(PARALLEL_PREVIEW.request),
-            contract_schemas.typed_result_schema(PARALLEL_PREVIEW.results),
+            _projected_request_schema(PARALLEL_PREVIEW.request, projector),
+            _projected_result_schema(PARALLEL_PREVIEW.results, projector),
         ),
         (
             BRIEF_CONTRACT.name,
-            contract_schemas.schema_for(BRIEF_CONTRACT.request),
-            contract_schemas.typed_result_schema(BRIEF_CONTRACT.results),
+            _projected_request_schema(BRIEF_CONTRACT.request, projector),
+            _projected_result_schema(BRIEF_CONTRACT.results, projector),
         ),
         (
             BRIEF_SOURCES.name,
-            contract_schemas.schema_for(BRIEF_SOURCES.request),
-            contract_schemas.typed_result_schema(BRIEF_SOURCES.results),
+            _projected_request_schema(BRIEF_SOURCES.request, projector),
+            _projected_result_schema(BRIEF_SOURCES.results, projector),
         ),
         (
             BRIEF_SOURCE_PLAN_OUTPUT.name,
-            contract_schemas.schema_for(BRIEF_SOURCE_PLAN_OUTPUT.request),
-            contract_schemas.typed_result_schema(BRIEF_SOURCE_PLAN_OUTPUT.results),
+            _projected_request_schema(BRIEF_SOURCE_PLAN_OUTPUT.request, projector),
+            _projected_result_schema(BRIEF_SOURCE_PLAN_OUTPUT.results, projector),
         ),
         (
             OBLIGATION_COVERAGE.name,
-            contract_schemas.schema_for(OBLIGATION_COVERAGE.request),
-            contract_schemas.typed_result_schema(OBLIGATION_COVERAGE.results),
+            _projected_request_schema(OBLIGATION_COVERAGE.request, projector),
+            _projected_result_schema(OBLIGATION_COVERAGE.results, projector),
         ),
         (
             ITEM_DEFINITION.name,
-            contract_schemas.schema_for(ITEM_DEFINITION.request),
-            contract_schemas.typed_result_schema(ITEM_DEFINITION.results),
+            _projected_request_schema(ITEM_DEFINITION.request, projector),
+            _projected_result_schema(ITEM_DEFINITION.results, projector),
         ),
         (
             BRIEF_REVIEW.name,
-            contract_schemas.schema_for(BRIEF_REVIEW.request),
-            contract_schemas.typed_result_schema(BRIEF_REVIEW.results),
+            _projected_request_schema(BRIEF_REVIEW.request, projector),
+            _projected_result_schema(BRIEF_REVIEW.results, projector),
         ),
         (
             ITEM_STATUS.name,
-            contract_schemas.schema_for(ITEM_STATUS.request),
-            contract_schemas.typed_result_schema(ITEM_STATUS.results),
+            _projected_request_schema(ITEM_STATUS.request, projector),
+            _projected_result_schema(ITEM_STATUS.results, projector),
         ),
         (
             PR_REVIEW.name,
-            contract_schemas.schema_for(PR_REVIEW.request),
-            contract_schemas.typed_result_schema(PR_REVIEW.results),
+            _projected_request_schema(PR_REVIEW.request, projector),
+            _projected_result_schema(PR_REVIEW.results, projector),
         ),
         (
             PROPOSAL_CREATE.name,
-            contract_schemas.schema_for(PROPOSAL_CREATE.request),
-            contract_schemas.typed_result_schema(PROPOSAL_CREATE.results),
+            _projected_request_schema(PROPOSAL_CREATE.request, projector),
+            _projected_result_schema(PROPOSAL_CREATE.results, projector),
         ),
         (
             BRIEF_PUBLISH.name,
-            contract_schemas.schema_for(BRIEF_PUBLISH.request),
-            contract_schemas.typed_result_schema(BRIEF_PUBLISH.results),
+            _projected_request_schema(BRIEF_PUBLISH.request, projector),
+            _projected_result_schema(BRIEF_PUBLISH.results, projector),
         ),
         (
             BRIEF_PUBLISH_FILE.name,
-            contract_schemas.schema_for(BRIEF_PUBLISH_FILE.request),
-            contract_schemas.typed_result_schema(BRIEF_PUBLISH_FILE.results),
+            _projected_request_schema(BRIEF_PUBLISH_FILE.request, projector),
+            _projected_result_schema(BRIEF_PUBLISH_FILE.results, projector),
         ),
         (
             OVERVIEW.name,
-            contract_schemas.schema_for(OVERVIEW.request),
-            contract_schemas.typed_result_schema(OVERVIEW.results),
+            _projected_request_schema(OVERVIEW.request, projector),
+            _projected_result_schema(OVERVIEW.results, projector),
         ),
         (
             ACTIONS.name,
-            contract_schemas.actions_request_schema(),
-            contract_schemas.typed_result_schema(ACTIONS.results),
+            _projected_actions_request_schema(projector),
+            _projected_result_schema(ACTIONS.results, projector),
         ),
         (
             ATTEMPT_INSPECT.name,
-            contract_schemas.schema_for(ATTEMPT_INSPECT.request),
-            contract_schemas.typed_result_schema(ATTEMPT_INSPECT.results),
+            _projected_request_schema(ATTEMPT_INSPECT.request, projector),
+            _projected_result_schema(ATTEMPT_INSPECT.results, projector),
         ),
         (
             CORRECTION_CONTEXT.name,
-            contract_schemas.schema_for(CORRECTION_CONTEXT.request),
-            contract_schemas.typed_result_schema(CORRECTION_CONTEXT.results),
+            _projected_request_schema(CORRECTION_CONTEXT.request, projector),
+            _projected_result_schema(CORRECTION_CONTEXT.results, projector),
         ),
         (
             RETURN_CONTEXT.name,
-            contract_schemas.schema_for(RETURN_CONTEXT.request),
-            contract_schemas.typed_result_schema(RETURN_CONTEXT.results),
+            _projected_request_schema(RETURN_CONTEXT.request, projector),
+            _projected_result_schema(RETURN_CONTEXT.results, projector),
         ),
         (
             ARTIFACT_VERIFY.name,
-            contract_schemas.schema_for(ARTIFACT_VERIFY.request),
-            contract_schemas.typed_result_schema(ARTIFACT_VERIFY.results),
+            _projected_request_schema(ARTIFACT_VERIFY.request, projector),
+            _projected_result_schema(ARTIFACT_VERIFY.results, projector),
         ),
         (
             BRIEF_LOOKUP.name,
-            contract_schemas.schema_for(BRIEF_LOOKUP.request),
-            contract_schemas.typed_result_schema(BRIEF_LOOKUP.results),
+            _projected_request_schema(BRIEF_LOOKUP.request, projector),
+            _projected_result_schema(BRIEF_LOOKUP.results, projector),
         ),
         (
             PREPARATION_AUTHORITY.name,
-            contract_schemas.schema_for(PREPARATION_AUTHORITY.request),
-            contract_schemas.typed_result_schema(PREPARATION_AUTHORITY.results),
+            _projected_request_schema(PREPARATION_AUTHORITY.request, projector),
+            _projected_result_schema(PREPARATION_AUTHORITY.results, projector),
         ),
         (
             ATTEMPT_AUTHORITY.name,
-            contract_schemas.schema_for(ATTEMPT_AUTHORITY.request),
-            contract_schemas.typed_result_schema(ATTEMPT_AUTHORITY.results),
+            _projected_request_schema(ATTEMPT_AUTHORITY.request, projector),
+            _projected_result_schema(ATTEMPT_AUTHORITY.results, projector),
         ),
         (
             TRANSITION.name,
-            contract_schemas.transition_request_schema(),
-            contract_schemas.typed_result_schema(TRANSITION.results),
+            _projected_transition_request_schema(projector),
+            _projected_result_schema(TRANSITION.results, projector),
         ),
         (
             CLOSE.name,
-            contract_schemas.schema_for(CLOSE.request),
-            contract_schemas.typed_result_schema(CLOSE.results),
+            _projected_request_schema(CLOSE.request, projector),
+            _projected_result_schema(CLOSE.results, projector),
         ),
         (
             DISPATCH.name,
-            contract_schemas.dispatch_request_schema(DISPATCH.request),
-            contract_schemas.typed_result_schema(DISPATCH.results),
+            _projected_dispatch_request_schema(DISPATCH.request, projector),
+            _projected_result_schema(DISPATCH.results, projector),
         ),
         (
             CANDIDATE_RESTORE.name,
-            contract_schemas.schema_for(CANDIDATE_RESTORE.request),
-            contract_schemas.typed_result_schema(CANDIDATE_RESTORE.results),
+            _projected_request_schema(CANDIDATE_RESTORE.request, projector),
+            _projected_result_schema(CANDIDATE_RESTORE.results, projector),
         ),
         (
             CANDIDATE_OBSERVE.name,
-            contract_schemas.schema_for(CANDIDATE_OBSERVE.request),
-            contract_schemas.typed_result_schema(CANDIDATE_OBSERVE.results),
+            _projected_request_schema(CANDIDATE_OBSERVE.request, projector),
+            _projected_result_schema(CANDIDATE_OBSERVE.results, projector),
         ),
         (
             REVIEW_JOB.name,
-            contract_schemas.schema_for(REVIEW_JOB.request),
-            contract_schemas.typed_result_schema(REVIEW_JOB.results),
+            _projected_request_schema(REVIEW_JOB.request, projector),
+            _projected_result_schema(REVIEW_JOB.results, projector),
         ),
     )
     for name, input_schema, output_schema in definitions:
         tool = server._tool_manager.get_tool(name)
         if tool is None:
             raise RuntimeError(f"MCP tool '{name}' was not registered.")
-        contract_schemas.project_regex_patterns(input_schema)
-        contract_schemas.project_regex_patterns(output_schema)
-        tool.parameters = input_schema
-        tool.fn_metadata.output_schema = output_schema
+        tool.parameters = deepcopy(input_schema)
+        tool.fn_metadata.output_schema = deepcopy(output_schema)
         tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
         tool.fn_metadata.arg_model.model_rebuild(force=True)
 

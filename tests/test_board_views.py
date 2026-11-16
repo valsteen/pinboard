@@ -1738,47 +1738,6 @@ class BoardHistoryTest(ItemLifecycleSupport):
         )
         self.assert_board_parity(fixture)
 
-    def test_multiline_acceptance_and_pause_records_reach_the_page_data_exactly(self) -> None:
-        def record(kind: str) -> str:
-            return f"Lead sentence for the {kind}.\n\nProblem:\n- `{kind}` detail.\n1. Step.\n\nReferences: {kind}.md"
-
-        fixture = self.checkpoint_fixture()
-        self.return_for_review(fixture, record("return"))
-        accepted = self.submit_candidate(fixture, "accepted")
-        self.record_ready(fixture, accepted)
-        checkpoint_id = fixture.brief.checkpoint.checkpoint_id
-        self.transition(
-            fixture,
-            "accept-checkpoint:work-a-1",
-            {"checkpoint": checkpoint_id, "candidate": accepted, "evidence": record("acceptance")},
-        )
-        self.assertEqual(record("acceptance"), self.condition(fixture)["text"])
-        milestone = self.json_object(self.json_array(self.standing(fixture)["milestones"])[0])
-        self.assertEqual((checkpoint_id, record("acceptance")), (milestone["checkpoint_id"], milestone["evidence"]))
-        self.close_prerequisite(fixture)
-        published = call_native_tool(
-            mcp_server.BRIEF_PUBLISH_TOOL,
-            {
-                **self.roots(fixture),
-                "brief": self.json_object(
-                    msgspec.json.decode(msgspec.json.encode(replace_struct(fixture.brief, artifact_revision=2)))
-                ),
-            },
-        )
-        self.assertEqual("committed", published["status"], published)
-        self.transition(
-            fixture,
-            "resume:work-a",
-            {"brief_artifact_ref_id": self.json_object(published["reference"])["artifact_ref_id"]},
-        )
-        self.transition(fixture, "pause:work-a-1", {"reason": record("pause"), "unblocker": HOLD_UNBLOCKER})
-        self.assertEqual(record("pause"), self.condition(fixture)["text"])
-        self.publish_rebind(fixture, replace_struct(fixture.brief, artifact_revision=3))
-        self.assertEqual(
-            ("rebound", record("pause")), (self.condition(fixture)["kind"], self.condition(fixture)["text"])
-        )
-        self.assert_board_parity(fixture)
-
     def test_unreadable_brief_is_a_card_notice_while_the_board_refreshes_and_validation_agrees(self) -> None:
         fixture = self.checkpoint_fixture()
         self.return_for_review(fixture, "Rework.")

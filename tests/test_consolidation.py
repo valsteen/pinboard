@@ -390,6 +390,136 @@ class ConsolidationTest(CheckpointPackageSupport):
         exported = self.run_json_cli(*fixture.common, "export")
         self.assertIn("pinboard-consolidation/v2", str(exported))
 
+    def test_authored_exact_origin_is_retained_once_while_unauthored_sources_still_carry(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        for item in ("source-a", "source-b", "control-source"):
+            self.create(fixture, item)
+        source_a = self.current(fixture, "source-a")
+        source_a_obligation = self.json_object(
+            self.json_array(self.json_object(source_a["definition"])["obligations"])[0]
+        )
+        source_b = self.current(fixture, "source-b")
+        source_b_obligation = self.json_object(
+            self.json_array(self.json_object(source_b["definition"])["obligations"])[0]
+        )
+        selection = self.selection(fixture, ("source-a", "source-b"), "campaign", True)
+        campaign = self.json_object(selection["campaign"])
+        definition = self.json_object(campaign["definition"])
+        authored_origin: JsonObject = {
+            "item_id": "source-a",
+            "definition_revision": source_a["definition_revision"],
+            "obligation_id": source_a_obligation["obligation_id"],
+        }
+        selection["campaign"] = {
+            **campaign,
+            "definition": {
+                **definition,
+                "schema": "pinboard-work-item-definition/v5",
+                "obligations": [
+                    {
+                        **source_a_obligation,
+                        "origin": authored_origin,
+                    }
+                ],
+            },
+        }
+        preview = self.preview(fixture, selection)
+        self.assertEqual("ok", preview["status"], preview)
+        preview_campaign = self.json_object(
+            self.json_object(self.json_object(preview["preview"])["campaign"])["definition"]
+        )
+        expected_obligations: list[JsonValue] = [
+            {
+                **source_a_obligation,
+                "origin": authored_origin,
+            },
+            {
+                "obligation_id": "carried-2",
+                "statement": source_b_obligation["statement"],
+                "deferral_policy": source_b_obligation["deferral_policy"],
+                "origin": {
+                    "item_id": "source-b",
+                    "definition_revision": source_b["definition_revision"],
+                    "obligation_id": source_b_obligation["obligation_id"],
+                },
+            },
+        ]
+        self.assertEqual(expected_obligations, self.json_array(preview_campaign["obligations"]))
+        committed = self.confirm(fixture, selection, preview)
+        self.assertEqual("committed", committed["status"], committed)
+
+        control_selection = self.selection(fixture, ("control-source",), "control-campaign", True)
+        control_preview = self.preview(fixture, control_selection)
+        self.assertEqual("ok", control_preview["status"], control_preview)
+        self.assertEqual("committed", self.confirm(fixture, control_selection, control_preview)["status"])
+
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+        after = fresh.validated_snapshot()
+        reloaded_campaign = next(
+            value for value in after.lifecycle.definition_revisions if value.item_id == WorkItemId("campaign")
+        )
+        assert isinstance(reloaded_campaign.definition, work_models.WorkItemDefinition)
+        self.assertEqual(
+            (
+                work_models.CarriedWorkObligation(
+                    work_models.ObligationId(str(source_a_obligation["obligation_id"])),
+                    str(source_a_obligation["statement"]),
+                    work_models.ObligationDeferralPolicy(str(source_a_obligation["deferral_policy"])),
+                    work_models.ObligationOrigin(
+                        WorkItemId("source-a"),
+                        int(str(source_a["definition_revision"])),
+                        work_models.ObligationId(str(source_a_obligation["obligation_id"])),
+                    ),
+                ),
+                work_models.CarriedWorkObligation(
+                    work_models.ObligationId("carried-2"),
+                    str(source_b_obligation["statement"]),
+                    work_models.ObligationDeferralPolicy(str(source_b_obligation["deferral_policy"])),
+                    work_models.ObligationOrigin(
+                        WorkItemId("source-b"),
+                        int(str(source_b["definition_revision"])),
+                        work_models.ObligationId(str(source_b_obligation["obligation_id"])),
+                    ),
+                ),
+            ),
+            reloaded_campaign.definition.obligations,
+        )
+        self.assertEqual(
+            expected_obligations,
+            self.json_array(self.json_object(self.current(fixture, "campaign")["definition"])["obligations"]),
+        )
+        for source_id, carrying_id in (("source-a", source_a_obligation["obligation_id"]), ("source-b", "carried-2")):
+            with self.subTest(source_id=source_id):
+                coverage = fixture.call_advertised_tool(
+                    mcp_server.OBLIGATION_COVERAGE_TOOL,
+                    {
+                        "request": {
+                            **self.roots(fixture),
+                            "operation": "pair",
+                            "source_item": source_id,
+                            "replacement_item": "campaign",
+                        }
+                    },
+                )
+                rows = self.json_array(self.json_object(coverage["coverage"])["obligations"])
+                self.assertEqual(1, len(rows))
+                row = self.json_object(rows[0])
+                self.assertEqual("covered", row["status"])
+                carriers = self.json_array(row["carrying"])
+                self.assertEqual(1, len(carriers))
+                self.assertEqual(carrying_id, self.json_object(carriers[0])["obligation_id"])
+
+        control_obligations = self.json_array(
+            self.json_object(self.current(fixture, "control-campaign")["definition"])["obligations"]
+        )
+        self.assertEqual(2, len(control_obligations))
+        self.assertIsNone(self.json_object(control_obligations[0])["origin"])
+        self.assertEqual(
+            "control-source",
+            self.json_object(self.json_object(control_obligations[1])["origin"])["item_id"],
+        )
+        self.assertEqual(0, self.run_cli(*fixture.common, "validate")[0])
+
     def test_existing_owner_folds_internal_edges_keeps_external_wait_and_declared_target(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
         for item in ("source-a", "source-b", "owner", "consumer", "external"):

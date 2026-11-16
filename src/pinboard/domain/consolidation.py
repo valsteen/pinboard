@@ -123,6 +123,7 @@ def _carry_definition(
     )
     obligations = list(plan.definition.obligations)
     used = {value.obligation_id for value in obligations}
+    existing_origins = {value.origin for value in obligations if isinstance(value, work_models.CarriedWorkObligation)}
     context = list(plan.definition.evidence)
     for _source, _item, anchor in selected:
         waits = (
@@ -136,18 +137,22 @@ def _carry_definition(
             f"Binding source context {anchor.work_item_id}@{anchor.revision}: original prerequisites {waits}."
         )
         for obligation in anchor.definition.obligations:
+            origin = work_models.ObligationOrigin(anchor.work_item_id, anchor.revision, obligation.obligation_id)
+            if origin in existing_origins:
+                continue
             number = len(obligations) + 1
             obligation_id = work_models.ObligationId(f"carried-{number}")
             while obligation_id in used:
                 number += 1
                 obligation_id = work_models.ObligationId(f"carried-{number}")
             used.add(obligation_id)
+            existing_origins.add(origin)
             obligations.append(
                 work_models.CarriedWorkObligation(
                     obligation_id,
                     obligation.statement,
                     obligation.deferral_policy,
-                    work_models.ObligationOrigin(anchor.work_item_id, anchor.revision, obligation.obligation_id),
+                    origin,
                 )
             )
     return replace(

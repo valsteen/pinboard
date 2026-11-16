@@ -102,9 +102,14 @@ class RecordTextJourneyTest(RecordTextSupport):
         items = self.json_array(self.json_object(json.loads(match.group(1)))["items"])
         return next(self.json_object(value) for value in items if self.json_object(value)["item_id"] == "work-a")
 
+    def standing(self, fixture: CheckpointFixture) -> JsonObject:
+        return self.json_object(self.board_item(fixture)["standing"])
+
+    def condition(self, fixture: CheckpointFixture) -> JsonObject:
+        return self.json_object(self.standing(fixture)["condition"])
+
     def condition_text(self, fixture: CheckpointFixture) -> JsonValue:
-        standing = self.json_object(self.board_item(fixture)["standing"])
-        return self.json_object(standing["condition"])["text"]
+        return self.condition(fixture)["text"]
 
     def pause_reason(self, fixture: CheckpointFixture) -> JsonValue:
         attempts = self.json_array(self.item_leaf(fixture)["attempts"])
@@ -154,6 +159,8 @@ class RecordTextJourneyTest(RecordTextSupport):
         )
         self.assertEqual(ACCEPT_EVIDENCE, package.acceptance_evidence)
         self.assertEqual(ACCEPT_EVIDENCE, self.condition_text(fixture))
+        milestone = self.json_object(self.json_array(self.standing(fixture)["milestones"])[0])
+        self.assertEqual((checkpoint_id, ACCEPT_EVIDENCE), (milestone["checkpoint_id"], milestone["evidence"]))
 
         self.close_prerequisite(fixture)
         next_brief = replace_struct(fixture.brief, artifact_revision=2)
@@ -224,7 +231,7 @@ class RecordTextJourneyTest(RecordTextSupport):
             msgspec.json.decode(bytes(rebind_receipt.outcome_payload), type=history.TransitionReceiptOutcome).evidence,
         )
         self.assertEqual(PAUSE_REASON, self.pause_reason(fixture))
-        self.assertEqual(PAUSE_REASON, self.condition_text(fixture))
+        self.assertEqual(("rebound", PAUSE_REASON), (self.condition(fixture)["kind"], self.condition_text(fixture)))
         self.assert_item_view_pause_reason(fixture)
 
         reloaded = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()

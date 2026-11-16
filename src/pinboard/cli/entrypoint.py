@@ -24,12 +24,8 @@ from pinboard.cli import (
     cli_commands,
     cli_output,
     cli_parser,
-    code_catalog,
     invocation_capture,
-    project_export,
     tool_contract,
-    transitions,
-    work_inspection,
     work_state_commands,
 )
 from pinboard.cli.errors import (
@@ -52,6 +48,13 @@ from pinboard.domain.errors import (
     FailureFact,
     RetryDisposition,
 )
+lazy from pinboard.cli import (
+    code_catalog,
+    project_export,
+    transitions,
+    work_inspection,
+)
+lazy from pinboard.cli.migration import schema_migration
 
 build_parser = cli_parser.build_parser
 
@@ -80,8 +83,6 @@ def _dispatch(  # noqa: C901, PLR0912 - keep the installed command routes visibl
             cli_commands.MigrateSchemaLabelledApplyCommand,
         ),
     ):
-        from pinboard.cli.migration import schema_migration  # noqa: PLC0415 - load migration only on its command route
-
         return schema_migration.migrate_schema(durable, store, invocation.command)
     match invocation.command:
         case cli_commands.ValidateCommand() as command:

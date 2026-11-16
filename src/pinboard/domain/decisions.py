@@ -361,15 +361,16 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
                     )
                 )
             )
-    elif context.item_state == work_models.WorkState.BLOCKED:
-        if work_models.resume_available(context.unsatisfied_dependencies, context.replacement_resolved):
-            item_actions.append(
-                decision_models.ResumeAction(
-                    factory.make(
-                        context.work_item_id, f"Return {context.work_item_id} to active", context.item_subject_revision
-                    )
+    elif context.item_state == work_models.WorkState.BLOCKED and work_models.resume_available(
+        context.unsatisfied_dependencies, context.replacement_resolved
+    ):
+        item_actions.append(
+            decision_models.ResumeAction(
+                factory.make(
+                    context.work_item_id, f"Return {context.work_item_id} to active", context.item_subject_revision
                 )
             )
+        )
     return ProjectAttemptActionGroups(tuple(attempt_actions), tuple(item_actions))
 
 

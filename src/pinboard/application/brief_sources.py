@@ -4,10 +4,9 @@ import hashlib
 import re
 from collections.abc import Iterable, Sequence
 from pathlib import PurePosixPath
-from typing import Final, Literal, Protocol
+from typing import Final, Literal, Protocol, TypedDict
 
 import msgspec
-from typing_extensions import TypedDict
 
 from pinboard.application.brief_source_models import (
     AuthoritySelector,

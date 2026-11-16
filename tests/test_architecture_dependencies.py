@@ -1,8 +1,11 @@
 import ast
+import io
 import re
+import sys
 import tempfile
 import tomllib
 import unittest
+from contextlib import redirect_stdout
 from importlib.metadata import distribution
 from importlib.util import resolve_name
 from pathlib import Path
@@ -211,18 +214,14 @@ class ArchitectureDependencyTest(unittest.TestCase):
         self.assertEqual({entrypoint.relative_to(SOURCE_ROOT)}, importers)
 
         tree = ast.parse(entrypoint.read_text(encoding="utf-8"), filename=str(entrypoint))
-        dispatch = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_dispatch")
-        migration_guard = ast.parse(
-            "isinstance(invocation.command, (cli_commands.MigrateSchemaPreviewCommand, "
-            "cli_commands.MigrateSchemaApplyCommand, cli_commands.MigrateSchemaReverseCommand, "
-            "cli_commands.MigrateSchemaLabelledPreviewCommand, cli_commands.MigrateSchemaLabelledApplyCommand))",
-            mode="eval",
-        ).body
-        routes = [
-            node for node in dispatch.body if isinstance(node, ast.If) and ast.compare(node.test, migration_guard)
+        lazy_imports = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.is_lazy == 1 and node.module == "pinboard.cli.migration"
         ]
-        self.assertEqual(1, len(routes), "expected the exact migrate-schema guard in CLI dispatch")
-        routes[0].body.clear()
+        self.assertEqual(1, len(lazy_imports), "expected a top-level PEP 810 lazy import of pinboard.cli.migration")
+        self.assertEqual(["schema_migration"], [alias.name for alias in lazy_imports[0].names])
+        tree.body.remove(lazy_imports[0])
         self.assertEqual(
             (),
             tuple(
@@ -231,6 +230,29 @@ class ArchitectureDependencyTest(unittest.TestCase):
                 if f"{imported}.".startswith(prefixes)
             ),
         )
+
+        from pinboard.cli import entrypoint as cli_entrypoint  # noqa: PLC0415
+
+        lazy_route_modules = (
+            "pinboard.cli.code_catalog",
+            "pinboard.cli.project_export",
+            "pinboard.cli.transitions",
+            "pinboard.cli.work_inspection",
+            "pinboard.cli.migration",
+            "pinboard.cli.migration.schema_migration",
+            "pinboard.application.migration.schema_migration",
+            "pinboard.adapters.sqlite.migration.schema_migration",
+        )
+        saved_modules = {
+            name: sys.modules.pop(name) for name in list(sys.modules) if name.startswith(lazy_route_modules)
+        }
+        try:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(0, cli_entrypoint.main(["tool-contract", "--json"]))
+            loaded = [name for name in sys.modules if name.startswith(lazy_route_modules)]
+            self.assertEqual([], loaded)
+        finally:
+            sys.modules.update(saved_modules)
 
     def test_sqlite_location_and_store_composition_have_one_explicit_owner(self) -> None:
         self.assertEqual((Path("adapters/files/file_io.py"),), _database_location_literals())

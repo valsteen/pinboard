@@ -65,7 +65,7 @@ class DuplicationPolicyTests(unittest.TestCase):
             (root / "second.py").write_bytes(b"old\n" + matched)
             original = pair(endpoint("first.py", 4), endpoint("second.py", 4), False)
             exceptions = policy.Exceptions(
-                "pinboard-duplication-exceptions/v1", "5.4.1", (certified_pair(original, root),)
+                "pinboard-duplication-exceptions/v1", "5.4.3", (certified_pair(original, root),)
             )
 
             prefix = b"longer\nprefix\n"
@@ -82,7 +82,7 @@ class DuplicationPolicyTests(unittest.TestCase):
             (root / "second.py").write_bytes(b"abcdefgh" * 4)
             original = pair(occurrence("first.py", 1, 9, 0), occurrence("second.py", 1, 9, 0), False)
             accepted = certified_pair(original, root)
-            exceptions = policy.Exceptions("pinboard-duplication-exceptions/v1", "5.4.1", (accepted,))
+            exceptions = policy.Exceptions("pinboard-duplication-exceptions/v1", "5.4.3", (accepted,))
             self.assertFalse(policy.evaluate(report((original,), 10000), exceptions, root).errors)
             cases = (
                 (msgspec.structs.replace(accepted, certification=None), (original,)),
@@ -115,7 +115,7 @@ class DuplicationPolicyTests(unittest.TestCase):
             original = pair(occurrence("source.py", 1, 11, 0), occurrence("source.py", 20, 30, 8), False)
             overlap = pair(occurrence("source.py", 5, 13, 16), occurrence("source.py", 40, 48, 24), False)
             record = certified_pair(original, root)
-            exceptions = policy.Exceptions("pinboard-duplication-exceptions/v1", "5.4.1", (record,))
+            exceptions = policy.Exceptions("pinboard-duplication-exceptions/v1", "5.4.3", (record,))
             for denominator, fails in ((3000, False), (3001, False), (2999, True)):
                 with self.subTest(source_lines=denominator):
                     result = policy.evaluate(report((original, overlap), denominator), exceptions, root)
@@ -126,7 +126,7 @@ class DuplicationPolicyTests(unittest.TestCase):
 
     def test_strict_records_reject_unknown_and_invalid_certification_shapes(self) -> None:
         for raw in (
-            b'{"schema":"pinboard-duplication-exceptions/v1","detector_version":"5.4.1","records":[],"extra":true}',
+            b'{"schema":"pinboard-duplication-exceptions/v1","detector_version":"5.4.3","records":[],"extra":true}',
             b'{"schema":"pinboard-duplication-exceptions/v1","detector_version":"changed","records":[]}',
         ):
             with self.assertRaises(msgspec.ValidationError):
@@ -158,7 +158,7 @@ class DuplicationPolicyTests(unittest.TestCase):
                 total=msgspec.structs.replace(original.statistics.total, duplicatedLines=8),
             ),
         )
-        exceptions = policy.Exceptions("pinboard-duplication-exceptions/v1", "5.4.1", ())
+        exceptions = policy.Exceptions("pinboard-duplication-exceptions/v1", "5.4.3", ())
         self.assertTrue(policy.evaluate(inconsistent, exceptions, Path.cwd()).errors)
 
     def test_real_pinned_native_baseline_third_copy_and_raw_statistics(self) -> None:
@@ -196,7 +196,7 @@ class DuplicationPolicyTests(unittest.TestCase):
             self.assertTrue(initial.duplicates)
             exceptions = policy.Exceptions(
                 "pinboard-duplication-exceptions/v1",
-                "5.4.1",
+                "5.4.3",
                 tuple(certified_pair(p, source_root) for p in initial.duplicates),
             )
             clean = policy.evaluate(initial, exceptions, source_root)

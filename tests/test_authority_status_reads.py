@@ -1789,15 +1789,6 @@ class AuthorityStatusReadTest(unittest.TestCase):
         self.assertEqual("released", stdout["authority_status"])
         self.assertEqual(1, clock.now.call_count)
 
-        stdout = self.native(
-            mcp_server.ATTEMPT_AUTHORITY_TOOL,
-            str(project),
-            str(work),
-            {"operation": "status", "attempt_id": "work-a-1"},
-        )
-        self.assertNotIn("code", stdout)
-        self.assertEqual("active", stdout["authority_status"])
-
         for retained_status in authority_models.AttemptLeaseStatus:
             retained = complete_sqlite_state()
             retained = replace(

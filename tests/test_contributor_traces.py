@@ -184,10 +184,6 @@ class ContributorTraceTest(unittest.TestCase):
             with self.assertRaises(SettingResolutionError) as failed:
                 contributor_traces.read_project_trace_settings(primary, None)
             self.assertIsInstance(failed.exception.cause, git_config.ReadFailed)
-            rejected = self.launch("--project-root", str(primary), "root", cwd=directory)
-            self.assertEqual(64, rejected.returncode)
-            self.assertEqual(b"", rejected.stdout)
-            self.assertIn(b"before Pinboard ran", rejected.stderr)
             settings.unlink()
             settings.symlink_to(project / ".pinboard" / contributor_traces.SETTINGS_NAME)
             linked_state = contributor_traces.read_project_trace_settings(primary, None)

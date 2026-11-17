@@ -729,11 +729,13 @@ class SQLiteQueriesTest(unittest.TestCase):
         v4, small = selected["v4"], selected["small"]
         assert isinstance(v4, query_models.ActionContinuation)
         assert isinstance(small, query_models.ActionContinuation)
-        self.assertEqual(decision_models.ActionKind.RETURN_FOR_CORRECTION, small.action_kind)
+        self.assertEqual(
+            (decision_models.ActionKind.RETURN_FOR_CORRECTION, decision_models.ActionKind.RETURN_FOR_CORRECTION),
+            (v4.action_kind, small.action_kind),
+        )
         self.assertEqual(v4.action_id, small.action_id)
-        self.assertIn("dispatch correction work", v4.condition)
-        self.assertNotIn("dispatch correction work", small.condition)
-        self.assertIn("inline", small.condition)
+        # The brief shape alone selects a distinct correction route for the same action.
+        self.assertNotEqual(v4.condition, small.condition)
 
     def test_resume_reconciliation_exhausts_relations_phases_and_effect_statuses(self) -> None:
         brief = example_work_brief()

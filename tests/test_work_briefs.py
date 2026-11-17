@@ -315,8 +315,15 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             (
                 "contract-owner",
                 replace(
-                    checkpoint, coverage=(replace(coverage, owner=work_brief_models.ContractCoverageOwner("Unknown.")),)
+                    checkpoint,
+                    coverage=(
+                        replace(coverage, owner=work_brief_models.CompatibilityInvariantCoverageOwner("Unknown.")),
+                    ),
                 ),
+            ),
+            (
+                "contract-ref-owner",
+                replace(checkpoint, coverage=(replace(coverage, owner=work_brief_models.ContractRefCoverageOwner(2)),)),
             ),
             (
                 "criterion-owner",
@@ -348,7 +355,8 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         correspondence = legacy.obligation_correspondence[0]
         for rows in (
             legacy.obligation_correspondence * 2,
-            (replace(correspondence, target=work_brief_models.ContractObligationTarget("Unknown.")),),
+            (replace(correspondence, target=work_brief_models.CompatibilityInvariantObligationTarget("Unknown.")),),
+            (replace(correspondence, target=work_brief_models.ContractRefObligationTarget(2)),),
             (replace(correspondence, target=work_brief_models.CriterionObligationTarget(99)),),
             (replace(correspondence, target=work_brief_models.DeferralObligationTarget("unknown")),),
         ):
@@ -414,7 +422,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             obligation_correspondence=(
                 work_brief_models.ObligationCorrespondence(
                     "unknown-obligation",
-                    work_brief_models.ContractObligationTarget(checkpoint.contracts[0].invariant),
+                    work_brief_models.ContractRefObligationTarget(1),
                 ),
             ),
         )
@@ -546,10 +554,19 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         value = example_work_brief()
         checkpoint = value.checkpoint
         assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+        retained = replace(
+            checkpoint,
+            coverage=(
+                replace(
+                    checkpoint.coverage[0],
+                    owner=work_brief_models.CompatibilityInvariantCoverageOwner(checkpoint.contracts[0].invariant),
+                ),
+            ),
+        )
 
         self.assertEqual(
             "bf8217d6c7dc376f24e13851933745ecfbe34e684b74707e4cd5cdadb63de1cc",
-            hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest(),
+            hashlib.sha256(canonical_checkpoint_bytes(retained)).hexdigest(),
         )
         renamed = replace(checkpoint, title="Renamed title")
         self.assertEqual(checkpoint.checkpoint_id, renamed.checkpoint_id)

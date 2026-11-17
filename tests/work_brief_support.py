@@ -58,7 +58,7 @@ def example_work_brief() -> work_brief_models.WorkBrief:
                 family="repository-practice",
                 distinction="Direct msgspec decoding remains required.",
                 consumer="Publication and dispatch",
-                owner=work_brief_models.ContractCoverageOwner(contract_invariant=contract.invariant),
+                owner=work_brief_models.ContractRefCoverageOwner(1),
                 counterexample="Decode through an untyped mapping.",
             ),
         ),
@@ -99,7 +99,7 @@ def example_work_brief() -> work_brief_models.WorkBrief:
         obligation_correspondence=(
             work_brief_models.ObligationCorrespondence(
                 "next-decision",
-                work_brief_models.ContractObligationTarget(contract.invariant),
+                work_brief_models.ContractRefObligationTarget(1),
             ),
         ),
     )
@@ -125,7 +125,6 @@ def work_a_brief(project: Path) -> work_brief_models.WorkBrief:
         checkpoint.coverage[0],
         authority_id="architecture",
         family="contract",
-        owner=replace(checkpoint.coverage[0].owner, contract_invariant=contract.invariant),
     )
     checkpoint = replace(
         checkpoint,

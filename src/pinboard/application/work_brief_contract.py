@@ -160,14 +160,14 @@ class _UnresolvedReviewedAuthority(msgspec.Struct, frozen=True, forbid_unknown_f
     families: tuple[None, ...]
 
 
-class _UnresolvedContractCoverageOwner(
+class _UnresolvedContractRefCoverageOwner(
     msgspec.Struct,
     frozen=True,
     forbid_unknown_fields=True,
-    tag="contract",
+    tag="contract-ref",
     tag_field="disposition",
 ):
-    contract_invariant: None
+    contract: None
 
 
 class _UnresolvedAcceptanceCoverageOwner(
@@ -205,7 +205,7 @@ class _UnresolvedCoverageRecord(msgspec.Struct, frozen=True, forbid_unknown_fiel
     family: None
     distinction: None
     consumer: None
-    owner: _UnresolvedContractCoverageOwner
+    owner: _UnresolvedContractRefCoverageOwner
     counterexample: None
 
 
@@ -238,14 +238,14 @@ class _UnresolvedRequiredLifecyclePartition(
     operations: tuple[_UnresolvedLifecycleRecord, ...]
 
 
-class _UnresolvedContractObligationTarget(
+class _UnresolvedContractRefObligationTarget(
     msgspec.Struct,
     frozen=True,
     forbid_unknown_fields=True,
-    tag="contract",
+    tag="contract-ref",
     tag_field="kind",
 ):
-    invariant: None
+    contract: None
 
 
 class _UnresolvedCriterionObligationTarget(
@@ -269,7 +269,7 @@ class _UnresolvedDeferralObligationTarget(
 
 
 type _UnresolvedObligationTarget = (
-    _UnresolvedContractObligationTarget | _UnresolvedCriterionObligationTarget | _UnresolvedDeferralObligationTarget
+    _UnresolvedContractRefObligationTarget | _UnresolvedCriterionObligationTarget | _UnresolvedDeferralObligationTarget
 )
 
 
@@ -469,7 +469,7 @@ def _cross_boundary_starter() -> _UnresolvedWorkBrief:
                 family=None,
                 distinction=None,
                 consumer=None,
-                owner=_UnresolvedContractCoverageOwner(None),
+                owner=_UnresolvedContractRefCoverageOwner(None),
                 counterexample=None,
             ),
         ),
@@ -482,7 +482,7 @@ def _cross_boundary_starter() -> _UnresolvedWorkBrief:
         local,
         checkpoint=checkpoint,
         obligation_correspondence=(
-            _UnresolvedObligationCorrespondence(None, _UnresolvedContractObligationTarget(None)),
+            _UnresolvedObligationCorrespondence(None, _UnresolvedContractRefObligationTarget(None)),
         ),
     )
 
@@ -533,7 +533,7 @@ _COVERAGE_OWNER_CHOICE = WorkBriefStructuralChoice(
     "coverage-owner",
     ("$.checkpoint.coverage[*].owner",),
     (
-        WorkBriefStructuralVariant("contract", _raw(_UnresolvedContractCoverageOwner(None))),
+        WorkBriefStructuralVariant("contract-ref", _raw(_UnresolvedContractRefCoverageOwner(None))),
         WorkBriefStructuralVariant("acceptance", _raw(_UnresolvedAcceptanceCoverageOwner(None))),
         WorkBriefStructuralVariant("deferred", _raw(_UnresolvedDeferredCoverageOwner(None))),
         WorkBriefStructuralVariant(
@@ -579,7 +579,7 @@ _OBLIGATION_TARGET_CHOICE = WorkBriefStructuralChoice(
     "obligation-target",
     ("$.obligation_correspondence[*].target",),
     (
-        WorkBriefStructuralVariant("contract", _raw(_UnresolvedContractObligationTarget(None))),
+        WorkBriefStructuralVariant("contract-ref", _raw(_UnresolvedContractRefObligationTarget(None))),
         WorkBriefStructuralVariant("criterion", _raw(_UnresolvedCriterionObligationTarget(None))),
         WorkBriefStructuralVariant("deferral", _raw(_UnresolvedDeferralObligationTarget(None))),
     ),
@@ -642,7 +642,11 @@ _RELATIONAL_CONSTRAINTS = (
     ),
     WorkBriefRelationalConstraint(
         "coverage-owner",
-        "Each coverage owner must name an existing contract invariant, acceptance criterion number, or deferral identity, unless it gives a not-applicable reason.",
+        "Each coverage owner must name an existing contract by its 1-based position in checkpoint.contracts, an acceptance criterion number, or a deferral identity, unless it gives a not-applicable reason.",
+    ),
+    WorkBriefRelationalConstraint(
+        "contract-reference-form",
+        "Coverage owners and obligation targets reference a contract with contract-ref and its 1-based position, never by repeating its invariant text; publication refuses the retained invariant-text form for new briefs.",
     ),
     WorkBriefRelationalConstraint(
         "prohibition-disposition",
@@ -654,7 +658,7 @@ _RELATIONAL_CONSTRAINTS = (
     ),
     WorkBriefRelationalConstraint(
         "complete-obligation-correspondence",
-        "Obligation correspondence must contain exactly one record for every accepted definition obligation and no other records; every target must name an existing contract, criterion, or deferral, and obligations that forbid deferral must not target a deferral.",
+        "Obligation correspondence must contain exactly one record for every accepted definition obligation and no other records; every target must name an existing contract by position, a criterion, or a deferral, and obligations that forbid deferral must not target a deferral.",
     ),
     WorkBriefRelationalConstraint(
         "small-brief-route",

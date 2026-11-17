@@ -1111,7 +1111,11 @@ class McpJobsTest(CheckpointPackageSupport):
             store.assert_not_called()
 
     def test_correction_dispatch_requires_current_return_and_fresh_independent_review(self) -> None:
-        fixture = self.checkpoint_fixture()
+        # The accepted base's reviewed source already differs from the brief's pin, so the change below is external
+        # drift rather than the returned candidate's own edit and correction must bind refreshed digests.
+        fixture = self.checkpoint_fixture(
+            base_files=(("architecture.md", "# Architecture\n\n## Contract\n\nChanged outside the attempt.\n"),)
+        )
         payload = fixture.project / "return.json"
         payload.write_text('{"reason":"Revalidate the changed authority."}', encoding="utf-8")
         receipt = self.transition_json(fixture, self.project_action(fixture, "return-for-correction:work-a-1"), payload)

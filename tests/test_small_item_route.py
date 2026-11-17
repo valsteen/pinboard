@@ -199,7 +199,7 @@ class SmallItemRouteTest(CheckpointPackageSupport):
                     {"operation": "status", "brief_artifact_ref_id": reference["artifact_ref_id"]},
                 )
                 self.assertEqual("rejected", brief_review["status"], brief_review)
-                self.assertIn("Small briefs take no brief review", str(brief_review["message"]))
+                self.assertEqual("WORK_BRIEF_REVIEW_INVALID", brief_review["code"], brief_review)
                 status = await call(mcp_server.ITEM_STATUS_TOOL, {"operation": "item", "item_id": "small-1"})
                 current = self.json_object(
                     self.json_object(self.json_array(status["attempts"])[0])["current_checkpoint"]
@@ -237,7 +237,9 @@ class SmallItemRouteTest(CheckpointPackageSupport):
                 refused = await session.call_tool(str(invocation["tool"]), arguments)
                 assert isinstance(refused.structured_content, dict)
                 self.assertEqual("rejected", refused.structured_content["status"], refused.structured_content)
-                self.assertIn("inline", str(refused.structured_content["message"]))
+                self.assertEqual(
+                    "DISPATCH_BRIEF_INVALID", refused.structured_content["code"], refused.structured_content
+                )
                 self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
 
                 acquired = await call(
@@ -270,7 +272,7 @@ class SmallItemRouteTest(CheckpointPackageSupport):
                     {"attempt_id": "small-1-1", "correction_history_id": correction_history_id},
                 )
                 self.assertEqual("rejected", context["status"], context)
-                self.assertIn("inline", str(context["message"]))
+                self.assertEqual("DISPATCH_BRIEF_INVALID", context["code"], context)
                 reacquired = await call(
                     mcp_server.ATTEMPT_AUTHORITY_TOOL,
                     {
@@ -462,7 +464,7 @@ class SmallBriefRecordTest(CheckpointPackageSupport):
         self.assertEqual(brief, work_briefs.decode_canonical_accepted_brief(data))
         narrowed = work_briefs.decode_canonical_work_brief(data)
         assert isinstance(narrowed, work_brief_models.WorkBriefFailure)
-        self.assertIn("inline", narrowed.message)
+        self.assertEqual(work_brief_models.WorkBriefErrorCode.BRIEF_INVALID, narrowed.code)
         payload = self.json_object(msgspec.json.decode(data))
         entry = self.json_object(self.json_array(payload["scope"])[0])
         for invalid in (

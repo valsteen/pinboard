@@ -83,7 +83,7 @@ def select_structural_variant(
 def fill_variant_template(value: JsonValue, key: str) -> JsonValue:
     """Independent synthetic field inputs complete construction shapes without copying their prose."""
     if value is None:
-        return 1 if key in {"number", "criterion", "scope_revision"} else "fixture"
+        return 1 if key in {"number", "criterion", "contract", "scope_revision"} else "fixture"
     if isinstance(value, dict):
         return {name: fill_variant_template(item, name) for name, item in value.items()}
     if isinstance(value, list):
@@ -105,6 +105,11 @@ class WorkBriefContractTest(unittest.TestCase):
             "obligation-target": work_brief_models.ObligationTarget,
             "checkpoint-disposition": work_brief_models.CheckpointDisposition,
         }
+        # Retained invariant-text forms decode for stored briefs but are never offered to new briefs.
+        retained_tags = {
+            work_brief_models.CompatibilityInvariantCoverageOwner.__struct_config__.tag,
+            work_brief_models.CompatibilityInvariantObligationTarget.__struct_config__.tag,
+        }
         for choice_id, shape in shape_types.items():
             definitions = msgspec.json.schema(shape).get("$defs", {})
             expected = {
@@ -116,6 +121,7 @@ class WorkBriefContractTest(unittest.TestCase):
             }
             if choice_id == "checkout-selection":
                 expected = {member.value for member in work_brief_models.work_models.CheckoutSelection}
+            expected -= retained_tags
             self.assertEqual(expected, {variant.selector for variant in choices[choice_id].variants})
             for variant in choices[choice_id].variants:
                 payload = fill_variant_template(msgspec.json.decode(bytes(variant.template)), "")
@@ -228,7 +234,7 @@ class WorkBriefContractTest(unittest.TestCase):
             )
         )
         owners: tuple[tuple[str, work_brief_models.CoverageOwner], ...] = (
-            ("contract", work_brief_models.ContractCoverageOwner(checkpoint.contracts[0].invariant)),
+            ("contract-ref", work_brief_models.ContractRefCoverageOwner(1)),
             ("acceptance", work_brief_models.AcceptanceCoverageOwner(1)),
             ("deferred", work_brief_models.DeferredCoverageOwner("later-work")),
             ("not-applicable", work_brief_models.NotApplicableCoverageOwner("No separate obligation.")),

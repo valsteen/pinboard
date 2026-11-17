@@ -59,7 +59,10 @@ SOURCE_SYMBOL_NAMES: dict[str, str] = {
     "decode_accepted_brief": work_briefs.decode_accepted_brief.__name__,
     "canonical_work_brief_bytes": work_briefs.canonical_work_brief_bytes.__name__,
     "WorkBriefContract": work_brief_contract.WorkBriefContract.__name__,
+    "ContractRefCoverageOwner": work_brief_models.ContractRefCoverageOwner.__name__,
 }
+
+COVERAGE_CONTRACT_REFERENCE = "contract-ref"
 
 
 def validate() -> None:
@@ -77,6 +80,9 @@ def validate() -> None:
 
     if frozenset(work_brief_models.AcceptedScope.__struct_fields__) != {"revision", "digest"}:
         raise ValueError("brief visual and accepted-scope identity differ")
+
+    if work_brief_models.ContractRefCoverageOwner.__struct_config__.tag != COVERAGE_CONTRACT_REFERENCE:
+        raise ValueError("brief visual and coverage contract reference differ")
 
 
 DIAGRAM = Diagram(
@@ -224,7 +230,7 @@ DIAGRAM = Diagram(
             "Coverage",
             "Who owns each distinction?",
             ("consumer + counterexample",),
-            ("criterion · contract · deferral",),
+            (f"{COVERAGE_CONTRACT_REFERENCE} · criterion · deferral",),
             35,
             703,
             275,

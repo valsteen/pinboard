@@ -262,10 +262,18 @@ class CorrectionContext:
     reuse_blockers: tuple[str, ...]
 
 
+class CorrectionCheckout(Enum):
+    """Whether the caller verified that the checkout equals the returned candidate's accepted snapshot."""
+
+    RETURNED_CANDIDATE = "returned-candidate"
+    UNVERIFIED = "unverified"
+
+
 @dataclass(frozen=True, slots=True)
 class CorrectionSources:
     brief: work_brief_models.WorkBrief
     removed_selectors: tuple[str, ...]
+    checkout: CorrectionCheckout
 
 
 @dataclass(frozen=True, slots=True)
@@ -852,7 +860,9 @@ def _replacement_readiness_context(
         failure := validate_executable_work_brief(store, brief, root.classify_checkout(source_checkout_root))
     ) is not None:
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, None)
-    current_sources = _observe_correction_sources(source_checkout_root, brief, allow_deleted=False)
+    current_sources = _observe_correction_sources(
+        source_checkout_root, brief, allow_deleted=False, checkout=CorrectionCheckout.UNVERIFIED
+    )
     if isinstance(current_sources, DispatchFailure):
         return current_sources
     if current_sources.brief != brief:
@@ -1212,6 +1222,37 @@ def _read_correction_snapshot(
     snapshot = _read_returned_snapshot(store, artifacts, brief, correction_history_id, identity, reason)
     if isinstance(snapshot, DispatchFailure):
         return snapshot
+    if mismatches := _returned_checkout_mismatches(source_checkout_root, brief, snapshot):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+            "Correction review does not identify the exact returned candidate, reason and starting checkout.",
+            _fresh_review_details((), mismatches),
+        )
+    return snapshot
+
+
+def _returned_checkout(
+    store: WorkStore,
+    artifacts: DispatchArtifactPort,
+    source_checkout_root: Path,
+    brief: work_brief_models.WorkBrief,
+    correction_history_id: HistoryId,
+    identity: work_brief_models.PortableArtifactIdentity,
+    reason: str,
+) -> CorrectionCheckout:
+    """Classify the checkout against the returned snapshot without failing; the caller's own checks still report."""
+    snapshot = _read_returned_snapshot(store, artifacts, brief, correction_history_id, identity, reason)
+    if isinstance(snapshot, DispatchFailure) or _returned_checkout_mismatches(source_checkout_root, brief, snapshot):
+        return CorrectionCheckout.UNVERIFIED
+    return CorrectionCheckout.RETURNED_CANDIDATE
+
+
+def _returned_checkout_mismatches(
+    source_checkout_root: Path,
+    brief: work_brief_models.WorkBrief,
+    snapshot: candidate_snapshots.CandidateSnapshot,
+) -> tuple[FailureMismatch, ...]:
+    """Name every way the snapshot or current checkout differs from the exact returned candidate; no effects."""
     mismatches = tuple(
         value
         for value in (
@@ -1273,14 +1314,7 @@ def _read_correction_snapshot(
                     assert_never(unreachable)
         case _ as unreachable:
             assert_never(unreachable)
-    mismatches = (*mismatches, *(value for value in checkout_mismatches if value.expected != value.observed))
-    if mismatches:
-        return DispatchFailure(
-            DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
-            "Correction review does not identify the exact returned candidate, reason and starting checkout.",
-            _fresh_review_details((), mismatches),
-        )
-    return snapshot
+    return (*mismatches, *(value for value in checkout_mismatches if value.expected != value.observed))
 
 
 def _read_correction_start(
@@ -1469,39 +1503,37 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
         failure := validate_executable_work_brief(store, brief, root.classify_checkout(source_checkout_root))
     ) is not None:
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, None)
-    sources = _observe_correction_sources(source_checkout_root, brief, allow_deleted=True)
+    reference = facts.returned_candidate_snapshot.reference
+    identity = _starting_candidate_identity(reference)
+    snapshot = _read_returned_snapshot(store, artifacts, brief, correction_history_id, identity, outcome.evidence)
+    if isinstance(snapshot, DispatchFailure):
+        return snapshot
+    # Source refresh and snapshot checks read only identity, branch and base, which refresh never changes.
+    match start:
+        case ReturnedCorrectionStart():
+            if mismatches := _returned_checkout_mismatches(source_checkout_root, brief, snapshot):
+                return DispatchFailure(
+                    DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
+                    "Correction review does not identify the exact returned candidate, reason and starting checkout.",
+                    _fresh_review_details((), mismatches),
+                )
+            checkout = CorrectionCheckout.RETURNED_CANDIDATE
+        case ReviewedCurrentCorrectionStart(binding=binding):
+            if (
+                failure := _validate_current_correction_candidate(source_checkout_root, brief, snapshot, binding)
+            ) is not None:
+                return failure
+            checkout = (
+                CorrectionCheckout.UNVERIFIED
+                if _returned_checkout_mismatches(source_checkout_root, brief, snapshot)
+                else CorrectionCheckout.RETURNED_CANDIDATE
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    sources = _observe_correction_sources(source_checkout_root, brief, allow_deleted=True, checkout=checkout)
     if isinstance(sources, DispatchFailure):
         return sources
     effective_brief = sources.brief
-    reference = facts.returned_candidate_snapshot.reference
-    identity = _starting_candidate_identity(reference)
-    match start:
-        case ReturnedCorrectionStart():
-            snapshot = _read_correction_snapshot(
-                store,
-                artifacts,
-                source_checkout_root,
-                effective_brief,
-                correction_history_id,
-                identity,
-                outcome.evidence,
-            )
-        case ReviewedCurrentCorrectionStart(binding=binding):
-            snapshot = _read_returned_snapshot(
-                store, artifacts, effective_brief, correction_history_id, identity, outcome.evidence
-            )
-            if isinstance(snapshot, DispatchFailure):
-                return snapshot
-            if (
-                failure := _validate_current_correction_candidate(
-                    source_checkout_root, effective_brief, snapshot, binding
-                )
-            ) is not None:
-                return failure
-        case _ as unreachable:
-            assert_never(unreachable)
-    if isinstance(snapshot, DispatchFailure):
-        return snapshot
     if isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
         ready = _read_reusable_ready_review(store, artifacts, brief, sources)
         reuse_blockers = (ready.message,) if isinstance(ready, DispatchFailure) else ()
@@ -1612,10 +1644,16 @@ def _observe_correction_sources(
     brief: work_brief_models.WorkBrief,
     *,
     allow_deleted: bool,
+    checkout: CorrectionCheckout,
 ) -> DispatchResult[CorrectionSources]:
+    """Pin each reviewed authority to its current bytes, keeping its reviewed digest for the candidate's own edit.
+
+    On a checkout verified equal to the returned candidate, an authority whose accepted-base bytes still match its
+    reviewed digest differs only by that candidate's edit, which the candidate reviewer reviews; it is not drift.
+    """
     checkpoint = brief.checkpoint
     if isinstance(checkpoint, work_brief_models.LocalCheckpoint):
-        return CorrectionSources(brief, ())
+        return CorrectionSources(brief, (), checkout)
     refreshed: list[work_brief_models.ReviewedAuthority] = []
     missing: list[tuple[work_brief_models.ReviewedAuthority, AuthoritySelector]] = []
     for authority in checkpoint.reviewed_authorities:
@@ -1631,8 +1669,14 @@ def _observe_correction_sources(
             missing.append((authority, selector))
             refreshed.append(authority)
         else:
+            current_sha256 = hashlib.sha256(selected.content).hexdigest()
+            own_edit = (
+                current_sha256 != authority.reviewed_sha256
+                and checkout == CorrectionCheckout.RETURNED_CANDIDATE
+                and _base_matches_review(source_checkout_root, brief.base_revision, selector, authority)
+            )
             refreshed.append(
-                msgspec.structs.replace(authority, reviewed_sha256=hashlib.sha256(selected.content).hexdigest())
+                authority if own_edit else msgspec.structs.replace(authority, reviewed_sha256=current_sha256)
             )
     if (
         missing
@@ -1643,6 +1687,21 @@ def _observe_correction_sources(
     return CorrectionSources(
         msgspec.structs.replace(brief, checkpoint=effective_checkpoint),
         tuple(dict.fromkeys(authority.selector for authority, _ in missing)),
+        checkout,
+    )
+
+
+def _base_matches_review(
+    source_checkout_root: Path,
+    base_revision: str,
+    selector: AuthoritySelector,
+    authority: work_brief_models.ReviewedAuthority,
+) -> bool:
+    """Whether the authority's accepted-base bytes still carry its reviewed digest; an unreadable base does not."""
+    base_source = select_base_brief_source(source_checkout_root, base_revision, selector, True)
+    return (
+        not isinstance(base_source, BriefSourceFailure)
+        and hashlib.sha256(base_source.content).hexdigest() == authority.reviewed_sha256
     )
 
 
@@ -1704,7 +1763,9 @@ def _recheck_correction_sources(
     accepted_brief: work_brief_models.WorkBrief,
     expected: CorrectionSources,
 ) -> DispatchFailure | None:
-    current = _observe_correction_sources(source_checkout_root, accepted_brief, allow_deleted=True)
+    current = _observe_correction_sources(
+        source_checkout_root, accepted_brief, allow_deleted=True, checkout=expected.checkout
+    )
     if isinstance(current, DispatchFailure):
         return current
     if current.removed_selectors != expected.removed_selectors:
@@ -1964,7 +2025,20 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
             )
         ) is not None:
             return failure
-        observed = _observe_correction_sources(source_checkout_root, accepted_source_brief, allow_deleted=True)
+        observed = _observe_correction_sources(
+            source_checkout_root,
+            accepted_source_brief,
+            allow_deleted=True,
+            checkout=_returned_checkout(
+                store,
+                artifacts,
+                source_checkout_root,
+                accepted_source_brief,
+                choice.correction_history_id,
+                choice.review.starting_candidate,
+                choice.review.correction_input.reason,
+            ),
+        )
         if isinstance(observed, DispatchFailure):
             return observed
         correction_sources = observed

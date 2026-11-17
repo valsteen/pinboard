@@ -67,6 +67,8 @@ def publish_work_brief(
         return failure
     if (failure := _validate_brief_route(store, brief)) is not None:
         return failure
+    if (failure := _validate_contract_reference_form(brief)) is not None:
+        return failure
     return publish_accepted_artifact(
         store,
         publisher,
@@ -92,7 +94,9 @@ def _canonical_bytes[T](value: T) -> bytes:
 
 def _owner_key(owner: work_brief_models.CoverageOwner) -> tuple[str, str | int]:
     match owner:
-        case work_brief_models.ContractCoverageOwner(contract_invariant=invariant):
+        case work_brief_models.ContractRefCoverageOwner(contract=position):
+            return "contract-ref", position
+        case work_brief_models.CompatibilityInvariantCoverageOwner(contract_invariant=invariant):
             return "contract", invariant
         case work_brief_models.AcceptanceCoverageOwner(criterion=criterion):
             return "acceptance", criterion
@@ -224,28 +228,46 @@ def validate_definition_brief_agreement(
         case work_brief_models.WorkBrief():
             return _validate_definition_work_brief_agreement(definition, brief)
         case work_brief_models.SmallWorkBrief():
-            expected_ids = {str(value.obligation_id) for value in definition.obligations}
-            observed_ids = work_brief_models.small_brief_obligation_ids(brief)
-            if len(observed_ids) != len(set(observed_ids)) or set(observed_ids) != expected_ids:
-                missing = ", ".join(sorted(expected_ids - set(observed_ids))) or "none"
-                unknown = ", ".join(sorted(set(observed_ids) - expected_ids)) or "none"
-                return _invalid(
-                    "Small-brief scope entries must together discharge every accepted obligation exactly once "
-                    f"(missing: {missing}; not accepted: {unknown})."
+            if (
+                failure := _obligation_mapping_failure(
+                    definition,
+                    work_brief_models.small_brief_obligation_ids(brief),
+                    "Small-brief scope entries must together discharge every accepted obligation exactly once",
                 )
+            ) is not None:
+                return failure
             return _validate_checkout_selection(definition, brief.checkout_selection)
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _obligation_mapping_failure(
+    definition: work_models.WorkItemDefinition, observed_ids: tuple[str, ...], requirement: str
+) -> work_brief_models.WorkBriefFailure | None:
+    """Refuse a mapping that misses, invents or repeats an accepted obligation, naming each such ID."""
+    expected_ids = {str(value.obligation_id) for value in definition.obligations}
+    duplicated = sorted({value for value in observed_ids if observed_ids.count(value) > 1})
+    if not duplicated and set(observed_ids) == expected_ids:
+        return None
+    missing = ", ".join(sorted(expected_ids - set(observed_ids))) or "none"
+    unknown = ", ".join(sorted(set(observed_ids) - expected_ids)) or "none"
+    return _invalid(
+        f"{requirement} (missing: {missing}; not accepted: {unknown}; duplicated: {', '.join(duplicated) or 'none'})."
+    )
 
 
 def _validate_definition_work_brief_agreement(
     definition: work_models.WorkItemDefinition,
     brief: work_brief_models.WorkBrief,
 ) -> work_brief_models.WorkBriefFailure | None:
-    expected_ids = tuple(value.obligation_id for value in definition.obligations)
-    observed_ids = tuple(work_models.ObligationId(value.obligation_id) for value in brief.obligation_correspondence)
-    if len(observed_ids) != len(set(observed_ids)) or set(observed_ids) != set(expected_ids):
-        return _invalid("Obligation correspondence must contain exactly one row for every accepted obligation.")
+    if (
+        failure := _obligation_mapping_failure(
+            definition,
+            tuple(value.obligation_id for value in brief.obligation_correspondence),
+            "Obligation correspondence must contain exactly one row for every accepted obligation",
+        )
+    ) is not None:
+        return failure
     policies = {value.obligation_id: value.deferral_policy for value in definition.obligations}
     if any(
         isinstance(row.target, work_brief_models.DeferralObligationTarget)
@@ -343,6 +365,41 @@ def _validate_brief_route(
         case _ as unreachable:
             assert_never(unreachable)
     return None
+
+
+def _validate_contract_reference_form(
+    brief: work_brief_models.AcceptedBrief,
+) -> work_brief_models.WorkBriefFailure | None:
+    """Require new v4 briefs to reference contracts by position; retained invariant-text briefs stay readable.
+
+    Only new publication applies this gate, so republishing retained invariant-text bytes is refused, not reused.
+    """
+    match brief:
+        case work_brief_models.SmallWorkBrief():
+            return None
+        case work_brief_models.WorkBrief(checkpoint=checkpoint, obligation_correspondence=correspondence):
+            pass
+        case _ as unreachable:
+            assert_never(unreachable)
+    rows = [
+        f"obligation_correspondence {row.obligation_id}"
+        for row in correspondence
+        if isinstance(row.target, work_brief_models.CompatibilityInvariantObligationTarget)
+    ]
+    if isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+        rows.extend(
+            f"coverage {record.authority_id}#{record.family}"
+            for record in checkpoint.coverage
+            if isinstance(record.owner, work_brief_models.CompatibilityInvariantCoverageOwner)
+        )
+    if not rows:
+        return None
+    return _invalid(
+        "New briefs reference contracts by position instead of repeating invariant text: replace "
+        '{"disposition": "contract", "contract_invariant": ...} with {"disposition": "contract-ref", "contract": <n>} '
+        'and {"kind": "contract", "invariant": ...} with {"kind": "contract-ref", "contract": <n>}, where <n> is the '
+        f"contract's 1-based position in checkpoint.contracts (invariant-text rows: {'; '.join(rows)})."
+    )
 
 
 def validate_executable_work_brief(
@@ -923,12 +980,32 @@ def _section(lines: list[str], heading: str, values: tuple[str, ...]) -> None:
 
 def _obligation_target_text(target: work_brief_models.ObligationTarget) -> str:
     match target:
-        case work_brief_models.ContractObligationTarget(invariant=invariant):
+        case work_brief_models.ContractRefObligationTarget(contract=position):
+            return f"contract-ref:{position}"
+        case work_brief_models.CompatibilityInvariantObligationTarget(invariant=invariant):
             return f"contract:{invariant}"
         case work_brief_models.CriterionObligationTarget(number=number):
             return f"criterion:{number}"
         case work_brief_models.DeferralObligationTarget(deferral_id=deferral_id):
             return f"deferral:{deferral_id}"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _contract_ref_note(
+    owner: work_brief_models.CoverageOwner, contracts: tuple[work_brief_models.ContractRecord, ...]
+) -> str:
+    """Name the referenced contract's invariant beside a positional owner in the generated projection."""
+    match owner:
+        case work_brief_models.ContractRefCoverageOwner(contract=position):
+            return f" ({contracts[position - 1].invariant})"
+        case (
+            work_brief_models.AcceptanceCoverageOwner()
+            | work_brief_models.DeferredCoverageOwner()
+            | work_brief_models.NotApplicableCoverageOwner()
+            | work_brief_models.CompatibilityInvariantCoverageOwner()
+        ):
+            return ""
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -1085,7 +1162,8 @@ def _render_work_brief_markdown(brief: CheckpointWorkBriefValue) -> bytes:  # no
                     "",
                     f"- Distinction: {record.distinction}",
                     f"- Consumer: {record.consumer}",
-                    f"- Owner: `{_owner_key(record.owner)[0]}:{_owner_key(record.owner)[1]}`",
+                    f"- Owner: `{_owner_key(record.owner)[0]}:{_owner_key(record.owner)[1]}`"
+                    + _contract_ref_note(record.owner, checkpoint.contracts),
                     f"- Counterexample: {record.counterexample}",
                     "",
                 )

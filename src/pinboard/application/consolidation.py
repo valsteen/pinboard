@@ -129,7 +129,7 @@ def _decide_change(
     dependency_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[consolidation.Change]:
     if (
-        failure := validate_dependency_brief_pins(facts.snapshot, requested_dependencies(plan), dependency_pins)
+        failure := validate_dependency_brief_pins(facts.snapshot, None, requested_dependencies(plan), dependency_pins)
     ) is not None:
         return failure
     membership = initiatives.decide_membership_intent(

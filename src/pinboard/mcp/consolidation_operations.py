@@ -61,6 +61,7 @@ def operate(
     dependency_pins = resolve_dependency_brief_pins(
         store,
         ArtifactRepository(durable),
+        None,
         consolidation.requested_dependencies(consolidation_models.plan(request.selection)),
         now,
     )

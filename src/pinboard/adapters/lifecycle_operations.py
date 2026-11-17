@@ -290,10 +290,14 @@ def commit_direct_transition(
     brief_identity = transition_brief_identity(store, command, artifacts)
     if isinstance(brief_identity, DecisionFailure):
         return brief_identity
-    dependencies = (
-        command.value.definition.dependencies if isinstance(command, decision_models.ReviseWorkItemCommand) else ()
+    revised = command if isinstance(command, decision_models.ReviseWorkItemCommand) else None
+    dependency_pins = resolve_dependency_brief_pins(
+        store,
+        artifacts,
+        None if revised is None else revised.action.capability.subject,
+        () if revised is None else revised.value.definition.dependencies,
+        operation_time,
     )
-    dependency_pins = resolve_dependency_brief_pins(store, artifacts, dependencies, operation_time)
     if isinstance(dependency_pins, DecisionFailure):
         return dependency_pins
     return service.decide_and_commit_transition(

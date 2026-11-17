@@ -244,7 +244,7 @@ def _proposal_created(
         if isinstance(operation.intake.relation, work_models.FollowUpProposalRelation)
         else ()
     )
-    dependency_pins = resolve_dependency_brief_pins(store, ArtifactRepository(durable), dependencies, now)
+    dependency_pins = resolve_dependency_brief_pins(store, ArtifactRepository(durable), None, dependencies, now)
     if isinstance(dependency_pins, DecisionFailure):
         return _proposal_failure(
             proposal_models.ProposalFailure(dependency_pins.code, dependency_pins.message, dependency_pins.details)

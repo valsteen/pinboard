@@ -27,6 +27,7 @@ from pinboard.adapters.sqlite.migration.database import (
     migrate_v6_database,
     migrate_v7_database,
 )
+from pinboard.adapters.sqlite.migration.schema_amendments_v13 import migrate_v13_database
 from pinboard.adapters.sqlite.migration.schema_decisions_v10 import migrate_v10_database
 from pinboard.adapters.sqlite.migration.schema_dependencies_v9 import migrate_v9_database
 from pinboard.adapters.sqlite.migration.schema_membership_v11 import migrate_v11_database
@@ -243,6 +244,37 @@ class UnblockerRestorePlan(
     backup_sha256: str
 
 
+class AmendmentAdvancePlan(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="amendments-advance", tag_field="kind"
+):
+    """The v13-to-v14 step, which adds the empty attempt amendments table."""
+
+    schema: Literal["pinboard-schema-plan/v8"]
+    database_path: str
+    source_version: Literal[13]
+    target_version: Literal[14]
+    source_sha256: str
+    postimage_sha256: str
+
+
+class AmendmentCurrentPlan(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="amendments-current", tag_field="kind"
+):
+    schema: Literal["pinboard-schema-plan/v8"]
+    database_path: str
+    source_sha256: str
+
+
+class AmendmentRestorePlan(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="amendments-restore", tag_field="kind"
+):
+    schema: Literal["pinboard-schema-plan/v8"]
+    database_path: str
+    forward_plan_id: str
+    postimage_sha256: str
+    backup_sha256: str
+
+
 type SchemaPlan = (
     CompatibilityForwardPlan
     | CompatibilityUnchangedPlan
@@ -265,6 +297,9 @@ type SchemaPlan = (
     | UnblockerAdvancePlan
     | UnblockerCurrentPlan
     | UnblockerRestorePlan
+    | AmendmentAdvancePlan
+    | AmendmentCurrentPlan
+    | AmendmentRestorePlan
 )
 
 
@@ -279,7 +314,7 @@ class AppliedSchema:
     plan_id: str
     direction: Literal["forward", "reverse", "unchanged"]
     changed_surfaces: tuple[str, ...]
-    resulting_version: Literal[6, 7, 8, 9, 10, 11, 12, 13]
+    resulting_version: Literal[6, 7, 8, 9, 10, 11, 12, 13, 14]
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +343,7 @@ def _identity(plan: SchemaPlan) -> str:
             DecisionBatchRestorePlan,
             MembershipRestorePlan,
             UnblockerRestorePlan,
+            AmendmentRestorePlan,
         ),
     ):
         return f"reverse-{plan.forward_plan_id}-{digest}"
@@ -491,7 +527,9 @@ def _read_selected_labels(labels: Path | None) -> LabelInput | SchemaProcedureFa
         return SchemaProcedureFailure(f"Schema preview rejected the hold label file: {error}", (), "correct-input")
 
 
-def _preview_advancement(path: Path, labels: Path | None) -> PlannedSchema | SchemaProcedureFailure:
+def _preview_advancement(  # noqa: C901, PLR0912 - exact supported predecessor steps
+    path: Path, labels: Path | None
+) -> PlannedSchema | SchemaProcedureFailure:
     try:
         version, source, postimage = inspect_current_schema_migration(path)
     except (ArtifactError, StorageError, OSError, ValueError, msgspec.ValidationError) as error:
@@ -535,8 +573,10 @@ def _preview_advancement(path: Path, labels: Path | None) -> PlannedSchema | Sch
         plan = DecisionBatchAdvancePlan("pinboard-schema-plan/v5", str(path), 10, 11, source, postimage)
     elif version == 11 and postimage is not None:
         plan = MembershipAdvancePlan("pinboard-schema-plan/v6", str(path), 11, 12, source, postimage)
+    elif version == 13 and postimage is not None:
+        plan = AmendmentAdvancePlan("pinboard-schema-plan/v8", str(path), 13, 14, source, postimage)
     else:
-        plan = UnblockerCurrentPlan("pinboard-schema-plan/v7", str(path), source)
+        plan = AmendmentCurrentPlan("pinboard-schema-plan/v8", str(path), source)
     return PlannedSchema(_identity(plan), plan)
 
 
@@ -560,6 +600,7 @@ def preview_schema(  # noqa: C901, PLR0912 - exact retained reversal families
                 DecisionBatchAdvancePlan,
                 MembershipAdvancePlan,
                 UnblockerAdvancePlan,
+                AmendmentAdvancePlan,
             ),
         ) or forward.database_path != str(path):
             return SchemaProcedureFailure(
@@ -598,6 +639,10 @@ def preview_schema(  # noqa: C901, PLR0912 - exact retained reversal families
             case UnblockerAdvancePlan():
                 plan = UnblockerRestorePlan(
                     "pinboard-schema-plan/v7", str(path), reverse_forward_id, forward.postimage_sha256, backup_digest
+                )
+            case AmendmentAdvancePlan():
+                plan = AmendmentRestorePlan(
+                    "pinboard-schema-plan/v8", str(path), reverse_forward_id, forward.postimage_sha256, backup_digest
                 )
             case _ as unreachable:
                 assert_never(unreachable)
@@ -652,6 +697,7 @@ def apply_schema(path: Path, plan_id: str, labels: Path | None = None) -> Schema
                 DecisionBatchCurrentPlan,
                 MembershipCurrentPlan,
                 UnblockerCurrentPlan,
+                AmendmentCurrentPlan,
             ),
         ):
             match selected:
@@ -667,6 +713,8 @@ def apply_schema(path: Path, plan_id: str, labels: Path | None = None) -> Schema
                     expected_version = 12
                 case UnblockerCurrentPlan():
                     expected_version = 13
+                case AmendmentCurrentPlan():
+                    expected_version = 14
                 case _ as unreachable:
                     assert_never(unreachable)
             if version != expected_version or source != selected.source_sha256:
@@ -683,6 +731,7 @@ def apply_schema(path: Path, plan_id: str, labels: Path | None = None) -> Schema
                 DecisionBatchAdvancePlan,
                 MembershipAdvancePlan,
                 UnblockerAdvancePlan,
+                AmendmentAdvancePlan,
             ),
         ):
             selected_labels: LabelInput | None = None
@@ -757,6 +806,8 @@ def apply_schema(path: Path, plan_id: str, labels: Path | None = None) -> Schema
                     migrated = migrate_v12_database(
                         path, selected.source_sha256, selected_labels, selected.postimage_sha256
                     )
+                case AmendmentAdvancePlan():
+                    migrated = migrate_v13_database(path, selected.postimage_sha256)
                 case _ as unreachable:
                     assert_never(unreachable)
             if migrated:
@@ -783,6 +834,7 @@ def apply_schema(path: Path, plan_id: str, labels: Path | None = None) -> Schema
                 DecisionBatchAdvancePlan,
                 MembershipAdvancePlan,
                 UnblockerAdvancePlan,
+                AmendmentAdvancePlan,
             ),
         ):
             return SchemaProcedureFailure("The original forward migration is unavailable.", (), "correct-input")
@@ -819,9 +871,10 @@ def _restore_predecessor(
     | DependencyRestorePlan
     | DecisionBatchRestorePlan
     | MembershipRestorePlan
-    | UnblockerRestorePlan,
+    | UnblockerRestorePlan
+    | AmendmentRestorePlan,
     backup: bytes,
-    version: Literal[6, 7, 8, 9, 10, 11, 12],
+    version: Literal[6, 7, 8, 9, 10, 11, 12, 13],
     changed: list[str],
 ) -> SchemaApplication:
     """Publish the bound reverse plan, replace exact predecessor bytes and retain confirmed effects."""

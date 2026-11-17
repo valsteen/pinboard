@@ -699,6 +699,9 @@ def _brief_contract(
                 contract.local_structural_choices,
                 contract.cross_boundary_structural_choices,
                 contract.relational_constraints,
+                contract.small_payload_schema,
+                contract.small_starter,
+                contract.small_structural_choices,
                 lookup,
             )
         case contracts.BriefContractStarterRequest():
@@ -1396,7 +1399,7 @@ def _read_overview(
         last = after if not items else items[-1].position
         page = query_models.DiscoveryPage(
             "pinboard-overview/v9",
-            "sqlite-v13",
+            "sqlite-v14",
             facts.revision,
             items,
             facts.total_items,
@@ -2134,7 +2137,7 @@ def _current_candidate_review(
     durable: DurableRoots,
     store: WorkStore,
     context: query_models.AttemptContextFacts,
-    brief: work_brief_models.WorkBrief | None,
+    brief: work_brief_models.AcceptedBrief | None,
     result: contracts.EvidenceReference,
     review: contracts.EvidenceReference,
 ) -> tuple[review_operations.CurrentCandidateReview | None, contracts.CandidateReviewReference]:
@@ -2296,6 +2299,7 @@ def _attempt_inspection_success(
     candidate_recovery: contracts.CandidateRecovery,
     candidate_review: contracts.CandidateReviewReference,
     accepted_brief: contracts.AcceptedBriefIdentity | None,
+    amendments: tuple[query_models.AttemptAmendmentView, ...],
     result: contracts.EvidenceReference,
     review: contracts.EvidenceReference,
     blocker: contracts.EvidenceReference,
@@ -2306,7 +2310,7 @@ def _attempt_inspection_success(
             raise RuntimeError("Terminal attempt projection changed continuation family.")
         record: contracts.TerminalAttemptInspectionSuccess | contracts.NonterminalAttemptInspectionSuccess = (
             contracts.TerminalAttemptInspectionSuccess(
-                "pinboard-mcp-attempt-inspection-result/v1",
+                "pinboard-mcp-attempt-inspection-result/v2",
                 "ok",
                 presented_continuation,
                 candidate_recovery,
@@ -2327,12 +2331,13 @@ def _attempt_inspection_success(
         if isinstance(presented_continuation, contracts.TerminalAttemptContinuation):
             raise RuntimeError("Nonterminal attempt projection changed continuation family.")
         record = contracts.NonterminalAttemptInspectionSuccess(
-            "pinboard-mcp-attempt-inspection-result/v1",
+            "pinboard-mcp-attempt-inspection-result/v2",
             "ok",
             presented_continuation,
             candidate_recovery,
             candidate_review,
             accepted_brief,
+            amendments,
             result,
             review,
             blocker,
@@ -2487,7 +2492,7 @@ def _inspection_context(
     if context is None:
         return execution.TypedOperationResult(
             contracts.AttemptNotFound(
-                "pinboard-mcp-attempt-inspection-result/v1",
+                "pinboard-mcp-attempt-inspection-result/v2",
                 "rejected",
                 "ATTEMPT_NOT_FOUND",
                 f"Attempt '{attempt_id}' does not exist. Check the exact roots and accepted attempt_id; pinboard_item_status operation item for the accepted item lists its current attempt. Do not create a new task or attempt merely to satisfy this read.",
@@ -2505,7 +2510,7 @@ def _inspection_context(
         observed, mismatches = _damaged_receipt_evidence(context)
         return execution.TypedOperationResult(
             contracts.AttemptReceiptDamaged(
-                "pinboard-mcp-attempt-inspection-result/v1",
+                "pinboard-mcp-attempt-inspection-result/v2",
                 "rejected",
                 "TRANSITION_RECEIPT_DAMAGED",
                 queries.damaged_receipt_message(context),
@@ -2533,7 +2538,7 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return execution.TypedOperationResult(
             contracts.AttemptInspectInvalid(
-                "pinboard-mcp-attempt-inspection-result/v1",
+                "pinboard-mcp-attempt-inspection-result/v2",
                 "rejected",
                 "ATTEMPT_INSPECT_INVALID",
                 f"Cannot inspect attempt: {error}",
@@ -2554,11 +2559,11 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
     token.checkpoint()
     accepted_brief: contracts.AcceptedBriefIdentity | None = None
     owner_task_id: TaskId | None = None
-    decoded_brief: work_brief_models.WorkBrief | None = None
+    decoded_brief: work_brief_models.AcceptedBrief | None = None
     if isinstance(context, query_models.NonterminalAttemptContextFacts):
         reference = context.brief_reference
         try:
-            brief = work_briefs.decode_canonical_work_brief(read_reference(durable.work_root, reference))
+            brief = work_briefs.decode_canonical_accepted_brief(read_reference(durable.work_root, reference))
         except ArtifactError as error:
             return execution.TypedOperationResult(
                 _attempt_brief_invalid(
@@ -2739,7 +2744,7 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
         observed, mismatches = common._failure_evidence(details)
         return execution.TypedOperationResult(
             contracts.AttemptActionUnavailable(
-                "pinboard-mcp-attempt-inspection-result/v1",
+                "pinboard-mcp-attempt-inspection-result/v2",
                 "rejected",
                 "ACTION_NOT_AVAILABLE",
                 continuation.message
@@ -2761,6 +2766,9 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
         recovery,
         candidate_review,
         accepted_brief,
+        ()
+        if not isinstance(context, query_models.NonterminalAttemptContextFacts)
+        else tuple(query_models.amendment_view(value) for value in context.amendments.current),
         result,
         review,
         blocker,
@@ -2771,7 +2779,7 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
 def _attempt_brief_invalid(message: str, details: FailureDetails) -> contracts.AttemptBriefInvalid:
     observed, mismatches = common._failure_evidence(details)
     return contracts.AttemptBriefInvalid(
-        "pinboard-mcp-attempt-inspection-result/v1",
+        "pinboard-mcp-attempt-inspection-result/v2",
         "rejected",
         "ATTEMPT_BRIEF_INVALID",
         message,

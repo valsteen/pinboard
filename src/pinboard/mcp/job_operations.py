@@ -187,7 +187,7 @@ def _job_failure(
 def _job_failure(
     project_root: str,
     work_root: str,
-    schema: Literal["pinboard-mcp-review-job-result/v1"],
+    schema: Literal["pinboard-mcp-review-job-result/v2"],
     attempt_id: str,
     failure: DecisionFailure | ArtifactAcceptanceFailure | ArtifactWriteFailure,
     refresh_warning: ViewWarning | None,
@@ -197,7 +197,7 @@ def _job_failure(
 def _job_failure(
     project_root: str,
     work_root: str,
-    schema: Literal["pinboard-mcp-dispatch-result/v1", "pinboard-mcp-review-job-result/v1"],
+    schema: Literal["pinboard-mcp-dispatch-result/v1", "pinboard-mcp-review-job-result/v2"],
     attempt_id: str,
     failure: JobFailure,
     refresh_warning: ViewWarning | None,
@@ -363,7 +363,7 @@ def _record_ready_review(
     durable: DurableRoots,
     store: WorkStore,
     choice: contracts.RecordReadyReviewChoice,
-    schema: Literal["pinboard-mcp-review-job-result/v1"],
+    schema: Literal["pinboard-mcp-review-job-result/v2"],
     token: execution.CancellationToken,
 ) -> execution.TypedOperationResult[contracts.ReviewJobResult]:
     token.checkpoint()
@@ -429,18 +429,22 @@ def _record_ready_review(
     )
 
 
-def _review_histories(
-    choice: contracts.ReviewLaunchChoice,
-) -> tuple[HistoryId | None, HistoryId | None]:
+def _review_round_selection(choice: contracts.ReviewLaunchChoice) -> review_operations.ReviewRoundSelection:
+    """Convert the decoded review-launch leaf into the review round it selects."""
+
     match choice:
         case contracts.InitialReviewChoice():
-            return None, None
+            return review_operations.InitialReviewSelection()
         case contracts.PackageInitialReviewChoice():
-            return HistoryId(choice.checkpoint_history_id), None
+            return review_operations.PackageReviewSelection(HistoryId(choice.checkpoint_history_id))
         case contracts.CorrectionReviewChoice():
-            return None, HistoryId(choice.correction_history_id)
+            return review_operations.CorrectionReviewSelection(HistoryId(choice.correction_history_id))
         case contracts.PackageCorrectionReviewChoice():
-            return HistoryId(choice.checkpoint_history_id), HistoryId(choice.correction_history_id)
+            return review_operations.PackageCorrectionReviewSelection(
+                HistoryId(choice.checkpoint_history_id), HistoryId(choice.correction_history_id)
+            )
+        case contracts.AmendmentDeltaReviewChoice():
+            return review_operations.AmendmentDeltaReviewSelection()
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -674,7 +678,7 @@ def _review_job(
     raw: Mapping[str, JsonValue], token: execution.CancellationToken
 ) -> execution.TypedOperationResult[contracts.ReviewJobResult] | execution.ResultProjectionFailure:
     token.checkpoint()
-    schema = "pinboard-mcp-review-job-result/v1"
+    schema = "pinboard-mcp-review-job-result/v2"
     try:
         request = msgspec.convert(
             raw,
@@ -703,7 +707,7 @@ def _review_job(
     store = common.compose_store(durable)
     if isinstance(choice, contracts.RecordReadyReviewChoice):
         return _record_ready_review(request.project_root, durable, store, choice, schema, token)
-    checkpoint_history_id, correction_history_id = _review_histories(choice)
+    selection = _review_round_selection(choice)
     token.checkpoint()
     # Cancellation cannot turn an entered publication into an unchanged/replayable result.
     prepared = review_operations.prepare_review_job(
@@ -712,8 +716,7 @@ def _review_job(
         ArtifactRepository(durable),
         AttemptId(choice.attempt_id),
         choice.candidate_revision,
-        checkpoint_history_id,
-        correction_history_id,
+        selection,
     )
     if isinstance(prepared, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         refresh_warning = common._refresh_published_ledger(durable, store, prepared.details, datetime.now(UTC))

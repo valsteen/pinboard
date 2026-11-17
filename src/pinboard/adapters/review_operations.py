@@ -22,6 +22,7 @@ from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
 from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.application import (
+    amendments,
     artifact_identity,
     candidate_snapshots,
     checkpoint_packages,
@@ -51,7 +52,7 @@ from pinboard.domain.errors import (
     FailureMismatch,
     RetryDisposition,
 )
-from pinboard.domain.identifiers import AttemptId, HistoryId, TaskId
+from pinboard.domain.identifiers import AttemptId, CandidateId, HistoryId, TaskId
 
 
 class NoPriorCheckpointPackage(msgspec.Struct, tag="absent", tag_field="kind", frozen=True, forbid_unknown_fields=True):
@@ -87,13 +88,69 @@ class CorrectionReviewRound(
     review_sha256: str
 
 
-type ReviewRound = InitialReviewRound | CorrectionReviewRound
+class AmendmentDeltaReviewRound(
+    msgspec.Struct, tag="amendment-delta", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    """A review of only the diff an amendment-only change made since an earlier ready-reviewed candidate."""
+
+    reviewed_candidate: str
+    reviewed_snapshot_artifact_ref_id: int
+    reviewed_snapshot_path: str
+    reviewed_snapshot_sha256: str
+    ready_review_artifact_ref_id: int
+    ready_review_path: str
+    ready_review_sha256: str
+    amendment_history_ids: tuple[int, ...]
+
+
+type ReviewRound = InitialReviewRound | CorrectionReviewRound | AmendmentDeltaReviewRound
+
+
+@dataclass(frozen=True, slots=True)
+class InitialReviewSelection:
+    """Review the candidate with no prior checkpoint package and no correction receipt."""
+
+
+@dataclass(frozen=True, slots=True)
+class PackageReviewSelection:
+    """Review the candidate against one accepted prior checkpoint package."""
+
+    checkpoint_history_id: HistoryId
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectionReviewSelection:
+    """Review the corrected candidate against one return-for-correction receipt."""
+
+    correction_history_id: HistoryId
+
+
+@dataclass(frozen=True, slots=True)
+class PackageCorrectionReviewSelection:
+    """Review the corrected candidate against a prior checkpoint package and a correction receipt."""
+
+    checkpoint_history_id: HistoryId
+    correction_history_id: HistoryId
+
+
+@dataclass(frozen=True, slots=True)
+class AmendmentDeltaReviewSelection:
+    """Review only the diff since the ready-reviewed candidate a recorded amendment captured."""
+
+
+type ReviewRoundSelection = (
+    InitialReviewSelection
+    | PackageReviewSelection
+    | CorrectionReviewSelection
+    | PackageCorrectionReviewSelection
+    | AmendmentDeltaReviewSelection
+)
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedReviewJob:
     candidate_evidence: candidate_snapshots.CandidateSnapshotEvidence
-    brief: work_brief_models.WorkBrief
+    brief: work_brief_models.AcceptedBrief
     brief_reference: BriefArtifactRef
     result_path: Path
     result_sha256: str
@@ -234,7 +291,7 @@ def _candidate_review_record(
         or facts.candidate_snapshot is None
     ):
         return unavailable
-    brief = work_briefs.decode_canonical_work_brief(read_reference(work_root, attempt.brief_reference))
+    brief = work_briefs.decode_canonical_accepted_brief(read_reference(work_root, attempt.brief_reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _review_job_failure(brief.message)
     if (failure := queries.validate_attempt_brief_identity(attempt, brief)) is not None:
@@ -365,7 +422,7 @@ def read_attempt_evidence_digests(work_root: Path, attempt_id: AttemptId) -> Att
 class ReadyRecordSubject:
     """The exact current candidate, snapshot, accepted brief, result.md and review.md a ready record must bind."""
 
-    brief: work_brief_models.WorkBrief
+    brief: work_brief_models.AcceptedBrief
     candidate_revision: str
     candidate_snapshot: stored_state.ArtifactReference
     accepted_brief: stored_state.ArtifactReference | BriefArtifactRef
@@ -385,7 +442,7 @@ class ReadyRecordSubject:
 
 
 def ready_record_subject(
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.AcceptedBrief,
     candidate_revision: str | None,
     candidate_snapshot: stored_state.ArtifactReference | None,
     accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
@@ -441,7 +498,7 @@ def read_current_brief(
     attempt: work_briefs.AttemptBriefIdentity,
     reference: stored_state.ArtifactReference,
     artifacts: ArtifactRepository,
-) -> work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure:
+) -> work_brief_models.AcceptedBrief | work_brief_models.WorkBriefFailure:
     """Read, decode and identity-check one open attempt's current brief; an unreadable artifact is a failure."""
 
     try:
@@ -462,11 +519,11 @@ class AttemptStatusArtifactReader:
 
     def read_attempt_brief(
         self, attempt: query_models.ItemStatusAttemptFacts
-    ) -> work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure:
+    ) -> work_brief_models.AcceptedBrief | work_brief_models.WorkBriefFailure:
         return read_current_brief(attempt, attempt.brief_reference, ArtifactRepository(self.durable))
 
     def read_ready_candidate_review(
-        self, attempt: query_models.ItemStatusAttemptFacts, brief: work_brief_models.WorkBrief
+        self, attempt: query_models.ItemStatusAttemptFacts, brief: work_brief_models.AcceptedBrief
     ) -> query_models.ReadyCandidateReview | None:
         if attempt.state != work_models.AttemptState.REVIEW or attempt.candidate_revision is None:
             return None
@@ -549,6 +606,58 @@ def read_board_history(
     )
 
 
+def observe_amendment_review(
+    store: ports.WorkStore, artifacts: ArtifactRepository, attempt_id: AttemptId
+) -> DecisionResult[tuple[work_models.ClearedSubmission | None, work_models.ReviewBase | None]]:
+    """Observe the submission an amendment would clear and the review base it may carry forward.
+
+    A review-state attempt's submission is its protected candidate and accepted snapshot, with the ready candidate
+    review recorded for it when that review still binds the current brief, result.md and review.md. The carried base is
+    the latest current amendment's review base when no return, rebind or acceptance followed it. The selected attempt
+    subject revision, rechecked under the write lock, binds these observations to the decision.
+    """
+
+    evidence = read_attempt_evidence_digests(artifacts.work_root, attempt_id)
+    facts = queries.select_review_job_context(
+        store, attempt_id, None, None, evidence.result_sha256, evidence.review_sha256
+    )
+    if isinstance(facts, DecisionFailure):
+        return facts
+    attempt = facts.attempt
+    if not isinstance(attempt, query_models.NonterminalAttemptContextFacts):
+        return _review_job_failure("Only an active attempt or an attempt in review can record an amendment.")
+    carried = amendments.carried_review_base(attempt.amendments.current, attempt.amendments.later_review_kinds)
+    snapshot = facts.candidate_snapshot
+    if attempt.state != work_models.AttemptState.REVIEW or attempt.candidate_revision is None or snapshot is None:
+        return None, carried
+    ready_review: stored_state.ArtifactReference | None = None
+    try:
+        brief = work_briefs.decode_canonical_accepted_brief(artifacts.read(attempt.brief_reference))
+        if (
+            not isinstance(brief, work_brief_models.WorkBriefFailure)
+            and queries.validate_attempt_brief_identity(attempt, brief) is None
+            and (
+                subject := ready_record_subject(
+                    brief, attempt.candidate_revision, snapshot.reference, attempt.brief_reference, evidence
+                )
+            )
+            is not None
+            and (current := verify_ready_record(subject, facts.candidate_review_reference, artifacts)) is not None
+        ):
+            ready_review = current.reference
+    except ArtifactError:
+        # An unreadable brief or review record leaves the submission without a ready review to capture.
+        ready_review = None
+    return (
+        work_models.ClearedSubmission(
+            CandidateId(attempt.candidate_revision),
+            snapshot.reference.artifact_ref_id,
+            None if ready_review is None else ready_review.artifact_ref_id,
+        ),
+        carried,
+    )
+
+
 def _candidate_review_required(
     attempt: query_models.NonterminalAttemptContextFacts,
     message: str,
@@ -588,7 +697,7 @@ def commissioned_review_snapshot(
     artifacts: dispatch_models.DispatchArtifactPort,
     *,
     attempt: query_models.NonterminalAttemptContextFacts,
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.AcceptedBrief,
     result_sha256: str,
     review_sha256: str,
     reviewer_task_id: str,
@@ -673,10 +782,15 @@ def _select_prior_checkpoint_package(
     facts: query_models.ReviewJobContextFacts,
     attempt_id: AttemptId,
     attempt: query_models.NonterminalAttemptContextFacts,
-    checkpoint_history_id: HistoryId | None,
+    selection: ReviewRoundSelection,
 ) -> DecisionResult[tuple[PriorCheckpointPackageSelection, str]]:
-    if checkpoint_history_id is None:
-        return NoPriorCheckpointPackage(), "No prior checkpoint package was selected."
+    match selection:
+        case PackageReviewSelection() | PackageCorrectionReviewSelection():
+            pass
+        case InitialReviewSelection() | CorrectionReviewSelection() | AmendmentDeltaReviewSelection():
+            return NoPriorCheckpointPackage(), "No prior checkpoint package was selected."
+        case _ as unreachable:
+            assert_never(unreachable)
     receipt = facts.checkpoint_receipt
     package_reference = facts.checkpoint_package_reference
     if receipt is None:
@@ -707,7 +821,7 @@ def _select_prior_checkpoint_package(
         return _review_job_failure("Selected checkpoint candidate evidence does not match its portable identity.")
     package_path = work_root / package_reference.selector
     candidate_path = work_root / candidate_reference.selector
-    selection = PriorCheckpointPackage(
+    prior_package = PriorCheckpointPackage(
         int(receipt.history_id),
         int(package_reference.artifact_ref_id),
         str(package_path),
@@ -729,7 +843,7 @@ def _select_prior_checkpoint_package(
         "identity cannot be resolved, no comparison range can be established, or the histories diverge. Treat "
         "the package as historical assurance, never as authority over the current brief or candidate."
     )
-    return selection, prompt
+    return prior_package, prompt
 
 
 def _prompt_record_text(label: str, text: str) -> str:
@@ -744,16 +858,159 @@ def _prompt_record_text(label: str, text: str) -> str:
     return f"{label} (JSON string): {msgspec.json.encode(text).decode()}"
 
 
+_HUMAN_WORDS_LABEL = "the human's exact words"
+
+
+def _amendments_prompt(current: tuple[stored_state.StoredAttemptAmendment, ...]) -> str:
+    """State the recorded amendments as part of the review contract, or that none are recorded."""
+
+    if not current:
+        return "No amendments are recorded for this attempt; the accepted brief alone is the contract."
+    listed = "\n".join(
+        f"- Amendment {value.history_id} ({value.amendment.amendment_class.value}): "
+        f"{_prompt_record_text('change', value.amendment.change)}; "
+        f"{_prompt_record_text('reason', value.amendment.reason)}; "
+        f"{_prompt_record_text(_HUMAN_WORDS_LABEL, value.amendment.human_decision)}"
+        for value in current
+    )
+    return (
+        "Recorded amendments are part of this contract beside the accepted brief:\n"
+        f"{listed}\n"
+        "Do not reject an amended change for being absent from the brief, and do not expand it beyond its stated "
+        "change. Check each amended diff against its recorded class and stated change. A change outside its class or "
+        "beyond its stated change is a product decision for the human, not a worker defect: report it with the human's "
+        "words, the product-level effect beyond them, why that effect matters, the options with their cost and your "
+        "recommendation, and explain it rather than citing a rule in its place."
+    )
+
+
+def _delta_unavailable(attempt: query_models.NonterminalAttemptContextFacts) -> DecisionFailure:
+    return DecisionFailure(
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        "No amendment-only delta review is available for this candidate. It needs a ready review captured by an "
+        "amendment under the current accepted brief, then only amendments and a resubmission, with no return for "
+        "correction, rebind or acceptance between.",
+        FailureDetails(
+            observed=(
+                FailureFact("attempt_id", str(attempt.attempt_id)),
+                FailureFact("current_amendments", len(attempt.amendments.current)),
+                FailureFact(
+                    "later_review_actions",
+                    ", ".join(kind.value for kind in attempt.amendments.later_review_kinds) or None,
+                ),
+                FailureFact(
+                    "next_step",
+                    "Commission an ordinary review of the complete candidate with review kind 'initial' instead.",
+                ),
+            ),
+            mismatches=(),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def _select_delta_round(
+    work_root: Path,
+    store: ports.WorkStore,
+    artifacts: dispatch_models.DispatchArtifactPort,
+    attempt: query_models.NonterminalAttemptContextFacts,
+) -> DecisionResult[tuple[ReviewRound, str]]:
+    current = attempt.amendments.current
+    base = amendments.delta_review_base(current, attempt.amendments.later_review_kinds)
+    if base is None:
+        return _delta_unavailable(attempt)
+    snapshot = store.read_artifact_reference_by_id(base.snapshot_artifact_ref_id)
+    review_reference = store.read_artifact_reference_by_id(base.ready_review_artifact_ref_id)
+    if snapshot is None or review_reference is None:
+        return _review_job_failure("The captured earlier review or its candidate snapshot is no longer accepted.")
+    try:
+        review = work_briefs.decode_canonical_candidate_review(artifacts.read(review_reference))
+    except ArtifactError as error:
+        return _review_job_failure(f"The captured earlier ready review cannot be read: {error}")
+    if (
+        isinstance(review, work_brief_models.WorkBriefFailure)
+        or review.attempt_id != str(attempt.attempt_id)
+        or review.candidate != str(base.candidate)
+        or review.candidate_snapshot.content_sha256 != snapshot.content_sha256
+        or review.accepted_brief.content_sha256 != attempt.brief_reference.content_sha256
+    ):
+        return _review_job_failure(
+            "The captured earlier review is not a ready review of the captured candidate under the current brief."
+        )
+    since = amendments.delta_amendments(current, base)
+    snapshot_path = work_root / snapshot.selector
+    review_path = work_root / review_reference.selector
+    round_view = AmendmentDeltaReviewRound(
+        str(base.candidate),
+        int(snapshot.artifact_ref_id),
+        str(snapshot_path),
+        snapshot.content_sha256,
+        int(review_reference.artifact_ref_id),
+        str(review_path),
+        review_reference.content_sha256,
+        tuple(int(value.history_id) for value in since),
+    )
+    prompt = (
+        "This is an amendment-only delta review. Earlier candidate "
+        f"{base.candidate} (snapshot {snapshot_path}, SHA-256 {snapshot.content_sha256}) received a ready review "
+        f"({review_path}, SHA-256 {review_reference.content_sha256}) under this same accepted brief. Since then only "
+        "amendments "
+        + ", ".join(str(value.history_id) for value in since)
+        + " were recorded and the attempt was resubmitted. Verify both artifacts, reconstruct both candidates and "
+        "limit the review subject to the diff from the earlier candidate to the current one: every change in that "
+        "diff must belong to one of those amendments, within its class and stated change. Treat the earlier review as "
+        "the verdict for everything outside that diff. Stop without a verdict if either identity cannot be resolved "
+        "or the diff contains a change no recorded amendment covers; report that change as a finding, because the "
+        "coordinator then commissions a full review of the candidate instead."
+    )
+    return round_view, prompt
+
+
+def _selected_history_ids(selection: ReviewRoundSelection) -> tuple[HistoryId | None, HistoryId | None]:
+    """Name the checkpoint and correction receipts the review-job context lookup reads for this round."""
+
+    match selection:
+        case InitialReviewSelection() | AmendmentDeltaReviewSelection():
+            return None, None
+        case PackageReviewSelection(checkpoint_history_id=checkpoint):
+            return checkpoint, None
+        case CorrectionReviewSelection(correction_history_id=correction):
+            return None, correction
+        case PackageCorrectionReviewSelection(checkpoint_history_id=checkpoint, correction_history_id=correction):
+            return checkpoint, correction
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _select_review_round(
+    work_root: Path,
+    store: ports.WorkStore,
+    artifacts: dispatch_models.DispatchArtifactPort,
+    facts: query_models.ReviewJobContextFacts,
+    attempt: query_models.NonterminalAttemptContextFacts,
+    selection: ReviewRoundSelection,
+) -> DecisionResult[tuple[ReviewRound, str]]:
+    match selection:
+        case InitialReviewSelection() | PackageReviewSelection():
+            return InitialReviewRound(), (
+                "This is an initial review round; no correction receipt or prior review is selected."
+            )
+        case CorrectionReviewSelection() | PackageCorrectionReviewSelection():
+            return _select_correction_round(work_root, facts, attempt.attempt_id)
+        case AmendmentDeltaReviewSelection():
+            return _select_delta_round(work_root, store, artifacts, attempt)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _select_correction_round(
     work_root: Path,
     facts: query_models.ReviewJobContextFacts,
     attempt_id: AttemptId,
-    correction_history_id: HistoryId | None,
 ) -> DecisionResult[tuple[ReviewRound, str]]:
-    if correction_history_id is None:
-        return InitialReviewRound(), (
-            "This is an initial review round; no correction receipt or prior review is selected."
-        )
     correction_receipt = facts.correction_receipt
     if correction_receipt is None:
         return _review_job_failure("Selected correction history does not exist.")
@@ -794,8 +1051,7 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
     artifacts: dispatch_models.DispatchArtifactPort,
     attempt_id: AttemptId,
     candidate_revision: str,
-    checkpoint_history_id: HistoryId | None,
-    correction_history_id: HistoryId | None,
+    selection: ReviewRoundSelection,
 ) -> DecisionResult[
     PreparedReviewJob | ArtifactAcceptanceFailure | ArtifactWriteFailure | ReviewPromptPublicationFailure
 ]:
@@ -807,6 +1063,7 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
     rendered_result_path, digest = result_evidence
     review_evidence = _read_required_evidence(work_root / "attempts" / attempt_id / "review.md", "review.md")
     review_sha256 = None if isinstance(review_evidence, DecisionFailure) else review_evidence[1]
+    checkpoint_history_id, correction_history_id = _selected_history_ids(selection)
     facts = queries.select_review_job_context(
         store,
         attempt_id,
@@ -826,7 +1083,7 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
         )
     reference = attempt.brief_reference
     brief_bytes = read_reference(work_root, reference)
-    brief = work_briefs.decode_canonical_work_brief(brief_bytes)
+    brief = work_briefs.decode_canonical_accepted_brief(brief_bytes)
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _review_job_failure(str(brief))
     if (failure := queries.validate_attempt_brief_identity(attempt, brief)) is not None:
@@ -867,11 +1124,11 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
     if not isinstance(operation, query_models.ReviewContinuation) or operation.candidate_revision != candidate_revision:
         return unavailable
     brief_path = work_root / reference.selector
-    selected_package = _select_prior_checkpoint_package(work_root, facts, attempt_id, attempt, checkpoint_history_id)
+    selected_package = _select_prior_checkpoint_package(work_root, facts, attempt_id, attempt, selection)
     if isinstance(selected_package, DecisionFailure):
         return selected_package
     prior_package, package_prompt = selected_package
-    selected_round = _select_review_round(work_root, facts, attempt_id, correction_history_id)
+    selected_round = _select_review_round(work_root, store, artifacts, facts, attempt, selection)
     if isinstance(selected_round, DecisionFailure):
         return selected_round
     review_round, correction_prompt = selected_round
@@ -908,7 +1165,8 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
         "if an input is unavailable, stop its affected operation and report the exact subject, missing value "
         "and known effects. Installed Pinboard internals are outside another project's review scope. "
         "Explicitly assigned Pinboard source development or human-authorized investigation remains in scope. "
-        f"Recheck candidate and result identity before returning; stop if either changed.\n\n{package_prompt}\n\n"
+        f"Recheck candidate and result identity before returning; stop if either changed.\n\n"
+        f"{_amendments_prompt(attempt.amendments.current)}\n\n{package_prompt}\n\n"
         f"{correction_prompt}\n\n{return_contract}"
     )
     try:

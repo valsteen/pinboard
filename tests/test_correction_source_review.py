@@ -187,12 +187,19 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         *,
         review_condition: Literal["ready", "missing", "malformed", "stale", "wrong-owner"] = "ready",
         test_baseline: str = "assert True\n",
+        drifted_authority: bool = False,
     ) -> CheckpointFixture:
-        """Return the fixture candidate for correction on an accepted base that already holds the test file."""
+        """Return the fixture candidate for correction on an accepted base that already holds the test file.
 
+        A drifted authority gives the accepted base reviewed-source bytes that differ from the brief's pin, so any
+        difference from the pin is external drift rather than the returned candidate's own edit.
+        """
+
+        drift = (("architecture.md", "# Architecture\n\n## Contract\n\nChanged outside the attempt.\n"),)
         fixture = self.native_fixture(
             self.checkpoint_fixture(
-                review_condition=review_condition, base_files=(("tests/test_only.py", test_baseline),)
+                review_condition=review_condition,
+                base_files=(("tests/test_only.py", test_baseline), *(drift if drifted_authority else ())),
             )
         )
         payload = fixture.work / "bootstrap-return.json"
@@ -511,6 +518,54 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         decoded = msgspec.json.decode(persisted[0], type=work_brief_models.ReusedCoverageCorrectionReview)
         self.assertEqual(persisted[0], work_briefs.canonical_correction_source_review_bytes(decoded))
 
+    def test_reuse_correction_accepts_the_returned_candidates_own_source_edit(self) -> None:
+        fixture = self.correction_fixture()
+        source = fixture.project / "architecture.md"
+        source.write_text(
+            "# Architecture\n\n## Contract\n\nTyped JSON stays canonical after the candidate's edit.\n",
+            encoding="utf-8",
+        )
+        history_id, full = self.submit_and_return(fixture, "own-edit", committed=True)
+        roots: JsonObject = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+        accepted_bytes = work_briefs.canonical_work_brief_bytes(fixture.brief)
+        accepted_sha256 = hashlib.sha256(accepted_bytes).hexdigest()
+        context = fixture.call_native_tool(
+            server.CORRECTION_CONTEXT_TOOL,
+            roots | {"attempt_id": "work-a-1", "correction_history_id": history_id},
+        )
+        self.assertEqual("ready", context["status"], context)
+        self.assertEqual(
+            (accepted_sha256, True, []),
+            (context["effective_brief_sha256"], context["reuse_eligible"], context["reuse_blockers"]),
+        )
+        self.assertEqual(
+            fixture.brief, msgspec.convert(context["effective_brief"], type=work_brief_models.WorkBrief, strict=True)
+        )
+        before = fixture.store.validated_snapshot()
+        # The full correction binds the same accepted pins, so a review of the candidate's refreshed digests is stale.
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_STALE", self.dispatch_native(fixture, full)["code"])
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        # Drift past the returned candidate is not the returned candidate's own edit and keeps refreshed digests.
+        committed = source.read_bytes()
+        source.write_bytes(committed + b"Edited after the return.\n")
+        current = fixture.call_advertised_tool(
+            server.RETURN_CONTEXT_TOOL,
+            roots
+            | {
+                "attempt_id": "work-a-1",
+                "selection": {"kind": "current-candidate", "return_history_id": history_id},
+            },
+        )
+        self.assertEqual("ready", current["status"], current)
+        drifted = self.json_object(self.json_object(current["context"])["review_context"])
+        self.assertFalse(drifted["reuse_eligible"])
+        self.assertNotEqual(accepted_sha256, drifted["effective_brief_sha256"])
+        source.write_bytes(committed)
+        ready = self.dispatch_native(fixture, self.reuse_choice(fixture, full))
+        self.assertEqual("ready", ready["status"], ready)
+        prompt_reference = self.json_object(ready["prompt_reference"])
+        self.assertIn(accepted_bytes, (fixture.work / str(prompt_reference["selector"])).read_bytes())
+
     def test_reuse_correction_reports_changed_source_and_missing_review(self) -> None:
         review_conditions: tuple[Literal["ready", "missing", "malformed", "stale", "wrong-owner"], ...] = (
             "ready",
@@ -519,13 +574,19 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             "stale",
             "wrong-owner",
         )
+        # A ready review with an externally drifted source is stale; each other condition names its review defect.
+        expected_codes = {
+            "ready": "DISPATCH_BRIEF_REVIEW_STALE",
+            "missing": "DISPATCH_BRIEF_REVIEW_MISSING",
+            "malformed": "DISPATCH_BRIEF_REVIEW_INVALID",
+            "stale": "DISPATCH_BRIEF_REVIEW_STALE",
+            "wrong-owner": "DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT",
+        }
         for review_condition in review_conditions:
             with self.subTest(review_condition=review_condition):
-                fixture = self.correction_fixture(review_condition=review_condition)
-                if review_condition == "ready":
-                    (fixture.project / "architecture.md").write_text(
-                        "# Architecture\n\n## Contract\n\nChanged after accepted review.\n", encoding="utf-8"
-                    )
+                fixture = self.correction_fixture(
+                    review_condition=review_condition, drifted_authority=review_condition == "ready"
+                )
                 history_id, full = self.submit_and_return(fixture, review_condition, committed=True)
                 choice = self.reuse_choice(fixture, full)
                 before = fixture.store.validated_snapshot()
@@ -538,19 +599,11 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                         "correction_history_id": history_id,
                     },
                 )
+                self.assertEqual("ready", context["status"], context)
                 self.assertFalse(context["reuse_eligible"])
-                self.assertTrue(context["reuse_blockers"])
-                self.assertIn("full cross-boundary correction review", str(context["reuse_blockers"]))
+                self.assertEqual(1, len(self.json_array(context["reuse_blockers"])))
                 rejected = self.dispatch_native(fixture, choice)
-                self.assertIn(
-                    rejected["code"],
-                    (
-                        "DISPATCH_BRIEF_REVIEW_STALE",
-                        "DISPATCH_BRIEF_REVIEW_MISSING",
-                        "DISPATCH_BRIEF_REVIEW_INVALID",
-                        "DISPATCH_BRIEF_REVIEW_NOT_INDEPENDENT",
-                    ),
-                )
+                self.assertEqual(("rejected", expected_codes[review_condition]), (rejected["status"], rejected["code"]))
                 self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_exact_correction_rejects_source_deleted_after_return(self) -> None:
@@ -1804,7 +1857,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             asyncio.run(scenario())
 
     def test_native_correction_context_binds_fresh_review_before_dispatch(self) -> None:
-        fixture = self.correction_fixture()
+        fixture = self.correction_fixture(drifted_authority=True)
         (fixture.project / "architecture.md").write_text(
             "# Architecture\n\n## Contract\n\nTyped JSON stays canonical after correction.\n", encoding="utf-8"
         )
@@ -2528,6 +2581,33 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": reuse_choice},
         )
         self.assertEqual("ready", dispatched_reuse["status"], dispatched_reuse)
+
+    def test_advertised_correction_binding_sources_agree_on_own_candidate_drift(self) -> None:
+        fixture = self.correction_fixture()
+        (fixture.project / "architecture.md").write_text(
+            "# Architecture\n\n## Contract\n\nTyped JSON stays canonical after the candidate's edit.\n",
+            encoding="utf-8",
+        )
+        history_id, _ = self.submit_and_return(fixture, "own-drift-binding", committed=True)
+        roots: JsonObject = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+        correction_ctx = fixture.call_advertised_tool(
+            server.CORRECTION_CONTEXT_TOOL, roots | {"attempt_id": "work-a-1", "correction_history_id": history_id}
+        )
+        return_ctx = fixture.call_advertised_tool(
+            server.RETURN_CONTEXT_TOOL,
+            roots
+            | {
+                "attempt_id": "work-a-1",
+                "selection": {"kind": "current-candidate", "return_history_id": history_id},
+            },
+        )
+        self.assertEqual(("ready", "ready"), (correction_ctx["status"], return_ctx["status"]))
+        return_review_ctx = self.json_object(self.json_object(return_ctx["context"])["review_context"])
+        accepted_sha256 = hashlib.sha256(work_briefs.canonical_work_brief_bytes(fixture.brief)).hexdigest()
+        for field in ("effective_brief_sha256", "checkpoint_sha256", "reviewed_authority_set_sha256", "reuse_eligible"):
+            with self.subTest(field=field):
+                self.assertEqual(correction_ctx[field], return_review_ctx[field])
+        self.assertEqual(accepted_sha256, correction_ctx["effective_brief_sha256"])
 
     def test_advertised_local_correction_binding_mismatch_diagnostic(self) -> None:
         self.fixed_native_time()

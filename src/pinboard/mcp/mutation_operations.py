@@ -32,6 +32,7 @@ from pinboard.application import (
     queries,
     query_models,
     service,
+    stored_state,
     work_brief_models,
     work_briefs,
 )
@@ -309,19 +310,22 @@ def _brief_published(
     token: execution.CancellationToken,
 ) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
     token.checkpoint()
+    brief = raw.get("brief")
     try:
-        request = msgspec.convert(raw, type=contracts.BriefPublishRequest, strict=True)
+        request = (
+            msgspec.convert(raw, type=contracts.SmallBriefPublishRequest, strict=True)
+            if isinstance(brief, dict) and brief.get("schema") == "pinboard-small-work-brief/v1"
+            else msgspec.convert(raw, type=contracts.BriefPublishRequest, strict=True)
+        )
         durable = common._resolve_durable(request.project_root, request.work_root)
     except msgspec.ValidationError as error:
-        return _brief_decode_failure(
-            str(raw.get("project_root", "")), str(raw.get("work_root", "")), raw.get("brief"), error
-        )
+        return _brief_decode_failure(str(raw.get("project_root", "")), str(raw.get("work_root", "")), brief, error)
     except (ValueError, OSError) as error:
         return _brief_failure("WORK_BRIEF_INVALID", f"Cannot decode brief publication request: {error}")
     return _publish_brief(durable, request.brief, token)
 
 
-type SelectedBrief = work_brief_models.WorkBrief | execution.TypedOperationResult[contracts.BriefPublicationResult]
+type SelectedBrief = work_brief_models.AcceptedBrief | execution.TypedOperationResult[contracts.BriefPublicationResult]
 
 
 def _read_brief_file(raw: Mapping[str, JsonValue]) -> SelectedBrief:
@@ -333,7 +337,7 @@ def _read_brief_file(raw: Mapping[str, JsonValue]) -> SelectedBrief:
     if isinstance(content, file_io.SelectedInputFailure):
         return _brief_failure(content.code, content.message)
     try:
-        return msgspec.json.decode(content, type=work_brief_models.WorkBrief)
+        return work_briefs.decode_accepted_brief(content)
     except msgspec.DecodeError as error:
         return _brief_failure(
             "WORK_BRIEF_INVALID",
@@ -348,7 +352,7 @@ def _brief_published_file(
 ) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
     token.checkpoint()
     brief = read_brief()
-    if not isinstance(brief, work_brief_models.WorkBrief):
+    if not isinstance(brief, (work_brief_models.WorkBrief, work_brief_models.SmallWorkBrief)):
         return brief
     try:
         durable = common._resolve_durable(str(raw["project_root"]), str(raw["work_root"]))
@@ -436,7 +440,7 @@ def _brief_publication_failed(
 
 
 def _publish_brief(
-    durable: DurableRoots, decoded: work_brief_models.WorkBrief, token: execution.CancellationToken
+    durable: DurableRoots, decoded: work_brief_models.AcceptedBrief, token: execution.CancellationToken
 ) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
     store = common.compose_store(durable)
     token.checkpoint()
@@ -963,6 +967,7 @@ def _apply_transition(
             continuation=None,
         )
     token.checkpoint()
+    ended_amendments = _amendments_ended_by_rebind(store, selected.command)
     if isinstance(
         selected.command,
         (
@@ -1036,7 +1041,9 @@ def _apply_transition(
         item_id = WorkItemId(selected.command.action.capability.subject)
     assert item_id is not None
     item_status = _committed_item_status(durable, store, item_id, datetime.now(UTC))
-    continuation = _transition_current_state_route(identity.kind, item_status_returned=True)
+    continuation = _ended_amendments_notice(ended_amendments) + _transition_current_state_route(
+        identity.kind, item_status_returned=True
+    )
     schema = "pinboard-mcp-transition-result/v1"
     revision = committed_effect.receipt.project_revision
     history_id = int(committed_effect.receipt.history_id)
@@ -1079,6 +1086,34 @@ def _apply_transition(
         ),
         "committed" if warning is None else "committed-warning",
         str(revision),
+    )
+
+
+def _amendments_ended_by_rebind(
+    store: ports.WorkStore, command: decision_models.TransitionCommand
+) -> tuple[stored_state.StoredAttemptAmendment, ...]:
+    """Name the current amendments a rebind to another brief ends; the selected subject revision binds this read."""
+
+    if not isinstance(command, decision_models.RebindAttemptCommand):
+        return ()
+    context = store.read_attempt_context(command.action.capability.subject)
+    if not isinstance(context, query_models.NonterminalAttemptContextFacts):
+        return ()
+    return tuple(
+        value
+        for value in context.amendments.current
+        if value.amendment.brief_artifact_ref_id != command.value.brief_artifact_ref_id
+    )
+
+
+def _ended_amendments_notice(ended: tuple[stored_state.StoredAttemptAmendment, ...]) -> str:
+    if not ended:
+        return ""
+    histories = ", ".join(str(value.history_id) for value in ended)
+    return (
+        f"The rebind ended {len(ended)} amendment{'' if len(ended) == 1 else 's'} recorded against the earlier brief "
+        f"(history {histories}); they stay in history but are no longer part of the contract, so the replacement brief "
+        "must state any it keeps. "
     )
 
 

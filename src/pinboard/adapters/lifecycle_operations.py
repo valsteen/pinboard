@@ -7,6 +7,7 @@ from functools import partial
 from pathlib import Path
 from typing import assert_never
 
+from pinboard.adapters import review_operations
 from pinboard.adapters.dependency_operations import resolve_dependency_brief_pins
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
@@ -16,7 +17,7 @@ from pinboard.application import action_models, actions, ports, service, work_br
 from pinboard.application.artifacts import WorkBriefIdentity
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.work_briefs import (
-    decode_canonical_work_brief,
+    decode_canonical_accepted_brief,
     read_selected_work_brief_identity,
     validate_executable_work_brief,
     validate_reviewed_authority_digests,
@@ -81,7 +82,7 @@ def resolve_activation(
     reference = store.read_artifact_reference_by_id(artifact_ref_id)
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
         return _input_failure("Activation requires one existing brief artifact reference.", ())
-    brief = decode_canonical_work_brief(artifacts.read(reference))
+    brief = decode_canonical_accepted_brief(artifacts.read(reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _input_failure(f"The selected brief artifact is invalid: {brief.message}", ())
     if (failure := validate_executable_work_brief(store, brief, classify_checkout(source_checkout))) is not None:
@@ -116,7 +117,9 @@ def resolve_activation(
             "The selected source checkout does not match the accepted brief branch and base revision.",
             checkout_mismatches,
         )
-    if isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+    if isinstance(brief, work_brief_models.WorkBrief) and isinstance(
+        brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint
+    ):
         authority_failure = validate_reviewed_authority_digests(
             partial(select_checkout_brief_source, source_checkout),
             brief.checkpoint.reviewed_authorities,
@@ -142,6 +145,26 @@ def resolve_activation(
     )
 
 
+def resolve_amendment(
+    store: ports.WorkStore,
+    artifacts: ArtifactRepository,
+    action: decision_models.Action,
+    decoded: action_models.RecordAmendmentInputPayload,
+) -> DecisionResult[decision_models.RecordAmendmentCommand]:
+    if not isinstance(action, decision_models.RecordAmendmentAction):
+        raise AssertionError("Amendment input requires a record-amendment action.")
+    observed = review_operations.observe_amendment_review(store, artifacts, action.capability.subject)
+    if isinstance(observed, DecisionFailure):
+        return observed
+    cleared, carried = observed
+    return decision_models.RecordAmendmentCommand(
+        action,
+        work_models.RecordAmendmentInput(
+            decoded.amendment_class, decoded.change, decoded.reason, decoded.human_decision, cleared, carried
+        ),
+    )
+
+
 def _validate_replacement_brief(
     source_checkout: Path,
     store: ports.WorkStore,
@@ -160,7 +183,7 @@ def _validate_replacement_brief(
     reference = store.read_artifact_reference_by_id(reference_id)
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
         return _input_failure(f"The {operation} operation requires one existing brief artifact reference.", ())
-    brief = decode_canonical_work_brief(artifacts.read(reference))
+    brief = decode_canonical_accepted_brief(artifacts.read(reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _input_failure(f"The selected brief artifact is invalid: {brief.message}", ())
     if (failure := validate_executable_work_brief(store, brief, classify_checkout(source_checkout))) is not None:
@@ -217,6 +240,8 @@ def select_transition(
     command: decision_models.TransitionCommand | DecisionFailure
     if isinstance(decoded, action_models.ActivateInputPayload):
         command = resolve_activation(source_checkout, store, artifacts, action, decoded)
+    elif isinstance(decoded, action_models.RecordAmendmentInputPayload):
+        command = resolve_amendment(store, artifacts, action, decoded)
     else:
         command = decoded
     if isinstance(command, DecisionFailure):

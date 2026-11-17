@@ -1,6 +1,6 @@
 """Transport-neutral construction contract for strict work briefs; no effects or project facts."""
 
-from typing import Literal
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -35,11 +35,14 @@ class WorkBriefContract(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     local_structural_choices: tuple[WorkBriefStructuralChoice, ...]
     cross_boundary_structural_choices: tuple[WorkBriefStructuralChoice, ...]
     relational_constraints: tuple[WorkBriefRelationalConstraint, ...]
+    small_payload_schema: msgspec.Raw
+    small_starter: msgspec.Raw
+    small_structural_choices: tuple[WorkBriefStructuralChoice, ...]
 
 
 class WorkBriefStarterContract(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-work-brief-starter/v1"]
-    boundary: Literal["local", "cross-boundary"]
+    boundary: Literal["local", "cross-boundary", "small"]
     completion_rule: work_brief_models.NonEmptyText
     structural_selection_rule: work_brief_models.NonEmptyText
     canonicalization_rule: work_brief_models.NonEmptyText
@@ -157,14 +160,14 @@ class _UnresolvedReviewedAuthority(msgspec.Struct, frozen=True, forbid_unknown_f
     families: tuple[None, ...]
 
 
-class _UnresolvedContractCoverageOwner(
+class _UnresolvedContractRefCoverageOwner(
     msgspec.Struct,
     frozen=True,
     forbid_unknown_fields=True,
-    tag="contract",
+    tag="contract-ref",
     tag_field="disposition",
 ):
-    contract_invariant: None
+    contract: None
 
 
 class _UnresolvedAcceptanceCoverageOwner(
@@ -202,7 +205,7 @@ class _UnresolvedCoverageRecord(msgspec.Struct, frozen=True, forbid_unknown_fiel
     family: None
     distinction: None
     consumer: None
-    owner: _UnresolvedContractCoverageOwner
+    owner: _UnresolvedContractRefCoverageOwner
     counterexample: None
 
 
@@ -235,14 +238,14 @@ class _UnresolvedRequiredLifecyclePartition(
     operations: tuple[_UnresolvedLifecycleRecord, ...]
 
 
-class _UnresolvedContractObligationTarget(
+class _UnresolvedContractRefObligationTarget(
     msgspec.Struct,
     frozen=True,
     forbid_unknown_fields=True,
-    tag="contract",
+    tag="contract-ref",
     tag_field="kind",
 ):
-    invariant: None
+    contract: None
 
 
 class _UnresolvedCriterionObligationTarget(
@@ -266,7 +269,7 @@ class _UnresolvedDeferralObligationTarget(
 
 
 type _UnresolvedObligationTarget = (
-    _UnresolvedContractObligationTarget | _UnresolvedCriterionObligationTarget | _UnresolvedDeferralObligationTarget
+    _UnresolvedContractRefObligationTarget | _UnresolvedCriterionObligationTarget | _UnresolvedDeferralObligationTarget
 )
 
 
@@ -360,6 +363,49 @@ class _UnresolvedWorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     obligation_correspondence: tuple[_UnresolvedObligationCorrespondence, ...]
 
 
+class _UnresolvedSmallScopeEntry(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    statement: None
+    obligations: tuple[None, ...]
+
+
+class _UnresolvedSmallWorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-small-work-brief/v1"]
+    artifact_revision: None
+    attempt_id: None
+    item_id: None
+    branch: None
+    base_revision: None
+    owner_task_id: None
+    accepted_scope: _UnresolvedAcceptedScope
+    checkout_selection: None
+    title: None
+    outcome: None
+    scope: tuple[_UnresolvedSmallScopeEntry, ...]
+    exclusions: tuple[None, ...]
+    check: None
+    architecture_impact: _UnresolvedNoArchitectureImpact
+
+
+def _small_starter() -> _UnresolvedSmallWorkBrief:
+    return _UnresolvedSmallWorkBrief(
+        schema="pinboard-small-work-brief/v1",
+        artifact_revision=None,
+        attempt_id=None,
+        item_id=None,
+        branch=None,
+        base_revision=None,
+        owner_task_id=None,
+        accepted_scope=_UnresolvedAcceptedScope(None, None),
+        checkout_selection=None,
+        title=None,
+        outcome=None,
+        scope=(_UnresolvedSmallScopeEntry(None, (None,)),),
+        exclusions=(),
+        check=None,
+        architecture_impact=_UnresolvedNoArchitectureImpact(None),
+    )
+
+
 def _local_starter() -> _UnresolvedWorkBrief:
     return _UnresolvedWorkBrief(
         schema="pinboard-work-brief/v4",
@@ -423,7 +469,7 @@ def _cross_boundary_starter() -> _UnresolvedWorkBrief:
                 family=None,
                 distinction=None,
                 consumer=None,
-                owner=_UnresolvedContractCoverageOwner(None),
+                owner=_UnresolvedContractRefCoverageOwner(None),
                 counterexample=None,
             ),
         ),
@@ -436,7 +482,7 @@ def _cross_boundary_starter() -> _UnresolvedWorkBrief:
         local,
         checkpoint=checkpoint,
         obligation_correspondence=(
-            _UnresolvedObligationCorrespondence(None, _UnresolvedContractObligationTarget(None)),
+            _UnresolvedObligationCorrespondence(None, _UnresolvedContractRefObligationTarget(None)),
         ),
     )
 
@@ -445,17 +491,19 @@ def _raw[T](value: T) -> msgspec.Raw:
     return msgspec.Raw(msgspec.json.encode(value, order="sorted"))
 
 
-_ARCHITECTURE_CHOICE = WorkBriefStructuralChoice(
-    "architecture-impact",
-    ("$.checkpoint.architecture_impact",),
-    (
-        WorkBriefStructuralVariant("none", _raw(_UnresolvedNoArchitectureImpact(None))),
-        WorkBriefStructuralVariant("read-only", _raw(_UnresolvedReadOnlyArchitecture(None, None))),
-        WorkBriefStructuralVariant(
-            "update-required",
-            _raw(_UnresolvedUpdateRequiredArchitecture(None, None)),
-        ),
+_ARCHITECTURE_VARIANTS = (
+    WorkBriefStructuralVariant("none", _raw(_UnresolvedNoArchitectureImpact(None))),
+    WorkBriefStructuralVariant("read-only", _raw(_UnresolvedReadOnlyArchitecture(None, None))),
+    WorkBriefStructuralVariant(
+        "update-required",
+        _raw(_UnresolvedUpdateRequiredArchitecture(None, None)),
     ),
+)
+_ARCHITECTURE_CHOICE = WorkBriefStructuralChoice(
+    "architecture-impact", ("$.checkpoint.architecture_impact",), _ARCHITECTURE_VARIANTS
+)
+_SMALL_ARCHITECTURE_CHOICE = WorkBriefStructuralChoice(
+    "architecture-impact", ("$.architecture_impact",), _ARCHITECTURE_VARIANTS
 )
 
 _AUTHORIZATION_CHOICE = WorkBriefStructuralChoice(
@@ -485,7 +533,7 @@ _COVERAGE_OWNER_CHOICE = WorkBriefStructuralChoice(
     "coverage-owner",
     ("$.checkpoint.coverage[*].owner",),
     (
-        WorkBriefStructuralVariant("contract", _raw(_UnresolvedContractCoverageOwner(None))),
+        WorkBriefStructuralVariant("contract-ref", _raw(_UnresolvedContractRefCoverageOwner(None))),
         WorkBriefStructuralVariant("acceptance", _raw(_UnresolvedAcceptanceCoverageOwner(None))),
         WorkBriefStructuralVariant("deferred", _raw(_UnresolvedDeferredCoverageOwner(None))),
         WorkBriefStructuralVariant(
@@ -531,7 +579,7 @@ _OBLIGATION_TARGET_CHOICE = WorkBriefStructuralChoice(
     "obligation-target",
     ("$.obligation_correspondence[*].target",),
     (
-        WorkBriefStructuralVariant("contract", _raw(_UnresolvedContractObligationTarget(None))),
+        WorkBriefStructuralVariant("contract-ref", _raw(_UnresolvedContractRefObligationTarget(None))),
         WorkBriefStructuralVariant("criterion", _raw(_UnresolvedCriterionObligationTarget(None))),
         WorkBriefStructuralVariant("deferral", _raw(_UnresolvedDeferralObligationTarget(None))),
     ),
@@ -543,6 +591,7 @@ _LOCAL_STRUCTURAL_CHOICES = (
     _CHECKOUT_SELECTION_CHOICE,
     _OBLIGATION_TARGET_CHOICE,
 )
+_SMALL_STRUCTURAL_CHOICES = (_SMALL_ARCHITECTURE_CHOICE, _CHECKOUT_SELECTION_CHOICE)
 _CROSS_BOUNDARY_STRUCTURAL_CHOICES = (
     _ARCHITECTURE_CHOICE,
     _CHECKPOINT_DISPOSITION_CHOICE,
@@ -593,7 +642,11 @@ _RELATIONAL_CONSTRAINTS = (
     ),
     WorkBriefRelationalConstraint(
         "coverage-owner",
-        "Each coverage owner must name an existing contract invariant, acceptance criterion number, or deferral identity, unless it gives a not-applicable reason.",
+        "Each coverage owner must name an existing contract by its 1-based position in checkpoint.contracts, an acceptance criterion number, or a deferral identity, unless it gives a not-applicable reason.",
+    ),
+    WorkBriefRelationalConstraint(
+        "contract-reference-form",
+        "Coverage owners and obligation targets reference a contract with contract-ref and its 1-based position, never by repeating its invariant text; publication refuses the retained invariant-text form for new briefs.",
     ),
     WorkBriefRelationalConstraint(
         "prohibition-disposition",
@@ -605,7 +658,11 @@ _RELATIONAL_CONSTRAINTS = (
     ),
     WorkBriefRelationalConstraint(
         "complete-obligation-correspondence",
-        "Obligation correspondence must contain exactly one record for every accepted definition obligation and no other records; every target must name an existing contract, criterion, or deferral, and obligations that forbid deferral must not target a deferral.",
+        "Obligation correspondence must contain exactly one record for every accepted definition obligation and no other records; every target must name an existing contract by position, a criterion, or a deferral, and obligations that forbid deferral must not target a deferral.",
+    ),
+    WorkBriefRelationalConstraint(
+        "small-brief-route",
+        "A small brief is published exactly for an item whose current definition records size_class small and declares no checkpoints, and a v4 brief for every other item; its scope entries together must name every accepted definition obligation exactly once and no other obligation.",
     ),
 )
 
@@ -642,16 +699,26 @@ def describe_work_brief_contract() -> WorkBriefContract:
         local_structural_choices=_LOCAL_STRUCTURAL_CHOICES,
         cross_boundary_structural_choices=_CROSS_BOUNDARY_STRUCTURAL_CHOICES,
         relational_constraints=_RELATIONAL_CONSTRAINTS,
+        small_payload_schema=msgspec.Raw(
+            msgspec.json.encode(msgspec.json.schema(work_brief_models.SmallWorkBrief), order="sorted")
+        ),
+        small_starter=_raw(_small_starter()),
+        small_structural_choices=_SMALL_STRUCTURAL_CHOICES,
     )
 
 
-def describe_work_brief_starter(boundary: Literal["local", "cross-boundary"]) -> WorkBriefStarterContract:
+def describe_work_brief_starter(boundary: Literal["local", "cross-boundary", "small"]) -> WorkBriefStarterContract:
     """Return one complete unresolved starter without the much larger validation schema."""
     contract = describe_work_brief_contract()
-    starter = contract.local_starter if boundary == "local" else contract.cross_boundary_starter
-    structural_choices = (
-        contract.local_structural_choices if boundary == "local" else contract.cross_boundary_structural_choices
-    )
+    match boundary:
+        case "local":
+            starter, structural_choices = contract.local_starter, contract.local_structural_choices
+        case "cross-boundary":
+            starter, structural_choices = contract.cross_boundary_starter, contract.cross_boundary_structural_choices
+        case "small":
+            starter, structural_choices = contract.small_starter, contract.small_structural_choices
+        case _ as unreachable:
+            assert_never(unreachable)
     return WorkBriefStarterContract(
         schema="pinboard-work-brief-starter/v1",
         boundary=boundary,

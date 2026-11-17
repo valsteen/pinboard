@@ -72,7 +72,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
             del payload["obligation_correspondence"]
         brief_bytes = msgspec.json.encode(payload, order="sorted") + b"\n"
         retained = work_briefs.decode_canonical_historical_work_brief(brief_bytes)
-        assert not isinstance(retained, work_brief_models.WorkBriefFailure)
+        assert not isinstance(retained, (work_brief_models.WorkBriefFailure, work_brief_models.SmallWorkBrief))
         retained_checkpoint = retained.checkpoint
         assert isinstance(retained_checkpoint, work_brief_compatibility_models.HistoricalCrossBoundaryCheckpoint)
         checkpoint_sha256 = hashlib.sha256(work_briefs.canonical_checkpoint_bytes(retained_checkpoint)).hexdigest()
@@ -995,7 +995,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         result, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
         self.assertEqual(0, result, stderr)
         project_export = msgspec.json.decode(stdout, type=ProjectExport, strict=True)
-        self.assertEqual("pinboard-project-export/v5", project_export.schema)
+        self.assertEqual("pinboard-project-export/v6", project_export.schema)
         self.assertEqual((), project_export.completion_packages)
         self.assertEqual(1, len(project_export.checkpoint_packages))
         exported = project_export.checkpoint_packages[0]

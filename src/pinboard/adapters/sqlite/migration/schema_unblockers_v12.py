@@ -330,7 +330,7 @@ def resolve_unblockers(connection: sqlite3.Connection, source_sha256: str, label
 
 
 def _create_statement(name: str) -> str:
-    statements = {table: statement for _, table, _, statement in database._build_expected_schema_signature()}
+    statements = {table: statement for _, table, _, statement in database._build_v13_schema_signature()}
     statement = statements[name]
     assert statement is not None
     return statement
@@ -400,7 +400,7 @@ def project_v12_for_current_readers(connection: sqlite3.Connection) -> None:
                     frozenset(),
                 ),
             )
-            database._verify_current_schema(connection)
+            database._verify_v13_schema(connection)
     finally:
         connection.execute("PRAGMA foreign_keys = ON")
 
@@ -419,12 +419,12 @@ def upgrade_v12_connection(
     try:
         with database.write_transaction(connection):
             if database._read_pinboard_schema_version(connection) == 13:
-                database._verify_current_schema(connection)
+                database._verify_v13_schema(connection)
                 return False
             database._verify_v12_schema(connection)
             database.verify_database_integrity(connection)
             _write_v13(connection, resolve_unblockers(connection, source_sha256, labels))
-            database._verify_current_schema(connection)
+            database._verify_v13_schema(connection)
             database.verify_database_integrity(connection)
             if (
                 expected_postimage is not None

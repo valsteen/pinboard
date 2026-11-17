@@ -97,6 +97,21 @@ def compile_documents(table: InstructionSources) -> dict[str, tuple[bytes, tuple
             and not key.endswith(".brief-sources")
             and not any("source-plan" in consumer for consumer in table.owners[key].consumers)
         )
+        # Prepare documents ignore consumer filters, so the small single-checkpoint route adds its own owners here.
+        selections[f"brief-author-small-single-{runtime}"] = (
+            *selections[f"brief-author-small-{runtime}"],
+            *(
+                key
+                for key, owner in table.owners.items()
+                if owner.kind == "action-attached"
+                and any(
+                    consumer.split(":")[0] == "prepare"
+                    and "size_class=small" in consumer.split(":")
+                    and _applies(consumer, "prepare", runtime, True, False)
+                    for consumer in owner.consumers
+                )
+            ),
+        )
     # Action consumers are explicit in the reviewed table. Produce bounded files rather than a phase index.
     for runtime in RUNTIMES:
         for phase in tuple(kind.value for kind in decision_models.ActionKind):
@@ -113,7 +128,8 @@ def compile_documents(table: InstructionSources) -> dict[str, tuple[bytes, tuple
                         and any(_applies(c, phase, runtime, small, checkpoints) for c in owner.consumers)
                     )
                     if phase == "prepare":
-                        keys = selections[f"brief-author-{'small-' if small else ''}{runtime}"]
+                        route = ("small-single-" if not checkpoints else "small-") if small else ""
+                        keys = selections[f"brief-author-{route}{runtime}"]
                     elif phase == "complete":
                         keys = selections[f"integrator-{runtime}"]
                     selections[
@@ -149,6 +165,10 @@ def _applies(consumer: str, phase: str, runtime: str, small: bool, checkpoints: 
     if parts[-1] in RUNTIMES and parts[-1] != runtime:
         return False
     if "declares_checkpoints=true" in parts and not checkpoints:
+        return False
+    if "declares_checkpoints=false" in parts and checkpoints:
+        return False
+    if "size_class=small" in parts and not small:
         return False
     return not ("size_class=standard|campaign" in parts and small)
 

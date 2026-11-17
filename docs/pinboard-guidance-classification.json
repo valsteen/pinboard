@@ -207,6 +207,18 @@
       "source": "skills/pinboard/sources/procedure.prepare.md",
       "implementing_tests": []
     },
+    "procedure.small-inline": {
+      "consumers": [
+        "prepare:size_class=small:declares_checkpoints=false",
+        "activate:size_class=small:declares_checkpoints=false",
+        "continue:size_class=small:declares_checkpoints=false"
+      ],
+      "kind": "action-attached",
+      "clauses": [],
+      "includes": [],
+      "source": "skills/pinboard/sources/procedure.small-inline.md",
+      "implementing_tests": []
+    },
     "procedure.brief": {
       "consumers": [
         "activate:size_class=standard|campaign",
@@ -279,6 +291,16 @@
       "clauses": [],
       "includes": [],
       "source": "skills/pinboard/sources/procedure.revision.md",
+      "implementing_tests": []
+    },
+    "procedure.amendment": {
+      "consumers": [
+        "record-amendment:active|review"
+      ],
+      "kind": "action-attached",
+      "clauses": [],
+      "includes": [],
+      "source": "skills/pinboard/sources/procedure.amendment.md",
       "implementing_tests": []
     },
     "procedure.integrate": {

@@ -1,5 +1,7 @@
 import hashlib
 import re
+from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Literal, Protocol, assert_never, override
 
@@ -212,13 +214,32 @@ class ReviewedAuthorityDigestMismatch:
 type ReviewedAuthorityValidationFailure = ReviewedAuthoritySelectionFailure | ReviewedAuthorityDigestMismatch
 
 
-class ContractCoverageOwner(
+class ContractRefCoverageOwner(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="contract-ref",
+    tag_field="disposition",
+):
+    """Point at the owning contract by its 1-based position in checkpoint.contracts."""
+
+    contract: PositiveInt
+
+
+class CompatibilityInvariantCoverageOwner(
     msgspec.Struct,
     frozen=True,
     forbid_unknown_fields=True,
     tag="contract",
     tag_field="disposition",
 ):
+    """Read-only retained form that repeats the owning contract's invariant text.
+
+    Declared here, beside the current variants, because the shared owner union that retained briefs and review
+    records decode through must name it. Publication refuses it for new briefs. Remove it when no retained brief or
+    review record uses the invariant-text form.
+    """
+
     contract_invariant: NonEmptyText
 
 
@@ -253,7 +274,11 @@ class NotApplicableCoverageOwner(
 
 
 type CoverageOwner = (
-    ContractCoverageOwner | AcceptanceCoverageOwner | DeferredCoverageOwner | NotApplicableCoverageOwner
+    ContractRefCoverageOwner
+    | AcceptanceCoverageOwner
+    | DeferredCoverageOwner
+    | NotApplicableCoverageOwner
+    | CompatibilityInvariantCoverageOwner
 )
 
 
@@ -304,13 +329,31 @@ class Deferral(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     reopen_when: NonEmptyText
 
 
-class ContractObligationTarget(
+class ContractRefObligationTarget(
+    msgspec.Struct,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="contract-ref",
+    tag_field="kind",
+):
+    """Point at the discharging contract by its 1-based position in checkpoint.contracts."""
+
+    contract: PositiveInt
+
+
+class CompatibilityInvariantObligationTarget(
     msgspec.Struct,
     frozen=True,
     forbid_unknown_fields=True,
     tag="contract",
     tag_field="kind",
 ):
+    """Read-only retained form that repeats the discharging contract's invariant text.
+
+    Declared here because the shared target union that retained briefs decode through must name it. Publication
+    refuses it for new briefs. Remove it when no retained brief or review record uses the invariant-text form.
+    """
+
     invariant: NonEmptyText
 
 
@@ -334,7 +377,12 @@ class DeferralObligationTarget(
     deferral_id: KebabId
 
 
-type ObligationTarget = ContractObligationTarget | CriterionObligationTarget | DeferralObligationTarget
+type ObligationTarget = (
+    ContractRefObligationTarget
+    | CriterionObligationTarget
+    | DeferralObligationTarget
+    | CompatibilityInvariantObligationTarget
+)
 
 
 class ObligationCorrespondence(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -471,34 +519,63 @@ def _reviewed_authority_keys(checkpoint: ReadableCrossBoundaryCheckpoint) -> fro
     return authority_keys
 
 
+def _family_names(keys: Iterable[tuple[str, str]]) -> str:
+    return ", ".join(f"{authority_id}#{family}" for authority_id, family in sorted(keys)) or "none"
+
+
+def _repeated[T](values: Iterable[T]) -> tuple[T, ...]:
+    counts = Counter(values)
+    return tuple(value for value, count in counts.items() if count > 1)
+
+
 def _validate_coverage(
     checkpoint: ReadableCrossBoundaryCheckpoint,
     authority_keys: frozenset[tuple[str, str]],
     criteria: frozenset[int],
     deferrals: frozenset[str],
-    contracts: frozenset[str],
 ) -> None:
     coverage_keys = tuple((value.authority_id, value.family) for value in checkpoint.coverage)
-    if len(set(coverage_keys)) != len(coverage_keys) or frozenset(coverage_keys) != authority_keys:
-        raise ValueError("Coverage must contain exactly one record for every reviewed authority family.")
+    duplicated = _repeated(coverage_keys)
+    if duplicated or frozenset(coverage_keys) != authority_keys:
+        raise ValueError(
+            "Coverage must contain exactly one record for every reviewed authority family "
+            f"(missing: {_family_names(authority_keys - frozenset(coverage_keys))}; "
+            f"not reviewed: {_family_names(frozenset(coverage_keys) - authority_keys)}; "
+            f"duplicated: {_family_names(duplicated)})."
+        )
     for record in checkpoint.coverage:
-        match record.owner:
-            case ContractCoverageOwner(contract_invariant=invariant):
-                if invariant not in contracts:
-                    raise ValueError(f"Coverage names unknown contract invariant '{invariant}'.")
-            case AcceptanceCoverageOwner(criterion=criterion):
-                if criterion not in criteria:
-                    raise ValueError(f"Coverage names unknown acceptance criterion '{criterion}'.")
-            case DeferredCoverageOwner(deferral_id=deferral_id):
-                if deferral_id not in deferrals:
-                    raise ValueError(f"Coverage names unknown deferral '{deferral_id}'.")
-                if PROHIBITION.search(record.distinction):
-                    raise ValueError("An in-scope prohibition cannot be deferred.")
-            case NotApplicableCoverageOwner():
-                if PROHIBITION.search(record.distinction):
-                    raise ValueError("An in-scope prohibition cannot be marked not applicable.")
-            case _ as unreachable:
-                assert_never(unreachable)
+        _validate_coverage_owner(record, checkpoint.contracts, criteria, deferrals)
+
+
+def _validate_coverage_owner(
+    record: CoverageRecord,
+    contracts: tuple[ContractRecord, ...],
+    criteria: frozenset[int],
+    deferrals: frozenset[str],
+) -> None:
+    match record.owner:
+        case ContractRefCoverageOwner(contract=position):
+            if position > len(contracts):
+                raise ValueError(
+                    f"Coverage {record.authority_id}#{record.family} names contract {position}, but "
+                    f"checkpoint.contracts ends at position {len(contracts)}."
+                )
+        case CompatibilityInvariantCoverageOwner(contract_invariant=invariant):
+            if invariant not in {contract.invariant for contract in contracts}:
+                raise ValueError(f"Coverage names unknown contract invariant '{invariant}'.")
+        case AcceptanceCoverageOwner(criterion=criterion):
+            if criterion not in criteria:
+                raise ValueError(f"Coverage names unknown acceptance criterion '{criterion}'.")
+        case DeferredCoverageOwner(deferral_id=deferral_id):
+            if deferral_id not in deferrals:
+                raise ValueError(f"Coverage names unknown deferral '{deferral_id}'.")
+            if PROHIBITION.search(record.distinction):
+                raise ValueError("An in-scope prohibition cannot be deferred.")
+        case NotApplicableCoverageOwner():
+            if PROHIBITION.search(record.distinction):
+                raise ValueError("An in-scope prohibition cannot be marked not applicable.")
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _validate_cross_boundary_checkpoint(
@@ -515,7 +592,7 @@ def _validate_cross_boundary_checkpoint(
         _validate_authorization(contract.authorization_basis, brief, authority_keys)
     for record in checkpoint.verification:
         _validate_authorization(record.authorization_basis, brief, authority_keys)
-    _validate_coverage(checkpoint, authority_keys, criteria, deferrals, frozenset(contract_invariants))
+    _validate_coverage(checkpoint, authority_keys, criteria, deferrals)
     match checkpoint.lifecycle_partition:
         case NoLifecyclePartition():
             pass
@@ -540,29 +617,41 @@ def validate_work_brief_relations(
             _validate_authorization(record.authorization_basis, brief, frozenset())
     else:
         _validate_cross_boundary_checkpoint(brief, cross_boundary, criteria, deferrals)
-    obligation_ids = tuple(row.obligation_id for row in correspondence)
-    if len(obligation_ids) != len(set(obligation_ids)):
-        raise ValueError("Obligation correspondence identities must be unique.")
-    contracts = (
-        frozenset(record.invariant for record in cross_boundary.contracts)
-        if cross_boundary is not None
-        else frozenset()
-    )
+    if duplicated := _repeated(row.obligation_id for row in correspondence):
+        raise ValueError(
+            f"Obligation correspondence identities must be unique (duplicated: {', '.join(sorted(duplicated))})."
+        )
+    contracts = () if cross_boundary is None else cross_boundary.contracts
     criteria = frozenset(record.number for record in checkpoint.acceptance_criteria)
     deferrals = frozenset(record.deferral_id for record in checkpoint.deferrals)
     for row in correspondence:
-        match row.target:
-            case ContractObligationTarget(invariant=invariant):
-                if invariant not in contracts:
-                    raise ValueError(f"Obligation correspondence names unknown contract '{invariant}'.")
-            case CriterionObligationTarget(number=number):
-                if number not in criteria:
-                    raise ValueError(f"Obligation correspondence names unknown criterion '{number}'.")
-            case DeferralObligationTarget(deferral_id=deferral_id):
-                if deferral_id not in deferrals:
-                    raise ValueError(f"Obligation correspondence names unknown deferral '{deferral_id}'.")
-            case _ as unreachable:
-                assert_never(unreachable)
+        _validate_obligation_target(row, contracts, criteria, deferrals)
+
+
+def _validate_obligation_target(
+    row: ObligationCorrespondence,
+    contracts: tuple[ContractRecord, ...],
+    criteria: frozenset[int],
+    deferrals: frozenset[str],
+) -> None:
+    match row.target:
+        case ContractRefObligationTarget(contract=position):
+            if position > len(contracts):
+                raise ValueError(
+                    f"Obligation correspondence '{row.obligation_id}' names contract {position}, but "
+                    f"checkpoint.contracts ends at position {len(contracts)}."
+                )
+        case CompatibilityInvariantObligationTarget(invariant=invariant):
+            if invariant not in {contract.invariant for contract in contracts}:
+                raise ValueError(f"Obligation correspondence names unknown contract '{invariant}'.")
+        case CriterionObligationTarget(number=number):
+            if number not in criteria:
+                raise ValueError(f"Obligation correspondence names unknown criterion '{number}'.")
+        case DeferralObligationTarget(deferral_id=deferral_id):
+            if deferral_id not in deferrals:
+                raise ValueError(f"Obligation correspondence names unknown deferral '{deferral_id}'.")
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 class WorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -593,6 +682,53 @@ class WorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
             self.checkpoint if isinstance(self.checkpoint, CrossBoundaryCheckpoint) else None,
             self.obligation_correspondence,
         )
+
+
+SMALL_BRIEF_CHECKPOINT_ID = "delivery"
+
+
+class SmallScopeEntry(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """One scope statement and the accepted obligations it discharges."""
+
+    statement: NonEmptyText
+    obligations: Annotated[tuple[KebabId, ...], msgspec.Meta(min_length=1)]
+
+
+class SmallWorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """The four-part brief of a recorded small item delivered inline by its coordinator.
+
+    It denotes one implicit terminal local checkpoint, SMALL_BRIEF_CHECKPOINT_ID, titled by the brief title.
+    Publication requires its scope entries to discharge every accepted obligation exactly once.
+    """
+
+    schema: Literal["pinboard-small-work-brief/v1"]
+    artifact_revision: PositiveInt
+    attempt_id: KebabId
+    item_id: KebabId
+    branch: NonEmptyLine
+    base_revision: NonEmptyLine
+    owner_task_id: NonEmptyLine
+    accepted_scope: AcceptedScope
+    checkout_selection: work_models.CheckoutSelection
+    title: NonEmptyLine
+    outcome: NonEmptyText
+    scope: Annotated[tuple[SmallScopeEntry, ...], msgspec.Meta(min_length=1)]
+    exclusions: tuple[NonEmptyText, ...]
+    check: NonEmptyText
+    architecture_impact: ArchitectureImpact
+
+    def __post_init__(self) -> None:
+        _validate_architecture_impact(self.architecture_impact)
+        obligation_ids = small_brief_obligation_ids(self)
+        if len(obligation_ids) != len(set(obligation_ids)):
+            raise ValueError("Each accepted obligation must be discharged by exactly one small-brief scope entry.")
+
+
+def small_brief_obligation_ids(brief: SmallWorkBrief) -> tuple[str, ...]:
+    return tuple(obligation for entry in brief.scope for obligation in entry.obligations)
+
+
+type AcceptedBrief = WorkBrief | SmallWorkBrief
 
 
 class ReadableCheckpoint(Protocol):
@@ -746,6 +882,8 @@ class WorkBriefReviewNeedsCorrection(msgspec.Struct, frozen=True, forbid_unknown
 
 @dataclass(frozen=True, slots=True)
 class AcceptedWorkBrief:
+    """An accepted v4 brief and its reference; only brief review reads it, so small briefs never appear."""
+
     reference: stored_state.ArtifactReference
     brief: WorkBrief
 

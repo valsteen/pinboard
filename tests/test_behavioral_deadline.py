@@ -1132,7 +1132,8 @@ class McpDeadlineTest(unittest.IsolatedAsyncioTestCase):
                         input_schema={
                             "$defs": {"Proposal": {"properties": {"schema": {"enum": ["pinboard-proposal/v6"]}}}}
                         },
-                    )
+                    ),
+                    Tool(name="pinboard_brief_publish", input_schema={"$defs": {"SmallWorkBrief": {}}}),
                 ]
             )
         )

@@ -103,6 +103,7 @@ class ActionKind(Enum):
     MERGE_PROPOSAL = "merge-proposal"
     PAUSE = "pause"
     REJECT_PROPOSAL = "reject-proposal"
+    RECORD_AMENDMENT = "record-amendment"
     RECORD_REPLACEMENT = "record-replacement"
     REBIND_ATTEMPT = "rebind-attempt"
     REPORT_BLOCKER = "report-blocker"
@@ -392,6 +393,17 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
                 "Record rejected disposition and drop its same-identity unstarted item from live work.",
                 requires_recorded_route=False,
             )
+        case ActionKind.RECORD_AMENDMENT:
+            return ActionSemantics(
+                "Record a human-approved incidental repair as an amendment to a live attempt's contract.",
+                LifecycleEffect.CHANGES_LIFECYCLE,
+                (Role.PROJECT,),
+                ActionSubjectKind.ATTEMPT,
+                ActionLifecyclePrecondition.ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE,
+                "Add the amendment to the attempt's current contract without revising the definition, brief or "
+                "lineage; an attempt in review returns to active with its prior worker authority fenced.",
+                requires_recorded_route=True,
+            )
         case ActionKind.RECORD_REPLACEMENT:
             return ActionSemantics(
                 "Record or withdraw one explicit planned replacement.",
@@ -614,6 +626,12 @@ class RejectProposalAction:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordAmendmentAction:
+    capability: MutationActionCapability[AttemptId]
+    kind: ActionKind = field(init=False, default=ActionKind.RECORD_AMENDMENT)
+
+
+@dataclass(frozen=True, slots=True)
 class RecordReplacementAction:
     capability: MutationActionCapability[WorkItemId]
     kind: ActionKind = field(init=False, default=ActionKind.RECORD_REPLACEMENT)
@@ -673,6 +691,7 @@ type LifecycleAction = (
     | PauseAction
     | RejectProposalAction
     | RebindAttemptAction
+    | RecordAmendmentAction
     | RecordReplacementAction
     | ResumeAction
     | ReturnForCorrectionAction
@@ -692,6 +711,7 @@ type NonCheckpointTransitionAction = (
     | PauseAction
     | RejectProposalAction
     | RebindAttemptAction
+    | RecordAmendmentAction
     | RecordReplacementAction
     | ResumeAction
     | ReturnForCorrectionAction
@@ -796,6 +816,12 @@ class ReturnForCorrectionCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class RecordAmendmentCommand:
+    action: RecordAmendmentAction
+    value: work_models.RecordAmendmentInput
+
+
+@dataclass(frozen=True, slots=True)
 class RecordReplacementCommand:
     action: RecordReplacementAction
     value: work_models.RecordPlannedReplacementInput
@@ -843,6 +869,7 @@ type TransitionCommand = (
     | ResumeCommand
     | SubmitReviewCommand
     | ReturnForCorrectionCommand
+    | RecordAmendmentCommand
     | RecordReplacementCommand
     | BlockWorkItemCommand
     | MergeProposalCommand
@@ -862,6 +889,7 @@ type NonCheckpointTransitionCommand = (
     | ResumeCommand
     | SubmitReviewCommand
     | ReturnForCorrectionCommand
+    | RecordAmendmentCommand
     | RecordReplacementCommand
     | BlockWorkItemCommand
     | MergeProposalCommand
@@ -997,6 +1025,17 @@ class ReviewAcceptanceChange:
 
 
 @dataclass(frozen=True, slots=True)
+class AmendmentChange:
+    """Record one amendment; an attempt in review returns to active and fences its prior worker authority."""
+
+    work_item_id: WorkItemId
+    attempt: AttemptId
+    attempt_before: work_models.AttemptState
+    amendment: work_models.AttemptAmendment
+    authority_change: AttemptAuthorityChange | None
+
+
+@dataclass(frozen=True, slots=True)
 class CompletionChange:
     work_item_id: WorkItemId
     item_before: work_models.WorkState
@@ -1095,6 +1134,7 @@ type NonCheckpointDecisionChange = (
     | ReviewSubmissionChange
     | ReviewReturnChange
     | ReviewAcceptanceChange
+    | AmendmentChange
     | CompletionChange
     | WorkItemClosureChange
     | MergedProposalChange

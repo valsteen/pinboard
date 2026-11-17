@@ -121,6 +121,8 @@ class AttemptProjectionFacts:
     archive: tuple[stored_state.ArtifactReference, stored_state.ArchiveHistoryFacts] | None
     hold: unblockers.HoldDescription | None
     """The held attempt's item hold sentence; none while the attempt is not paused or blocked."""
+    amendments: tuple[stored_state.StoredAttemptAmendment, ...]
+    """Every amendment recorded on the attempt, in recording order."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +131,8 @@ class GeneratedViewFacts:
     items: tuple[ItemProjectionFacts, ...]
     attempts: tuple[AttemptProjectionFacts, ...]
     receipts: tuple[stored_state.StoredTransitionReceipt, ...]
+    amendments: tuple[stored_state.StoredAttemptAmendment, ...]
+    """The amendments the selected receipts recorded."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,7 +405,7 @@ type NonterminalAttemptState = Literal[
 
 
 class AttemptContinuationIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-attempt-continuation/v1"]
+    schema: Literal["pinboard-attempt-continuation/v2"]
     attempt_id: str
     item_id: str
     revision: int
@@ -679,6 +683,19 @@ class TerminalAttemptContextFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class AttemptAmendmentFacts:
+    """Every amendment recorded on one attempt, its current ones and the review receipts after the latest current one.
+
+    Current amendments were recorded against the attempt's current accepted brief, in recording order; the later review
+    kinds are the attempt's review-relevant receipts after the latest current amendment, oldest first.
+    """
+
+    recorded: tuple[stored_state.StoredAttemptAmendment, ...]
+    current: tuple[stored_state.StoredAttemptAmendment, ...]
+    later_review_kinds: tuple[decision_models.ActionKind, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class NonterminalAttemptContextFacts:
     project_revision: int
     attempt_id: AttemptId
@@ -695,6 +712,7 @@ class NonterminalAttemptContextFacts:
     brief_reference: artifacts.BriefArtifactRef
     pause_reason: str | None
     decision_batch: decision_batches.DecisionBatchView | None
+    amendments: AttemptAmendmentFacts
 
 
 type AttemptContextFacts = TerminalAttemptContextFacts | NonterminalAttemptContextFacts
@@ -766,8 +784,8 @@ class CompletionRecoveryRequired:
     reason: str
 
 
-type ItemStatusSchema = Literal["pinboard-item-status/v6"]
-type ItemStatusAuthority = Literal["sqlite-v13"]
+type ItemStatusSchema = Literal["pinboard-item-status/v7"]
+type ItemStatusAuthority = Literal["sqlite-v14"]
 
 
 type DamagedReceiptActionKind = Literal[
@@ -865,6 +883,8 @@ class ItemStatusAttemptFacts:
     brief_reference: stored_state.ArtifactReference
     pause_reason: RecordedPauseReason
     review_event: ReviewEventFacts | None
+    amendments: tuple[stored_state.StoredAttemptAmendment, ...]
+    """The amendments recorded against the current brief, in recording order."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -947,6 +967,33 @@ class UnreadableCurrentCheckpoint(
 type CurrentCheckpoint = ContinuingCurrentCheckpoint | TerminalCurrentCheckpoint | UnreadableCurrentCheckpoint
 
 
+class AttemptAmendmentView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """One human-approved incidental repair recorded as part of the attempt's current contract."""
+
+    history_id: int
+    recorded_at: str
+    amendment_class: work_models.AmendmentClass
+    change: str
+    reason: str
+    human_decision: str
+    """The human's exact authorizing words."""
+    cleared_candidate: str | None
+    """The reviewed candidate this amendment returned to active, if it was recorded while the attempt was in review."""
+
+
+def amendment_view(value: stored_state.StoredAttemptAmendment) -> AttemptAmendmentView:
+    amendment = value.amendment
+    return AttemptAmendmentView(
+        int(value.history_id),
+        value.recorded_at.isoformat(),
+        amendment.amendment_class,
+        amendment.change,
+        amendment.reason,
+        amendment.human_decision,
+        None if amendment.cleared_candidate is None else str(amendment.cleared_candidate),
+    )
+
+
 class ItemStatusAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: str
     state: work_models.AttemptState
@@ -961,6 +1008,8 @@ class ItemStatusAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     Checkpoint acceptance keeps the brief, so this matches a checkpoint-accepted verdict's checkpoint until a rebind
     or revised-brief resume replaces the brief and this names the new, unaccepted checkpoint.
     """
+    amendments: tuple[AttemptAmendmentView, ...]
+    """The amendments recorded against the current brief; with the brief they form the attempt's contract."""
 
 
 class IntakeContext(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1379,8 +1428,10 @@ class OverviewItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 class BoardAttemptRecords:
     """One open attempt's records selected for its board card, still undecoded.
 
-    The brief reference names the attempt's current accepted brief. The latest receipt is the one committed at the
-    attempt's subject revision, or none when no receipt is recorded there. Checkpoint acceptances are this attempt's
+    The brief reference names the attempt's current accepted brief. The latest receipt is the one that names the
+    attempt's condition: the receipt committed at its subject revision, or, when that receipt recorded an amendment
+    that left the attempt active, the receipt that amendment left in place; none when no receipt is recorded there.
+    Amendments are every amendment recorded on the attempt, in recording order. Checkpoint acceptances are this attempt's
     checkpoint-acceptance/v2 receipts, newest first. The candidate snapshot reference is present only for a
     review-state attempt whose protected candidate has an accepted snapshot.
     """
@@ -1398,6 +1449,7 @@ class BoardAttemptRecords:
     checkpoint_acceptances: tuple[stored_state.StoredTransitionReceipt, ...]
     candidate_snapshot: stored_state.ArtifactReference | None
     decision_batch: decision_batches.DecisionBatchView | None
+    amendments: tuple[stored_state.StoredAttemptAmendment, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1436,7 +1488,7 @@ class BoardAttemptFacts:
     """One open attempt's records with its decoded, identity-checked current brief and ready-review decision."""
 
     records: BoardAttemptRecords
-    brief: work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure
+    brief: work_brief_models.AcceptedBrief | work_brief_models.WorkBriefFailure
     ready_record: ReadyRecordAcceptance | None
 
 
@@ -1512,6 +1564,15 @@ class RetainedReturnedCondition:
 
 
 @dataclass(frozen=True, slots=True)
+class AmendedFromReviewCondition:
+    """An amendment that returned a reviewed attempt to active, shown until the attempt is submitted again."""
+
+    at: datetime
+    amendment_class: work_models.AmendmentClass
+    change: str
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuedCondition:
     """Review accepted with the attempt continuing, and the recorded acceptance evidence."""
 
@@ -1569,6 +1630,7 @@ type BoardCondition = (
     | ReviewedReadyCondition
     | ReturnedCondition
     | RetainedReturnedCondition
+    | AmendedFromReviewCondition
     | ContinuedCondition
     | CheckpointAcceptedCondition
     | RetainedCheckpointAcceptedCondition
@@ -1763,7 +1825,7 @@ class OverviewCursor(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class DiscoveryPage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-overview/v9"]
-    authority: Literal["sqlite-v13"]
+    authority: Literal["sqlite-v14"]
     revision: str
     items: Annotated[tuple[DiscoveryItem, ...], msgspec.Meta(max_length=25)]
     total_items: Annotated[int, msgspec.Meta(ge=0)]
@@ -1856,7 +1918,7 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition/v1"]
-    authority: Literal["sqlite-v13"]
+    authority: Literal["sqlite-v14"]
     project_revision: int
     item_id: str
     item_subject_revision: int
@@ -1879,7 +1941,7 @@ class ItemDefinitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class ItemDefinitionHistory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition-history/v1"]
-    authority: Literal["sqlite-v13"]
+    authority: Literal["sqlite-v14"]
     project_revision: int
     item_id: str
     revisions: tuple[ItemDefinitionHistoryRow, ...]

@@ -33,6 +33,8 @@ def expect_transition_command(
         raise AssertionError(str(value))
     if isinstance(value, action_models.ActivateInputPayload):
         raise AssertionError("Expected a domain command, received an unresolved activation request.")
+    if isinstance(value, action_models.RecordAmendmentInputPayload):
+        raise AssertionError("Expected a domain command, received an unobserved amendment request.")
     return value
 
 

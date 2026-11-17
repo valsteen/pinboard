@@ -551,6 +551,70 @@ class AcceptReviewAndContinueInput:
     evidence: str
 
 
+class AmendmentClass(Enum):
+    """The closed kinds of human-approved incidental repair an attempt amendment may record."""
+
+    STALE_DOCUMENTATION = "stale-documentation"
+    FLAKY_OR_BROKEN_TEST = "flaky-or-broken-test"
+    LINT_OR_TOOLING = "lint-or-tooling"
+    COMMENT_OR_NAME = "comment-or-name"
+    MECHANICAL_BASELINE_CLEANUP = "mechanical-baseline-cleanup"
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewBase:
+    """An earlier reviewed submission an amendment-only delta review may compare against.
+
+    The candidate, its accepted snapshot and the ready candidate review recorded for that submission.
+    """
+
+    candidate: CandidateId
+    snapshot_artifact_ref_id: ArtifactRefId
+    ready_review_artifact_ref_id: ArtifactRefId
+
+
+@dataclass(frozen=True, slots=True)
+class ClearedSubmission:
+    """The protected submission an amendment on a review attempt clears, observed before the decision.
+
+    The ready review is that submission's own valid ready candidate review, when one was recorded.
+    """
+
+    candidate: CandidateId
+    snapshot_artifact_ref_id: ArtifactRefId
+    ready_review_artifact_ref_id: ArtifactRefId | None
+
+
+@dataclass(frozen=True, slots=True)
+class RecordAmendmentInput:
+    """The caller's amendment plus the review facts the transition adapter observed for the attempt.
+
+    The carried base is the review base of the attempt's latest amendment under its current brief when no return,
+    rebind or acceptance followed it; the attempt subject revision the caller selected binds both observations.
+    """
+
+    amendment_class: AmendmentClass
+    change: str
+    reason: str
+    human_decision: str
+    cleared_submission: ClearedSubmission | None
+    carried_base: ReviewBase | None
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptAmendment:
+    """One recorded amendment to an attempt's contract, bound to the accepted brief it was recorded against."""
+
+    amendment_class: AmendmentClass
+    change: str
+    reason: str
+    human_decision: str
+    brief_artifact_ref_id: ArtifactRefId
+    cleared_candidate: CandidateId | None
+    cleared_snapshot_artifact_ref_id: ArtifactRefId | None
+    review_base: ReviewBase | None
+
+
 @dataclass(frozen=True, slots=True)
 class RecordPlannedReplacementInput:
     expected_relation_revision: int

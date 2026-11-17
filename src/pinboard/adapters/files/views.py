@@ -52,7 +52,7 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
 
 
 def _render_header(kind: str) -> str:
-    return f"---\nkind: {kind}\nauthority: sqlite-v13\n---\n\n> {NOTICE}\n\n"
+    return f"---\nkind: {kind}\nauthority: sqlite-v14\n---\n\n> {NOTICE}\n\n"
 
 
 def _render_decision_questions(decisions: tuple[decision_batches.PauseDecision, ...]) -> str:
@@ -260,17 +260,61 @@ def _render_item(
     ).encode()
 
 
+def _render_amendment(amendment: stored_state.StoredAttemptAmendment) -> str:
+    value = amendment.amendment
+    cleared = (
+        ""
+        if value.cleared_candidate is None
+        else f"- Cleared submission: candidate {value.cleared_candidate}, returning the attempt to active\n"
+    )
+    return (
+        f"- Class: {value.amendment_class.value}\n"
+        + f"- Change: {history.nest_record_text(value.change, '  ')}\n"
+        + f"- Reason: {history.nest_record_text(value.reason, '  ')}\n"
+        + f"- Human's words: {history.nest_record_text(value.human_decision, '  ')}\n"
+        + cleared
+        + f"- Recorded: {amendment.recorded_at.isoformat()} in [history {amendment.history_id}]"
+        + f"(../history/{amendment.history_id}.md)\n"
+    )
+
+
+def _render_amendments(
+    attempt: stored_state.StoredAttempt, amendments: tuple[stored_state.StoredAttemptAmendment, ...]
+) -> bytes:
+    """List the attempt's amendments; one recorded against an earlier brief no longer belongs to the contract."""
+
+    if not amendments:
+        return b""
+    sections = "".join(
+        f"\n### Amendment {index}"
+        + (
+            ""
+            if value.amendment.brief_artifact_ref_id == attempt.brief_artifact_ref_id
+            else " (ended when the attempt was rebound to another brief)"
+        )
+        + "\n\n"
+        + _render_amendment(value)
+        for index, value in enumerate(amendments, start=1)
+    )
+    return (
+        "\n## Amendments\n\nHuman-approved incidental repairs recorded as part of this attempt's contract "
+        "beside the accepted brief.\n" + sections
+    ).encode()
+
+
 def _render_attempt(
     attempt: stored_state.StoredAttempt,
     item_state: stored_state.StoredWorkItemState,
     attempt_briefs: Mapping[AttemptId, bytes],
     hold: unblockers.HoldDescription | None,
+    amendments: tuple[stored_state.StoredAttemptAmendment, ...],
 ) -> bytes:
-    """Render an attempt view: its accepted brief bytes unchanged, or a summary, and the hold sentence while held."""
+    """Render an attempt view: its accepted brief bytes unchanged, or a summary, its amendments and any hold."""
 
     hold_section = (
         b"" if hold is None else f"\n## On hold\n\n{markdown_hold_sentence(hold.parts, '../items/')}\n".encode()
     )
+    hold_section = _render_amendments(attempt, amendments) + hold_section
     if (brief := attempt_briefs.get(attempt.attempt_id)) is not None:
         return brief + hold_section
     state = (
@@ -347,8 +391,10 @@ def _render_hold_receipt(receipt: stored_state.StoredTransitionReceipt) -> str:
             return ""
 
 
-def _render_history(receipt: stored_state.StoredTransitionReceipt) -> bytes:
-    decisions = ""
+def _render_history(
+    receipt: stored_state.StoredTransitionReceipt, amendment: stored_state.StoredAttemptAmendment | None
+) -> bytes:
+    decisions = "" if amendment is None else "\n## Amendment\n\n" + _render_amendment(amendment)
     if receipt.input_schema == "pinboard-pause-decisions/v1":
         pause = msgspec.json.decode(bytes(receipt.input_payload), type=decision_batches.PauseDecisionsInput)
         decisions = f"\n## Decision batch\n\n{pause.reason}\n\n" + _render_decision_questions(pause.decisions)
@@ -751,6 +797,15 @@ def _condition(  # noqa: C901, PLR0912 - one exhaustive presentation of the clos
                 "Acceptance receipt committed",
                 evidence,
                 "No acceptance evidence is recorded." if evidence is None else None,
+            )
+        case query_models.AmendedFromReviewCondition(at=at, amendment_class=amendment_class, change=change):
+            return _BoardPageCondition(
+                "amended",
+                f"Candidate being amended ({amendment_class.value})",
+                _utc_instant(at),
+                "Amendment receipt committed",
+                change,
+                None,
             )
         case query_models.CheckpointAcceptedCondition(at=at, checkpoint=checkpoint, evidence=evidence):
             return _BoardPageCondition(
@@ -1700,12 +1755,15 @@ def _write_facts(
             attempt = selected.attempt
             atomic_replace(
                 attempt_root / f"{attempt.attempt_id}.md",
-                _render_attempt(attempt, selected.item_state, attempt_briefs, selected.hold),
+                _render_attempt(attempt, selected.item_state, attempt_briefs, selected.hold, selected.amendments),
             )
     if facts.receipts:
         history_root = ensure_child_directory(view_root, "history")
+        recorded = {value.history_id: value for value in facts.amendments}
         for receipt in facts.receipts:
-            atomic_replace(history_root / f"{receipt.history_id}.md", _render_history(receipt))
+            atomic_replace(
+                history_root / f"{receipt.history_id}.md", _render_history(receipt, recorded.get(receipt.history_id))
+            )
     return tuple(damaged)
 
 
@@ -1810,12 +1868,15 @@ def derive_expected_view_bytes(
                 if attempt.state in {work_models.AttemptState.PAUSED, work_models.AttemptState.BLOCKED}
                 and (overview := view_inputs.overview_items.get(str(attempt.item_id))) is not None
                 else None,
+                tuple(value for value in state.lifecycle.amendments if value.attempt_id == attempt.attempt_id),
             ),
         )
         for attempt in state.lifecycle.attempts
     )
+    recorded = {value.history_id: value for value in state.lifecycle.amendments}
     expected_views.update(
-        (f"history/{receipt.history_id}.md", _render_history(receipt)) for receipt in state.transition_receipts
+        (f"history/{receipt.history_id}.md", _render_history(receipt, recorded.get(receipt.history_id)))
+        for receipt in state.transition_receipts
     )
     roadmap_markdown, roadmap_html = roadmap_files.render(roadmap.from_state(state))
     expected_views["roadmap.md"] = roadmap_markdown

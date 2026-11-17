@@ -17,10 +17,12 @@ from pinboard.mcp.contracts import (
     _PAUSED_CONTINUATION_ACTION_KINDS,
     _REVIEW_CONTINUATION_ACTION_KINDS,
     ActionsEnvelope,
+    BriefPublishRequest,
     DispatchRequest,
     ExecutorBusyResult,
     JsonSchemaValue,
     SchemaUnsupportedResult,
+    SmallBriefPublishRequest,
     TracePreflightResult,
     TransitionRequest,
     _committed_transition_surfaces,
@@ -107,6 +109,33 @@ def _cached_schema_for(boundary_type: type[msgspec.Struct]) -> dict[str, JsonSch
 def schema_for(boundary_type: type[msgspec.Struct]) -> dict[str, JsonSchemaValue]:
     """Return one host-facing MCP request schema from a strict msgspec record."""
     return deepcopy(_cached_schema_for(boundary_type))
+
+
+@cache
+def _cached_brief_publish_request_schema() -> dict[str, JsonSchemaValue]:
+    schema = schema_for(BriefPublishRequest)
+    small = schema_for(SmallBriefPublishRequest)
+    definitions = schema.get("$defs")
+    small_definitions = small.get("$defs")
+    properties = schema.get("properties")
+    small_properties = small.get("properties")
+    if not (
+        isinstance(definitions, dict)
+        and isinstance(small_definitions, dict)
+        and isinstance(properties, dict)
+        and isinstance(small_properties, dict)
+    ):
+        raise TypeError("Brief publication schemas must contain properties and named definitions.")
+    small_definitions.pop(SmallBriefPublishRequest.__name__)
+    definitions.update(small_definitions)
+    properties["brief"] = {"oneOf": [properties["brief"], small_properties["brief"]]}
+    return schema
+
+
+def brief_publish_request_schema() -> dict[str, JsonSchemaValue]:
+    """Advertise both brief records the publication decoder selects by brief.schema."""
+
+    return deepcopy(_cached_brief_publish_request_schema())
 
 
 @cache

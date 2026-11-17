@@ -14,6 +14,7 @@ from typing import assert_never
 import msgspec
 
 from pinboard.application import (
+    amendments,
     candidate_snapshots,
     checkpoint_packages,
     decision_batches,
@@ -24,6 +25,7 @@ from pinboard.application import (
     stored_state,
     unblockers,
     work_brief_models,
+    work_briefs,
 )
 from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
@@ -172,7 +174,7 @@ def damaged_receipt_validation_recovery(damaged: query_models.DamagedTransitionR
 
 def validate_attempt_brief_identity(
     context: query_models.NonterminalAttemptContextFacts,
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.AcceptedBrief,
 ) -> DecisionFailure | None:
     """Require one decoded brief to be the exact accepted identity for an attempt."""
 
@@ -221,7 +223,7 @@ def _terminal_attempt_continuation(
         case _ as unreachable:
             assert_never(unreachable)
     return constructor(
-        "pinboard-attempt-continuation/v1",
+        "pinboard-attempt-continuation/v2",
         context.attempt_id,
         context.work_item_id,
         context.project_revision,
@@ -243,7 +245,7 @@ def _held_payload(unblocker: work_models.Unblocker | None) -> unblockers.Unblock
 def project_attempt_continuation(
     context: query_models.AttemptContextFacts,
     owner_task_id: TaskId | None,
-    brief: work_brief_models.WorkBrief | None,
+    brief: work_brief_models.AcceptedBrief | None,
     reconciliation: query_models.AttemptReconciliation | None,
     candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
@@ -312,7 +314,7 @@ def project_attempt_continuation(
             if isinstance(selected, DecisionFailure):
                 return selected
             continuation_arguments = (
-                "pinboard-attempt-continuation/v1",
+                "pinboard-attempt-continuation/v2",
                 context.attempt_id,
                 context.work_item_id,
                 context.project_revision,
@@ -353,6 +355,7 @@ def _select_repository_disposition(
     reconciliation: query_models.AttemptReconciliation,
     candidate_lineage: query_models.CandidateLineage | None,
     actions: tuple[decision_models.Action, ...],
+    brief: work_brief_models.AcceptedBrief,
 ) -> DecisionResult[
     query_models.ActionContinuation
     | query_models.RepositoryDispositionContinuation
@@ -364,18 +367,35 @@ def _select_repository_disposition(
         return query_models.CommitThenReinspectContinuation(reconciliation.target_revision, reconciliation.relation)
     for action in actions:
         if isinstance(action, decision_models.ReturnForCorrectionAction):
-            condition = (
-                "The protected candidate no longer matches the checkout. Apply return-for-correction to the same "
-                "attempt with this lineage mismatch as the reason, preserve its history_id, obtain correction-source "
-                "review, then dispatch correction work that submits a current clean commit candidate; no user input "
-                "is required."
+            return query_models.ActionContinuation(
+                decision_models.action_id(action), action.kind, _lineage_correction_condition(brief)
             )
-            return query_models.ActionContinuation(decision_models.action_id(action), action.kind, condition)
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
         "Candidate lineage correction is not currently available.",
         None,
     )
+
+
+def _lineage_correction_condition(brief: work_brief_models.AcceptedBrief) -> str:
+    returned = (
+        "The protected candidate no longer matches the checkout. Apply return-for-correction to the same attempt "
+        "with this lineage mismatch as the reason, preserve its history_id, "
+    )
+    match brief:
+        case work_brief_models.WorkBrief():
+            return (
+                f"{returned}obtain correction-source review, then dispatch correction work that submits a current "
+                "clean commit candidate; no user input is required."
+            )
+        case work_brief_models.SmallWorkBrief():
+            return (
+                f"{returned}then correct inline as the owning coordinator: reacquire attempt authority with your own "
+                "identity, submit a current clean commit candidate, release and commission a correction review. "
+                "A small attempt takes no correction-source review or correction dispatch; no user input is required."
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-candidate relations remain explicit
@@ -386,6 +406,7 @@ def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-
     candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
     actions: tuple[decision_models.Action, ...],
+    brief: work_brief_models.AcceptedBrief,
 ) -> DecisionResult[
     query_models.ActionContinuation | query_models.ReviewContinuation | query_models.ReconciliationContinuation
 ]:
@@ -423,7 +444,7 @@ def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-
         query_models.IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE,
         query_models.IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE,
     ):
-        return _select_repository_disposition(reconciliation, candidate_lineage, actions)
+        return _select_repository_disposition(reconciliation, candidate_lineage, actions, brief)
     match relation:
         case query_models.IntegrationRelation.CANDIDATE_INTEGRATED:
             if reconciliation.phase == query_models.RepositoryPhase.CLEANUP:
@@ -447,7 +468,7 @@ def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-
 def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuation selection
     context: query_models.NonterminalAttemptContextFacts,
     actions: tuple[decision_models.Action, ...],
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.AcceptedBrief,
     reconciliation: query_models.AttemptReconciliation | None,
     candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
@@ -463,6 +484,7 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 candidate_lineage=candidate_lineage,
                 ready_review=ready_review,
                 actions=actions,
+                brief=brief,
             )
         if ready_review:
             return query_models.ReconcileRepositoryContinuation(
@@ -472,7 +494,7 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 "that phase needs; then inspect again with those reconciliation facts to select disposition, "
                 "refresh, correction, cleanup, or completion.",
             )
-    if isinstance(brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition):
+    if isinstance(work_briefs.accepted_brief_disposition(brief), work_brief_models.TerminalCheckpointDisposition):
         for action in actions:
             if isinstance(action, decision_models.CompleteAction):
                 if context.state == work_models.AttemptState.REVIEW:
@@ -502,9 +524,14 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 "runtime-subagent",
             )
         if isinstance(action, decision_models.ContinueAction):
-            return query_models.ActionContinuation(
-                decision_models.action_id(action), action.kind, "Follow the accepted brief."
+            current = context.amendments.current
+            condition = (
+                "Follow the accepted brief."
+                if not current
+                else f"Follow the accepted brief and its {len(current)} current amendment"
+                f"{'' if len(current) == 1 else 's'}, read from attempt inspection before submitting."
             )
+            return query_models.ActionContinuation(decision_models.action_id(action), action.kind, condition)
     for action in actions:
         if isinstance(action, decision_models.CloseAction):
             return query_models.ActionContinuation(
@@ -516,7 +543,10 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
             return query_models.ActionContinuation(
                 decision_models.action_id(action),
                 action.kind,
-                "Bind a current accepted v4 brief that matches the current definition.",
+                "Bind a current accepted pinboard-small-work-brief/v1 brief that matches the current definition; "
+                "its owning coordinator delivers it inline."
+                if work_briefs.takes_small_brief(context.work_item.route_facts)
+                else "Bind a current accepted pinboard-work-brief/v4 brief that matches the current definition.",
             )
         if isinstance(action, decision_models.ReturnForCorrectionAction):
             return query_models.ActionContinuation(
@@ -948,12 +978,27 @@ def select_board_records(state: stored_state.StoredWorkState) -> query_models.Bo
     for receipt in sorted(state.transition_receipts, key=_receipt_history_key, reverse=True):
         if receipt.outcome_schema == "checkpoint-acceptance/v2":
             acceptances.setdefault(str(receipt.subject_id), []).append(receipt)
+    recorded_amendments = {value.history_id: value for value in state.lifecycle.amendments}
     attempts: list[query_models.BoardAttemptRecords] = []
     for attempt in state.lifecycle.attempts:
         open_state = open_attempt_state(attempt.state)
         if open_state is None:
             continue
-        latest = receipts_by_revision.get(attempt.subject_revision)
+        attempt_amendments = tuple(
+            value for value in state.lifecycle.amendments if value.attempt_id == attempt.attempt_id
+        )
+        latest = amendments.condition_receipt(
+            attempt.subject_revision,
+            {
+                revision: _consumed_receipt(receipt)
+                for revision in (
+                    attempt.subject_revision,
+                    *(value.prior_attempt_revision for value in attempt_amendments),
+                )
+                if (receipt := receipts_by_revision.get(revision)) is not None
+            },
+            recorded_amendments,
+        )
         snapshot = (
             latest_snapshots.get(
                 candidate_snapshots.candidate_snapshot_artifact_key(
@@ -976,10 +1021,11 @@ def select_board_records(state: stored_state.StoredWorkState) -> query_models.Bo
                 attempt.accepted_scope_digest,
                 attempt.candidate_revision,
                 references[attempt.brief_artifact_ref_id],
-                None if latest is None else _consumed_receipt(latest),
+                latest,
                 tuple(acceptances.get(str(attempt.attempt_id), ())),
                 snapshot,
                 batches.get(attempt.attempt_id),
+                attempt_amendments,
             )
         )
     live_ids = frozenset(item.item_id for item, _live_state in _select_live_items(state))
@@ -1062,6 +1108,15 @@ def _board_condition(facts: query_models.BoardAttemptFacts) -> query_models.Boar
                 if isinstance(continued, query_models.DamagedTransitionReceipt)
                 else continued
             )
+        case decision_models.ActionKind.RECORD_AMENDMENT:
+            amendment = next((value for value in records.amendments if value.history_id == receipt.history_id), None)
+            if amendment is None:
+                return query_models.UnreadableCondition(
+                    receipt.history_id, at, "The amendment receipt has no recorded amendment."
+                )
+            return query_models.AmendedFromReviewCondition(
+                at, amendment.amendment.amendment_class, amendment.amendment.change
+            )
         case decision_models.ActionKind.ACCEPT_CHECKPOINT:
             accepted = _decode_checkpoint_acceptance(attempt_id, receipt)
             return (
@@ -1109,15 +1164,14 @@ def _board_condition(facts: query_models.BoardAttemptFacts) -> query_models.Boar
 def project_current_checkpoint(
     attempt_id: AttemptId,
     reference: stored_state.ArtifactReference,
-    brief: work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure,
+    brief: work_brief_models.AcceptedBrief | work_brief_models.WorkBriefFailure,
 ) -> query_models.BoardCheckpoint | query_models.UnreadableBrief:
     """Project an open attempt's current checkpoint from its identity-checked current brief, for board and status."""
 
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return query_models.UnreadableBrief(attempt_id, brief.message)
-    checkpoint = brief.checkpoint
     remaining: query_models.RecordedRemainingWork | query_models.FinalCheckpoint
-    match checkpoint.disposition:
+    match work_briefs.accepted_brief_disposition(brief):
         case work_brief_models.ContinueCheckpointDisposition(remaining_work=text):
             remaining = query_models.RecordedRemainingWork(text)
         case work_brief_models.TerminalCheckpointDisposition():
@@ -1125,7 +1179,11 @@ def project_current_checkpoint(
         case _ as unreachable:
             assert_never(unreachable)
     return query_models.BoardCheckpoint(
-        checkpoint.checkpoint_id, checkpoint.title, reference.revision, reference.created_at, remaining
+        work_briefs.accepted_brief_checkpoint_id(brief),
+        work_briefs.accepted_brief_checkpoint_title(brief),
+        reference.revision,
+        reference.created_at,
+        remaining,
     )
 
 
@@ -1467,7 +1525,7 @@ def _decode_checkpoint_acceptance(
 
 def _review_verdict(
     attempt: query_models.ItemStatusAttemptFacts,
-    brief: work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure,
+    brief: work_brief_models.AcceptedBrief | work_brief_models.WorkBriefFailure,
     artifacts: ports.ItemStatusArtifactReader,
 ) -> query_models.ReviewVerdict | query_models.DamagedTransitionReceipt:
     """Derive the current attempt's verdict from its latest review-relevant receipt.
@@ -1557,6 +1615,7 @@ def _closure_action(
             | decision_models.ActionKind.REVIEW_CANDIDATE
             | decision_models.ActionKind.PAUSE
             | decision_models.ActionKind.REJECT_PROPOSAL
+            | decision_models.ActionKind.RECORD_AMENDMENT
             | decision_models.ActionKind.RECORD_REPLACEMENT
             | decision_models.ActionKind.REBIND_ATTEMPT
             | decision_models.ActionKind.REPORT_BLOCKER
@@ -1657,6 +1716,7 @@ def project_item_status(
                 selected.pause_reason,
                 facts.batches_by_attempt.get(selected.attempt_id),
                 _status_checkpoint(project_current_checkpoint(selected.attempt_id, selected.brief_reference, brief)),
+                tuple(query_models.amendment_view(value) for value in selected.amendments),
             )
         )
         selected_verdict = _review_verdict(selected, brief, artifacts)
@@ -1671,8 +1731,8 @@ def project_item_status(
         and isinstance((target := history.dependency_from_payload(value.target)), work_models.CheckpointDependency)
     )
     return query_models.ItemStatus(
-        "pinboard-item-status/v6",
-        "sqlite-v13",
+        "pinboard-item-status/v7",
+        "sqlite-v14",
         str(facts.project_revision),
         str(item.work_item_id),
         facts.definition_title,
@@ -1721,7 +1781,7 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
         return None
     return query_models.BranchOwners(
         "pinboard-branch-owners/v1",
-        "sqlite-v13",
+        "sqlite-v14",
         str(facts.project_revision),
         branch,
         tuple(
@@ -1851,7 +1911,7 @@ def select_item_definition(
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
-        "sqlite-v13",
+        "sqlite-v14",
         selected.project_revision,
         work_item_id,
         selected.item_subject_revision,
@@ -1888,7 +1948,7 @@ def select_item_definition_history(
     )
     return query_models.ItemDefinitionHistory(
         "pinboard-item-definition-history/v1",
-        "sqlite-v13",
+        "sqlite-v14",
         selected.project_revision,
         work_item_id,
         rows,

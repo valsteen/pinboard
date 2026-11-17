@@ -447,6 +447,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
                     checkpoint_acceptances=(),
                     decision_batch_references=(),
                     unblockers=(),
+                    amendments=(),
                 ),
             )
             connection.execute("UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'ready'")
@@ -494,6 +495,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
                     checkpoint_acceptances=(),
                     decision_batch_references=(),
                     unblockers=(),
+                    amendments=(),
                 ),
             )
             connection.execute("UPDATE work_items SET state = 'review' WHERE item_id = ?", (str(item_id),))

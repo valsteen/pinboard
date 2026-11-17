@@ -42,6 +42,7 @@ from pinboard.domain.identifiers import (
 from tests.decision_support import BOARD, discover_actions
 from tests.domain_support import expect_success, held_unblocker
 from tests.support import (
+    SQLITE_DIGEST,
     SQLITE_NOW,
     LedgerOnlyStatusArtifacts,
     complete_sqlite_state,
@@ -49,6 +50,8 @@ from tests.support import (
     test_definition,
     with_definition_dependencies,
 )
+from tests.test_small_item_route import small_work_a_brief
+from tests.work_brief_support import example_work_brief
 
 
 class SQLiteQueriesTest(unittest.TestCase):
@@ -265,8 +268,8 @@ class SQLiteQueriesTest(unittest.TestCase):
 
         self.assertEqual(
             query_models.ItemStatus(
-                "pinboard-item-status/v6",
-                "sqlite-v13",
+                "pinboard-item-status/v7",
+                "sqlite-v14",
                 "12",
                 "work-a",
                 "Work work-a",
@@ -287,6 +290,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                         current_checkpoint=query_models.UnreadableCurrentCheckpoint(
                             "Ledger-only test attempt 'work-a-1' stores no brief bytes."
                         ),
+                        amendments=(),
                     ),
                 ),
                 query_models.NoReviewVerdict(),
@@ -303,8 +307,8 @@ class SQLiteQueriesTest(unittest.TestCase):
         )
         self.assertEqual(
             query_models.ItemStatus(
-                "pinboard-item-status/v6",
-                "sqlite-v13",
+                "pinboard-item-status/v7",
+                "sqlite-v14",
                 "12",
                 "work-b",
                 "Work work-b",
@@ -407,6 +411,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                         brief_reference,
                         None,
                         None,
+                        (),
                     ),
                 )
             )
@@ -490,6 +495,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             ),
             None,
             None,
+            (),
         )
         for selected_item, attempts, expected, observed in (
             (item, (attempt,), "none", "active"),
@@ -597,7 +603,7 @@ class SQLiteQueriesTest(unittest.TestCase):
     def test_attempt_continuation_round_trips_exact_states_and_rejects_cross_identity(self) -> None:
         forbidden = ("create-user-task", "wake-user-task", "return-ownership-to-parent")
         active = query_models.ActiveAttemptContinuation(
-            "pinboard-attempt-continuation/v1",
+            "pinboard-attempt-continuation/v2",
             "attempt-1",
             "item-1",
             1,
@@ -610,7 +616,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             decision_batch=None,
         )
         review = query_models.ReviewAttemptContinuation(
-            "pinboard-attempt-continuation/v1",
+            "pinboard-attempt-continuation/v2",
             "attempt-1",
             "item-1",
             1,
@@ -623,7 +629,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             decision_batch=None,
         )
         paused = query_models.PausedAttemptContinuation(
-            "pinboard-attempt-continuation/v1",
+            "pinboard-attempt-continuation/v2",
             "attempt-1",
             "item-1",
             1,
@@ -638,7 +644,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             unblockers.HumanDecisionPayload("Which option does the maintainer choose?"),
         )
         blocked = query_models.BlockedAttemptContinuation(
-            "pinboard-attempt-continuation/v1",
+            "pinboard-attempt-continuation/v2",
             "attempt-1",
             "item-1",
             1,
@@ -652,7 +658,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             unblocker=unblockers.ItemsToFinishPayload(("dependency-1",)),
         )
         terminal = query_models.TerminalAttemptContinuation(
-            "pinboard-attempt-continuation/v1",
+            "pinboard-attempt-continuation/v2",
             "attempt-1",
             "item-1",
             1,
@@ -694,7 +700,45 @@ class SQLiteQueriesTest(unittest.TestCase):
             with self.assertRaises((msgspec.ValidationError, ValueError)):
                 msgspec.convert(invalid, type=query_models.AttemptContinuation, strict=True)
 
+    def test_lineage_correction_of_a_small_attempt_stays_inline(self) -> None:
+        capability = decision_models.MutationActionCapability(AttemptId("attempt-1"), "Review action", "1")
+        actions: tuple[decision_models.Action, ...] = (decision_models.ReturnForCorrectionAction(capability),)
+        allowed = query_models.RuntimeEffectStatus.ALLOWED
+        pending = query_models.AttemptReconciliation(
+            "target-revision",
+            query_models.IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE,
+            query_models.RepositoryPhase.DISPOSITION,
+            (
+                query_models.RuntimeEffectObservation(query_models.RuntimeEffect.SOURCE_CHECKOUT, allowed),
+                query_models.RuntimeEffectObservation(query_models.RuntimeEffect.SHARED_WORK_ROOT, allowed),
+                query_models.RuntimeEffectObservation(query_models.RuntimeEffect.GIT_METADATA, allowed),
+            ),
+        )
+        selected = {
+            name: select_resumed_review_operation(
+                pending,
+                attempt_id="attempt-1",
+                candidate_revision="candidate-1",
+                candidate_lineage=query_models.CandidateLineage.DRIFTED,
+                ready_review=True,
+                actions=actions,
+                brief=brief,
+            )
+            for name, brief in (("v4", example_work_brief()), ("small", small_work_a_brief(SQLITE_DIGEST)))
+        }
+        v4, small = selected["v4"], selected["small"]
+        assert isinstance(v4, query_models.ActionContinuation)
+        assert isinstance(small, query_models.ActionContinuation)
+        self.assertEqual(
+            (decision_models.ActionKind.RETURN_FOR_CORRECTION, decision_models.ActionKind.RETURN_FOR_CORRECTION),
+            (v4.action_kind, small.action_kind),
+        )
+        self.assertEqual(v4.action_id, small.action_id)
+        # The brief shape alone selects a distinct correction route for the same action.
+        self.assertNotEqual(v4.condition, small.condition)
+
     def test_resume_reconciliation_exhausts_relations_phases_and_effect_statuses(self) -> None:
+        brief = example_work_brief()
         capability = decision_models.MutationActionCapability(AttemptId("attempt-1"), "Review action", "1")
         actions: tuple[decision_models.Action, ...] = (
             decision_models.CompleteAction(capability),
@@ -780,6 +824,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                 candidate_lineage=query_models.CandidateLineage.COMMIT_CURRENT,
                 ready_review=True,
                 actions=actions,
+                brief=brief,
             )
             with self.subTest(relation=relation.value, phase=phase.value):
                 self.assertIsInstance(selected, expected)
@@ -797,6 +842,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             candidate_lineage=query_models.CandidateLineage.WORKING_TREE_CURRENT,
             ready_review=True,
             actions=actions,
+            brief=brief,
         )
         self.assertIsInstance(working_tree, query_models.CommitThenReinspectContinuation)
 
@@ -807,6 +853,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             candidate_lineage=query_models.CandidateLineage.DRIFTED,
             ready_review=True,
             actions=actions,
+            brief=brief,
         )
         self.assertIsInstance(drifted, query_models.ActionContinuation)
         assert isinstance(drifted, query_models.ActionContinuation)
@@ -860,6 +907,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                             candidate_lineage=query_models.CandidateLineage.COMMIT_CURRENT,
                             ready_review=True,
                             actions=actions,
+                            brief=brief,
                         )
                         if status in (
                             query_models.RuntimeEffectStatus.DENIED,
@@ -885,6 +933,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             candidate_lineage=query_models.CandidateLineage.COMMIT_CURRENT,
             ready_review=True,
             actions=actions,
+            brief=brief,
         )
         self.assertIsInstance(selected, query_models.PermissionRecoveryContinuation)
         assert isinstance(selected, query_models.PermissionRecoveryContinuation)
@@ -897,6 +946,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                 candidate_lineage=query_models.CandidateLineage.COMMIT_CURRENT,
                 ready_review=False,
                 actions=actions,
+                brief=brief,
             ),
             query_models.ReviewContinuation,
         )

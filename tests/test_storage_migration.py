@@ -27,7 +27,7 @@ from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import WorkItemId
 from tests.domain_support import expect_success
-from tests.sqlite_support import downgrade_to_v12
+from tests.sqlite_support import advanced_v13_copy, downgrade_to_v12
 from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initialize_store
 
 
@@ -172,10 +172,10 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
             with contextlib.closing(sqlite3.connect(path)) as connection:
                 sqlite_database._verify_v10_schema(connection)
-            for _step in ("v10-to-v11", "v11-to-v12", "v12-to-v13"):
+            for _step in ("v10-to-v11", "v11-to-v12", "v12-to-v13", "v13-to-v14"):
                 current = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
                 self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
-            self.assertEqual(13, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
+            self.assertEqual(14, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
             roots = resolve_durable_roots(project)
             publication = ArtifactRepository(roots).publish(
                 NewArtifact(work_models.ArtifactKind.EVIDENCE, "later", 1, ".txt", b"later")
@@ -314,7 +314,7 @@ class StorageMigrationTests(unittest.TestCase):
             evidence = path.parent / "migration"
             self.assertEqual(original, (evidence / f"{plan_id}.v12").read_bytes())
             self.assertEqual(label_file.read_bytes(), (evidence / f"{plan_id}.labels.json").read_bytes())
-            reloaded = SQLiteWorkStore(path).validated_snapshot()
+            reloaded = SQLiteWorkStore(advanced_v13_copy(path)).validated_snapshot()
             self.assertEqual(
                 {
                     WorkItemId("work-c"): work_models.WaitingForHumanDecision("Should work C wait for the new survey?"),
@@ -373,7 +373,7 @@ class StorageMigrationTests(unittest.TestCase):
                 project, "migrate-schema", "--apply", str(planned["plan_id"]), "--labels", str(label_file)
             )
             self.assertEqual(0, code, migrated)
-            reloaded = SQLiteWorkStore(path).validated_snapshot()
+            reloaded = SQLiteWorkStore(advanced_v13_copy(path)).validated_snapshot()
             states = {value.item_id: value.state for value in reloaded.lifecycle.work_items}
             self.assertEqual(stored_state.StoredWorkItemState.READY, states[WorkItemId("work-c")])
             self.assertEqual(stored_state.StoredWorkItemState.READY, states[WorkItemId("zz-proposal-a")])

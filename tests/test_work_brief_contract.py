@@ -4,7 +4,6 @@ import msgspec
 
 from pinboard.application import work_brief_models
 from pinboard.application.work_brief_contract import WorkBriefStructuralChoice, describe_work_brief_contract
-from pinboard.application.work_briefs import decode_work_brief
 from tests.work_brief_support import example_work_brief, work_c_brief
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
@@ -84,7 +83,7 @@ def select_structural_variant(
 def fill_variant_template(value: JsonValue, key: str) -> JsonValue:
     """Independent synthetic field inputs complete construction shapes without copying their prose."""
     if value is None:
-        return 1 if key in {"number", "criterion", "scope_revision"} else "fixture"
+        return 1 if key in {"number", "criterion", "contract", "scope_revision"} else "fixture"
     if isinstance(value, dict):
         return {name: fill_variant_template(item, name) for name, item in value.items()}
     if isinstance(value, list):
@@ -106,6 +105,11 @@ class WorkBriefContractTest(unittest.TestCase):
             "obligation-target": work_brief_models.ObligationTarget,
             "checkpoint-disposition": work_brief_models.CheckpointDisposition,
         }
+        # Retained invariant-text forms decode for stored briefs but are never offered to new briefs.
+        retained_tags = {
+            work_brief_models.CompatibilityInvariantCoverageOwner.__struct_config__.tag,
+            work_brief_models.CompatibilityInvariantObligationTarget.__struct_config__.tag,
+        }
         for choice_id, shape in shape_types.items():
             definitions = msgspec.json.schema(shape).get("$defs", {})
             expected = {
@@ -117,6 +121,7 @@ class WorkBriefContractTest(unittest.TestCase):
             }
             if choice_id == "checkout-selection":
                 expected = {member.value for member in work_brief_models.work_models.CheckoutSelection}
+            expected -= retained_tags
             self.assertEqual(expected, {variant.selector for variant in choices[choice_id].variants})
             for variant in choices[choice_id].variants:
                 payload = fill_variant_template(msgspec.json.decode(bytes(variant.template)), "")
@@ -155,7 +160,8 @@ class WorkBriefContractTest(unittest.TestCase):
             checkpoint = json_object(payload["checkpoint"])
             checkpoint_keys = {field.name for field in msgspec.structs.fields(checkpoint_type)} | {"boundary"}
             self.assertEqual(checkpoint_keys, checkpoint.keys())
-            self.assertIsInstance(decode_work_brief(bytes(starter)), work_brief_models.WorkBriefFailure)
+            with self.assertRaises(msgspec.DecodeError):
+                msgspec.json.decode(bytes(starter), type=work_brief_models.WorkBrief)
 
     def test_mechanically_completed_starters_pass_strict_decode(self) -> None:
         contract = describe_work_brief_contract()
@@ -203,8 +209,8 @@ class WorkBriefContractTest(unittest.TestCase):
         ):
             template = msgspec.json.decode(bytes(starter))
             completed_payload = msgspec.json.decode(msgspec.json.encode(completed))
-            decoded = expect_work_brief_success(
-                decode_work_brief(msgspec.json.encode(complete_starter(template, completed_payload)))
+            decoded = msgspec.json.decode(
+                msgspec.json.encode(complete_starter(template, completed_payload)), type=work_brief_models.WorkBrief
             )
             self.assertIsInstance(decoded.checkpoint, checkpoint_type)
             self.assertEqual(completed, decoded)
@@ -228,7 +234,7 @@ class WorkBriefContractTest(unittest.TestCase):
             )
         )
         owners: tuple[tuple[str, work_brief_models.CoverageOwner], ...] = (
-            ("contract", work_brief_models.ContractCoverageOwner(checkpoint.contracts[0].invariant)),
+            ("contract-ref", work_brief_models.ContractRefCoverageOwner(1)),
             ("acceptance", work_brief_models.AcceptanceCoverageOwner(1)),
             ("deferred", work_brief_models.DeferredCoverageOwner("later-work")),
             ("not-applicable", work_brief_models.NotApplicableCoverageOwner("No separate obligation.")),
@@ -276,8 +282,8 @@ class WorkBriefContractTest(unittest.TestCase):
                     "required",
                 )
                 completed_payload = msgspec.json.decode(msgspec.json.encode(completed))
-                decoded = expect_work_brief_success(
-                    decode_work_brief(msgspec.json.encode(complete_starter(starter, completed_payload)))
+                decoded = msgspec.json.decode(
+                    msgspec.json.encode(complete_starter(starter, completed_payload)), type=work_brief_models.WorkBrief
                 )
                 self.assertEqual(completed, decoded)
 

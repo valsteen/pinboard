@@ -304,7 +304,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         self.assertEqual("committed", content["status"], content)
         return content
 
-    def submit_review(self, fixture: AcceptedPackageFixture, label: str, worker: str) -> str:
+    def submit_review(self, fixture: CheckpointFixture, label: str, worker: str) -> str:
         """Write the labelled change and submit what observation says is submittable, committing past the base."""
 
         tracked = fixture.project / "tracked.txt"

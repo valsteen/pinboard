@@ -148,7 +148,7 @@ class McpFileInputsTest(CheckpointPackageSupport):
             changes: tuple[JsonObject, ...] = ({"brief_sha256": "bad"}, {"brief": {}}, {"brief_path": ""})
             for change in changes:
                 rejected = mutation_operations._read_brief_file(arguments | change)
-                assert not isinstance(rejected, work_brief_models.WorkBrief)
+                assert isinstance(rejected, execution.TypedOperationResult)
                 self.assertEqual("WORK_BRIEF_INVALID", execution.wire_content(rejected.record)["code"])
 
     def test_negative_review_file_preserves_identity_collision_and_independence(self) -> None:

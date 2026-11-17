@@ -14,6 +14,7 @@ from pinboard.adapters.sqlite import consolidation as consolidation_storage
 from pinboard.adapters.sqlite import initiatives as initiative_storage
 from pinboard.adapters.sqlite import obligation_coverage as obligation_storage
 from pinboard.adapters.sqlite import state as sqlite_state
+from pinboard.adapters.sqlite.amendments import insert_amendment
 from pinboard.adapters.sqlite.artifacts import (
     accept_artifact_reference as write_artifact_reference,
 )
@@ -67,6 +68,7 @@ from pinboard.adapters.sqlite.proposals import (
 from pinboard.application import (
     artifact_identity,
     cancellation_models,
+    candidate_snapshots,
     consolidation_models,
     query_models,
     stored_state,
@@ -151,6 +153,7 @@ def _transition_subjects(
             | decision_models.ReviewSubmissionChange(work_item_id=item, attempt=attempt)
             | decision_models.ReviewAcceptanceChange(work_item_id=item, attempt=attempt)
             | decision_models.ReviewReturnChange(work_item_id=item, attempt=attempt)
+            | decision_models.AmendmentChange(work_item_id=item, attempt=attempt)
             | decision_models.CompletionChange(work_item_id=item, attempt=attempt)
             | decision_models.RebindAttemptChange(work_item_id=item, attempt=attempt)
         ):
@@ -318,6 +321,7 @@ def _committed_effect_ids(  # noqa: C901, PLR0912 - exhaustively projects every 
                     | decision_models.ReviewSubmissionChange()
                     | decision_models.ReviewReturnChange()
                     | decision_models.ReviewAcceptanceChange()
+                    | decision_models.AmendmentChange()
                     | DefinitionRevisionDecision()
                     | decision_models.PlannedReplacementChange()
                     | decision_models.ReplacementDispositionChange()
@@ -433,6 +437,65 @@ def _persist_closure(
         ):
             return failure
     return None
+
+
+def _persist_amendment_lifecycle(
+    connection: sqlite3.Connection,
+    facts: _PersistenceFacts,
+    change: decision_models.AmendmentChange,
+    revision: int,
+    now: datetime,
+) -> DecisionFailure | None:
+    """Advance the amended attempt's revision; an attempt in review returns to active with its candidate cleared."""
+
+    attempt = facts.attempt(change.attempt)
+    match change.attempt_before:
+        case work_models.AttemptState.ACTIVE:
+            return set_attempt_state(
+                connection, attempt, work_models.AttemptState.ACTIVE, work_models.AttemptState.ACTIVE, revision, now
+            )
+        case work_models.AttemptState.REVIEW:
+            cleared = change.amendment.cleared_snapshot_artifact_ref_id
+            if (
+                change.amendment.cleared_candidate is None
+                or attempt.candidate_revision is None
+                or str(change.amendment.cleared_candidate) != attempt.candidate_revision
+                or cleared is None
+                or (reference := read_artifact_reference_by_id(connection, cleared)) is None
+                or attempt.candidate_recorded_at is None
+                or reference.key
+                != candidate_snapshots.candidate_snapshot_artifact_key(
+                    str(attempt.attempt_id), attempt.candidate_revision, attempt.candidate_recorded_at.isoformat()
+                )
+            ):
+                return DecisionFailure(
+                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                    "The amendment's cleared submission is not the attempt's current protected candidate snapshot.",
+                    None,
+                )
+            if (
+                failure := set_item_state(
+                    connection,
+                    facts.work_item(change.work_item_id),
+                    work_models.WorkState.REVIEW,
+                    stored_state.StoredWorkItemState.ACTIVE,
+                    revision,
+                    now,
+                    unblocker=None,
+                )
+            ) is not None:
+                return failure
+            return set_attempt_state(
+                connection, attempt, work_models.AttemptState.REVIEW, work_models.AttemptState.ACTIVE, revision, now
+            )
+        case (
+            work_models.AttemptState.PAUSED | work_models.AttemptState.BLOCKED | work_models.AttemptState.DONE
+        ) as unavailable:
+            raise StorageError(
+                StorageErrorCode.INVARIANT_VIOLATION, f"An amendment was decided for a {unavailable.value} attempt."
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _persist_transition(  # noqa: C901, PLR0912, PLR0915
@@ -669,6 +732,21 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             ) is not None:
                 return failure
             if (failure := fence_attempt_authority(connection, authority, now)) is not None:
+                return failure
+        case decision_models.AmendmentChange(
+            work_item_id=item, attempt=attempt, attempt_before=attempt_before, authority_change=authority
+        ):
+            current_attempt = facts.attempt(attempt)
+            if (failure := _persist_amendment_lifecycle(connection, facts, change, revision, now)) is not None:
+                return failure
+            insert_amendment(
+                connection,
+                mutation.receipt.history_id,
+                attempt,
+                current_attempt.subject_revision,
+                change.amendment,
+            )
+            if authority is not None and (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
         case decision_models.CompletionChange(
             work_item_id=item,

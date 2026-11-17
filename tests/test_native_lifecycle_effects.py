@@ -775,7 +775,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                 result = self.transition_result(fixture, action, payload)
                 self.assertEqual("committed", result["status"])
                 returned_status = self.json_object(result["item_status"])
-                self.assertEqual("pinboard-item-status/v6", returned_status["schema"])
+                self.assertEqual("pinboard-item-status/v7", returned_status["schema"])
                 self.assertEqual("zz-proposal-a", returned_status["item_id"])
                 self.assertEqual(
                     returned_status,

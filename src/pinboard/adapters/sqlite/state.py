@@ -395,10 +395,43 @@ def _validate_hold_receipts(
             ) from error
 
 
+def _validate_amendments(
+    lifecycle: stored_state.LifecycleRecords,
+    receipts: tuple[stored_state.StoredTransitionReceipt, ...],
+    error_code: StorageErrorCode,
+) -> None:
+    """Require every amendment row and every record-amendment receipt to name each other and one attempt."""
+
+    attempts = {value.attempt_id for value in lifecycle.attempts}
+    by_history = {value.history_id: value for value in receipts}
+    recorded = {value.history_id for value in lifecycle.amendments}
+    for amendment in lifecycle.amendments:
+        receipt = by_history.get(amendment.history_id)
+        if (
+            receipt is None
+            or receipt.action_kind != decision_models.ActionKind.RECORD_AMENDMENT
+            or str(receipt.subject_id) != str(amendment.attempt_id)
+            or amendment.attempt_id not in attempts
+        ):
+            raise StorageError(
+                error_code, f"Amendment {amendment.history_id} is not recorded by its attempt's amendment receipt."
+            )
+        if (amendment.amendment.cleared_candidate is None) != (
+            amendment.amendment.cleared_snapshot_artifact_ref_id is None
+        ):
+            raise StorageError(
+                error_code, f"Amendment {amendment.history_id} records an incomplete cleared submission."
+            )
+    for receipt in receipts:
+        if receipt.action_kind == decision_models.ActionKind.RECORD_AMENDMENT and receipt.history_id not in recorded:
+            raise StorageError(error_code, f"Amendment receipt {receipt.history_id} has no amendment row.")
+
+
 def _validate_current_state(state: stored_state.StoredWorkState, error_code: StorageErrorCode) -> None:
     _validate_consolidation_history(state.transition_receipts, error_code)
     _validate_held_unblockers(state.lifecycle, error_code)
     _validate_hold_receipts(state.transition_receipts, error_code)
+    _validate_amendments(state.lifecycle, state.transition_receipts, error_code)
     validate_attempt_authority(state, error_code)
     positions = sorted(value.queue_position for value in state.lifecycle.work_items if value.queue_position is not None)
     if positions != list(range(1, len(positions) + 1)):
@@ -517,6 +550,7 @@ def read_project_export_state(connection: sqlite3.Connection) -> project_export.
     _validate_consolidation_history(receipts, StorageErrorCode.INVALID_STATE)
     _validate_held_unblockers(lifecycle, StorageErrorCode.INVALID_STATE)
     _validate_hold_receipts(receipts, StorageErrorCode.INVALID_STATE)
+    _validate_amendments(lifecycle, receipts, StorageErrorCode.INVALID_STATE)
     try:
         decision_batches.validate_batch_history(lifecycle, receipts)
     except (ValueError, KeyError) as error:

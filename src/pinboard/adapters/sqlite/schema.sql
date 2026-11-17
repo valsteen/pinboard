@@ -1,10 +1,10 @@
--- SQLite authority schema version 13.
+-- SQLite authority schema version 14.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE project_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     application TEXT NOT NULL CHECK (application = 'pinboard'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 13),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 14),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
     created_at TEXT NOT NULL,
@@ -302,6 +302,49 @@ CREATE TABLE transition_history (
 CREATE INDEX checkpoint_history_by_subject
 ON transition_history(subject_id, history_id)
 WHERE outcome_schema = 'checkpoint-acceptance/v2';
+
+CREATE TABLE attempt_amendments (
+    history_id INTEGER PRIMARY KEY REFERENCES transition_history(history_id),
+    attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+    prior_attempt_revision INTEGER NOT NULL CHECK (prior_attempt_revision >= 0),
+    brief_artifact_ref_id INTEGER NOT NULL,
+    brief_artifact_kind TEXT NOT NULL CHECK (brief_artifact_kind = 'brief'),
+    amendment_class TEXT NOT NULL CHECK (amendment_class IN (
+        'stale-documentation', 'flaky-or-broken-test', 'lint-or-tooling', 'comment-or-name',
+        'mechanical-baseline-cleanup'
+    )),
+    change TEXT NOT NULL CHECK (length(trim(change)) >= 1),
+    reason TEXT NOT NULL CHECK (length(trim(reason)) >= 1),
+    human_decision TEXT NOT NULL CHECK (length(trim(human_decision)) >= 1),
+    cleared_candidate_revision TEXT,
+    cleared_snapshot_ref_id INTEGER,
+    cleared_snapshot_kind TEXT CHECK (cleared_snapshot_kind = 'evidence'),
+    base_candidate_revision TEXT,
+    base_snapshot_ref_id INTEGER,
+    base_snapshot_kind TEXT CHECK (base_snapshot_kind = 'evidence'),
+    base_review_ref_id INTEGER,
+    base_review_kind TEXT CHECK (base_review_kind = 'evidence'),
+    FOREIGN KEY (brief_artifact_ref_id, brief_artifact_kind)
+        REFERENCES artifact_refs(artifact_ref_id, kind),
+    FOREIGN KEY (cleared_snapshot_ref_id, cleared_snapshot_kind)
+        REFERENCES artifact_refs(artifact_ref_id, kind),
+    FOREIGN KEY (base_snapshot_ref_id, base_snapshot_kind)
+        REFERENCES artifact_refs(artifact_ref_id, kind),
+    FOREIGN KEY (base_review_ref_id, base_review_kind)
+        REFERENCES artifact_refs(artifact_ref_id, kind),
+    CHECK (
+        (cleared_candidate_revision IS NULL) = (cleared_snapshot_ref_id IS NULL)
+        AND (cleared_snapshot_ref_id IS NULL) = (cleared_snapshot_kind IS NULL)
+    ),
+    CHECK (
+        (base_candidate_revision IS NULL) = (base_snapshot_ref_id IS NULL)
+        AND (base_snapshot_ref_id IS NULL) = (base_snapshot_kind IS NULL)
+        AND (base_snapshot_ref_id IS NULL) = (base_review_ref_id IS NULL)
+        AND (base_review_ref_id IS NULL) = (base_review_kind IS NULL)
+    )
+) STRICT;
+
+CREATE INDEX attempt_amendments_by_attempt ON attempt_amendments(attempt_id, history_id);
 
 CREATE TABLE checkpoint_acceptances (
     history_id INTEGER PRIMARY KEY REFERENCES transition_history(history_id),

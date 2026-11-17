@@ -16,14 +16,28 @@ def read_facts(connection: sqlite3.Connection, plan: consolidation.Plan, now: da
     selected = (*tuple(value.item_id for value in plan.sources), plan.campaign_id)
     sources = tuple(value.item_id for value in plan.sources)
     first = read_selected_decision_facts(
-        connection, query_models.DecisionScope(selected, (), (), sources, (), (), (), ()), now
+        connection, query_models.DecisionScope(selected, (), (), sources, (), (), (), (), ()), now
     ).snapshot
     primary = tuple(dict.fromkeys((*selected, *(item.work_item_id for item in first.items))))
     roots = tuple(
         dict.fromkeys((*primary, *(work_models.dependency_item(value) for value in plan.definition.dependencies)))
     )
     facts = read_selected_decision_facts(
-        connection, query_models.DecisionScope(primary, (), roots, sources, (), (), (), ()), now
+        connection,
+        query_models.DecisionScope(
+            primary,
+            (),
+            roots,
+            sources,
+            (),
+            (),
+            (),
+            (),
+            tuple(
+                value for value in plan.definition.dependencies if isinstance(value, work_models.CheckpointDependency)
+            ),
+        ),
+        now,
     )
     order = tuple(
         decode_row(row, ItemIdRow).item_id

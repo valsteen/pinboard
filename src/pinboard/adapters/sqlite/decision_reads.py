@@ -915,7 +915,8 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         planned_replacements=planned_replacements,
         replacement_dispositions=replacement_dispositions,
         accepted_checkpoints=read_accepted_checkpoints(
-            connection, (target for targets in dependencies.values() for target in targets)
+            connection,
+            (*(target for targets in dependencies.values() for target in targets), *scope.checkpoint_targets),
         ),
         dependency_facts=_recorded_dependency_facts(definitions.values()),
         dropped_item_ids=frozenset(

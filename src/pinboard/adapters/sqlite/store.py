@@ -1023,7 +1023,7 @@ class SQLiteWorkStore:
                                 (lease_id, generation),
                             ).fetchall()
                         )
-                        scope = query_models.DecisionScope((), (), (), (), attempt_ids, (), (), ())
+                        scope = query_models.DecisionScope((), (), (), (), attempt_ids, (), (), (), ())
                     case decision_models.Role.PREPARER:
                         item_ids = tuple(
                             decode_row(row, ItemIdRow).item_id
@@ -1040,7 +1040,7 @@ class SQLiteWorkStore:
                                 (lease_id, generation),
                             ).fetchall()
                         )
-                        scope = query_models.DecisionScope(item_ids, (), (), (), (), (), (), ())
+                        scope = query_models.DecisionScope(item_ids, (), (), (), (), (), (), (), ())
                     case decision_models.Role.PROJECT | decision_models.Role.OBSERVER:
                         raise StorageError(
                             StorageErrorCode.INVARIANT_VIOLATION,

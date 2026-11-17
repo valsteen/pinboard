@@ -120,7 +120,7 @@ def acquire_attempt_authority(
 
     with store.write() as transaction:
         snapshot = transaction.read_decision_facts(
-            query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), ()), acquired_at
+            query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), (), ()), acquired_at
         ).snapshot
         attempt = snapshot.attempt(attempt_id)
         if attempt is None:
@@ -219,7 +219,7 @@ def _commit_attempt_authority_change(
         case _ as unreachable:
             assert_never(unreachable)
     decision_context = transaction.read_decision_facts(
-        query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), ()), decided_at
+        query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), (), ()), decided_at
     ).snapshot
     retained = transaction.read_attempt_authority_status(attempt_id)
     generation_before = transaction.read_attempt_generation(attempt_id)
@@ -328,7 +328,7 @@ def start_preparation(
 
     with store.write() as transaction:
         snapshot = transaction.read_decision_facts(
-            query_models.DecisionScope((work_item_id,), (), (), (), (), (), (), ()), acquired_at
+            query_models.DecisionScope((work_item_id,), (), (), (), (), (), (), (), ()), acquired_at
         ).snapshot
         retained = _project_retained_preparation_authority(
             snapshot, transaction.read_preparation_authority_status(work_item_id), work_item_id
@@ -415,7 +415,7 @@ def _commit_preparation_authority_change(
         case _ as unreachable:
             assert_never(unreachable)
     decision_context = transaction.read_decision_facts(
-        query_models.DecisionScope((item_id,), (), (), (), (), (), (), ()), decided_at
+        query_models.DecisionScope((item_id,), (), (), (), (), (), (), (), ()), decided_at
     ).snapshot
     retained = transaction.read_preparation_authority_status(item_id)
     generation_before = transaction.read_preparation_generation(item_id)
@@ -497,10 +497,15 @@ def create_proposal(
                 pass
             case _ as unreachable:
                 assert_never(unreachable)
-        if isinstance(operation.intake.relation, work_models.FollowUpProposalRelation) and isinstance(
-            operation.intake.relation.dependency, work_models.CheckpointDependency
-        ):
-            primary_items = (*primary_items, operation.intake.relation.work_item_id)
+        requested_dependencies = (
+            (operation.intake.relation.dependency,)
+            if isinstance(operation.intake.relation, work_models.FollowUpProposalRelation)
+            else ()
+        )
+        checkpoint_targets = tuple(
+            value for value in requested_dependencies if isinstance(value, work_models.CheckpointDependency)
+        )
+        primary_items = (*primary_items, *(value.item_id for value in checkpoint_targets))
         decision_context = transaction.read_decision_facts(
             query_models.DecisionScope(
                 work_item_ids=primary_items,
@@ -511,16 +516,14 @@ def create_proposal(
                 proposal_ids=(operation.intake.proposal_id,),
                 artifact_ref_ids=(),
                 completion_history_attempt_ids=(),
+                checkpoint_targets=checkpoint_targets,
             ),
             now,
         ).snapshot
-        requested_dependencies = (
-            (operation.intake.relation.dependency,)
-            if isinstance(operation.intake.relation, work_models.FollowUpProposalRelation)
-            else ()
-        )
         if (
-            failure := validate_dependency_brief_pins(decision_context, requested_dependencies, dependency_brief_pins)
+            failure := validate_dependency_brief_pins(
+                decision_context, None, requested_dependencies, dependency_brief_pins
+            )
         ) is not None:
             return failure
         if (failure := obligation_coverage.validate_origins(transaction, operation.intake.obligations)) is not None:
@@ -631,6 +634,7 @@ def _transition_decision_scope(
     live_dependent_roots: tuple[WorkItemId, ...] = ()
     artifact_ids: tuple[ArtifactRefId, ...] = ()
     completion_history_attempt_ids: tuple[AttemptId, ...] = ()
+    checkpoint_targets: tuple[work_models.CheckpointDependency, ...] = ()
     match command:
         case decision_models.ActivateCommand(value=value):
             artifact_ids = (value.brief_artifact_ref_id,)
@@ -646,14 +650,12 @@ def _transition_decision_scope(
         case decision_models.ReviseWorkItemCommand(value=value):
             related_item_ids = tuple(work_models.dependency_item(target) for target in value.definition.dependencies)
             dependency_closure_roots = related_item_ids
-            item_ids = (
-                *item_ids,
-                *(
-                    target.item_id
-                    for target in value.definition.dependencies
-                    if isinstance(target, work_models.CheckpointDependency)
-                ),
+            checkpoint_targets = tuple(
+                target
+                for target in value.definition.dependencies
+                if isinstance(target, work_models.CheckpointDependency)
             )
+            item_ids = (*item_ids, *(target.item_id for target in checkpoint_targets))
         case decision_models.RecordReplacementCommand(value=value):
             related_item_ids = (value.replacement_item,)
         case decision_models.CloseCommand():
@@ -682,6 +684,7 @@ def _transition_decision_scope(
         proposal_ids=tuple(dict.fromkeys(proposal_ids)),
         artifact_ref_ids=artifact_ids,
         completion_history_attempt_ids=completion_history_attempt_ids,
+        checkpoint_targets=checkpoint_targets,
     )
 
 
@@ -758,7 +761,10 @@ def _read_authorize_and_decide(
         isinstance(command, decision_models.ReviseWorkItemCommand)
         and (
             failure := validate_dependency_brief_pins(
-                decision_context, command.value.definition.dependencies, dependency_brief_pins
+                decision_context,
+                command.action.capability.subject,
+                command.value.definition.dependencies,
+                dependency_brief_pins,
             )
         )
         is not None

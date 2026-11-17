@@ -1,11 +1,14 @@
-"""Recheck verified checkpoint declarations against locked producer facts."""
+"""Recheck verified checkpoint targets against locked producer facts.
+
+A revision verifies only the checkpoint dependencies that are new relative to the dependent's current definition.
+"""
 
 from dataclasses import dataclass
 from typing import assert_never
 
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
-from pinboard.domain.identifiers import ArtifactRefId, AttemptId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
@@ -25,20 +28,51 @@ class DependencyBriefPin:
     definition_digest: str
 
 
-type DependencyCheckpointPin = DependencyDefinitionPin | DependencyBriefPin
+@dataclass(frozen=True, slots=True)
+class DependencyAcceptancePin:
+    """The target has a committed checkpoint acceptance on some attempt of its producer."""
+
+    target: work_models.CheckpointDependency
+
+
+@dataclass(frozen=True, slots=True)
+class DependencyFinishedProducerPin:
+    """The target's producer is done or superseded, which satisfies every checkpoint of it."""
+
+    target: work_models.CheckpointDependency
+
+
+type DependencyCheckpointPin = (
+    DependencyDefinitionPin | DependencyBriefPin | DependencyAcceptancePin | DependencyFinishedProducerPin
+)
+
+
+def new_checkpoint_dependencies(
+    snapshot: LedgerSnapshot, dependent: WorkItemId | None, dependencies: tuple[work_models.Dependency, ...]
+) -> tuple[work_models.CheckpointDependency, ...]:
+    """Checkpoint dependencies that the dependent's current definition does not already hold."""
+
+    current = None if dependent is None else snapshot.definition(dependent)
+    unchanged = () if current is None else current.definition.dependencies
+    return tuple(
+        value
+        for value in dependencies
+        if isinstance(value, work_models.CheckpointDependency) and value not in unchanged
+    )
 
 
 def validate_dependency_brief_pins(
     snapshot: LedgerSnapshot,
+    dependent: WorkItemId | None,
     dependencies: tuple[work_models.Dependency, ...],
     pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionFailure | None:
-    requested = tuple(value for value in dependencies if isinstance(value, work_models.CheckpointDependency))
+    requested = new_checkpoint_dependencies(snapshot, dependent, dependencies)
     if tuple(pin.target for pin in pins) != requested:
-        targets = ", ".join(f"'{value.item_id}' checkpoint '{value.checkpoint_id}'" for value in requested)
+        targets = ", ".join(f"'{value.item_id}' checkpoint '{value.checkpoint_id}'" for value in requested) or "none"
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,
-            f"Checkpoint dependencies ({targets}) require verified declarations from each prerequisite's current definition or accepted brief; inspect those prerequisites before authoring them.",
+            f"New checkpoint dependencies ({targets}) require verified targets from each prerequisite's current definition, accepted brief, committed checkpoint acceptance or finished state; inspect the item and those prerequisites before authoring them.",
             None,
         )
     for pin in pins:
@@ -72,6 +106,20 @@ def validate_dependency_brief_pins(
                     return DecisionFailure(
                         DecisionFailureCode.ITEM_DEFINITION_STALE,
                         f"Prerequisite '{pin.target.item_id}' changed its accepted brief or definition while checkpoint '{pin.target.checkpoint_id}' was selected. Inspect that prerequisite and select its current declared checkpoint again.",
+                        None,
+                    )
+            case DependencyAcceptancePin():
+                if pin.target not in snapshot.accepted_checkpoints:
+                    return DecisionFailure(
+                        DecisionFailureCode.ITEM_DEFINITION_STALE,
+                        f"Prerequisite '{pin.target.item_id}' no longer shows a committed acceptance of checkpoint '{pin.target.checkpoint_id}'. Inspect that prerequisite and select its checkpoint again.",
+                        None,
+                    )
+            case DependencyFinishedProducerPin():
+                if pin.target.item_id not in snapshot.history_items or pin.target.item_id in snapshot.dropped_item_ids:
+                    return DecisionFailure(
+                        DecisionFailureCode.ITEM_DEFINITION_STALE,
+                        f"Prerequisite '{pin.target.item_id}' is no longer done or superseded while checkpoint '{pin.target.checkpoint_id}' was selected. Inspect that prerequisite and select its checkpoint again.",
                         None,
                     )
             case _ as unreachable:

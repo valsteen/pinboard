@@ -48,7 +48,7 @@ from pinboard.application.work_briefs import (
 )
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import HostId, ReviewId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, HostId, ReviewId
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.decision_support import discover_actions
@@ -126,6 +126,7 @@ def prepare_dispatch_from_artifact(
         supplied_prompt,
         OrdinaryDispatch(),
         requires_brief_review=True,
+        current_amendments=(),
     )
 
 
@@ -1031,6 +1032,7 @@ class DispatchTest(unittest.TestCase):
             supplied_prompt: bytes | None,
             choice: dispatch_brief.DispatchPreparationChoice,
             requires_brief_review: bool,
+            current_amendments: tuple[stored_state.StoredAttemptAmendment, ...],
         ) -> DispatchResult[str]:
             rendered = render_prompt(
                 brief,
@@ -1043,6 +1045,7 @@ class DispatchTest(unittest.TestCase):
                 supplied_prompt,
                 choice,
                 requires_brief_review,
+                current_amendments,
             )
             expect_success(
                 store.accept_artifact_reference(
@@ -1241,6 +1244,55 @@ class DispatchTest(unittest.TestCase):
         self.assertFalse(rejected["state_changed"])
         self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
 
+    def test_worker_prompt_carries_current_amendments_and_requires_a_fresh_read(self) -> None:
+        _project, roots, store, value, _action, environment = self.initialized()
+        reference = store.validated_snapshot().artifact_references[0]
+        amendment = stored_state.StoredAttemptAmendment(
+            HistoryId(41),
+            AttemptId(value.attempt_id),
+            3,
+            SQLITE_NOW,
+            work_models.AttemptAmendment(
+                work_models.AmendmentClass.FLAKY_OR_BROKEN_TEST,
+                "Stabilize the clock in test_routes.",
+                "The test reads wall-clock time.",
+                "Yes, fix that flaky test too.",
+                ArtifactRefId(1),
+                None,
+                None,
+                None,
+            ),
+        )
+        prompts: dict[str, str] = {}
+        for label, amendments in (("none", ()), ("one", (amendment,))):
+            prompts[label] = expect_dispatch_success(
+                _render_dispatch_prompt(
+                    value,
+                    canonical_work_brief_bytes(value),
+                    roots.work_root,
+                    roots.work_root / reference.selector,
+                    CHECKPOINT_ID,
+                    environment,
+                    ready_review(value),
+                    None,
+                    OrdinaryDispatch(),
+                    requires_brief_review=True,
+                    current_amendments=amendments,
+                )
+            )
+        facts = (
+            "flaky-or-broken-test",
+            "Stabilize the clock",
+            "The test reads wall-clock time.",
+            "Yes, fix that flaky test too.",
+        )
+        self.assertIn("Amendment 41 (flaky-or-broken-test)", prompts["one"])
+        for fact in facts:
+            self.assertIn(fact, prompts["one"])
+            self.assertNotIn(fact, prompts["none"])
+        for prompt in prompts.values():
+            self.assertIn("pinboard_attempt_inspect", prompt)
+
     def test_reused_prompt_failure_preserves_prior_review_publication_effects(self) -> None:
         project, roots, store, value, action, environment = self.initialized()
         reference = store.validated_snapshot().artifact_references[0]
@@ -1256,6 +1308,7 @@ class DispatchTest(unittest.TestCase):
                 None,
                 OrdinaryDispatch(),
                 requires_brief_review=True,
+                current_amendments=(),
             )
         )
         prompt_bytes = rendered.encode()
@@ -1329,6 +1382,7 @@ class DispatchTest(unittest.TestCase):
                 None,
                 OrdinaryDispatch(),
                 requires_brief_review=True,
+                current_amendments=(),
             )
         )
         prompt_bytes = rendered.encode()

@@ -7,6 +7,7 @@ from functools import partial
 from pathlib import Path
 from typing import assert_never
 
+from pinboard.adapters import review_operations
 from pinboard.adapters.dependency_operations import resolve_dependency_brief_pins
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
@@ -142,6 +143,26 @@ def resolve_activation(
     )
 
 
+def resolve_amendment(
+    store: ports.WorkStore,
+    artifacts: ArtifactRepository,
+    action: decision_models.Action,
+    decoded: action_models.RecordAmendmentInputPayload,
+) -> DecisionResult[decision_models.RecordAmendmentCommand]:
+    if not isinstance(action, decision_models.RecordAmendmentAction):
+        raise AssertionError("Amendment input requires a record-amendment action.")
+    observed = review_operations.observe_amendment_review(store, artifacts, action.capability.subject)
+    if isinstance(observed, DecisionFailure):
+        return observed
+    cleared, carried = observed
+    return decision_models.RecordAmendmentCommand(
+        action,
+        work_models.RecordAmendmentInput(
+            decoded.amendment_class, decoded.change, decoded.reason, decoded.human_decision, cleared, carried
+        ),
+    )
+
+
 def _validate_replacement_brief(
     source_checkout: Path,
     store: ports.WorkStore,
@@ -217,6 +238,8 @@ def select_transition(
     command: decision_models.TransitionCommand | DecisionFailure
     if isinstance(decoded, action_models.ActivateInputPayload):
         command = resolve_activation(source_checkout, store, artifacts, action, decoded)
+    elif isinstance(decoded, action_models.RecordAmendmentInputPayload):
+        command = resolve_amendment(store, artifacts, action, decoded)
     else:
         command = decoded
     if isinstance(command, DecisionFailure):

@@ -144,6 +144,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 (
                     "continue:target-1",
                     "dispatch:target-1",
+                    "record-amendment:target-1",
                     "rebind-attempt:target-1",
                     "pause:target-1",
                     "block:target-1",
@@ -175,6 +176,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "review-candidate:target-1",
                     "accept-checkpoint:target-1",
                     "accept-review-and-continue:target-1",
+                    "record-amendment:target-1",
                     "complete:target-1",
                     "revise-item:target",
                 ),

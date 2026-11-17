@@ -571,6 +571,7 @@ def _canonical_prompt(
     checkpoint_id: str,
     environment: DispatchEnvironment,
     choice: DispatchPreparationChoice,
+    current_amendments: tuple[stored_state.StoredAttemptAmendment, ...],
 ) -> str:
     permissions = ", ".join(sorted(permission.value for permission in environment.permissions)) or "none"
     result_path = work_root / "attempts" / attempt_id / "result.md"
@@ -599,12 +600,14 @@ def _canonical_prompt(
         f"Canonical brief: {attempt_path}\n"
         f"Canonical brief SHA-256: {brief_sha256}\n"
         f"Canonical brief size: {len(accepted_brief_bytes)} bytes\n\n"
-        "The complete accepted brief is included below as direct task content. It is the sole semantic execution "
-        "contract; the path and digest are provenance and read-back evidence, not another instruction source. "
-        "Do not restate, narrow, defer, or add acceptance semantics in this launch.\n\n"
+        "The complete accepted brief is included below as direct task content. Together with the attempt's "
+        "recorded amendments, it is the semantic execution contract; the path and digest are provenance and "
+        "read-back evidence, not another instruction source. Do not restate, narrow, defer, or add acceptance "
+        "semantics beyond the accepted brief and its recorded amendments in this launch.\n\n"
         "----- BEGIN CANONICAL PINBOARD BRIEF -----\n"
         f"{brief_text}"
         "----- END CANONICAL PINBOARD BRIEF -----\n\n"
+        f"{_amendments_context(current_amendments)}"
         f"{correction_context}"
         "Execution environment declaration:\n"
         f"- Checkout: {environment.checkout}\n"
@@ -626,6 +629,29 @@ def _canonical_prompt(
         "Attempt evidence locations:\n"
         f"- Result: {result_path}\n"
         f"- Blocker: {blocker_path}\n"
+    )
+
+
+def _amendments_context(current: tuple[stored_state.StoredAttemptAmendment, ...]) -> str:
+    """List the amendments current at dispatch and require a fresh read of them before submission."""
+
+    listed = (
+        "No amendments are recorded at dispatch.\n"
+        if not current
+        else "".join(
+            f"- Amendment {value.history_id} ({value.amendment.amendment_class.value}). Change (JSON string): "
+            f"{msgspec.json.encode(value.amendment.change).decode()}. Reason (JSON string): "
+            f"{msgspec.json.encode(value.amendment.reason).decode()}. Human's exact words (JSON string): "
+            f"{msgspec.json.encode(value.amendment.human_decision).decode()}\n"
+            for value in current
+        )
+    )
+    return (
+        "Recorded amendments current at dispatch:\n"
+        f"{listed}"
+        "Each recorded amendment is part of the contract within its class and stated change. Before submitting, read "
+        "the attempt's current amendments from pinboard_attempt_inspect, because a coordinator may record one after "
+        "this launch; a direction that is not recorded as an amendment is not one.\n\n"
     )
 
 
@@ -1828,6 +1854,7 @@ def _render_dispatch_prompt(
     supplied_prompt: bytes | None,
     choice: DispatchPreparationChoice,
     requires_brief_review: bool,
+    current_amendments: tuple[stored_state.StoredAttemptAmendment, ...],
 ) -> DispatchResult[str]:
     binding_source = (
         _ReviewBindingSource.CORRECTION_CONTEXT
@@ -1839,7 +1866,14 @@ def _render_dispatch_prompt(
     ) is not None:
         return failure
     prompt = _canonical_prompt(
-        work_root, attempt_path, accepted_brief_bytes, brief.attempt_id, checkpoint, environment, choice
+        work_root,
+        attempt_path,
+        accepted_brief_bytes,
+        brief.attempt_id,
+        checkpoint,
+        environment,
+        choice,
+        current_amendments,
     )
     if supplied_prompt is not None and supplied_prompt != prompt.encode():
         return DispatchFailure(
@@ -2052,6 +2086,7 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
         supplied_prompt,
         choice,
         requires_brief_review,
+        attempt.amendments.current,
     )
     if isinstance(rendered_prompt, DispatchFailure):
         return _after_publication_failure(

@@ -76,6 +76,9 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                     | decision_models.ReviewReturnChange(candidate=accepted_candidate)
                 ):
                     candidate = str(accepted_candidate)
+                case decision_models.AmendmentChange(amendment=amendment):
+                    # The amendment row, keyed by this receipt's history id, owns the amendment itself.
+                    candidate = None if amendment.cleared_candidate is None else str(amendment.cleared_candidate)
                 case (
                     decision_models.ActivationChange()
                     | decision_models.AttemptStateChange()

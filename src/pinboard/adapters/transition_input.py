@@ -82,7 +82,11 @@ def _revise_item_input(payload: transition_models.ReviseItemInputPayload) -> wor
     )
 
 
-type ParsedTransitionInput = decision_models.TransitionCommand | transition_models.ActivateInputPayload
+type ParsedTransitionInput = (
+    decision_models.TransitionCommand
+    | transition_models.ActivateInputPayload
+    | transition_models.RecordAmendmentInputPayload
+)
 
 
 def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaustive action-to-input boundary
@@ -216,6 +220,9 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                 # Report the plain-pause failure unless the caller selected the decision-batch shape by its schema.
                 return payload if _names_schema(data) else plain
             return decision_models.PauseCommand(action, decision_batches.decisions_from_payload(payload))
+        case decision_models.RecordAmendmentAction():
+            # The transition adapter adds the review facts it observes for the attempt before deciding.
+            return _decode(data, transition_models.RecordAmendmentInputPayload)
         case decision_models.ReturnForCorrectionAction():
             if isinstance(payload := _decode(data, transition_models.ReasonInputPayload), TransitionInputFailure):
                 return payload

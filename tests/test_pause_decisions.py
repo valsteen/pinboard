@@ -21,7 +21,7 @@ from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import native_tools
-from tests.sqlite_support import downgrade_to_v12
+from tests.sqlite_support import downgrade_to_v12, downgrade_to_v13
 from tests.support import HOLD_UNBLOCKER, JsonObject
 
 
@@ -229,13 +229,13 @@ class PauseDecisionsTest(CheckpointPackageSupport):
         rebuilt, stdout, stderr = self.run_cli(*fixture.common, "views", "rebuild")
         self.assertEqual(0, rebuilt, f"{stdout}\n{stderr}")
         markdown_views = tuple(
-            view for view in (fixture.work / "views").rglob("*.md") if "authority: sqlite-v13" in view.read_text()
+            view for view in (fixture.work / "views").rglob("*.md") if "authority: sqlite-v14" in view.read_text()
         )
         self.assertTrue(markdown_views)
         for view in markdown_views:
             current = view.read_text()
-            self.assertIn("authority: sqlite-v13", current)
-            stale = current.replace("authority: sqlite-v13", "authority: sqlite-v12")
+            self.assertIn("authority: sqlite-v14", current)
+            stale = current.replace("authority: sqlite-v14", "authority: sqlite-v12")
             view.write_text(stale)
             self.assertEqual(stale, view.read_text())
         downgrade_to_v12(path)
@@ -248,14 +248,14 @@ class PauseDecisionsTest(CheckpointPackageSupport):
         plan_id = str(preview["plan_id"])
         self.assertEqual("unblockers-advance", self.json_object(preview["plan"])["kind"])
         self.assertEqual(original, path.read_bytes())
-        verify = database._verify_current_schema
+        verify = database._verify_v13_schema
 
         def fail_before_commit(connection: sqlite3.Connection) -> None:
             verify(connection)
             if connection.execute("PRAGMA database_list").fetchone()[2] == str(path):
                 raise StorageError(StorageErrorCode.INVALID_STATE, "Controlled pre-commit failure.")
 
-        with patch.object(database, "_verify_current_schema", side_effect=fail_before_commit):
+        with patch.object(database, "_verify_v13_schema", side_effect=fail_before_commit):
             failed = schema_procedure.apply_schema(path, plan_id)
         self.assertIsInstance(failed, schema_procedure.SchemaProcedureFailure)
         self.assertEqual(original, path.read_bytes())
@@ -263,24 +263,36 @@ class PauseDecisionsTest(CheckpointPackageSupport):
         migrated = self.run_json_cli(*fixture.common, "migrate-schema", "--apply", plan_id)
         self.assertEqual("sqlite-v13", migrated["authority"])
         self.assertIsNone(migrated["warning"])
+        intermediate = path.read_bytes()
+        amendments = self.run_json_cli(*fixture.common, "migrate-schema")
+        self.assertEqual("amendments-advance", self.json_object(amendments["plan"])["kind"])
+        amendment_plan = str(amendments["plan_id"])
+        current = self.run_json_cli(*fixture.common, "migrate-schema", "--apply", amendment_plan)
+        self.assertEqual("sqlite-v14", current["authority"])
+        self.assertIsNone(current["warning"])
         for view in markdown_views:
-            self.assertIn("authority: sqlite-v13", view.read_text())
+            self.assertIn("authority: sqlite-v14", view.read_text())
             self.assertNotIn("authority: sqlite-v12", view.read_text())
         self.assertEqual(expected, SQLiteWorkStore(path).validated_snapshot())
         exported = self.run_json_cli(*fixture.common, "export")
-        self.assertEqual(13, self.json_object(exported["project"])["schema_version"])
+        self.assertEqual(14, self.json_object(exported["project"])["schema_version"])
         validated = self.run_json_cli(*fixture.common, "validate")
         self.assertTrue(validated["valid"])
         self.assertNotIn(
             "VIEW_REFRESH_REQUIRED",
             [self.json_object(value)["code"] for value in self.json_array(validated["diagnostics"])],
         )
-        reverse = self.run_json_cli(*fixture.common, "migrate-schema", "--reverse", plan_id)
-        reversed_result = self.run_json_cli(*fixture.common, "migrate-schema", "--apply", str(reverse["plan_id"]))
-        self.assertEqual("sqlite-v12", reversed_result["authority"])
-        self.assertIsNone(reversed_result["warning"])
-        self.assertEqual(original, path.read_bytes())
+        for forward, authority, restored in (
+            (amendment_plan, "sqlite-v13", intermediate),
+            (plan_id, "sqlite-v12", original),
+        ):
+            reverse = self.run_json_cli(*fixture.common, "migrate-schema", "--reverse", forward)
+            reversed_result = self.run_json_cli(*fixture.common, "migrate-schema", "--apply", str(reverse["plan_id"]))
+            self.assertEqual(authority, reversed_result["authority"])
+            self.assertIsNone(reversed_result["warning"])
+            self.assertEqual(restored, path.read_bytes())
         self.run_json_cli(*fixture.common, "migrate-schema", "--apply", plan_id)
+        self.run_json_cli(*fixture.common, "migrate-schema", "--apply", amendment_plan)
         changed = self.transition_result(
             fixture,
             self.project_action(fixture, "return-for-correction:work-a-1"),
@@ -288,10 +300,12 @@ class PauseDecisionsTest(CheckpointPackageSupport):
         )
         self.assertEqual("committed", changed["status"], changed)
         later = path.read_bytes()
-        self.assertIsInstance(schema_procedure.preview_schema(path, plan_id), schema_procedure.SchemaProcedureFailure)
+        self.assertIsInstance(
+            schema_procedure.preview_schema(path, amendment_plan), schema_procedure.SchemaProcedureFailure
+        )
         self.assertEqual(later, path.read_bytes())
 
-    def test_committed_v12_migration_reports_committed_when_the_view_refresh_after_it_fails(self) -> None:
+    def test_committed_migration_to_current_reports_committed_when_the_view_refresh_after_it_fails(self) -> None:
         for failure in (
             ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, "Controlled brief read failure."),
             FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "Controlled view write failure."),
@@ -300,12 +314,12 @@ class PauseDecisionsTest(CheckpointPackageSupport):
                 fixture = self.checkpoint_fixture()
                 path = fixture.work / "state.sqlite3"
                 expected = fixture.store.validated_snapshot()
-                downgrade_to_v12(path)
+                downgrade_to_v13(path)
                 plan_id = str(self.run_json_cli(*fixture.common, "migrate-schema")["plan_id"])
                 with patch("pinboard.cli.migration.schema_migration.work_views.rebuild", side_effect=failure):
                     migrated = self.run_json_cli(*fixture.common, "migrate-schema", "--apply", plan_id)
                 self.assertEqual(
-                    ("migrated", "committed", "do-not-retry", True, "sqlite-v13"),
+                    ("migrated", "committed", "do-not-retry", True, "sqlite-v14"),
                     (
                         migrated["status"],
                         migrated["effect"],

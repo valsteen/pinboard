@@ -212,6 +212,13 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
                                 context.attempt_subject_revision,
                             )
                         ),
+                        decision_models.RecordAmendmentAction(
+                            factory.make(
+                                context.attempt,
+                                f"Record a human-approved amendment for {context.work_item_id}",
+                                context.attempt_subject_revision,
+                            )
+                        ),
                     )
                 )
             attempt_actions.extend(
@@ -285,6 +292,15 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
                             )
                         )
                     )
+                attempt_actions.append(
+                    decision_models.RecordAmendmentAction(
+                        factory.make(
+                            context.attempt,
+                            f"Record a human-approved amendment for {context.work_item_id} and return it to active",
+                            context.attempt_subject_revision,
+                        )
+                    )
+                )
         case work_models.WorkState.PAUSED | work_models.WorkState.BLOCKED:
             pass
         case work_models.WorkState.READY:
@@ -1419,6 +1435,104 @@ def _return_for_correction(
     )
 
 
+def _record_amendment(
+    snapshot: LedgerSnapshot,
+    command: decision_models.RecordAmendmentCommand,
+    now: datetime,
+) -> DecisionResult[decision_models.TransitionDecision]:
+    action = command.action
+    value = command.value
+    attempt_id = action.capability.subject
+    item = _require_attempt_item(snapshot, attempt_id)
+    if isinstance(item, DecisionFailure):
+        return item
+    attempt = snapshot.attempt(attempt_id)
+    if (
+        item.state not in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}
+        or attempt is None
+        or attempt.state not in {work_models.AttemptState.ACTIVE, work_models.AttemptState.REVIEW}
+    ):
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "Only an active attempt or an attempt in review can record an amendment.",
+            None,
+        )
+    if _definition_stale(snapshot, item):
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_DEFINITION_STALE,
+            "The attempt has not accepted the item's current definition.",
+            None,
+        )
+    if not _replacement_resolved(snapshot, item.work_item_id):
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "An unresolved planned replacement withholds amendments until it is withdrawn or temporarily retained.",
+            None,
+        )
+    if not (value.change.strip() and value.reason.strip() and value.human_decision.strip()):
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "An amendment requires a nonempty change, reason and the human's exact authorizing words.",
+            None,
+        )
+    if attempt.brief_artifact_ref_id is None:
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_DEFINITION_STALE,
+            "The attempt has no accepted brief reference to bind the amendment to.",
+            None,
+        )
+    authority_change: decision_models.AttemptAuthorityChange | None = None
+    cleared = value.cleared_submission
+    if attempt.state == work_models.AttemptState.REVIEW:
+        if cleared is None or cleared.candidate != attempt.protected_candidate_revision:
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+                "The protected candidate changed after its submission was observed for this amendment.",
+                None,
+            )
+        authorities = tuple(candidate for candidate in snapshot.attempt_authorities if candidate.attempt == attempt_id)
+        if len(authorities) != 1:
+            return DecisionFailure(
+                DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+                "Amending an attempt in review requires exactly one current attempt-authority record to fence.",
+                None,
+            )
+        authority = authorities[0]
+        authority_change = decision_models.AttemptAuthorityChange(
+            authority,
+            replace(authority, lease_id=None, generation=authority.generation + 1),
+        )
+    elif cleared is not None:
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "An active attempt has no protected submission for an amendment to clear.",
+            None,
+        )
+    review_base = (
+        work_models.ReviewBase(
+            cleared.candidate, cleared.snapshot_artifact_ref_id, cleared.ready_review_artifact_ref_id
+        )
+        if cleared is not None and cleared.ready_review_artifact_ref_id is not None
+        else value.carried_base
+    )
+    amendment = work_models.AttemptAmendment(
+        value.amendment_class,
+        value.change,
+        value.reason,
+        value.human_decision,
+        attempt.brief_artifact_ref_id,
+        None if cleared is None else cleared.candidate,
+        None if cleared is None else cleared.snapshot_artifact_ref_id,
+        review_base,
+    )
+    return _accepted_transition_decision(
+        action,
+        now,
+        decision_models.AmendmentChange(item.work_item_id, attempt_id, attempt.state, amendment, authority_change),
+        work_item_id=item.work_item_id,
+    )
+
+
 def validate_checkpoint_candidate(
     snapshot: LedgerSnapshot,
     command: decision_models.AcceptCheckpointCommand,
@@ -1820,6 +1934,8 @@ def decide(  # noqa: C901, PLR0912
             return _submit_review(snapshot, command, now)
         case decision_models.ReturnForCorrectionCommand():
             return _return_for_correction(snapshot, command, now)
+        case decision_models.RecordAmendmentCommand():
+            return _record_amendment(snapshot, command, now)
         case decision_models.BlockWorkItemCommand():
             return _block_item(snapshot, command, now)
         case decision_models.MergeProposalCommand():

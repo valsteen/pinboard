@@ -19,6 +19,11 @@ from pinboard.adapters.sqlite import consolidation as consolidation_storage
 from pinboard.adapters.sqlite import initiatives as initiative_storage
 from pinboard.adapters.sqlite import obligation_coverage as obligation_storage
 from pinboard.adapters.sqlite import state as sqlite_state
+from pinboard.adapters.sqlite.amendments import (
+    read_amendment_facts,
+    read_amendments_by_history,
+    read_attempt_amendments,
+)
 from pinboard.adapters.sqlite.artifacts import (
     decode_reference_rows,
     read_artifact_reference,
@@ -90,6 +95,7 @@ from pinboard.adapters.sqlite.proposals import (
 )
 from pinboard.adapters.sqlite.replacements import read_current_replacements
 from pinboard.application import (
+    amendments,
     artifact_identity,
     cancellation_models,
     candidate_snapshots,
@@ -390,6 +396,7 @@ def _read_generated_view_facts(  # noqa: PLR0915 - one selected read of every pr
             tuple(attempt.item_id for attempt in selected_attempt_records.values()),
         )
     }
+    attempt_amendments = read_attempt_amendments(connection, attempt_ids)
     attempts: list[query_models.AttemptProjectionFacts] = []
     for attempt_id in attempt_ids:
         attempt = selected_attempt_records.get(attempt_id)
@@ -416,6 +423,7 @@ def _read_generated_view_facts(  # noqa: PLR0915 - one selected read of every pr
                 holds.get(attempt.item_id)
                 if attempt.state in {work_models.AttemptState.PAUSED, work_models.AttemptState.BLOCKED}
                 else None,
+                attempt_amendments.get(attempt_id, ()),
             )
         )
     selected_receipts = sqlite_state.read_history_receipts_by_ids(connection, history_ids)
@@ -424,7 +432,13 @@ def _read_generated_view_facts(  # noqa: PLR0915 - one selected read of every pr
     )
     if len(receipts) != len(history_ids):
         raise StorageError(StorageErrorCode.INVALID_STATE, "An affected history projection is missing.")
-    return query_models.GeneratedViewFacts(project_revision, tuple(items), tuple(attempts), receipts)
+    return query_models.GeneratedViewFacts(
+        project_revision,
+        tuple(items),
+        tuple(attempts),
+        receipts,
+        tuple(read_amendments_by_history(connection, history_ids).values()),
+    )
 
 
 def _read_overview_proposals(
@@ -488,7 +502,15 @@ def _read_board_records(connection: sqlite3.Connection, snapshot: LedgerSnapshot
     briefs = read_artifact_references_by_ids(
         connection, tuple(attempt.brief_artifact_ref_id for attempt, _ in attempts)
     )
-    receipts = read_receipts_at_revisions(connection, (attempt.subject_revision for attempt, _state in attempts))
+    attempt_amendments = read_attempt_amendments(connection, attempt_ids)
+    recorded_amendments = {value.history_id: value for values in attempt_amendments.values() for value in values}
+    receipts = read_receipts_at_revisions(
+        connection,
+        (
+            *(attempt.subject_revision for attempt, _state in attempts),
+            *(value.prior_attempt_revision for value in recorded_amendments.values()),
+        ),
+    )
     acceptances = sqlite_state.read_checkpoint_receipts(connection, attempt_ids)
     snapshot_keys = {
         attempt.attempt_id: candidate_snapshots.candidate_snapshot_artifact_key(
@@ -529,10 +551,11 @@ def _read_board_records(connection: sqlite3.Connection, snapshot: LedgerSnapshot
                 attempt.accepted_scope_digest,
                 attempt.candidate_revision,
                 brief,
-                receipts.get(attempt.subject_revision),
+                amendments.condition_receipt(attempt.subject_revision, receipts, recorded_amendments),
                 tuple(reversed(acceptances.get(attempt.attempt_id, ()))),
                 None if snapshot_key is None else snapshots.get(snapshot_key),
                 batches.get(attempt.attempt_id),
+                attempt_amendments.get(attempt.attempt_id, ()),
             )
         )
     histories = read_definition_histories(connection, tuple(item.work_item_id for item in snapshot.items))
@@ -591,6 +614,7 @@ def _read_attempt_inspection_facts(
                 reference,
                 selected.pause_reason,
                 read_decision_batches(connection, (selected.attempt_id,)).get(selected.attempt_id),
+                read_amendment_facts(connection, selected.attempt_id, selected.brief_artifact_ref_id),
             )
         case _ as unreachable:
             assert_never(unreachable)

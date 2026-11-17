@@ -139,6 +139,19 @@ class AcceptReviewAndContinueInputPayload(msgspec.Struct, frozen=True, forbid_un
     evidence: RecordText
 
 
+class RecordAmendmentInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """One human-approved incidental repair recorded as an attempt amendment.
+
+    human_decision carries the human's exact authorizing words; it is attribution, not authentication of the human.
+    """
+
+    schema: Literal["pinboard-attempt-amendment/v1"]
+    amendment_class: work_models.AmendmentClass
+    change: RecordText
+    reason: RecordText
+    human_decision: RecordText
+
+
 class RecordPlannedReplacementInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-planned-replacement/v1"]
     expected_relation_revision: Annotated[int, msgspec.Meta(ge=0)]
@@ -203,6 +216,7 @@ type InputPayload = (
     | EvidenceInputPayload
     | AcceptCheckpointInputPayload
     | AcceptReviewAndContinueInputPayload
+    | RecordAmendmentInputPayload
     | RecordPlannedReplacementInputPayload
     | RetainTemporarilyInputPayload
     | CloseInputPayload
@@ -237,6 +251,8 @@ def action_input_model(kind: decision_models.ActionKind) -> InputModel | None:  
             return BlockInputPayload
         case decision_models.ActionKind.CLOSE:
             return CloseInputPayload
+        case decision_models.ActionKind.RECORD_AMENDMENT:
+            return RecordAmendmentInputPayload
         case decision_models.ActionKind.RECORD_REPLACEMENT:
             return RecordPlannedReplacementInputPayload
         case decision_models.ActionKind.RETAIN_TEMPORARILY:

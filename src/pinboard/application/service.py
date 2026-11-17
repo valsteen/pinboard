@@ -666,6 +666,7 @@ def _transition_decision_scope(
             | decision_models.PauseCommand()
             | decision_models.SubmitReviewCommand()
             | decision_models.ReturnForCorrectionCommand()
+            | decision_models.RecordAmendmentCommand()
             | decision_models.RejectProposalCommand()
             | decision_models.RetainTemporarilyCommand()
         ):

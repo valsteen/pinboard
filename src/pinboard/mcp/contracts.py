@@ -1022,6 +1022,10 @@ class PackageCorrectionReviewChoice(ReviewChoiceBase, tag="package-correction", 
     correction_history_id: PositiveInt
 
 
+class AmendmentDeltaReviewChoice(ReviewChoiceBase, tag="amendment-delta", tag_field="kind", frozen=True):
+    """Review only the diff since the ready-reviewed candidate an amendment captured, when Pinboard records one."""
+
+
 class RecordReadyReviewChoice(
     msgspec.Struct, tag="record-ready", tag_field="kind", frozen=True, forbid_unknown_fields=True
 ):
@@ -1038,7 +1042,11 @@ class RecordReadyReviewChoice(
 
 
 type ReviewLaunchChoice = (
-    InitialReviewChoice | PackageInitialReviewChoice | CorrectionReviewChoice | PackageCorrectionReviewChoice
+    InitialReviewChoice
+    | PackageInitialReviewChoice
+    | CorrectionReviewChoice
+    | PackageCorrectionReviewChoice
+    | AmendmentDeltaReviewChoice
 )
 type ReviewChoice = ReviewLaunchChoice | RecordReadyReviewChoice
 
@@ -1169,6 +1177,9 @@ type WorkerDecisionPauseTransitionRequest = WorkerTransitionRequest[
 type RejectProposalTransitionRequest = ProjectTransitionRequest[
     Literal["reject-proposal"], action_models.RejectProposalInputPayload
 ]
+type RecordAmendmentTransitionRequest = ProjectTransitionRequest[
+    Literal["record-amendment"], action_models.RecordAmendmentInputPayload
+]
 type RecordReplacementTransitionRequest = ProjectTransitionRequest[
     Literal["record-replacement"], action_models.RecordPlannedReplacementInputPayload
 ]
@@ -1209,6 +1220,7 @@ type TransitionRequest = (
     | DecisionPauseTransitionRequest
     | WorkerDecisionPauseTransitionRequest
     | RejectProposalTransitionRequest
+    | RecordAmendmentTransitionRequest
     | RecordReplacementTransitionRequest
     | RebindAttemptTransitionRequest
     | ResumeTransitionRequest
@@ -1328,6 +1340,10 @@ def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest
         case "reject-proposal":
             request = msgspec.convert(
                 raw, type=TransitionEnvelope[RejectProposalTransitionRequest], strict=True
+            ).request
+        case "record-amendment":
+            request = msgspec.convert(
+                raw, type=TransitionEnvelope[RecordAmendmentTransitionRequest], strict=True
             ).request
         case "record-replacement":
             request = msgspec.convert(
@@ -1622,28 +1638,28 @@ class AttemptLeaseRequired(_ReadEvidenceUnavailable, frozen=True):
 
 
 class AttemptInspectInvalid(_InvalidReadRequest, frozen=True):
-    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v2"]
     code: diagnostic_codes.AttemptInspectInvalidCode
 
 
 class AttemptNotFound(_InvalidReadRequest, frozen=True):
-    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v2"]
     code: diagnostic_codes.AttemptNotFoundCode
 
 
 class AttemptBriefInvalid(_ReadEvidenceUnavailable, frozen=True):
-    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v2"]
     code: diagnostic_codes.AttemptBriefInvalidCode
     retry: Literal["do-not-retry"]
 
 
 class AttemptReceiptDamaged(_DamagedReadEvidence, frozen=True):
-    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v2"]
     code: diagnostic_codes.DamagedReceiptResultCode
 
 
 class AttemptActionUnavailable(_UnchangedReadRejection, frozen=True):
-    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v2"]
     code: diagnostic_codes.ActionUnavailableCode
     retry: Literal["refresh-action"]
 
@@ -1763,6 +1779,7 @@ def action_invocation_tool(
         case (
             decision_models.ActionKind.ACCEPT_CHECKPOINT
             | decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE
+            | decision_models.ActionKind.RECORD_AMENDMENT
             | decision_models.ActionKind.ACTIVATE
             | decision_models.ActionKind.BLOCK
             | decision_models.ActionKind.BLOCK_ITEM
@@ -2042,6 +2059,7 @@ _ACTIVE_CONTINUATION_ACTION_KINDS = (
     decision_models.ActionKind.PAUSE,
     decision_models.ActionKind.BLOCK,
     decision_models.ActionKind.COMPLETE,
+    decision_models.ActionKind.RECORD_AMENDMENT,
     decision_models.ActionKind.RECORD_REPLACEMENT,
     decision_models.ActionKind.RETAIN_TEMPORARILY,
     decision_models.ActionKind.REVISE_ITEM,
@@ -2052,6 +2070,7 @@ _REVIEW_CONTINUATION_ACTION_KINDS = (
     decision_models.ActionKind.RETURN_FOR_CORRECTION,
     decision_models.ActionKind.ACCEPT_CHECKPOINT,
     decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE,
+    decision_models.ActionKind.RECORD_AMENDMENT,
     decision_models.ActionKind.RECORD_REPLACEMENT,
     decision_models.ActionKind.RETAIN_TEMPORARILY,
     decision_models.ActionKind.REVISE_ITEM,
@@ -2076,7 +2095,7 @@ _BLOCKED_CONTINUATION_ACTION_KINDS = (
 class TerminalAttemptContinuation(
     msgspec.Struct, tag="done", tag_field="state", frozen=True, forbid_unknown_fields=True
 ):
-    schema: Literal["pinboard-attempt-continuation/v1"]
+    schema: Literal["pinboard-attempt-continuation/v2"]
     attempt_id: PathComponent
     item_id: PathComponent
     revision: PositiveInt
@@ -2107,7 +2126,7 @@ class SupersededAttemptContinuation(
 
 
 class NonterminalAttemptContinuationBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-attempt-continuation/v1"]
+    schema: Literal["pinboard-attempt-continuation/v2"]
     attempt_id: PathComponent
     item_id: PathComponent
     revision: PositiveInt
@@ -2290,7 +2309,7 @@ type CandidateRecovery = CandidateRecoveryAbsent | CandidateRecoveryPresent
 
 
 class TerminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v2"]
     status: Literal["ok"]
     continuation: TerminalAttemptContinuation | CancelledAttemptContinuation | SupersededAttemptContinuation
     candidate_recovery: CandidateRecovery
@@ -2305,12 +2324,19 @@ class TerminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, frozen=
 
 
 class NonterminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-attempt-inspection-result/v1"]
+    schema: Literal["pinboard-mcp-attempt-inspection-result/v2"]
     status: Literal["ok"]
     continuation: NonterminalAttemptContinuation
     candidate_recovery: CandidateRecovery
     candidate_review: CandidateReviewReference
     accepted_brief: AcceptedBriefIdentity
+    amendments: Annotated[
+        tuple[query_models.AttemptAmendmentView, ...],
+        msgspec.Meta(
+            description="Amendments recorded against the accepted brief; with the brief they form the attempt's "
+            "current contract."
+        ),
+    ]
     result: EvidenceReference
     review: EvidenceReference
     blocker: EvidenceReference
@@ -2701,6 +2727,7 @@ def _committed_transition_surfaces(kind: decision_models.ActionKind) -> tuple[tu
             | decision_models.ActionKind.MERGE_PROPOSAL
             | decision_models.ActionKind.PAUSE
             | decision_models.ActionKind.REJECT_PROPOSAL
+            | decision_models.ActionKind.RECORD_AMENDMENT
             | decision_models.ActionKind.RECORD_REPLACEMENT
             | decision_models.ActionKind.REBIND_ATTEMPT
             | decision_models.ActionKind.RESUME
@@ -3397,7 +3424,7 @@ class ReplacementReadinessReady(msgspec.Struct, frozen=True, forbid_unknown_fiel
 
 
 class ReviewJobReady(PublishedJobReady, frozen=True):
-    schema: Literal["pinboard-mcp-review-job-result/v1"]
+    schema: Literal["pinboard-mcp-review-job-result/v2"]
     attempt_id: PathComponent
     candidate_revision: NonEmptyText
     candidate_recovery: CandidateRecoveryPresent
@@ -3437,7 +3464,7 @@ class ReviewJobReady(PublishedJobReady, frozen=True):
 
 
 class CandidateReviewRecorded(_VariableStateChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-mcp-review-job-result/v1"]
+    schema: Literal["pinboard-mcp-review-job-result/v2"]
     status: Literal["recorded"]
     attempt_id: PathComponent
     candidate_revision: NonEmptyText
@@ -3473,7 +3500,7 @@ class DispatchInvalid(_InvalidReadRequest, frozen=True):
 
 
 class ReviewJobInvalid(_InvalidReadRequest, frozen=True):
-    schema: Literal["pinboard-mcp-review-job-result/v1"]
+    schema: Literal["pinboard-mcp-review-job-result/v2"]
     code: diagnostic_codes.ReviewJobInvalidCode
 
 
@@ -3503,7 +3530,7 @@ class DispatchRejected(JobRejected, frozen=True):
 
 
 class ReviewJobRejected(JobRejected, frozen=True):
-    schema: Literal["pinboard-mcp-review-job-result/v1"]
+    schema: Literal["pinboard-mcp-review-job-result/v2"]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -3532,7 +3559,7 @@ class DispatchInfrastructureFailure(JobInfrastructureFailure, frozen=True):
 
 
 class ReviewJobInfrastructureFailure(JobInfrastructureFailure, frozen=True):
-    schema: Literal["pinboard-mcp-review-job-result/v1"]
+    schema: Literal["pinboard-mcp-review-job-result/v2"]
 
 
 class JobFailedAfterPublication(_ChangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -3566,7 +3593,7 @@ class DispatchFailedAfterPublication(JobFailedAfterPublication, frozen=True):
 
 
 class ReviewJobFailedAfterPublication(JobFailedAfterPublication, frozen=True):
-    schema: Literal["pinboard-mcp-review-job-result/v1"]
+    schema: Literal["pinboard-mcp-review-job-result/v2"]
 
     def __post_init__(self) -> None:
         super().__post_init__()

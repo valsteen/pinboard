@@ -155,7 +155,7 @@ def stored_close_outcome(value: work_models.CloseOutcome) -> StoredWorkItemState
 @dataclass(frozen=True, slots=True)
 class ProjectRecord:
     application: Literal["pinboard"]
-    schema_version: Literal[13]
+    schema_version: Literal[14]
     revision: int
     host_epoch: int
     created_at: datetime
@@ -382,11 +382,27 @@ class StoredUnblocker:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredAttemptAmendment:
+    """One recorded attempt amendment, keyed by the receipt that recorded it.
+
+    prior_attempt_revision is the attempt's subject revision before the amendment, so a reader can find the
+    condition the amendment left in place.
+    """
+
+    history_id: HistoryId
+    attempt_id: AttemptId
+    prior_attempt_revision: int
+    recorded_at: datetime
+    amendment: work_models.AttemptAmendment
+
+
+@dataclass(frozen=True, slots=True)
 class LifecycleRecords:
     project: ProjectRecord
     decision_batch_references: tuple[DecisionBatchReference, ...] = field(kw_only=True)
     checkpoint_acceptances: tuple[CheckpointAcceptance, ...] = field(kw_only=True)
     unblockers: tuple[StoredUnblocker, ...] = field(kw_only=True)
+    amendments: tuple[StoredAttemptAmendment, ...] = field(kw_only=True)
     work_items: tuple[StoredWorkItem, ...] = ()
     dependencies: tuple[ItemDependency, ...] = ()
     attempts: tuple[StoredAttempt, ...] = ()

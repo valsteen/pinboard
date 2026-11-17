@@ -995,7 +995,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         result, stdout, stderr = self.run_cli(*fixture.common, "export", "--json")
         self.assertEqual(0, result, stderr)
         project_export = msgspec.json.decode(stdout, type=ProjectExport, strict=True)
-        self.assertEqual("pinboard-project-export/v5", project_export.schema)
+        self.assertEqual("pinboard-project-export/v6", project_export.schema)
         self.assertEqual((), project_export.completion_packages)
         self.assertEqual(1, len(project_export.checkpoint_packages))
         exported = project_export.checkpoint_packages[0]

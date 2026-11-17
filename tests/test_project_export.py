@@ -387,10 +387,10 @@ class ProjectExportTest(unittest.TestCase):
         result, stdout, stderr, statements = self.run_project_export_with_trace(common)
         self.assertEqual(0, result, stderr)
         project_export = self.decode_project_export(stdout)
-        self.assertEqual("pinboard-project-export/v5", project_export.schema)
+        self.assertEqual("pinboard-project-export/v6", project_export.schema)
         self.assertEqual((), project_export.completion_packages)
         self.assertEqual((), project_export.checkpoint_packages)
-        self.assertEqual("sqlite-v13", project_export.authority)
+        self.assertEqual("sqlite-v14", project_export.authority)
         self.assertEqual(state_before.lifecycle.project.revision, project_export.revision)
         with patch.object(SQLiteWorkStore, "validated_snapshot", side_effect=AssertionError("complete snapshot used")):
             self.assertEqual(stdout, self.run_cli(*common)[1])

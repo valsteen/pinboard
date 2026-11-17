@@ -193,6 +193,17 @@ def _representative_transition_requests() -> tuple[dict[str, contracts.JsonValue
         ("pause", "worker", batch),
         ("reject-proposal", "project", reason),
         (
+            "record-amendment",
+            "project",
+            {
+                "schema": "pinboard-attempt-amendment/v1",
+                "amendment_class": "stale-documentation",
+                "change": "Correct the stale install command.",
+                "reason": "The documented command no longer exists.",
+                "human_decision": "Yes, fix that line too.",
+            },
+        ),
+        (
             "record-replacement",
             "project",
             {
@@ -1168,7 +1179,7 @@ class McpTransportTest(unittest.TestCase):
                 {"request": common | {"role": "worker", "lease_id": "lease ", "generation": 1}},
             )
             assert isinstance(accepted, CallToolResult) and isinstance(accepted.structured_content, dict)
-            self.assertEqual("pinboard-item-status/v6", accepted.structured_content["schema"])
+            self.assertEqual("pinboard-item-status/v7", accepted.structured_content["schema"])
             for result, code in (
                 (invalid_path, "ITEM_STATUS_INVALID"),
                 (invalid_identity, "ACTIONS_INVALID"),
@@ -3327,7 +3338,7 @@ class McpTransportTest(unittest.TestCase):
             msgspec.convert(wrong_identity, type=contracts.ActionsSuccess, strict=True)
 
         continuation = query_models.ActiveAttemptContinuation(
-            "pinboard-attempt-continuation/v1",
+            "pinboard-attempt-continuation/v2",
             "attempt-1",
             "item-1",
             1,
@@ -3343,7 +3354,7 @@ class McpTransportTest(unittest.TestCase):
         presented_continuation = mcp_reads._mcp_attempt_continuation(continuation)
         assert not isinstance(presented_continuation, contracts.TerminalAttemptContinuation)
         inspection = contracts.NonterminalAttemptInspectionSuccess(
-            "pinboard-mcp-attempt-inspection-result/v1",
+            "pinboard-mcp-attempt-inspection-result/v2",
             "ok",
             presented_continuation,
             contracts.CandidateRecoveryAbsent(),
@@ -3351,6 +3362,7 @@ class McpTransportTest(unittest.TestCase):
             contracts.AcceptedBriefIdentity(
                 1, "/work/brief.json", "artifacts/briefs/a/1.json", "a" * 64, 1, 1, 1, "b" * 64
             ),
+            (),
             absent,
             contracts.EvidenceAbsent("/work/attempts/attempt-1/review.md"),
             contracts.EvidenceAbsent("/work/attempts/attempt-1/blocker.md"),
@@ -3369,7 +3381,7 @@ class McpTransportTest(unittest.TestCase):
             inspection,
             continuation=mcp_reads._mcp_attempt_continuation(
                 query_models.ReviewAttemptContinuation(
-                    "pinboard-attempt-continuation/v1",
+                    "pinboard-attempt-continuation/v2",
                     "attempt-1",
                     "item-1",
                     1,
@@ -3740,7 +3752,7 @@ class McpTransportTest(unittest.TestCase):
 
     def test_attempt_projection_preserves_every_closed_continuation_without_parent_duplicates(self) -> None:
         forbidden = ("create-user-task", "wake-user-task", "return-ownership-to-parent")
-        common = ("pinboard-attempt-continuation/v1", "attempt-1", "item-1", 1, "owner-task", False, False)
+        common = ("pinboard-attempt-continuation/v2", "attempt-1", "item-1", 1, "owner-task", False, False)
         continuations: tuple[query_models.AttemptContinuation, ...] = (
             query_models.ActiveAttemptContinuation(
                 *common,
@@ -3774,7 +3786,7 @@ class McpTransportTest(unittest.TestCase):
                 unblocker=unblockers.ItemsToFinishPayload(("dependency-1",)),
             ),
             query_models.TerminalAttemptContinuation(
-                "pinboard-attempt-continuation/v1",
+                "pinboard-attempt-continuation/v2",
                 "attempt-1",
                 "item-1",
                 1,
@@ -3802,7 +3814,7 @@ class McpTransportTest(unittest.TestCase):
             contracts.ContinuationDependencies(("dependency-1", "dependency-1"))
         with self.assertRaises(ValueError):
             contracts.TerminalAttemptContinuation(
-                "pinboard-attempt-continuation/v1",
+                "pinboard-attempt-continuation/v2",
                 "attempt-1",
                 "item-1",
                 1,
@@ -3926,7 +3938,7 @@ class McpTransportTest(unittest.TestCase):
         overview_content = overview.structured_content
         assert isinstance(overview_content, dict)
         self.assertEqual("pinboard-overview/v9", overview_content["schema"])
-        self.assertEqual("sqlite-v13", overview_content["authority"])
+        self.assertEqual("sqlite-v14", overview_content["authority"])
         self.assertEqual(
             ["work-a-1"], [row["attempt_id"] for row in overview_content["items"] if row["state"] == "active"]
         )

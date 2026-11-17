@@ -39,6 +39,7 @@ def action_subject_ids(
             | decision_models.DispatchAction(capability=capability)
             | decision_models.PauseAction(capability=capability)
             | decision_models.RebindAttemptAction(capability=capability)
+            | decision_models.RecordAmendmentAction(capability=capability)
             | decision_models.ReportBlockerAction(capability=capability)
             | decision_models.ReturnForCorrectionAction(capability=capability)
             | decision_models.SubmitReviewAction(capability=capability)

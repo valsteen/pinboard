@@ -265,8 +265,8 @@ class SQLiteQueriesTest(unittest.TestCase):
 
         self.assertEqual(
             query_models.ItemStatus(
-                "pinboard-item-status/v6",
-                "sqlite-v13",
+                "pinboard-item-status/v7",
+                "sqlite-v14",
                 "12",
                 "work-a",
                 "Work work-a",
@@ -287,6 +287,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                         current_checkpoint=query_models.UnreadableCurrentCheckpoint(
                             "Ledger-only test attempt 'work-a-1' stores no brief bytes."
                         ),
+                        amendments=(),
                     ),
                 ),
                 query_models.NoReviewVerdict(),
@@ -303,8 +304,8 @@ class SQLiteQueriesTest(unittest.TestCase):
         )
         self.assertEqual(
             query_models.ItemStatus(
-                "pinboard-item-status/v6",
-                "sqlite-v13",
+                "pinboard-item-status/v7",
+                "sqlite-v14",
                 "12",
                 "work-b",
                 "Work work-b",
@@ -407,6 +408,7 @@ class SQLiteQueriesTest(unittest.TestCase):
                         brief_reference,
                         None,
                         None,
+                        (),
                     ),
                 )
             )
@@ -490,6 +492,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             ),
             None,
             None,
+            (),
         )
         for selected_item, attempts, expected, observed in (
             (item, (attempt,), "none", "active"),
@@ -597,7 +600,7 @@ class SQLiteQueriesTest(unittest.TestCase):
     def test_attempt_continuation_round_trips_exact_states_and_rejects_cross_identity(self) -> None:
         forbidden = ("create-user-task", "wake-user-task", "return-ownership-to-parent")
         active = query_models.ActiveAttemptContinuation(
-            "pinboard-attempt-continuation/v1",
+            "pinboard-attempt-continuation/v2",
             "attempt-1",
             "item-1",
             1,
@@ -610,7 +613,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             decision_batch=None,
         )
         review = query_models.ReviewAttemptContinuation(
-            "pinboard-attempt-continuation/v1",
+            "pinboard-attempt-continuation/v2",
             "attempt-1",
             "item-1",
             1,
@@ -623,7 +626,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             decision_batch=None,
         )
         paused = query_models.PausedAttemptContinuation(
-            "pinboard-attempt-continuation/v1",
+            "pinboard-attempt-continuation/v2",
             "attempt-1",
             "item-1",
             1,
@@ -638,7 +641,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             unblockers.HumanDecisionPayload("Which option does the maintainer choose?"),
         )
         blocked = query_models.BlockedAttemptContinuation(
-            "pinboard-attempt-continuation/v1",
+            "pinboard-attempt-continuation/v2",
             "attempt-1",
             "item-1",
             1,
@@ -652,7 +655,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             unblocker=unblockers.ItemsToFinishPayload(("dependency-1",)),
         )
         terminal = query_models.TerminalAttemptContinuation(
-            "pinboard-attempt-continuation/v1",
+            "pinboard-attempt-continuation/v2",
             "attempt-1",
             "item-1",
             1,

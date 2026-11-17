@@ -15,6 +15,7 @@ from typing import Annotated, NoReturn, assert_never
 
 import msgspec
 
+from pinboard.adapters.sqlite.amendments import read_all_amendments, read_amendment_facts
 from pinboard.adapters.sqlite.artifacts import read_artifact_references_by_ids
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.dependencies import DependencyRow, DependencyTargetRow, read_accepted_checkpoints
@@ -742,6 +743,9 @@ def read_item_status(
                 _read_review_event(
                     connection, item.work_item_id, selected_attempt.attempt_id, selected_attempt.subject_revision
                 ),
+                read_amendment_facts(
+                    connection, selected_attempt.attempt_id, selected_attempt.brief_artifact_ref_id
+                ).current,
             ),
         )
     closure = (
@@ -1166,6 +1170,7 @@ def read_lifecycle(
             stored_state.StoredUnblocker(item_id, unblocker)
             for item_id, unblocker in sorted(read_all_item_unblockers(connection).items())
         ),
+        amendments=read_all_amendments(connection),
     )
 
 

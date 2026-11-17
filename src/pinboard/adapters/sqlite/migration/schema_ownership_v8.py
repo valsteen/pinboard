@@ -16,6 +16,7 @@ from pinboard.adapters.sqlite import database
 from pinboard.adapters.sqlite.artifact_ownership import accept_ownership
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.migration import database as migration_database
+from pinboard.adapters.sqlite.migration.schema_amendments_v13 import upgrade_v13_connection
 from pinboard.adapters.sqlite.migration.schema_decisions_v10 import _upgrade_v10_connection
 from pinboard.adapters.sqlite.migration.schema_dependencies_v9 import _upgrade_v9_connection
 from pinboard.adapters.sqlite.migration.schema_membership_v11 import _upgrade_v11_connection
@@ -202,6 +203,7 @@ def _read_compatibility_v9_state(connection: sqlite3.Connection) -> stored_state
         _upgrade_v10_connection(projection, None)
         _upgrade_v11_connection(projection, None)
         project_v12_for_current_readers(projection)
+        upgrade_v13_connection(projection, None)
         return read_state(projection)
 
 
@@ -325,7 +327,9 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
                 database._verify_v12_schema(connection)
                 database.verify_database_integrity(connection)
                 return version, source, None
-            if version == 11:
+            if version == 13:
+                database._verify_v13_schema(connection)
+            elif version == 11:
                 database._verify_v11_schema(connection)
             elif version == 10:
                 database._verify_v10_schema(connection)
@@ -343,7 +347,9 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
             with closing(sqlite3.connect(":memory:", isolation_level=None)) as simulation:
                 connection.backup(simulation)
                 database._configure_connection(simulation)
-                if version == 11:
+                if version == 13:
+                    upgrade_v13_connection(simulation, None)
+                elif version == 11:
                     _upgrade_v11_connection(simulation, None)
                 elif version == 10:
                     _upgrade_v10_connection(simulation, None)

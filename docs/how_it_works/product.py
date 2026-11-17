@@ -42,6 +42,7 @@ ACTION_GROUPS: dict[decision_models.ActionKind, str] = {
     decision_models.ActionKind.REJECT_PROPOSAL: "proposal",
     decision_models.ActionKind.REBIND_ATTEMPT: "lifecycle",
     decision_models.ActionKind.REPORT_BLOCKER: "advisory",
+    decision_models.ActionKind.RECORD_AMENDMENT: "review",
     decision_models.ActionKind.RECORD_REPLACEMENT: "relation",
     decision_models.ActionKind.REVISE_ITEM: "definition",
     decision_models.ActionKind.RESUME: "lifecycle",

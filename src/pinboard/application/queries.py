@@ -14,6 +14,7 @@ from typing import assert_never
 import msgspec
 
 from pinboard.application import (
+    amendments,
     candidate_snapshots,
     checkpoint_packages,
     decision_batches,
@@ -221,7 +222,7 @@ def _terminal_attempt_continuation(
         case _ as unreachable:
             assert_never(unreachable)
     return constructor(
-        "pinboard-attempt-continuation/v1",
+        "pinboard-attempt-continuation/v2",
         context.attempt_id,
         context.work_item_id,
         context.project_revision,
@@ -312,7 +313,7 @@ def project_attempt_continuation(
             if isinstance(selected, DecisionFailure):
                 return selected
             continuation_arguments = (
-                "pinboard-attempt-continuation/v1",
+                "pinboard-attempt-continuation/v2",
                 context.attempt_id,
                 context.work_item_id,
                 context.project_revision,
@@ -502,9 +503,14 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 "runtime-subagent",
             )
         if isinstance(action, decision_models.ContinueAction):
-            return query_models.ActionContinuation(
-                decision_models.action_id(action), action.kind, "Follow the accepted brief."
+            current = context.amendments.current
+            condition = (
+                "Follow the accepted brief."
+                if not current
+                else f"Follow the accepted brief and its {len(current)} current amendment"
+                f"{'' if len(current) == 1 else 's'}, read from attempt inspection before submitting."
             )
+            return query_models.ActionContinuation(decision_models.action_id(action), action.kind, condition)
     for action in actions:
         if isinstance(action, decision_models.CloseAction):
             return query_models.ActionContinuation(
@@ -948,12 +954,27 @@ def select_board_records(state: stored_state.StoredWorkState) -> query_models.Bo
     for receipt in sorted(state.transition_receipts, key=_receipt_history_key, reverse=True):
         if receipt.outcome_schema == "checkpoint-acceptance/v2":
             acceptances.setdefault(str(receipt.subject_id), []).append(receipt)
+    recorded_amendments = {value.history_id: value for value in state.lifecycle.amendments}
     attempts: list[query_models.BoardAttemptRecords] = []
     for attempt in state.lifecycle.attempts:
         open_state = open_attempt_state(attempt.state)
         if open_state is None:
             continue
-        latest = receipts_by_revision.get(attempt.subject_revision)
+        attempt_amendments = tuple(
+            value for value in state.lifecycle.amendments if value.attempt_id == attempt.attempt_id
+        )
+        latest = amendments.condition_receipt(
+            attempt.subject_revision,
+            {
+                revision: _consumed_receipt(receipt)
+                for revision in (
+                    attempt.subject_revision,
+                    *(value.prior_attempt_revision for value in attempt_amendments),
+                )
+                if (receipt := receipts_by_revision.get(revision)) is not None
+            },
+            recorded_amendments,
+        )
         snapshot = (
             latest_snapshots.get(
                 candidate_snapshots.candidate_snapshot_artifact_key(
@@ -976,10 +997,11 @@ def select_board_records(state: stored_state.StoredWorkState) -> query_models.Bo
                 attempt.accepted_scope_digest,
                 attempt.candidate_revision,
                 references[attempt.brief_artifact_ref_id],
-                None if latest is None else _consumed_receipt(latest),
+                latest,
                 tuple(acceptances.get(str(attempt.attempt_id), ())),
                 snapshot,
                 batches.get(attempt.attempt_id),
+                attempt_amendments,
             )
         )
     live_ids = frozenset(item.item_id for item, _live_state in _select_live_items(state))
@@ -1061,6 +1083,15 @@ def _board_condition(facts: query_models.BoardAttemptFacts) -> query_models.Boar
                 _unreadable_condition(continued)
                 if isinstance(continued, query_models.DamagedTransitionReceipt)
                 else continued
+            )
+        case decision_models.ActionKind.RECORD_AMENDMENT:
+            amendment = next((value for value in records.amendments if value.history_id == receipt.history_id), None)
+            if amendment is None:
+                return query_models.UnreadableCondition(
+                    receipt.history_id, at, "The amendment receipt has no recorded amendment."
+                )
+            return query_models.AmendedFromReviewCondition(
+                at, amendment.amendment.amendment_class, amendment.amendment.change
             )
         case decision_models.ActionKind.ACCEPT_CHECKPOINT:
             accepted = _decode_checkpoint_acceptance(attempt_id, receipt)
@@ -1557,6 +1588,7 @@ def _closure_action(
             | decision_models.ActionKind.REVIEW_CANDIDATE
             | decision_models.ActionKind.PAUSE
             | decision_models.ActionKind.REJECT_PROPOSAL
+            | decision_models.ActionKind.RECORD_AMENDMENT
             | decision_models.ActionKind.RECORD_REPLACEMENT
             | decision_models.ActionKind.REBIND_ATTEMPT
             | decision_models.ActionKind.REPORT_BLOCKER
@@ -1657,6 +1689,7 @@ def project_item_status(
                 selected.pause_reason,
                 facts.batches_by_attempt.get(selected.attempt_id),
                 _status_checkpoint(project_current_checkpoint(selected.attempt_id, selected.brief_reference, brief)),
+                tuple(query_models.amendment_view(value) for value in selected.amendments),
             )
         )
         selected_verdict = _review_verdict(selected, brief, artifacts)
@@ -1671,8 +1704,8 @@ def project_item_status(
         and isinstance((target := history.dependency_from_payload(value.target)), work_models.CheckpointDependency)
     )
     return query_models.ItemStatus(
-        "pinboard-item-status/v6",
-        "sqlite-v13",
+        "pinboard-item-status/v7",
+        "sqlite-v14",
         str(facts.project_revision),
         str(item.work_item_id),
         facts.definition_title,
@@ -1721,7 +1754,7 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
         return None
     return query_models.BranchOwners(
         "pinboard-branch-owners/v1",
-        "sqlite-v13",
+        "sqlite-v14",
         str(facts.project_revision),
         branch,
         tuple(
@@ -1851,7 +1884,7 @@ def select_item_definition(
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
-        "sqlite-v13",
+        "sqlite-v14",
         selected.project_revision,
         work_item_id,
         selected.item_subject_revision,
@@ -1888,7 +1921,7 @@ def select_item_definition_history(
     )
     return query_models.ItemDefinitionHistory(
         "pinboard-item-definition-history/v1",
-        "sqlite-v13",
+        "sqlite-v14",
         selected.project_revision,
         work_item_id,
         rows,

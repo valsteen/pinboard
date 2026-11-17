@@ -281,6 +281,16 @@
       "source": "skills/pinboard/sources/procedure.revision.md",
       "implementing_tests": []
     },
+    "procedure.amendment": {
+      "consumers": [
+        "record-amendment:active|review"
+      ],
+      "kind": "action-attached",
+      "clauses": [],
+      "includes": [],
+      "source": "skills/pinboard/sources/procedure.amendment.md",
+      "implementing_tests": []
+    },
     "procedure.integrate": {
       "consumers": [
         "complete:external_effects=none|publish|merge|external-service",

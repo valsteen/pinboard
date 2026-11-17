@@ -12,6 +12,8 @@ from pinboard.adapters.sqlite.artifact_ownership import accept_ownership
 from pinboard.adapters.sqlite.database import APPLICATION, SCHEMA_VERSION
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import _definition_revision_values
+from pinboard.adapters.sqlite.migration import database as migration_database
+from pinboard.adapters.sqlite.migration.schema_amendments_v13 import upgrade_v13_connection
 from pinboard.adapters.sqlite.proposals import _encode_proposal_disposition_columns
 from pinboard.adapters.sqlite.state import _validate_current_state, append_history
 from pinboard.application import stored_state, unblockers
@@ -19,9 +21,41 @@ from pinboard.domain import work_models
 from tests.domain_support import TEST_HOLD
 
 
+def downgrade_to_v13(path: Path) -> None:
+    """Rewrite a current ledger without amendments into the exact v13 predecessor schema for migration journeys."""
+
+    statements = {name: sql for _, name, _, sql in sqlite_database._build_v13_schema_signature()}
+    with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT count(*) FROM attempt_amendments").fetchone()[0]:
+            raise AssertionError("Only a ledger without amendments can be rewritten as a v13 fixture.")
+        connection.execute("DROP TABLE attempt_amendments")
+        connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v14")
+        connection.execute(str(statements["project_meta"]))
+        connection.execute(
+            "INSERT INTO project_meta SELECT singleton, application, 13, revision, host_epoch, created_at, updated_at FROM project_meta_v14"
+        )
+        connection.execute("DROP TABLE project_meta_v14")
+        sqlite_database._verify_v13_schema(connection)
+        connection.execute("COMMIT")
+        connection.execute("PRAGMA foreign_keys = ON")
+
+
+def advanced_v13_copy(path: Path) -> Path:
+    """Copy a v13 ledger beside itself and advance only the copy, so current readers can check v13 facts."""
+
+    copy = path.with_name("state-v14-check.sqlite3")
+    copy.write_bytes(path.read_bytes())
+    with migration_database.migration_connection(copy) as connection:
+        upgrade_v13_connection(connection, None)
+    return copy
+
+
 def downgrade_to_v12(path: Path) -> None:
     """Rewrite an unheld current ledger into the exact v12 predecessor schema for migration journeys."""
 
+    downgrade_to_v13(path)
     statements = {name: sql for _, name, _, sql in sqlite_database._build_v12_schema_signature()}
     with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as connection:
         connection.execute("PRAGMA foreign_keys = OFF")

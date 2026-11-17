@@ -51,6 +51,8 @@ The brief is the single agreement both sides work from. The implementing agent b
 
 When the reviewer finds an implementation defect, the work returns to the same attempt for correction and another review. When either agent discovers something that would change the product scope, the architecture or compatibility, it stops and brings that decision to you. If you change the agreement, Pinboard replaces the definition and brief before the affected work continues, so review always compares the change with what you actually asked for.
 
+A small repair you approve along the way does not change the agreement: fixing stale documentation, a broken or flaky test, a lint or tooling failure, a comment or a name, or a mechanical baseline cleanup. The agent records it as an amendment to the running attempt with your exact words and makes it in the same checkout, without a new definition or brief. The next review checks the change against the brief plus its amendments. If a review had already approved the rest, it checks only the amended diff, and a reviewer who finds a change beyond what you approved brings that back to you as a decision.
+
 A favorably reviewed change does not land by itself. You decide whether to merge it, keep it on its branch as an experiment, or drop it. A merged pull request is not proof of review either: if a change was published first, the agent can still send the saved version for review and tell you which commits that review covered. [Using Pinboard in conversation](GUIDE.md) walks through these cases.
 
 The brief itself is a strict structured record rather than free prose.

@@ -29,7 +29,7 @@ class ContentEncoding(Enum):
 
 class ProjectExportProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[13]
+    schema_version: Literal[14]
     created_at: str
     updated_at: str
 
@@ -53,6 +53,31 @@ class ProjectExportUnblocker(msgspec.Struct, frozen=True, forbid_unknown_fields=
 
     item_id: str
     unblocker: unblockers.UnblockerPayload
+
+
+class ProjectExportReviewBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """The earlier reviewed submission an amendment-only delta review may compare against."""
+
+    candidate: str
+    snapshot_artifact_ref_id: int
+    ready_review_artifact_ref_id: int
+
+
+class ProjectExportAmendment(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """One recorded attempt amendment, keyed by the receipt that recorded it."""
+
+    history_id: int
+    attempt_id: str
+    prior_attempt_revision: int
+    recorded_at: str
+    amendment_class: work_models.AmendmentClass
+    change: str
+    reason: str
+    human_decision: str
+    brief_artifact_ref_id: int
+    cleared_candidate: str | None
+    cleared_snapshot_artifact_ref_id: int | None
+    review_base: ProjectExportReviewBase | None
 
 
 class ProjectExportDefinitionRevision(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -406,8 +431,8 @@ class ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_u
 
 
 class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-project-export/v5"]
-    authority: Literal["sqlite-v13"]
+    schema: Literal["pinboard-project-export/v6"]
+    authority: Literal["sqlite-v14"]
     revision: int
     project: ProjectExportProject
     work_items: tuple[ProjectExportWorkItem, ...]
@@ -415,6 +440,7 @@ class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     definition_revisions: tuple[ProjectExportDefinitionRevision, ...]
     dependencies: tuple[ProjectExportDependency, ...]
     attempts: tuple[ProjectExportAttempt, ...]
+    amendments: tuple[ProjectExportAmendment, ...]
     proposals: tuple[ProjectExportProposal, ...]
     proposal_relations: tuple[ProjectExportProposalRelation, ...]
     planned_replacements: tuple[ProjectExportPlannedReplacement, ...]
@@ -463,6 +489,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
     definition_revisions = list(lifecycle.definition_revisions)
     batch_references = list(lifecycle.decision_batch_references)
     held = list(lifecycle.unblockers)
+    recorded_amendments = list(lifecycle.amendments)
     proposal_values = list(proposals.proposals)
     evidence = list(proposals.evidence)
     freshness = list(proposals.freshness)
@@ -477,6 +504,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
         definition_revisions.extend(batch.lifecycle.definition_revisions)
         batch_references.extend(batch.lifecycle.decision_batch_references)
         held.extend(batch.lifecycle.unblockers)
+        recorded_amendments.extend(batch.lifecycle.amendments)
         proposal_values.extend(batch.proposals.proposals)
         evidence.extend(batch.proposals.evidence)
         freshness.extend(batch.proposals.freshness)
@@ -496,6 +524,7 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
             checkpoint_acceptances=(),
             decision_batch_references=tuple(batch_references),
             unblockers=tuple(held),
+            amendments=tuple(recorded_amendments),
         ),
         stored_state.ProposalRecords(tuple(proposal_values), tuple(evidence), tuple(freshness)),
         stored_state.ReplacementRecords(tuple(planned_replacements), tuple(replacement_dispositions)),
@@ -577,6 +606,29 @@ def _project_item_artifact_links(state: ProjectExportState) -> tuple[ProjectExpo
     return tuple(unique)
 
 
+def _project_amendment(value: stored_state.StoredAttemptAmendment) -> ProjectExportAmendment:
+    amendment = value.amendment
+    base = amendment.review_base
+    return ProjectExportAmendment(
+        int(value.history_id),
+        str(value.attempt_id),
+        value.prior_attempt_revision,
+        value.recorded_at.isoformat(),
+        amendment.amendment_class,
+        amendment.change,
+        amendment.reason,
+        amendment.human_decision,
+        int(amendment.brief_artifact_ref_id),
+        None if amendment.cleared_candidate is None else str(amendment.cleared_candidate),
+        None if amendment.cleared_snapshot_artifact_ref_id is None else int(amendment.cleared_snapshot_artifact_ref_id),
+        None
+        if base is None
+        else ProjectExportReviewBase(
+            str(base.candidate), int(base.snapshot_artifact_ref_id), int(base.ready_review_artifact_ref_id)
+        ),
+    )
+
+
 def project_export_from_state(
     state: ProjectExportState,
     artifact_references: tuple[ProjectExportArtifactReference, ...],
@@ -601,8 +653,8 @@ def project_export_from_state(
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
     return ProjectExport(
-        "pinboard-project-export/v5",
-        "sqlite-v13",
+        "pinboard-project-export/v6",
+        "sqlite-v14",
         state.lifecycle.project.revision,
         ProjectExportProject(
             state.lifecycle.project.application,
@@ -669,6 +721,7 @@ def project_export_from_state(
             )
             for value in state.lifecycle.attempts
         ),
+        tuple(_project_amendment(value) for value in state.lifecycle.amendments),
         tuple(
             ProjectExportProposal(
                 str(value.proposal_id),

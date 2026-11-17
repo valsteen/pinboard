@@ -258,7 +258,7 @@ class OverviewPagingTest(CheckpointPackageSupport):
             reason = self.json_object(self.json_array(proposal["dependency_reasons"])[0])
             self.assertIn(state.proposals.proposals[0].why_it_matters, str(reason["reason"]))
             self.assertEqual("work-c", self.json_object(self.json_array(proposal["dependencies"])[0])["target"])
-            self.assertEqual("pinboard-item-status/v6", proposal["schema"])
+            self.assertEqual("pinboard-item-status/v7", proposal["schema"])
 
     def test_invalid_continuations_and_oversized_identity_reject_without_echoing_input(self) -> None:
         fixture = self.checkpoint_fixture()

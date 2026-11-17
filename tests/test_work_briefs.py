@@ -32,12 +32,12 @@ from pinboard.application.work_briefs import (
     canonical_reviewed_authority_set_bytes,
     canonical_work_brief_bytes,
     canonical_work_brief_review_needs_correction_bytes,
+    decode_accepted_brief,
     decode_canonical_checkpoint_review_package,
     decode_canonical_historical_work_brief,
     decode_canonical_work_brief,
     decode_canonical_work_brief_review_needs_correction,
     decode_checkpoint_review_package,
-    decode_work_brief,
     decode_work_brief_identity,
     decode_work_brief_review,
     read_selected_work_brief_identity,
@@ -124,24 +124,22 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         value = example_work_brief()
         candidate = msgspec.json.encode(value)
 
-        decoded = expect_work_brief_success(decode_work_brief(candidate))
+        decoded = decode_accepted_brief(candidate)
 
         self.assertEqual(value, decoded)
         canonical = canonical_work_brief_bytes(decoded)
         self.assertTrue(canonical.endswith(b"\n"))
-        self.assertEqual(decoded, expect_work_brief_success(decode_work_brief(canonical)))
-        expect_work_brief_failure(
-            decode_work_brief(candidate[:-1] + b',"unknown":true}'), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
-        )
+        self.assertEqual(decoded, decode_accepted_brief(canonical))
+        with self.assertRaises(msgspec.DecodeError):
+            decode_accepted_brief(candidate[:-1] + b',"unknown":true}')
         for field, invalid in (("attempt_id", f"{value.attempt_id}\n"), ("title", f"{value.title}\n")):
             with self.subTest(field=field):
                 payload = msgspec.json.decode(candidate)
                 if not isinstance(payload, dict):
                     self.fail("work brief JSON must be an object")
                 payload[field] = invalid
-                expect_work_brief_failure(
-                    decode_work_brief(msgspec.json.encode(payload)), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
-                )
+                with self.assertRaises(msgspec.DecodeError):
+                    decode_accepted_brief(msgspec.json.encode(payload))
 
     def test_original_v2_facts_preserve_exact_history_without_operational_identity(self) -> None:
         current = example_work_brief()
@@ -165,7 +163,8 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         self.assertEqual("pinboard-work-brief/v2", legacy.schema)
         self.assertIn(b"authority: pinboard-work-brief/v2", render_historical_work_brief_markdown(legacy))
         self.assertEqual(legacy_bytes, canonical_work_brief_bytes(legacy))
-        expect_work_brief_failure(decode_work_brief(legacy_bytes), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID)
+        with self.assertRaises(msgspec.DecodeError):
+            decode_accepted_brief(legacy_bytes)
         expect_work_brief_failure(
             decode_work_brief_identity(legacy_bytes), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
         )
@@ -183,6 +182,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 work_brief_models.WorkBriefErrorCode.BRIEF_INVALID,
             )
         current_review = msgspec.json.decode(ready_review(current), type=work_brief_models.WorkBriefReview)
+        assert not isinstance(legacy, work_brief_models.SmallWorkBrief)
         legacy_checkpoint = legacy.checkpoint
         review = work_brief_compatibility_models.HistoricalWorkBriefReviewV2(
             "pinboard-work-brief-review/v2",
@@ -446,9 +446,8 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             self.fail("work brief coverage JSON must be a non-empty array of objects")
         coverage[0]["owner"] = {"disposition": "acceptance", "criterion": 99}
 
-        expect_work_brief_failure(
-            decode_work_brief(msgspec.json.encode(payload)), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
-        )
+        with self.assertRaises(msgspec.DecodeError):
+            decode_accepted_brief(msgspec.json.encode(payload))
 
     def test_checkpoint_identity_may_equal_item_identity(self) -> None:
         value = example_work_brief()
@@ -457,7 +456,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
             checkpoint=replace(value.checkpoint, checkpoint_id=value.item_id),
         )
 
-        self.assertEqual(changed, expect_work_brief_success(decode_work_brief(canonical_work_brief_bytes(changed))))
+        self.assertEqual(changed, decode_accepted_brief(canonical_work_brief_bytes(changed)))
 
     def test_every_tagged_variant_decodes_through_the_strict_boundary(self) -> None:
         value = example_work_brief()
@@ -537,14 +536,11 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 candidate = replace(value, checkpoint=changed)
-                self.assertEqual(
-                    candidate, expect_work_brief_success(decode_work_brief(canonical_work_brief_bytes(candidate)))
-                )
+                self.assertEqual(candidate, decode_accepted_brief(canonical_work_brief_bytes(candidate)))
 
         invalid = replace(value, owner_task_id=" owner-task ")
-        expect_work_brief_failure(
-            decode_work_brief(msgspec.json.encode(invalid)), work_brief_models.WorkBriefErrorCode.BRIEF_INVALID
-        )
+        with self.assertRaises(msgspec.DecodeError):
+            decode_accepted_brief(msgspec.json.encode(invalid))
 
     def test_checkpoint_and_authority_digests_use_canonical_records(self) -> None:
         value = example_work_brief()

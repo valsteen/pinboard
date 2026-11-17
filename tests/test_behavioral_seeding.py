@@ -95,7 +95,7 @@ class ItemStateReadTest(unittest.IsolatedAsyncioTestCase):
                 selected = await board.proposal_format(session)
                 self.assertEqual(version, selected)
                 seeder = seeding.Seeder(
-                    board.BoardClient(session, Window(None), selected), Path("project"), Path("work"), "owner"
+                    board.BoardClient(session, Window(None), selected, False), Path("project"), Path("work"), "owner"
                 )
                 await seeder.propose(
                     "item",
@@ -151,7 +151,7 @@ class ItemStateReadTest(unittest.IsolatedAsyncioTestCase):
 
         @asynccontextmanager
         async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
-            yield board.BoardClient(session, window, "pinboard-proposal/v6")
+            yield board.BoardClient(session, window, "pinboard-proposal/v6", True)
 
         with patch.object(board, "connect", connected):
             observed = await board.overview(
@@ -188,7 +188,7 @@ class ItemStateReadTest(unittest.IsolatedAsyncioTestCase):
 
         @asynccontextmanager
         async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
-            yield board.BoardClient(session, window, "pinboard-proposal/v6")
+            yield board.BoardClient(session, window, "pinboard-proposal/v6", True)
 
         with patch.object(board, "connect", connected):
             observed = await board.item_states(
@@ -231,7 +231,7 @@ class SeededReviewTest(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as temporary, patch.object(seeding, "head", return_value="d" * 40):
             root = Path(temporary)
             fixture = seeding.Seeder(
-                board.BoardClient(session, Window(None), "pinboard-proposal/v6"),
+                board.BoardClient(session, Window(None), "pinboard-proposal/v6", True),
                 root / "project",
                 root / "board",
                 "fixture-owner",
@@ -266,6 +266,7 @@ class SeededReviewTest(unittest.IsolatedAsyncioTestCase):
 class FakeBoard:
     """Answers the seeder's MCP calls after decoding each consumed request through Pinboard's own contracts."""
 
+    proposals: list[contracts.ProposalCreateRequest]
     briefs: list[contracts.BriefPublishRequest]
     reviews: list[contracts.ReviewJobRequest]
     transitions: list[contracts.TransitionRequest]
@@ -273,12 +274,17 @@ class FakeBoard:
     async def answer(self, tool: str, arguments: dict[str, contracts.JsonValue]) -> CallToolResult:
         match tool:
             case "pinboard_proposal_create":
-                msgspec.convert(arguments, type=contracts.ProposalCreateRequest, strict=True)
+                self.proposals.append(msgspec.convert(arguments, type=contracts.ProposalCreateRequest, strict=True))
                 content = {"status": "committed"}
             case "pinboard_preparation_authority" | "pinboard_attempt_authority":
                 content = {"status": "committed", "lease_id": "lease-1", "generation": 1}
             case "pinboard_item_definition":
-                content = {"definition_revision": 1, "definition_digest": "e" * 64}
+                route_facts = msgspec.to_builtins(self.proposals[-1].proposal.route_facts)
+                content = {
+                    "definition_revision": 1,
+                    "definition_digest": "e" * 64,
+                    "definition": {"schema": "pinboard-work-item-definition/v4", "route_facts": route_facts},
+                }
             case "pinboard_brief_publish":
                 self.briefs.append(msgspec.convert(arguments, type=contracts.BriefPublishRequest, strict=True))
                 content = {"status": "committed", "reference": {"artifact_ref_id": 3}}
@@ -317,14 +323,17 @@ class ContinueCheckpointWorldTest(unittest.TestCase):
     """The continue-checkpoint extra publishes a continue brief and records commissioned ready review in review."""
 
     def test_seeding_publishes_a_continue_checkpoint_and_records_ready_review(self) -> None:
-        fake = FakeBoard(briefs=[], reviews=[], transitions=[])
+        fake = FakeBoard(proposals=[], briefs=[], reviews=[], transitions=[])
         session = AsyncMock(spec=ClientSession)
         session.call_tool.side_effect = fake.answer
         window = Window(None)
         with TemporaryDirectory() as temporary:
             project = committed_project(Path(temporary), window)
             seeder = seeding.Seeder(
-                board.BoardClient(session, window, "pinboard-proposal/v6"), project, project / ".pinboard", "owner"
+                board.BoardClient(session, window, "pinboard-proposal/v6", True),
+                project,
+                project / ".pinboard",
+                "owner",
             )
             asyncio.run(world_content.seed_continue_checkpoint(seeder))
             candidate = seeding.head(seeder.worktree("usage-guide"), window)
@@ -359,7 +368,7 @@ class ContinueCheckpointWorldTest(unittest.TestCase):
 
         @asynccontextmanager
         async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
-            yield board.BoardClient(MagicMock(spec=ClientSession), window, "pinboard-proposal/v6")
+            yield board.BoardClient(MagicMock(spec=ClientSession), window, "pinboard-proposal/v6", True)
 
         async def seed(seeder: seeding.Seeder) -> None:
             seeded_content.append(seeder.work_root)
@@ -404,7 +413,7 @@ class ContinueCheckpointWorldTest(unittest.TestCase):
 
             @asynccontextmanager
             async def connected(_launcher: Path, _log: Path, window: Window) -> AsyncGenerator[board.BoardClient]:
-                yield board.BoardClient(MagicMock(spec=ClientSession), window, "pinboard-proposal/v6")
+                yield board.BoardClient(MagicMock(spec=ClientSession), window, "pinboard-proposal/v6", True)
 
             async def states(*arguments: Path | tuple[str, ...] | Window) -> list[tuple[str, str]]:
                 self.assertEqual(("exit-status",), arguments[4])

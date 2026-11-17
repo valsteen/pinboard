@@ -13,7 +13,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, assert_never
 
 import anyio
 import msgspec
@@ -145,6 +145,14 @@ class _ProposalInputSchema(Projection, frozen=True):
     definitions: _ProposalDefinitions = msgspec.field(name="$defs")
 
 
+class _SchemaDefinition(Projection, frozen=True):
+    """Any advertised definition; only its name is consumed."""
+
+
+class _BriefPublishInputSchema(Projection, frozen=True):
+    definitions: dict[str, _SchemaDefinition] = msgspec.field(name="$defs")
+
+
 class PreparationStart(Request, frozen=True):
     operation: Literal["start"]
     project_root: str
@@ -248,6 +256,37 @@ class BriefPublish(Request, frozen=True):
     project_root: str
     work_root: str
     brief: Brief
+
+
+class SmallScopeEntry(Request, frozen=True):
+    statement: str
+    obligations: list[str]
+
+
+class SmallBrief(Request, frozen=True):
+    """The four-part brief a revision that advertises it requires for a small item without checkpoints."""
+
+    accepted_scope: AcceptedScope
+    architecture_impact: ArchitectureImpact
+    artifact_revision: int
+    attempt_id: str
+    base_revision: str
+    branch: str
+    check: str
+    checkout_selection: Literal["isolated"]
+    exclusions: list[str]
+    item_id: str
+    outcome: str
+    owner_task_id: str
+    schema: Literal["pinboard-small-work-brief/v1"]
+    scope: list[SmallScopeEntry]
+    title: str
+
+
+class SmallBriefPublish(Request, frozen=True):
+    project_root: str
+    work_root: str
+    brief: SmallBrief
 
 
 class ActionId(Request, frozen=True):
@@ -419,9 +458,45 @@ class Lease(Projection, frozen=True):
     generation: int
 
 
+class UnclassifiedDefinitionFacts(Projection, frozen=True, tag_field="schema", tag="pinboard-work-item-definition/v2"):
+    """A definition that records no route facts."""
+
+
+class UnclassifiedOriginDefinitionFacts(
+    Projection, frozen=True, tag_field="schema", tag="pinboard-work-item-definition/v3"
+):
+    """An origin-bearing definition that records no route facts."""
+
+
+class ClassifiedDefinitionFacts(Projection, frozen=True, tag_field="schema", tag="pinboard-work-item-definition/v4"):
+    route_facts: RouteFacts
+
+
+class ClassifiedOriginDefinitionFacts(
+    Projection, frozen=True, tag_field="schema", tag="pinboard-work-item-definition/v5"
+):
+    route_facts: RouteFacts
+
+
 class Definition(Projection, frozen=True):
     definition_revision: int
     definition_digest: str
+    definition: (
+        UnclassifiedDefinitionFacts
+        | UnclassifiedOriginDefinitionFacts
+        | ClassifiedDefinitionFacts
+        | ClassifiedOriginDefinitionFacts
+    )
+
+    def takes_small_brief(self) -> bool:
+        """Whether the recorded route facts are small with no declared checkpoints, which the small brief requires."""
+        match self.definition:
+            case UnclassifiedDefinitionFacts() | UnclassifiedOriginDefinitionFacts():
+                return False
+            case ClassifiedDefinitionFacts(route_facts=route) | ClassifiedOriginDefinitionFacts(route_facts=route):
+                return route.size_class == "small" and not route.declares_checkpoints
+            case _ as unreachable:
+                assert_never(unreachable)
 
 
 class ArtifactReference(Projection, frozen=True):
@@ -498,6 +573,7 @@ class BoardClient:
     session: ClientSession
     window: processes.Window
     proposal_format: Literal["pinboard-proposal/v2", "pinboard-proposal/v4", "pinboard-proposal/v6"]
+    small_brief: bool
 
     async def call[T: Projection](self, tool: str, arguments: Request, projection: type[T]) -> T:
         with anyio.fail_after(self.window.timeout(300)):
@@ -525,7 +601,9 @@ async def connect(launcher: Path, log: Path, window: processes.Window) -> AsyncG
         with anyio.fail_after(operation_window.timeout(300)), log.open("a") as errlog:
             async with stdio_client(parameters, errlog=errlog) as streams, ClientSession(*streams) as session:
                 await session.initialize()
-                yield BoardClient(session, operation_window, await proposal_format(session))
+                yield BoardClient(
+                    session, operation_window, await proposal_format(session), await small_brief_format(session)
+                )
     except OSError as error:
         raise SeedFailure(f"the evaluated launcher could not serve MCP: {error}") from error
 
@@ -543,6 +621,19 @@ async def proposal_format(
     except (msgspec.ValidationError, ValueError) as error:
         raise SeedFailure(f"the advertised proposal schema is unsupported: {error}") from error
     return schema.definitions.proposal.properties.schema.enum[0]
+
+
+async def small_brief_format(session: ClientSession) -> bool:
+    """Whether the evaluated revision's brief publication advertises the small brief, before any effect."""
+    tools = await session.list_tools()
+    publish_tool = next((tool for tool in tools.tools if tool.name == "pinboard_brief_publish"), None)
+    if publish_tool is None:
+        raise SeedFailure("the evaluated revision does not advertise pinboard_brief_publish")
+    try:
+        schema = msgspec.convert(publish_tool.input_schema, type=_BriefPublishInputSchema)
+    except (msgspec.ValidationError, ValueError) as error:
+        raise SeedFailure(f"the advertised brief publication schema is unsupported: {error}") from error
+    return "SmallWorkBrief" in schema.definitions
 
 
 def require(status: str, accepted: tuple[str, ...], what: str) -> None:

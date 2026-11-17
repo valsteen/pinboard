@@ -1488,7 +1488,7 @@ class BoardAttemptFacts:
     """One open attempt's records with its decoded, identity-checked current brief and ready-review decision."""
 
     records: BoardAttemptRecords
-    brief: work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure
+    brief: work_brief_models.AcceptedBrief | work_brief_models.WorkBriefFailure
     ready_record: ReadyRecordAcceptance | None
 
 

@@ -699,6 +699,9 @@ def _brief_contract(
                 contract.local_structural_choices,
                 contract.cross_boundary_structural_choices,
                 contract.relational_constraints,
+                contract.small_payload_schema,
+                contract.small_starter,
+                contract.small_structural_choices,
                 lookup,
             )
         case contracts.BriefContractStarterRequest():
@@ -2134,7 +2137,7 @@ def _current_candidate_review(
     durable: DurableRoots,
     store: WorkStore,
     context: query_models.AttemptContextFacts,
-    brief: work_brief_models.WorkBrief | None,
+    brief: work_brief_models.AcceptedBrief | None,
     result: contracts.EvidenceReference,
     review: contracts.EvidenceReference,
 ) -> tuple[review_operations.CurrentCandidateReview | None, contracts.CandidateReviewReference]:
@@ -2556,11 +2559,11 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
     token.checkpoint()
     accepted_brief: contracts.AcceptedBriefIdentity | None = None
     owner_task_id: TaskId | None = None
-    decoded_brief: work_brief_models.WorkBrief | None = None
+    decoded_brief: work_brief_models.AcceptedBrief | None = None
     if isinstance(context, query_models.NonterminalAttemptContextFacts):
         reference = context.brief_reference
         try:
-            brief = work_briefs.decode_canonical_work_brief(read_reference(durable.work_root, reference))
+            brief = work_briefs.decode_canonical_accepted_brief(read_reference(durable.work_root, reference))
         except ArtifactError as error:
             return execution.TypedOperationResult(
                 _attempt_brief_invalid(

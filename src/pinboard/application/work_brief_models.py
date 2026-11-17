@@ -595,6 +595,53 @@ class WorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
         )
 
 
+SMALL_BRIEF_CHECKPOINT_ID = "delivery"
+
+
+class SmallScopeEntry(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """One scope statement and the accepted obligations it discharges."""
+
+    statement: NonEmptyText
+    obligations: Annotated[tuple[KebabId, ...], msgspec.Meta(min_length=1)]
+
+
+class SmallWorkBrief(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """The four-part brief of a recorded small item delivered inline by its coordinator.
+
+    It denotes one implicit terminal local checkpoint, SMALL_BRIEF_CHECKPOINT_ID, titled by the brief title.
+    Publication requires its scope entries to discharge every accepted obligation exactly once.
+    """
+
+    schema: Literal["pinboard-small-work-brief/v1"]
+    artifact_revision: PositiveInt
+    attempt_id: KebabId
+    item_id: KebabId
+    branch: NonEmptyLine
+    base_revision: NonEmptyLine
+    owner_task_id: NonEmptyLine
+    accepted_scope: AcceptedScope
+    checkout_selection: work_models.CheckoutSelection
+    title: NonEmptyLine
+    outcome: NonEmptyText
+    scope: Annotated[tuple[SmallScopeEntry, ...], msgspec.Meta(min_length=1)]
+    exclusions: tuple[NonEmptyText, ...]
+    check: NonEmptyText
+    architecture_impact: ArchitectureImpact
+
+    def __post_init__(self) -> None:
+        _validate_architecture_impact(self.architecture_impact)
+        obligation_ids = small_brief_obligation_ids(self)
+        if len(obligation_ids) != len(set(obligation_ids)):
+            raise ValueError("Each accepted obligation must be discharged by exactly one small-brief scope entry.")
+
+
+def small_brief_obligation_ids(brief: SmallWorkBrief) -> tuple[str, ...]:
+    return tuple(obligation for entry in brief.scope for obligation in entry.obligations)
+
+
+type AcceptedBrief = WorkBrief | SmallWorkBrief
+
+
 class ReadableCheckpoint(Protocol):
     @property
     def checkpoint_id(self) -> str: ...
@@ -746,6 +793,8 @@ class WorkBriefReviewNeedsCorrection(msgspec.Struct, frozen=True, forbid_unknown
 
 @dataclass(frozen=True, slots=True)
 class AcceptedWorkBrief:
+    """An accepted v4 brief and its reference; only brief review reads it, so small briefs never appear."""
+
     reference: stored_state.ArtifactReference
     brief: WorkBrief
 

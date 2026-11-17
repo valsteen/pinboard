@@ -13,7 +13,7 @@ from pinboard.application.dependency_authoring import (
     DependencyCheckpointPin,
     DependencyDefinitionPin,
 )
-from pinboard.application.work_briefs import decode_canonical_work_brief
+from pinboard.application.work_briefs import decode_canonical_accepted_brief
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 
@@ -79,7 +79,7 @@ def resolve_dependency_brief_pins(
                 f"Prerequisite '{target.item_id}' has no current accepted brief declaring checkpoint '{target.checkpoint_id}'. Inspect that prerequisite's item status and accepted brief before choosing a checkpoint dependency.",
                 None,
             )
-        brief = decode_canonical_work_brief(artifacts.read(reference))
+        brief = decode_canonical_accepted_brief(artifacts.read(reference))
         lineage = lineages[attempt.attempt]
         if isinstance(brief, work_brief_models.WorkBriefFailure) or (
             brief.item_id,
@@ -99,6 +99,12 @@ def resolve_dependency_brief_pins(
             return DecisionFailure(
                 DecisionFailureCode.ITEM_DEFINITION_STALE,
                 f"Prerequisite '{target.item_id}' has an invalid or stale current accepted brief. Inspect and reconcile that prerequisite before authoring checkpoint '{target.checkpoint_id}'.",
+                None,
+            )
+        if isinstance(brief, work_brief_models.SmallWorkBrief):
+            return DecisionFailure(
+                DecisionFailureCode.ITEM_DEFINITION_INVALID,
+                f"Prerequisite '{target.item_id}' is a small item delivered inline under one implicit terminal checkpoint, so it offers no checkpoint dependency target. Depend on the item '{target.item_id}' itself instead of checkpoint '{target.checkpoint_id}'.",
                 None,
             )
         declared = brief.checkpoint.checkpoint_id

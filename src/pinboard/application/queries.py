@@ -25,6 +25,7 @@ from pinboard.application import (
     stored_state,
     unblockers,
     work_brief_models,
+    work_briefs,
 )
 from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
@@ -173,7 +174,7 @@ def damaged_receipt_validation_recovery(damaged: query_models.DamagedTransitionR
 
 def validate_attempt_brief_identity(
     context: query_models.NonterminalAttemptContextFacts,
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.AcceptedBrief,
 ) -> DecisionFailure | None:
     """Require one decoded brief to be the exact accepted identity for an attempt."""
 
@@ -244,7 +245,7 @@ def _held_payload(unblocker: work_models.Unblocker | None) -> unblockers.Unblock
 def project_attempt_continuation(
     context: query_models.AttemptContextFacts,
     owner_task_id: TaskId | None,
-    brief: work_brief_models.WorkBrief | None,
+    brief: work_brief_models.AcceptedBrief | None,
     reconciliation: query_models.AttemptReconciliation | None,
     candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
@@ -354,6 +355,7 @@ def _select_repository_disposition(
     reconciliation: query_models.AttemptReconciliation,
     candidate_lineage: query_models.CandidateLineage | None,
     actions: tuple[decision_models.Action, ...],
+    brief: work_brief_models.AcceptedBrief,
 ) -> DecisionResult[
     query_models.ActionContinuation
     | query_models.RepositoryDispositionContinuation
@@ -365,18 +367,35 @@ def _select_repository_disposition(
         return query_models.CommitThenReinspectContinuation(reconciliation.target_revision, reconciliation.relation)
     for action in actions:
         if isinstance(action, decision_models.ReturnForCorrectionAction):
-            condition = (
-                "The protected candidate no longer matches the checkout. Apply return-for-correction to the same "
-                "attempt with this lineage mismatch as the reason, preserve its history_id, obtain correction-source "
-                "review, then dispatch correction work that submits a current clean commit candidate; no user input "
-                "is required."
+            return query_models.ActionContinuation(
+                decision_models.action_id(action), action.kind, _lineage_correction_condition(brief)
             )
-            return query_models.ActionContinuation(decision_models.action_id(action), action.kind, condition)
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
         "Candidate lineage correction is not currently available.",
         None,
     )
+
+
+def _lineage_correction_condition(brief: work_brief_models.AcceptedBrief) -> str:
+    returned = (
+        "The protected candidate no longer matches the checkout. Apply return-for-correction to the same attempt "
+        "with this lineage mismatch as the reason, preserve its history_id, "
+    )
+    match brief:
+        case work_brief_models.WorkBrief():
+            return (
+                f"{returned}obtain correction-source review, then dispatch correction work that submits a current "
+                "clean commit candidate; no user input is required."
+            )
+        case work_brief_models.SmallWorkBrief():
+            return (
+                f"{returned}then correct inline as the owning coordinator: reacquire attempt authority with your own "
+                "identity, submit a current clean commit candidate, release and commission a correction review. "
+                "A small attempt takes no correction-source review or correction dispatch; no user input is required."
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-candidate relations remain explicit
@@ -387,6 +406,7 @@ def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-
     candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
     actions: tuple[decision_models.Action, ...],
+    brief: work_brief_models.AcceptedBrief,
 ) -> DecisionResult[
     query_models.ActionContinuation | query_models.ReviewContinuation | query_models.ReconciliationContinuation
 ]:
@@ -424,7 +444,7 @@ def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-
         query_models.IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE,
         query_models.IntegrationRelation.CANDIDATE_PENDING_ON_SQUASH_EQUIVALENT_BASE,
     ):
-        return _select_repository_disposition(reconciliation, candidate_lineage, actions)
+        return _select_repository_disposition(reconciliation, candidate_lineage, actions, brief)
     match relation:
         case query_models.IntegrationRelation.CANDIDATE_INTEGRATED:
             if reconciliation.phase == query_models.RepositoryPhase.CLEANUP:
@@ -448,7 +468,7 @@ def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-
 def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuation selection
     context: query_models.NonterminalAttemptContextFacts,
     actions: tuple[decision_models.Action, ...],
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.AcceptedBrief,
     reconciliation: query_models.AttemptReconciliation | None,
     candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
@@ -464,6 +484,7 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 candidate_lineage=candidate_lineage,
                 ready_review=ready_review,
                 actions=actions,
+                brief=brief,
             )
         if ready_review:
             return query_models.ReconcileRepositoryContinuation(
@@ -473,7 +494,7 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 "that phase needs; then inspect again with those reconciliation facts to select disposition, "
                 "refresh, correction, cleanup, or completion.",
             )
-    if isinstance(brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition):
+    if isinstance(work_briefs.accepted_brief_disposition(brief), work_brief_models.TerminalCheckpointDisposition):
         for action in actions:
             if isinstance(action, decision_models.CompleteAction):
                 if context.state == work_models.AttemptState.REVIEW:
@@ -522,7 +543,10 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
             return query_models.ActionContinuation(
                 decision_models.action_id(action),
                 action.kind,
-                "Bind a current accepted v4 brief that matches the current definition.",
+                "Bind a current accepted pinboard-small-work-brief/v1 brief that matches the current definition; "
+                "its owning coordinator delivers it inline."
+                if work_briefs.takes_small_brief(context.work_item.route_facts)
+                else "Bind a current accepted pinboard-work-brief/v4 brief that matches the current definition.",
             )
         if isinstance(action, decision_models.ReturnForCorrectionAction):
             return query_models.ActionContinuation(
@@ -1140,15 +1164,14 @@ def _board_condition(facts: query_models.BoardAttemptFacts) -> query_models.Boar
 def project_current_checkpoint(
     attempt_id: AttemptId,
     reference: stored_state.ArtifactReference,
-    brief: work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure,
+    brief: work_brief_models.AcceptedBrief | work_brief_models.WorkBriefFailure,
 ) -> query_models.BoardCheckpoint | query_models.UnreadableBrief:
     """Project an open attempt's current checkpoint from its identity-checked current brief, for board and status."""
 
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return query_models.UnreadableBrief(attempt_id, brief.message)
-    checkpoint = brief.checkpoint
     remaining: query_models.RecordedRemainingWork | query_models.FinalCheckpoint
-    match checkpoint.disposition:
+    match work_briefs.accepted_brief_disposition(brief):
         case work_brief_models.ContinueCheckpointDisposition(remaining_work=text):
             remaining = query_models.RecordedRemainingWork(text)
         case work_brief_models.TerminalCheckpointDisposition():
@@ -1156,7 +1179,11 @@ def project_current_checkpoint(
         case _ as unreachable:
             assert_never(unreachable)
     return query_models.BoardCheckpoint(
-        checkpoint.checkpoint_id, checkpoint.title, reference.revision, reference.created_at, remaining
+        work_briefs.accepted_brief_checkpoint_id(brief),
+        work_briefs.accepted_brief_checkpoint_title(brief),
+        reference.revision,
+        reference.created_at,
+        remaining,
     )
 
 
@@ -1498,7 +1525,7 @@ def _decode_checkpoint_acceptance(
 
 def _review_verdict(
     attempt: query_models.ItemStatusAttemptFacts,
-    brief: work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure,
+    brief: work_brief_models.AcceptedBrief | work_brief_models.WorkBriefFailure,
     artifacts: ports.ItemStatusArtifactReader,
 ) -> query_models.ReviewVerdict | query_models.DamagedTransitionReceipt:
     """Derive the current attempt's verdict from its latest review-relevant receipt.

@@ -63,6 +63,7 @@ from pinboard.application.work_briefs import (
     canonical_reviewed_authority_set_bytes,
     canonical_work_brief_bytes,
     canonical_work_brief_review_bytes,
+    decode_canonical_accepted_brief,
     decode_canonical_work_brief,
     decode_canonical_work_brief_review,
     ready_review_key_sha256,
@@ -1447,9 +1448,17 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID, "Correction reason is unavailable.", None
         )
     try:
-        brief = decode_canonical_work_brief(artifacts.read(attempt.brief_reference))
+        brief = decode_canonical_accepted_brief(artifacts.read(attempt.brief_reference))
     except ArtifactError as error:
         return DispatchFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, str(error), None)
+    if isinstance(brief, work_brief_models.SmallWorkBrief):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_INVALID,
+            f"Attempt '{attempt_id}' has an accepted small brief, so its corrections are made inline with no "
+            "correction context or correction dispatch: the owning coordinator acquires attempt authority with its "
+            "own identity, makes the correction, resubmits for review, releases and commissions a correction review.",
+            None,
+        )
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_INVALID, "Current canonical work brief is unavailable.", None
@@ -1909,6 +1918,15 @@ def prepare_dispatch(  # noqa: C901, PLR0912, PLR0915 - one ordered selection, r
     requires_brief_review = route.size_class.requires_cross_boundary_brief_review
     accepted_brief_reference = selected_dispatch.brief_reference
     accepted_brief_bytes = artifacts.read(accepted_brief_reference)
+    if isinstance(decode_canonical_accepted_brief(accepted_brief_bytes), work_brief_models.SmallWorkBrief):
+        return DispatchFailure(
+            DispatchErrorCode.DISPATCH_BRIEF_INVALID,
+            f"Attempt '{attempt.attempt_id}' has an accepted small brief, which is delivered inline by its owning "
+            "coordinator rather than dispatched. Acquire attempt authority with your own identity, make the edit, "
+            "run the brief's check, write result.md, submit for review and release; then commission one independent "
+            "candidate review. Corrections are made inline the same way.",
+            None,
+        )
     accepted_brief_path = artifacts.work_root / accepted_brief_reference.selector
     validated_brief = _read_dispatch_brief(
         accepted_brief_bytes,

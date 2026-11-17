@@ -17,7 +17,7 @@ from pinboard.application import action_models, actions, ports, service, work_br
 from pinboard.application.artifacts import WorkBriefIdentity
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.work_briefs import (
-    decode_canonical_work_brief,
+    decode_canonical_accepted_brief,
     read_selected_work_brief_identity,
     validate_executable_work_brief,
     validate_reviewed_authority_digests,
@@ -82,7 +82,7 @@ def resolve_activation(
     reference = store.read_artifact_reference_by_id(artifact_ref_id)
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
         return _input_failure("Activation requires one existing brief artifact reference.", ())
-    brief = decode_canonical_work_brief(artifacts.read(reference))
+    brief = decode_canonical_accepted_brief(artifacts.read(reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _input_failure(f"The selected brief artifact is invalid: {brief.message}", ())
     if (failure := validate_executable_work_brief(store, brief, classify_checkout(source_checkout))) is not None:
@@ -117,7 +117,9 @@ def resolve_activation(
             "The selected source checkout does not match the accepted brief branch and base revision.",
             checkout_mismatches,
         )
-    if isinstance(brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+    if isinstance(brief, work_brief_models.WorkBrief) and isinstance(
+        brief.checkpoint, work_brief_models.CrossBoundaryCheckpoint
+    ):
         authority_failure = validate_reviewed_authority_digests(
             partial(select_checkout_brief_source, source_checkout),
             brief.checkpoint.reviewed_authorities,
@@ -181,7 +183,7 @@ def _validate_replacement_brief(
     reference = store.read_artifact_reference_by_id(reference_id)
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
         return _input_failure(f"The {operation} operation requires one existing brief artifact reference.", ())
-    brief = decode_canonical_work_brief(artifacts.read(reference))
+    brief = decode_canonical_accepted_brief(artifacts.read(reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _input_failure(f"The selected brief artifact is invalid: {brief.message}", ())
     if (failure := validate_executable_work_brief(store, brief, classify_checkout(source_checkout))) is not None:

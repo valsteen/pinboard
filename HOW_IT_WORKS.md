@@ -40,7 +40,7 @@ Consolidation alone starts no agent and authorizes no merge. Once you start the 
 
 Before any code changes, the agent works through the material open questions with you and writes the result down as a brief.
 
-Each saved item records its size, architecture impact, external effects and whether it has checkpoints. A small change goes from its accepted brief to a worker and one separate candidate reviewer. Larger cross-boundary work retains source preparation and independent brief review. Later instructions follow the saved facts rather than asking the agent to classify the same work again.
+Each saved item records its size, architecture impact, external effects and whether it has checkpoints. A small change without checkpoints gets a four-part brief (its outcome, scope, exclusions and one check), the coordinating agent makes the edit itself in the same session, and one separate candidate reviewer checks it before you complete it. Larger cross-boundary work retains source preparation and independent brief review. Later instructions follow the saved facts rather than asking the agent to classify the same work again.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works/ambiguity-closure-dark.svg">

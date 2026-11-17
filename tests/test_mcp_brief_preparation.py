@@ -158,7 +158,7 @@ class McpBriefPreparationTest(unittest.TestCase):
                         "repository-policy",
                     )
                 payload = json_object(complete_starter(template, msgspec.json.decode(msgspec.json.encode(completed))))
-                self.assertEqual(completed, work_briefs.decode_work_brief(msgspec.json.encode(payload)))
+                self.assertEqual(completed, work_briefs.decode_accepted_brief(msgspec.json.encode(payload)))
                 if boundary == "local":
                     published = await transport.call_tool(
                         server.BRIEF_PUBLISH_TOOL,

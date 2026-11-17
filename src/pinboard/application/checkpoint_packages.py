@@ -133,10 +133,15 @@ def _brief(
     package: work_brief_models.CheckpointReviewPackageV3,
     reference: stored_state.ArtifactReference,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[work_briefs.HistoricalWorkBriefValue]:
+) -> work_brief_models.WorkBriefResult[work_briefs.CheckpointWorkBriefValue]:
     brief = decode_canonical_historical_work_brief(artifact_bytes[reference.artifact_ref_id])
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _invalid(f"The package accepted brief is invalid: {brief.message}")
+    if isinstance(brief, work_brief_models.SmallWorkBrief):
+        return _invalid(
+            "A small brief has no checkpoint packages: its one implicit terminal checkpoint completes through one "
+            "commissioned candidate review."
+        )
     if (
         brief.attempt_id != package.attempt_id
         or brief.item_id != package.item_id
@@ -152,7 +157,7 @@ def _brief(
 
 def _review_basis(
     package: work_brief_models.CheckpointReviewPackageV3,
-    brief: work_briefs.HistoricalWorkBriefValue,
+    brief: work_briefs.CheckpointWorkBriefValue,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
 ) -> work_brief_models.WorkBriefFailure | None:

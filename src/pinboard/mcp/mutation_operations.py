@@ -310,19 +310,22 @@ def _brief_published(
     token: execution.CancellationToken,
 ) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
     token.checkpoint()
+    brief = raw.get("brief")
     try:
-        request = msgspec.convert(raw, type=contracts.BriefPublishRequest, strict=True)
+        request = (
+            msgspec.convert(raw, type=contracts.SmallBriefPublishRequest, strict=True)
+            if isinstance(brief, dict) and brief.get("schema") == "pinboard-small-work-brief/v1"
+            else msgspec.convert(raw, type=contracts.BriefPublishRequest, strict=True)
+        )
         durable = common._resolve_durable(request.project_root, request.work_root)
     except msgspec.ValidationError as error:
-        return _brief_decode_failure(
-            str(raw.get("project_root", "")), str(raw.get("work_root", "")), raw.get("brief"), error
-        )
+        return _brief_decode_failure(str(raw.get("project_root", "")), str(raw.get("work_root", "")), brief, error)
     except (ValueError, OSError) as error:
         return _brief_failure("WORK_BRIEF_INVALID", f"Cannot decode brief publication request: {error}")
     return _publish_brief(durable, request.brief, token)
 
 
-type SelectedBrief = work_brief_models.WorkBrief | execution.TypedOperationResult[contracts.BriefPublicationResult]
+type SelectedBrief = work_brief_models.AcceptedBrief | execution.TypedOperationResult[contracts.BriefPublicationResult]
 
 
 def _read_brief_file(raw: Mapping[str, JsonValue]) -> SelectedBrief:
@@ -334,7 +337,7 @@ def _read_brief_file(raw: Mapping[str, JsonValue]) -> SelectedBrief:
     if isinstance(content, file_io.SelectedInputFailure):
         return _brief_failure(content.code, content.message)
     try:
-        return msgspec.json.decode(content, type=work_brief_models.WorkBrief)
+        return work_briefs.decode_accepted_brief(content)
     except msgspec.DecodeError as error:
         return _brief_failure(
             "WORK_BRIEF_INVALID",
@@ -349,7 +352,7 @@ def _brief_published_file(
 ) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
     token.checkpoint()
     brief = read_brief()
-    if not isinstance(brief, work_brief_models.WorkBrief):
+    if not isinstance(brief, (work_brief_models.WorkBrief, work_brief_models.SmallWorkBrief)):
         return brief
     try:
         durable = common._resolve_durable(str(raw["project_root"]), str(raw["work_root"]))
@@ -437,7 +440,7 @@ def _brief_publication_failed(
 
 
 def _publish_brief(
-    durable: DurableRoots, decoded: work_brief_models.WorkBrief, token: execution.CancellationToken
+    durable: DurableRoots, decoded: work_brief_models.AcceptedBrief, token: execution.CancellationToken
 ) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
     store = common.compose_store(durable)
     token.checkpoint()

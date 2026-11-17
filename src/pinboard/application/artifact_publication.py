@@ -141,7 +141,7 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
         attempt_id = command.action.capability.subject
         attempt = next((value for value in snapshot.attempts if value.attempt == attempt_id), None)
         mismatches = (
-            (FailureMismatch("accepted_brief_identity", "current v4 brief", None),)
+            (FailureMismatch("accepted_brief_identity", "current accepted brief", None),)
             if not isinstance(identity, CurrentAttemptWorkBriefIdentity)
             else tuple(
                 mismatch

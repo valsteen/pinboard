@@ -1,6 +1,6 @@
 Deliver exactly the accepted checkpoint of one active attempt: implement its complete scope, verify it, write truthful durable evidence and submit it for separate review. A request merely to read context, orient or wait does not initialize delivery.
 
-For recorded small inline delivery, no launched envelope or post-launch identity exists: read and verify the exact accepted brief named by current attempt inspection and use your own trusted current task/host. The coordinator follows the same worker implementation/submission/release duties and still needs a separate candidate reviewer.
+For inline delivery of a small-brief attempt, no launched envelope or post-launch identity exists: read and verify the exact accepted brief named by current attempt inspection and use your own trusted current task/host. The coordinator follows the same worker implementation/submission/release duties and still needs a separate candidate reviewer.
 
 For a launched role, before authority or implementation follow the exact native envelope verifier and read the immutable task it names completely. Require accepted reference, selector, size, digest and bytes to agree; stop on rejection, unreadable text or mismatch, never choose another artifact, reconstruct the prompt or ask the parent to restate it. Read the complete canonical brief and bootstrap. Load this one complete role/runtime document natively; no pinboard_evidence_read paging or other Pinboard instruction file is required. Delivery establishes task content, not readiness, identity or permission.
 

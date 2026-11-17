@@ -26,6 +26,20 @@ class GuidanceMetadataTest(unittest.TestCase):
             ):
                 instruction_catalog.validate_generated()
 
+    def test_small_inline_delivery_reaches_only_small_single_checkpoint_coordinators(self) -> None:
+        compiled = instruction_catalog.compile_documents(instruction_catalog.source())
+        expected = {
+            f"{phase}-{runtime}-small-single"
+            for phase in ("prepare", "activate", "continue")
+            for runtime in instruction_catalog.RUNTIMES
+        }
+        carrying = {
+            key
+            for key, (_body, owners) in compiled.items()
+            if "procedure.small-inline" in owners and not key.startswith("brief-author-")
+        }
+        self.assertEqual(expected, carrying)
+
 
 def _startup_tree(root: Path) -> Path:
     """Lay out minimal coordinator entry skills, generated coordinators, MCP server and hooks under root."""

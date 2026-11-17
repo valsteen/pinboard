@@ -59,12 +59,13 @@ from pinboard.application.candidate_identity import (
 )
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.work_briefs import (
+    accepted_brief_disposition,
     canonical_checkpoint_bytes,
     canonical_checkpoint_review_package_bytes,
     canonical_completion_review_package_bytes,
     canonical_reviewed_authority_set_bytes,
     current_attempt_work_brief_identity,
-    decode_canonical_work_brief,
+    decode_canonical_accepted_brief,
     decode_canonical_work_brief_review,
     ready_review_key_sha256,
     validate_work_brief_review,
@@ -470,10 +471,10 @@ class _CheckpointContext:
 def _read_current_attempt_brief(
     artifacts: ArtifactRepository,
     context: query_models.NonterminalAttemptContextFacts,
-) -> DecisionResult[work_brief_models.WorkBrief]:
+) -> DecisionResult[work_brief_models.AcceptedBrief]:
     """Read verified accepted bytes and compare the brief with current attempt facts."""
 
-    brief = decode_canonical_work_brief(artifacts.read(context.brief_reference))
+    brief = decode_canonical_accepted_brief(artifacts.read(context.brief_reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _unchanged(f"The accepted brief is invalid: {brief.message}", candidate=None)
     if (
@@ -492,6 +493,22 @@ def _read_current_attempt_brief(
         context.accepted_scope_digest,
     ):
         return _unchanged("The accepted brief identity does not match the current attempt.", candidate=None)
+    return brief
+
+
+def _read_checkpoint_brief(
+    artifacts: ArtifactRepository,
+    context: query_models.NonterminalAttemptContextFacts,
+) -> DecisionResult[work_brief_models.WorkBrief]:
+    """Read the current brief of a checkpoint acceptance, which a small brief never has."""
+
+    brief = _read_current_attempt_brief(artifacts, context)
+    if isinstance(brief, work_brief_models.SmallWorkBrief):
+        return _unchanged(
+            "A small brief declares no checkpoint to accept: its one implicit terminal checkpoint completes "
+            "through one commissioned ready candidate review and the human's completion words.",
+            candidate=None,
+        )
     return brief
 
 
@@ -524,7 +541,7 @@ def _checkpoint_context(
     context = store.read_attempt_context(command.action.capability.subject)
     if not isinstance(context, query_models.NonterminalAttemptContextFacts):
         return _unchanged("Checkpoint acceptance requires a current accepted brief.", candidate=None)
-    brief = _read_current_attempt_brief(artifacts, context)
+    brief = _read_checkpoint_brief(artifacts, context)
     if isinstance(brief, DecisionFailure):
         return brief
     if brief.checkpoint.checkpoint_id != command.value.checkpoint:
@@ -748,7 +765,7 @@ def _accept_checkpoint(
 
 @dataclass(frozen=True, slots=True)
 class _CompletionContext:
-    brief: work_brief_models.WorkBrief
+    brief: work_brief_models.AcceptedBrief
     reference: BriefArtifactRef
     checkpoint_coverage: tuple[work_brief_models.CompletionCheckpointCoverage, ...]
     identity: CurrentAttemptWorkBriefIdentity
@@ -767,7 +784,7 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
     brief = _read_current_attempt_brief(artifacts, attempt)
     if isinstance(brief, DecisionFailure):
         return brief
-    if not isinstance(brief.checkpoint.disposition, work_brief_models.TerminalCheckpointDisposition):
+    if not isinstance(accepted_brief_disposition(brief), work_brief_models.TerminalCheckpointDisposition):
         return _unchanged("Completion requires a terminal checkpoint disposition.", candidate=None)
     if str(command.value.reviewer_task_id) == brief.owner_task_id:
         return _unchanged("The completion reviewer must be independent from the attempt owner.", candidate=None)

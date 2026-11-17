@@ -56,7 +56,7 @@ CHECKPOINT_DETAIL_FIELDS = frozenset(
 SOURCE_SYMBOL_NAMES: dict[str, str] = {
     "WorkBrief": work_brief_models.WorkBrief.__name__,
     "CrossBoundaryCheckpoint": work_brief_models.CrossBoundaryCheckpoint.__name__,
-    "decode_work_brief": work_briefs.decode_work_brief.__name__,
+    "decode_accepted_brief": work_briefs.decode_accepted_brief.__name__,
     "canonical_work_brief_bytes": work_briefs.canonical_work_brief_bytes.__name__,
     "WorkBriefContract": work_brief_contract.WorkBriefContract.__name__,
 }

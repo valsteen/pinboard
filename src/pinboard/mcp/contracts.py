@@ -316,9 +316,19 @@ class ProposalCreateRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=T
 
 
 class BriefPublishRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Publish a v4 brief; the advertised schema offers this and SmallBriefPublishRequest's brief as one choice."""
+
     project_root: RootPath
     work_root: RootPath
     brief: work_brief_models.WorkBrief
+
+
+class SmallBriefPublishRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Publish a small brief, selected by its brief.schema before decoding the exact record."""
+
+    project_root: RootPath
+    work_root: RootPath
+    brief: work_brief_models.SmallWorkBrief
 
 
 class BriefPublishFileRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -382,7 +392,7 @@ class BriefContractStarterRequest(
 ):
     project_root: RootPath
     work_root: RootPath
-    boundary: Literal["local", "cross-boundary"]
+    boundary: Literal["local", "cross-boundary", "small"]
 
 
 class BriefContractEnvelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

@@ -4,7 +4,6 @@ import msgspec
 
 from pinboard.application import work_brief_models
 from pinboard.application.work_brief_contract import WorkBriefStructuralChoice, describe_work_brief_contract
-from pinboard.application.work_briefs import decode_work_brief
 from tests.work_brief_support import example_work_brief, work_c_brief
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
@@ -155,7 +154,8 @@ class WorkBriefContractTest(unittest.TestCase):
             checkpoint = json_object(payload["checkpoint"])
             checkpoint_keys = {field.name for field in msgspec.structs.fields(checkpoint_type)} | {"boundary"}
             self.assertEqual(checkpoint_keys, checkpoint.keys())
-            self.assertIsInstance(decode_work_brief(bytes(starter)), work_brief_models.WorkBriefFailure)
+            with self.assertRaises(msgspec.DecodeError):
+                msgspec.json.decode(bytes(starter), type=work_brief_models.WorkBrief)
 
     def test_mechanically_completed_starters_pass_strict_decode(self) -> None:
         contract = describe_work_brief_contract()
@@ -203,8 +203,8 @@ class WorkBriefContractTest(unittest.TestCase):
         ):
             template = msgspec.json.decode(bytes(starter))
             completed_payload = msgspec.json.decode(msgspec.json.encode(completed))
-            decoded = expect_work_brief_success(
-                decode_work_brief(msgspec.json.encode(complete_starter(template, completed_payload)))
+            decoded = msgspec.json.decode(
+                msgspec.json.encode(complete_starter(template, completed_payload)), type=work_brief_models.WorkBrief
             )
             self.assertIsInstance(decoded.checkpoint, checkpoint_type)
             self.assertEqual(completed, decoded)
@@ -276,8 +276,8 @@ class WorkBriefContractTest(unittest.TestCase):
                     "required",
                 )
                 completed_payload = msgspec.json.decode(msgspec.json.encode(completed))
-                decoded = expect_work_brief_success(
-                    decode_work_brief(msgspec.json.encode(complete_starter(starter, completed_payload)))
+                decoded = msgspec.json.decode(
+                    msgspec.json.encode(complete_starter(starter, completed_payload)), type=work_brief_models.WorkBrief
                 )
                 self.assertEqual(completed, decoded)
 

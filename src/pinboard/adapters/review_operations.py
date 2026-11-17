@@ -150,7 +150,7 @@ type ReviewRoundSelection = (
 @dataclass(frozen=True, slots=True)
 class PreparedReviewJob:
     candidate_evidence: candidate_snapshots.CandidateSnapshotEvidence
-    brief: work_brief_models.WorkBrief
+    brief: work_brief_models.AcceptedBrief
     brief_reference: BriefArtifactRef
     result_path: Path
     result_sha256: str
@@ -291,7 +291,7 @@ def _candidate_review_record(
         or facts.candidate_snapshot is None
     ):
         return unavailable
-    brief = work_briefs.decode_canonical_work_brief(read_reference(work_root, attempt.brief_reference))
+    brief = work_briefs.decode_canonical_accepted_brief(read_reference(work_root, attempt.brief_reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _review_job_failure(brief.message)
     if (failure := queries.validate_attempt_brief_identity(attempt, brief)) is not None:
@@ -422,7 +422,7 @@ def read_attempt_evidence_digests(work_root: Path, attempt_id: AttemptId) -> Att
 class ReadyRecordSubject:
     """The exact current candidate, snapshot, accepted brief, result.md and review.md a ready record must bind."""
 
-    brief: work_brief_models.WorkBrief
+    brief: work_brief_models.AcceptedBrief
     candidate_revision: str
     candidate_snapshot: stored_state.ArtifactReference
     accepted_brief: stored_state.ArtifactReference | BriefArtifactRef
@@ -442,7 +442,7 @@ class ReadyRecordSubject:
 
 
 def ready_record_subject(
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.AcceptedBrief,
     candidate_revision: str | None,
     candidate_snapshot: stored_state.ArtifactReference | None,
     accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
@@ -498,7 +498,7 @@ def read_current_brief(
     attempt: work_briefs.AttemptBriefIdentity,
     reference: stored_state.ArtifactReference,
     artifacts: ArtifactRepository,
-) -> work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure:
+) -> work_brief_models.AcceptedBrief | work_brief_models.WorkBriefFailure:
     """Read, decode and identity-check one open attempt's current brief; an unreadable artifact is a failure."""
 
     try:
@@ -519,11 +519,11 @@ class AttemptStatusArtifactReader:
 
     def read_attempt_brief(
         self, attempt: query_models.ItemStatusAttemptFacts
-    ) -> work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure:
+    ) -> work_brief_models.AcceptedBrief | work_brief_models.WorkBriefFailure:
         return read_current_brief(attempt, attempt.brief_reference, ArtifactRepository(self.durable))
 
     def read_ready_candidate_review(
-        self, attempt: query_models.ItemStatusAttemptFacts, brief: work_brief_models.WorkBrief
+        self, attempt: query_models.ItemStatusAttemptFacts, brief: work_brief_models.AcceptedBrief
     ) -> query_models.ReadyCandidateReview | None:
         if attempt.state != work_models.AttemptState.REVIEW or attempt.candidate_revision is None:
             return None
@@ -632,7 +632,7 @@ def observe_amendment_review(
         return None, carried
     ready_review: stored_state.ArtifactReference | None = None
     try:
-        brief = work_briefs.decode_canonical_work_brief(artifacts.read(attempt.brief_reference))
+        brief = work_briefs.decode_canonical_accepted_brief(artifacts.read(attempt.brief_reference))
         if (
             not isinstance(brief, work_brief_models.WorkBriefFailure)
             and queries.validate_attempt_brief_identity(attempt, brief) is None
@@ -697,7 +697,7 @@ def commissioned_review_snapshot(
     artifacts: dispatch_models.DispatchArtifactPort,
     *,
     attempt: query_models.NonterminalAttemptContextFacts,
-    brief: work_brief_models.WorkBrief,
+    brief: work_brief_models.AcceptedBrief,
     result_sha256: str,
     review_sha256: str,
     reviewer_task_id: str,
@@ -1083,7 +1083,7 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
         )
     reference = attempt.brief_reference
     brief_bytes = read_reference(work_root, reference)
-    brief = work_briefs.decode_canonical_work_brief(brief_bytes)
+    brief = work_briefs.decode_canonical_accepted_brief(brief_bytes)
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _review_job_failure(str(brief))
     if (failure := queries.validate_attempt_brief_identity(attempt, brief)) is not None:

@@ -29,6 +29,7 @@ from evals.behavioral.board import (
     Checkpoint,
     CompatibilityProposalV2,
     CompatibilityProposalV4,
+    ContinueDisposition,
     Correspondence,
     CorrespondenceTarget,
     Criterion,
@@ -59,8 +60,12 @@ from evals.behavioral.board import (
     ReviewedCompletion,
     ReviewJob,
     RouteFacts,
+    SmallBrief,
+    SmallBriefPublish,
+    SmallScopeEntry,
     Status,
     SubmitPayload,
+    TerminalDisposition,
     Verification,
     require,
 )
@@ -201,15 +206,27 @@ class Seeder:
             ),
             Definition,
         )
-        published = await self.board.call(
-            "pinboard_brief_publish",
-            BriefPublish(
-                project_root=str(worktree),
-                work_root=str(self.work_root),
-                brief=local_brief(item, title, criterion, scope, disposition, base, self.owner, definition),
-            ),
-            Published,
-        )
+        # A revision that advertises the small brief requires it exactly for recorded small items without
+        # checkpoints and refuses a v4 brief for them; the small brief's one implicit checkpoint is terminal.
+        takes_small_brief = self.board.small_brief and definition.takes_small_brief()
+        match disposition:
+            case TerminalDisposition() | ContinueDisposition() if not takes_small_brief:
+                request: BriefPublish | SmallBriefPublish = BriefPublish(
+                    project_root=str(worktree),
+                    work_root=str(self.work_root),
+                    brief=local_brief(item, title, criterion, scope, disposition, base, self.owner, definition),
+                )
+            case TerminalDisposition():
+                request = SmallBriefPublish(
+                    project_root=str(worktree),
+                    work_root=str(self.work_root),
+                    brief=small_brief(item, title, criterion, scope, base, self.owner, definition),
+                )
+            case ContinueDisposition():
+                raise SeedFailure(f"seeded small item {item} takes a terminal small brief but was seeded to continue")
+            case _ as unreachable:
+                assert_never(unreachable)
+        published = await self.board.call("pinboard_brief_publish", request, Published)
         require(published.status, ("committed",), f"publish {item}")
         activate = ActionId(kind="activate", subject=item)
         actions = await self.board.call(
@@ -444,6 +461,28 @@ def first_revision(actions: Actions, what: str) -> str:
     if not actions.actions:
         raise SeedFailure(f"no legal action for {what}")
     return actions.actions[0].subject_revision
+
+
+def small_brief(
+    item: str, title: str, criterion: str, scope: str, base: str, owner: str, definition: Definition
+) -> SmallBrief:
+    return SmallBrief(
+        accepted_scope=AcceptedScope(digest=definition.definition_digest, revision=definition.definition_revision),
+        architecture_impact=ArchitectureImpact(kind="none", reason="Changes stay inside tally.sh and its docs"),
+        artifact_revision=1,
+        attempt_id=f"{item}-1",
+        base_revision=base,
+        branch=f"pinboard/{item}",
+        check="Run ./test.sh",
+        checkout_selection="isolated",
+        exclusions=[],
+        item_id=item,
+        outcome=criterion,
+        owner_task_id=owner,
+        schema="pinboard-small-work-brief/v1",
+        scope=[SmallScopeEntry(statement=scope, obligations=["outcome"])],
+        title=title,
+    )
 
 
 def local_brief(

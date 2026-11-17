@@ -250,7 +250,7 @@ def completion_input_contract(
             "Completion requires a current nonterminal attempt.",
             None,
         )
-    brief = work_briefs.decode_canonical_work_brief(artifacts.read(attempt.brief_reference))
+    brief = work_briefs.decode_canonical_accepted_brief(artifacts.read(attempt.brief_reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
@@ -264,11 +264,13 @@ def completion_input_contract(
                 alternatives=(),
             ),
         )
-    if isinstance(brief.checkpoint.disposition, work_brief_models.ContinueCheckpointDisposition):
+    if isinstance(
+        disposition := work_briefs.accepted_brief_disposition(brief), work_brief_models.ContinueCheckpointDisposition
+    ):
         return query_models.CompletionRecoveryRequired(
             attempt.attempt_id,
             "The accepted brief marks this checkpoint as continuing work, so it cannot authorize completion. "
-            f"Remaining work:\n{brief.checkpoint.disposition.remaining_work}",
+            f"Remaining work:\n{disposition.remaining_work}",
         )
     if (recovery := completion_candidate_recovery(completion)) is not None:
         return recovery

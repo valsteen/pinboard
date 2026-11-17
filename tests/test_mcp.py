@@ -5450,8 +5450,12 @@ class McpTransportTest(unittest.TestCase):
         self.assertFalse(proposal_schema["$defs"]["Proposal"]["additionalProperties"])
         self.assertFalse(proposal_schema["$defs"]["OriginProposal"]["additionalProperties"])
         brief_schema = tools_by_name[mcp_server.BRIEF_PUBLISH_TOOL].input_schema
-        self.assertEqual("#/$defs/WorkBrief", brief_schema["properties"]["brief"]["$ref"])
+        self.assertEqual(
+            [{"$ref": "#/$defs/WorkBrief"}, {"$ref": "#/$defs/SmallWorkBrief"}],
+            brief_schema["properties"]["brief"]["oneOf"],
+        )
         self.assertFalse(brief_schema["$defs"]["WorkBrief"]["additionalProperties"])
+        self.assertFalse(brief_schema["$defs"]["SmallWorkBrief"]["additionalProperties"])
         brief_output_schema = tools_by_name[mcp_server.BRIEF_PUBLISH_TOOL].output_schema
         assert brief_output_schema is not None
         reference_schema = brief_output_schema["$defs"]["ArtifactReferenceResult"]

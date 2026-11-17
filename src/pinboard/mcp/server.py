@@ -261,7 +261,7 @@ PARALLEL_PREVIEW: execution.ToolContract[contracts.ParallelPreviewEnvelope, cont
 BRIEF_CONTRACT: execution.ToolContract[contracts.BriefContractEnvelope, contracts.BriefContractResult] = (
     execution.ToolContract(
         name=BRIEF_CONTRACT_TOOL,
-        description="Construct the strict work-brief contract or unresolved local/cross-boundary starter; no project facts or authority. Put all fields inside request. Structural construction is not readiness review or activation. Follow the Pinboard coordination Skill for preparation.",
+        description="Construct the strict work-brief contract or unresolved local, cross-boundary or small starter; no project facts or authority. Put all fields inside request. Structural construction is not readiness review or activation. Follow the Pinboard coordination Skill for preparation.",
         request=contracts.BriefContractEnvelope,
         results=contracts.BriefContractResult,
         operate=read_operations._brief_contract,
@@ -818,7 +818,7 @@ def create_server(  # noqa: C901, PLR0915 - explicit installed SDK tool registra
             _shared_repository: Path, _work_root: str | None, _arguments: dict[str, JsonValue]
         ) -> str | None:
             brief = read_brief()
-            return brief.item_id if isinstance(brief, work_brief_models.WorkBrief) else None
+            return None if isinstance(brief, execution.TypedOperationResult) else brief.item_id
 
         selected_capture = (
             execution.AutomaticCapture(select_brief_item)
@@ -1214,6 +1214,15 @@ def _projected_request_schema(
 
 
 @cache
+def _projected_brief_publish_request_schema(
+    projector: SchemaProjector,
+) -> dict[str, contracts.JsonSchemaValue]:
+    schema = contract_schemas.brief_publish_request_schema()
+    projector(schema)
+    return schema
+
+
+@cache
 def _projected_actions_request_schema(
     projector: SchemaProjector,
 ) -> dict[str, contracts.JsonSchemaValue]:
@@ -1337,7 +1346,7 @@ def _install_boundary_contracts(server: MCPServer) -> None:
         ),
         (
             BRIEF_PUBLISH.name,
-            _projected_request_schema(BRIEF_PUBLISH.request, projector),
+            _projected_brief_publish_request_schema(projector),
             _projected_result_schema(BRIEF_PUBLISH.results, projector),
         ),
         (

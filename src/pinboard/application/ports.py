@@ -230,10 +230,10 @@ class ItemStatusArtifactReader(Protocol):
 
     def read_attempt_brief(
         self, attempt: query_models.ItemStatusAttemptFacts
-    ) -> work_brief_models.WorkBrief | work_brief_models.WorkBriefFailure: ...
+    ) -> work_brief_models.AcceptedBrief | work_brief_models.WorkBriefFailure: ...
 
     def read_ready_candidate_review(
-        self, attempt: query_models.ItemStatusAttemptFacts, brief: work_brief_models.WorkBrief
+        self, attempt: query_models.ItemStatusAttemptFacts, brief: work_brief_models.AcceptedBrief
     ) -> query_models.ReadyCandidateReview | None: ...
 
 

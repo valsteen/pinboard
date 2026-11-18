@@ -243,11 +243,17 @@ class StoredWorkItem:
 
 
 @dataclass(frozen=True, slots=True)
-class ItemDefinitionRevision:
+class ItemDefinitionRevision[Definition: StoredDefinition = StoredDefinition]:
+    """One accepted definition revision of a work item.
+
+    A stored row may hold any `StoredDefinition`, so reads use the default. Every definition write stores a definition
+    Pinboard accepted as current, so the write path takes `ItemDefinitionRevision[work_models.WorkItemDefinition]`.
+    """
+
     item_id: WorkItemId
     revision: int
     digest: str
-    definition: StoredDefinition
+    definition: Definition
     reason: str
     source_task_id: TaskId
     before_digest: str | None

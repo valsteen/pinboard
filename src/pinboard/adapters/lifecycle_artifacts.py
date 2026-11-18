@@ -551,10 +551,7 @@ def _checkpoint_context(
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
     command: decision_models.AcceptCheckpointCommand,
-) -> DecisionResult[
-    _CheckpointContext,
-    Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID, DecisionFailureCode.TRANSITION_INPUT_INVALID],
-]:
+) -> DecisionResult[_CheckpointContext, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     context = store.read_attempt_context(command.action.capability.subject)
     if not isinstance(context, query_models.NonterminalAttemptContextFacts):
         return _unchanged("Checkpoint acceptance requires a current accepted brief.", candidate=None)

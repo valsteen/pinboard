@@ -11,7 +11,6 @@ from pinboard.adapters.sqlite import database as sqlite_database
 from pinboard.adapters.sqlite.artifact_ownership import accept_ownership
 from pinboard.adapters.sqlite.database import APPLICATION, SCHEMA_VERSION
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.adapters.sqlite.lifecycle import _definition_revision_values
 from pinboard.adapters.sqlite.migration import database as migration_database
 from pinboard.adapters.sqlite.migration.schema_amendments_v13 import upgrade_v13_connection
 from pinboard.adapters.sqlite.migration.schema_holds_v14 import upgrade_v14_connection
@@ -197,7 +196,21 @@ def _insert_lifecycle(connection: sqlite3.Connection, records: stored_state.Life
             source_task_id, before_digest, after_digest, accepted_project_revision, accepted_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        tuple(_definition_revision_values(value) for value in records.definition_revisions),
+        tuple(
+            (
+                value.item_id,
+                value.revision,
+                value.digest,
+                stored_state.stored_definition_bytes(value.definition),
+                value.reason,
+                value.source_task_id,
+                value.before_digest,
+                value.after_digest,
+                value.accepted_project_revision,
+                value.accepted_at.isoformat(),
+            )
+            for value in records.definition_revisions
+        ),
     )
     connection.executemany(
         """

@@ -572,6 +572,12 @@ def decode_definition_revision(row: sqlite3.Row) -> stored_state.ItemDefinitionR
 
 
 def current_definition_anchor(value: stored_state.ItemDefinitionRevision) -> work_models.DefinitionAnchor:
+    """Decode a stored current definition row into the executable definition it must hold.
+
+    This is a stored-row decoding boundary: its callers read rows, and a live item whose current row holds historical
+    v1 is corrupt stored state rather than a value Pinboard wrote, because every definition write takes a
+    `WorkItemDefinition`.
+    """
     if not isinstance(value.definition, work_models.WorkItemDefinition):
         raise StorageError(
             StorageErrorCode.INVALID_STATE,
@@ -1138,12 +1144,14 @@ def read_item_definition_history(
     return query_models.ItemDefinitionHistoryFacts(project_revision, True, definitions)
 
 
-def _definition_revision_values(value: stored_state.ItemDefinitionRevision) -> tuple[str | int | bytes | None, ...]:
+def _definition_revision_values(
+    value: stored_state.ItemDefinitionRevision[work_models.WorkItemDefinition],
+) -> tuple[str | int | bytes | None, ...]:
     return (
         value.item_id,
         value.revision,
         value.digest,
-        accepted_definition_bytes(current_definition_anchor(value).definition),
+        accepted_definition_bytes(value.definition),
         value.reason,
         value.source_task_id,
         value.before_digest,
@@ -1702,7 +1710,7 @@ def insert_definition_revision(
     connection: sqlite3.Connection,
     current_item: stored_state.StoredWorkItem,
     current: stored_state.ItemDefinitionRevision,
-    revision: stored_state.ItemDefinitionRevision,
+    revision: stored_state.ItemDefinitionRevision[work_models.WorkItemDefinition],
 ) -> (
     DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ITEM_DEFINITION_STALE]] | None
 ):
@@ -1733,7 +1741,7 @@ def insert_definition_revision(
 
 def append_definition_revision(
     connection: sqlite3.Connection,
-    revision: stored_state.ItemDefinitionRevision,
+    revision: stored_state.ItemDefinitionRevision[work_models.WorkItemDefinition],
 ) -> None:
     values = _definition_revision_values(revision)
     connection.execute(

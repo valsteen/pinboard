@@ -18,6 +18,24 @@ from tests.support import HOLD_UNBLOCKER, JsonObject, JsonValue
 from tests.test_proposals import proposal
 
 
+def _repeated_revision(
+    value: stored_state.ItemDefinitionRevision, revision: int
+) -> stored_state.ItemDefinitionRevision[work_models.WorkItemDefinition]:
+    """Repeat a current definition at a later revision number, linked to the one it repeats."""
+    return stored_state.ItemDefinitionRevision(
+        value.item_id,
+        revision,
+        value.digest,
+        lifecycle.current_definition_anchor(value).definition,
+        value.reason,
+        value.source_task_id,
+        value.digest,
+        value.after_digest,
+        value.accepted_project_revision,
+        value.accepted_at,
+    )
+
+
 class ObligationCoverageTest(CheckpointPackageSupport):
     def roots(self, fixture: CheckpointFixture) -> JsonObject:
         return {"project_root": str(fixture.project), "work_root": str(fixture.work)}
@@ -585,9 +603,7 @@ class ObligationCoverageTest(CheckpointPackageSupport):
             selected = lifecycle.read_current_definition(connection, WorkItemId("work-a"))
             assert unrelated is not None and selected is not None
             for revision in range(2, 502):
-                lifecycle.append_definition_revision(
-                    connection, replace(unrelated, revision=revision, before_digest=unrelated.digest)
-                )
+                lifecycle.append_definition_revision(connection, _repeated_revision(unrelated, revision))
             statements.clear()
             connection.set_trace_callback(statements.append)
             with patch.object(
@@ -610,9 +626,7 @@ class ObligationCoverageTest(CheckpointPackageSupport):
             self.assertEqual(initial_coverage_statements, tuple(statements))
             connection.set_trace_callback(None)
             for revision in range(2, 502):
-                lifecycle.append_definition_revision(
-                    connection, replace(selected, revision=revision, before_digest=selected.digest)
-                )
+                lifecycle.append_definition_revision(connection, _repeated_revision(selected, revision))
             requested = tuple(replace(origins[0], definition_revision=revision) for revision in range(1, 502))
             statements.clear()
             connection.set_trace_callback(statements.append)

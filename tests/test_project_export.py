@@ -117,7 +117,7 @@ class ProjectExportTest(unittest.TestCase):
             SQLITE_NOW,
             position,
         )
-        revision = stored_state.ItemDefinitionRevision(
+        revision: stored_state.ItemDefinitionRevision = stored_state.ItemDefinitionRevision(
             item_id,
             1,
             digest,

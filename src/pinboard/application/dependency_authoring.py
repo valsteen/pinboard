@@ -4,7 +4,7 @@ A revision verifies only the checkpoint dependencies that are new relative to th
 """
 
 from dataclasses import dataclass
-from typing import assert_never
+from typing import Literal, assert_never
 
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
@@ -46,6 +46,11 @@ type DependencyCheckpointPin = (
     DependencyDefinitionPin | DependencyBriefPin | DependencyAcceptancePin | DependencyFinishedProducerPin
 )
 
+# A checkpoint target that resolves to no declared route is invalid; one whose verified route no longer holds is stale.
+type DependencyPinFailureCode = Literal[
+    DecisionFailureCode.ITEM_DEFINITION_INVALID, DecisionFailureCode.ITEM_DEFINITION_STALE
+]
+
 
 def new_checkpoint_dependencies(
     snapshot: LedgerSnapshot, dependent: WorkItemId | None, dependencies: tuple[work_models.Dependency, ...]
@@ -66,7 +71,7 @@ def validate_dependency_brief_pins(
     dependent: WorkItemId | None,
     dependencies: tuple[work_models.Dependency, ...],
     pins: tuple[DependencyCheckpointPin, ...],
-) -> DecisionFailure | None:
+) -> DecisionFailure[DependencyPinFailureCode] | None:
     requested = new_checkpoint_dependencies(snapshot, dependent, dependencies)
     if tuple(pin.target for pin in pins) != requested:
         targets = ", ".join(f"'{value.item_id}' checkpoint '{value.checkpoint_id}'" for value in requested) or "none"

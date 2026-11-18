@@ -3,7 +3,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pinboard.application import (
     artifact_identity,
@@ -20,11 +20,12 @@ from pinboard.application.mutation_models import (
     CheckpointMutationAllocation,
     CommittedEffect,
     MutationAllocation,
+    ProposalCreationMutation,
     StoredStateMutation,
 )
 from pinboard.application.project_export import ProjectExportState
 from pinboard.domain import consolidation, decision_models, initiatives, work_models
-from pinboard.domain.errors import DecisionResult
+from pinboard.domain.errors import DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, LeaseId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
@@ -80,6 +81,12 @@ class WorkTransaction(Protocol):
     def read_preparation_generation(self, work_item_id: WorkItemId) -> int: ...
 
     def commit(self, mutation: StoredStateMutation) -> DecisionResult[CommittedEffect]: ...
+
+    def commit_proposal(
+        self, mutation: ProposalCreationMutation
+    ) -> DecisionResult[CommittedEffect, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
+        """Commit one proposal creation, whose only expected refusal is a stale compare-and-set write."""
+        ...
 
 
 class WorkStore(Protocol):

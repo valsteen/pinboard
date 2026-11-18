@@ -18,7 +18,7 @@ from datetime import datetime
 from functools import cache
 from itertools import batched
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 from urllib.parse import quote
 
 import msgspec
@@ -59,11 +59,14 @@ def select_by_ids(
     )
 
 
-def stale_write(message: str) -> DecisionFailure:
+type StaleWriteCode = Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]
+
+
+def stale_write(message: str) -> DecisionFailure[StaleWriteCode]:
     return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, message, None)
 
 
-def require_one_changed_row(cursor: sqlite3.Cursor, message: str) -> DecisionFailure | None:
+def require_one_changed_row(cursor: sqlite3.Cursor, message: str) -> DecisionFailure[StaleWriteCode] | None:
     """Report a failed compare-and-set without changing transaction ownership."""
 
     if cursor.rowcount != 1:

@@ -27,7 +27,6 @@ from pinboard.application import (
     action_models,
     authority_operations,
     ports,
-    proposal_models,
     proposals,
     queries,
     query_models,
@@ -70,7 +69,16 @@ _ARCHITECTURE_IMPACT_KIND_PATH = "$.brief.checkpoint.architecture_impact.kind"
 _ARCHITECTURE_IMPACT_KINDS = ("none", "read-only", "update-required")
 
 
-def _proposal_rejected_code(code: DecisionFailureCode) -> diagnostic_codes.ProposalRejectedCode:
+type _ProposalRejectedFailureCode = Literal[
+    DecisionFailureCode.PROPOSAL_INVALID,
+    DecisionFailureCode.ITEM_ALREADY_EXISTS,
+    DecisionFailureCode.ITEM_NOT_FOUND,
+    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    DecisionFailureCode.ITEM_DEFINITION_INVALID,
+]
+
+
+def _proposal_rejected_code(code: _ProposalRejectedFailureCode) -> diagnostic_codes.ProposalRejectedCode:
     match code:
         case DecisionFailureCode.PROPOSAL_INVALID:
             return "PROPOSAL_INVALID"
@@ -82,68 +90,66 @@ def _proposal_rejected_code(code: DecisionFailureCode) -> diagnostic_codes.Propo
             return "ACTION_NOT_AVAILABLE"
         case DecisionFailureCode.ITEM_DEFINITION_INVALID:
             return "ITEM_DEFINITION_INVALID"
-        case (
-            DecisionFailureCode.ACTION_NOT_MUTATING
-            | DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED
-            | DecisionFailureCode.ATTEMPT_LEASE_REQUIRED
-            | DecisionFailureCode.ATTEMPT_LEASE_EXPIRED
-            | DecisionFailureCode.ATTEMPT_NOT_FOUND
-            | DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED
-            | DecisionFailureCode.DEPENDENCY_NOT_SATISFIED
-            | DecisionFailureCode.HISTORY_RECORD_EXISTS
-            | DecisionFailureCode.ITEM_DEFINITION_STALE
-            | DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED
-            | DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID
-            | DecisionFailureCode.ITEM_DEPENDENCY_CYCLE
-            | DecisionFailureCode.ITEM_STATUS_INCONSISTENT
-            | DecisionFailureCode.LIVE_DEPENDENTS
-            | DecisionFailureCode.LEASE_FENCED
-            | DecisionFailureCode.PROPOSAL_NOT_FOUND
-            | DecisionFailureCode.PROPOSAL_ALREADY_EXISTS
-            | DecisionFailureCode.REPLACEMENT_INVALID
-            | DecisionFailureCode.REPLACEMENT_STALE
-            | DecisionFailureCode.REVIEWER_PROMPT_NOT_COMMISSIONED
-            | DecisionFailureCode.TRANSITION_INPUT_INVALID
-            | DecisionFailureCode.SCHEMA_MIGRATION_INVALID
-            | DecisionFailureCode.SCHEMA_MIGRATION_FAILED
-        ):
-            raise ValueError(f"Proposal creation cannot emit rejection code {code.value}.")
         case _ as unreachable:
             assert_never(unreachable)
 
 
 def _proposal_failure(
-    failure: proposal_models.ProposalFailure | DecisionFailure,
+    failure: DecisionFailure[service.ProposalCreationFailureCode],
 ) -> execution.TypedOperationResult[contracts.ProposalResult]:
     schema = "pinboard-mcp-proposal-result/v2"
-    if failure.code == DecisionFailureCode.PROPOSAL_ALREADY_EXISTS:
-        result = contracts.ProposalDuplicate(
-            schema,
-            "rejected",
-            "PROPOSAL_ALREADY_EXISTS",
-            failure.message,
-            False,
-            "unchanged",
-            "do-not-retry",
-            (),
-            (),
-            (),
-            "Read item status for the proposal_id before deciding whether any new proposal is needed.",
-        )
-    else:
-        result = contracts.ProposalRejected(
-            schema,
-            "rejected",
-            _proposal_rejected_code(failure.code),
-            failure.message,
-            False,
-            "unchanged",
-            "correct-input",
-            (),
-            (),
-            (),
-            None,
-        )
+    match failure.code:
+        case DecisionFailureCode.PROPOSAL_ALREADY_EXISTS:
+            result: contracts.ProposalResult = contracts.ProposalDuplicate(
+                schema,
+                "rejected",
+                "PROPOSAL_ALREADY_EXISTS",
+                failure.message,
+                False,
+                "unchanged",
+                "do-not-retry",
+                (),
+                (),
+                (),
+                "Read item status for the proposal_id before deciding whether any new proposal is needed.",
+            )
+        case DecisionFailureCode.ITEM_DEFINITION_STALE:
+            result = contracts.ProposalStale(
+                schema,
+                "rejected",
+                "ITEM_DEFINITION_STALE",
+                failure.message,
+                False,
+                "unchanged",
+                "refresh-action",
+                (),
+                (),
+                (),
+                "Inspect the named prerequisite's item status and accepted brief, then select one of its current "
+                "declared checkpoints again before retrying the proposal.",
+            )
+        case (
+            DecisionFailureCode.PROPOSAL_INVALID
+            | DecisionFailureCode.ITEM_ALREADY_EXISTS
+            | DecisionFailureCode.ITEM_NOT_FOUND
+            | DecisionFailureCode.ACTION_NOT_AVAILABLE
+            | DecisionFailureCode.ITEM_DEFINITION_INVALID
+        ) as code:
+            result = contracts.ProposalRejected(
+                schema,
+                "rejected",
+                _proposal_rejected_code(code),
+                failure.message,
+                False,
+                "unchanged",
+                "correct-input",
+                (),
+                (),
+                (),
+                None,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
     return execution.TypedOperationResult(result, "rejected", None)
 
 
@@ -228,11 +234,7 @@ def _proposal_created(
         durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
         return _proposal_failure(
-            proposal_models.ProposalFailure(
-                DecisionFailureCode.PROPOSAL_INVALID,
-                f"Cannot decode proposal request: {error}",
-                None,
-            )
+            DecisionFailure(DecisionFailureCode.PROPOSAL_INVALID, f"Cannot decode proposal request: {error}", None)
         )
     decoded = request.proposal
     store = common.compose_store(durable)
@@ -246,9 +248,7 @@ def _proposal_created(
     )
     dependency_pins = resolve_dependency_brief_pins(store, ArtifactRepository(durable), None, dependencies, now)
     if isinstance(dependency_pins, DecisionFailure):
-        return _proposal_failure(
-            proposal_models.ProposalFailure(dependency_pins.code, dependency_pins.message, dependency_pins.details)
-        )
+        return _proposal_failure(dependency_pins)
     committed = service.create_proposal(
         store,
         operation,

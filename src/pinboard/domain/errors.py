@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
+from typing import Final, final
 
 type FailureFactValue = str | int | bool | None
 
@@ -164,11 +165,20 @@ class DecisionFailureCode(DescribedCode):
     )
 
 
+@final
 @dataclass(frozen=True, slots=True)
-class DecisionFailure:
-    code: DecisionFailureCode
-    message: str
-    details: FailureDetails | None
+class DecisionFailure[Code: DecisionFailureCode = DecisionFailureCode]:
+    """An expected rejection whose code is one of the codes its producer declares.
+
+    A producer declares its range as a ``Literal`` subset of ``DecisionFailureCode``, so its consumer matches only
+    those codes. The default is the transitional whole vocabulary for producers that do not declare a range yet. The
+    fields are ``Final`` so that both type checkers treat a narrow failure as assignable to a wider one, and the class
+    is ``final`` so that narrowing a result by ``isinstance`` keeps only the declared failure.
+    """
+
+    code: Final[Code]
+    message: Final[str]
+    details: Final[FailureDetails | None]
 
 
-type DecisionResult[T] = T | DecisionFailure
+type DecisionResult[T, Code: DecisionFailureCode = DecisionFailureCode] = T | DecisionFailure[Code]

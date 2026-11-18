@@ -20,7 +20,7 @@ class OriginReader(Protocol):
 
 def validate_origins(
     reader: OriginReader, obligations: Iterable[work_models.DefinitionObligation]
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID]] | None:
     origins = tuple(
         dict.fromkeys(value.origin for value in obligations if isinstance(value, work_models.CarriedWorkObligation))
     )

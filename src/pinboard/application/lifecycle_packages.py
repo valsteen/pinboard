@@ -63,11 +63,9 @@ def _validate_one_checkpoint_package(
         )
     ) is not None:
         return failure
-    if receipt.artifact_ref_id is None:
-        raise AssertionError("Validated package receipt must link one artifact.")
     packaged = {
         "history_id": int(receipt.history_id),
-        "package_artifact_ref_id": int(receipt.artifact_ref_id),
+        "package_artifact_ref_id": int(package_reference.artifact_ref_id),
         **msgspec.to_builtins(package),
     }
     return msgspec.convert(packaged, type=project_export.ProjectExportCheckpointPackageV3, strict=True)
@@ -343,20 +341,14 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
         ):
             return _package_provenance_failure("Completion package does not match its terminal attempt or scope.")
         accepted_brief = _completion_reference(package.accepted_brief, references, artifact_bytes)
+        if isinstance(accepted_brief, work_brief_models.ReviewEvidenceFailure):
+            return accepted_brief
         terminal_result = _completion_reference(package.terminal_result, references, artifact_bytes)
+        if isinstance(terminal_result, work_brief_models.ReviewEvidenceFailure):
+            return terminal_result
         final_review = _completion_reference(package.final_review, references, artifact_bytes)
-        if any(
-            isinstance(value, work_brief_models.ReviewEvidenceFailure)
-            for value in (accepted_brief, terminal_result, final_review)
-        ):
-            return next(
-                value
-                for value in (accepted_brief, terminal_result, final_review)
-                if isinstance(value, work_brief_models.ReviewEvidenceFailure)
-            )
-        assert isinstance(accepted_brief, stored_state.ArtifactReference)
-        assert isinstance(terminal_result, stored_state.ArtifactReference)
-        assert isinstance(final_review, stored_state.ArtifactReference)
+        if isinstance(final_review, work_brief_models.ReviewEvidenceFailure):
+            return final_review
         if (
             not any(owner.attempt_id == package.attempt_id for owner in accepted_brief.owners)
             or artifact_identity.CompletionAddress(

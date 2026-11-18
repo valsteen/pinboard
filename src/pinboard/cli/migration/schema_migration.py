@@ -118,47 +118,53 @@ def migrate_schema(
             assert_never(unreachable)
     if isinstance(selected, SchemaProcedureFailure):
         return _failure(selected, str(path), requested_id, recovery)
-    if isinstance(selected, PlannedSchema):
-        version, _, _ = inspect_current_schema_migration(path)
-        write_json(
-            SchemaMigrationView(
-                "pinboard-schema-migration/v2",
-                "planned",
-                selected.plan_id,
-                selected.plan,
-                str(path),
-                _authority(version),
-                False,
-                "unchanged",
-                "safe-to-repeat",
-                (),
-                None,
+    match selected:
+        case PlannedSchema():
+            version, _, _ = inspect_current_schema_migration(path)
+            write_json(
+                SchemaMigrationView(
+                    "pinboard-schema-migration/v2",
+                    "planned",
+                    selected.plan_id,
+                    selected.plan,
+                    str(path),
+                    _authority(version),
+                    False,
+                    "unchanged",
+                    "safe-to-repeat",
+                    (),
+                    None,
+                )
             )
-        )
-    else:
-        assert isinstance(selected, AppliedSchema)
-        changed = bool(selected.changed_surfaces)
-        version = selected.resulting_version
-        warning = (
-            _refresh_committed_views(roots, store)
-            if "ledger" in selected.changed_surfaces and version == SCHEMA_VERSION
-            else None
-        )
-        write_json(
-            SchemaMigrationView(
-                "pinboard-schema-migration/v2",
-                "migrated" if changed and selected.direction == "forward" else "reversed" if changed else "unchanged",
-                selected.plan_id,
-                None,
-                str(path),
-                _authority(version),
-                changed,
-                "committed" if changed else "unchanged",
-                "do-not-retry" if changed else "safe-to-repeat",
-                selected.changed_surfaces,
-                warning,
+        case AppliedSchema():
+            changed = bool(selected.changed_surfaces)
+            version = selected.resulting_version
+            warning = (
+                _refresh_committed_views(roots, store)
+                if "ledger" in selected.changed_surfaces and version == SCHEMA_VERSION
+                else None
             )
-        )
+            write_json(
+                SchemaMigrationView(
+                    "pinboard-schema-migration/v2",
+                    "migrated"
+                    if changed and selected.direction == "forward"
+                    else "reversed"
+                    if changed
+                    else "unchanged",
+                    selected.plan_id,
+                    None,
+                    str(path),
+                    _authority(version),
+                    changed,
+                    "committed" if changed else "unchanged",
+                    "do-not-retry" if changed else "safe-to-repeat",
+                    selected.changed_surfaces,
+                    warning,
+                )
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
     return 0
 
 

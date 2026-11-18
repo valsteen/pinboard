@@ -902,10 +902,11 @@ class WorkBriefReviewNeedsCorrection(msgspec.Struct, frozen=True, forbid_unknown
 
 @dataclass(frozen=True, slots=True)
 class AcceptedWorkBrief:
-    """An accepted v4 brief and its reference; only brief review reads it, so small briefs never appear."""
+    """The verified cross-boundary subject of a brief review."""
 
     reference: stored_state.BriefArtifactReference
     brief: WorkBrief
+    checkpoint: CrossBoundaryCheckpoint
 
 
 @dataclass(frozen=True, slots=True)

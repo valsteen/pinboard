@@ -431,6 +431,8 @@ class McpFileInputsTest(CheckpointPackageSupport):
 
     def test_file_publishers_report_committed_artifact_sync_failure(self) -> None:
         fixture = self.checkpoint_fixture()
+        checkpoint = fixture.brief.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
         brief = msgspec.structs.replace(fixture.brief, artifact_revision=fixture.brief.artifact_revision + 1)
         review = msgspec.json.decode(
             needs_correction_review(fixture.brief), type=work_brief_models.WorkBriefReviewNeedsCorrection
@@ -460,7 +462,7 @@ class McpFileInputsTest(CheckpointPackageSupport):
                         "review_path": str(selected),
                     }
                 },
-                work_briefs.needs_correction_review_key(fixture.brief),
+                work_briefs.needs_correction_review_key(fixture.brief, checkpoint),
                 work_briefs.canonical_work_brief_review_needs_correction_bytes(review),
             ),
         )

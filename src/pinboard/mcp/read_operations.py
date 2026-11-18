@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Literal, assert_never
+from typing import Literal, assert_never, overload
 
 import msgspec
 
@@ -31,7 +31,6 @@ from pinboard.adapters.files.file_io import DurableRoots, create_immutable
 from pinboard.adapters.files.models import AffectedViews
 from pinboard.adapters.files.root import resolve_source_checkout_root
 from pinboard.application import (
-    action_models,
     actions,
     brief_source_codec,
     brief_source_models,
@@ -1149,7 +1148,7 @@ def _brief_review_status(
     store: WorkStore,
 ) -> execution.TypedOperationResult[contracts.BriefReviewResult]:
     schema = "pinboard-mcp-brief-review-result/v1"
-    checkpoint = selected.accepted_brief.brief.checkpoint
+    checkpoint = selected.accepted_brief.checkpoint
     item_id = selected.accepted_brief.brief.item_id
     current_definition = queries.select_item_definition(store, WorkItemId(item_id))
     if isinstance(current_definition, DecisionFailure):
@@ -1175,7 +1174,6 @@ def _brief_review_status(
                 alternatives=(),
             ),
         )
-    assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
     reference = selected.accepted_brief.reference
     result_kind: Literal["brief"]
     match reference.kind:
@@ -2074,8 +2072,6 @@ def _mcp_action(
     procedure = instructions.action_instructions(
         instruction_reader, action.kind, caller_role, profile, None if anchor is None else anchor.definition.route_facts
     )
-    if not isinstance(projected, action_models.ActionView):
-        raise RuntimeError("MCP action discovery requires an inline input contract.")
     identity = contracts.ActionIdentity(projected.kind, projected.subject)
     invocation = contracts.action_invocation(projected, project_root, work_root)
     if isinstance(action, decision_models.CompleteAction) and focused:
@@ -2242,16 +2238,14 @@ def _evidence_reference(path: Path) -> contracts.EvidenceReference:
 def _current_candidate_review(
     durable: DurableRoots,
     store: WorkStore,
-    context: query_models.AttemptContextFacts,
-    brief: work_brief_models.AcceptedBrief | None,
+    context: query_models.NonterminalAttemptContextFacts,
+    brief: work_brief_models.AcceptedBrief,
     result: contracts.EvidenceReference,
     review: contracts.EvidenceReference,
 ) -> tuple[review_operations.CurrentCandidateReview | None, contracts.CandidateReviewReference]:
     if not (
-        isinstance(context, query_models.NonterminalAttemptContextFacts)
-        and context.state == work_models.AttemptState.REVIEW
+        context.state == work_models.AttemptState.REVIEW
         and context.candidate_revision is not None
-        and brief is not None
         and isinstance(result, contracts.EvidencePresent)
         and isinstance(review, contracts.EvidencePresent)
     ):
@@ -2307,6 +2301,18 @@ def _continuation_operation(
             return contracts.ContinuationRepositoryCleanup(target_revision)
         case _ as unreachable:
             assert_never(unreachable)
+
+
+@overload
+def _mcp_attempt_continuation(
+    continuation: query_models.TerminalAttemptContinuation,
+) -> contracts.TerminalAttemptContinuation: ...
+
+
+@overload
+def _mcp_attempt_continuation(
+    continuation: query_models.NonterminalAttemptContinuation,
+) -> contracts.NonterminalAttemptContinuation: ...
 
 
 def _mcp_attempt_continuation(
@@ -2368,65 +2374,6 @@ def _mcp_attempt_continuation(
                     assert_never(unreachable)
         case _ as unreachable:
             assert_never(unreachable)
-
-
-def _attempt_inspection_success(
-    project_root: str,
-    work_root: str,
-    continuation: query_models.AttemptContinuation,
-    candidate_recovery: contracts.CandidateRecovery,
-    candidate_review: contracts.CandidateReviewReference,
-    accepted_brief: contracts.AcceptedBriefIdentity | None,
-    amendments: tuple[query_models.AttemptAmendmentView, ...],
-    result: contracts.EvidenceReference,
-    review: contracts.EvidenceReference,
-    blocker: contracts.EvidenceReference,
-) -> contracts.TerminalAttemptInspectionSuccess | contracts.NonterminalAttemptInspectionSuccess:
-    if isinstance(continuation, query_models.TerminalAttemptContinuation):
-        presented_continuation = _mcp_attempt_continuation(continuation)
-        if not isinstance(presented_continuation, contracts.TerminalAttemptContinuation):
-            raise RuntimeError("Terminal attempt projection changed continuation family.")
-        record: contracts.TerminalAttemptInspectionSuccess | contracts.NonterminalAttemptInspectionSuccess = (
-            contracts.TerminalAttemptInspectionSuccess(
-                "pinboard-mcp-attempt-inspection-result/v2",
-                "ok",
-                presented_continuation,
-                candidate_recovery,
-                None,
-                result,
-                review,
-                blocker,
-                False,
-                "unchanged",
-                "safe-to-repeat",
-                (),
-            )
-        )
-    else:
-        if accepted_brief is None:
-            raise RuntimeError("A nonterminal attempt inspection requires its verified accepted brief.")
-        presented_continuation = _mcp_attempt_continuation(continuation)
-        if isinstance(presented_continuation, contracts.TerminalAttemptContinuation):
-            raise RuntimeError("Nonterminal attempt projection changed continuation family.")
-        record = contracts.NonterminalAttemptInspectionSuccess(
-            "pinboard-mcp-attempt-inspection-result/v2",
-            "ok",
-            presented_continuation,
-            candidate_recovery,
-            candidate_review,
-            accepted_brief,
-            amendments,
-            result,
-            review,
-            blocker,
-            False,
-            "unchanged",
-            "safe-to-repeat",
-            (),
-            _review_launch_invocations(project_root, work_root, continuation),
-            instructions.native_document("recovery-launch"),
-        )
-    return record
 
 
 def _review_launch_invocations(
@@ -2519,7 +2466,7 @@ def _candidate_lineage_for_disposition(
     project_root: str,
     durable: DurableRoots,
     store: WorkStore,
-    context: query_models.AttemptContextFacts,
+    context: query_models.NonterminalAttemptContextFacts,
     attempt_id: str,
     ready_review: bool,
     reconciliation: query_models.AttemptReconciliation | None,
@@ -2527,7 +2474,6 @@ def _candidate_lineage_for_disposition(
     if (
         reconciliation is None
         or not ready_review
-        or not isinstance(context, query_models.NonterminalAttemptContextFacts)
         or reconciliation.relation
         not in (
             query_models.IntegrationRelation.CANDIDATE_PENDING_ON_ACCEPTED_BASE,
@@ -2606,7 +2552,118 @@ def _inspection_context(
     return context
 
 
-def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independent evidence and failure gates
+@dataclass(frozen=True, slots=True)
+class _LiveAttemptInspectionContext:
+    attempt: query_models.NonterminalAttemptContextFacts
+    brief: work_brief_models.AcceptedBrief
+    brief_identity: contracts.AcceptedBriefIdentity
+
+
+def _read_live_attempt_inspection_context(
+    durable: DurableRoots,
+    store: WorkStore,
+    context: query_models.NonterminalAttemptContextFacts,
+) -> _LiveAttemptInspectionContext | contracts.AttemptBriefInvalid:
+    """Verify bytes and match the stored reference before pairing the live attempt with its brief."""
+    reference = context.brief_reference
+    brief_reference_facts = (
+        FailureFact("attempt_id", context.attempt_id),
+        FailureFact("artifact_ref_id", int(context.brief_artifact_ref_id)),
+        FailureFact("selector", reference.selector),
+    )
+    try:
+        brief = work_briefs.decode_canonical_accepted_brief(read_reference(durable.work_root, reference))
+    except ArtifactError as error:
+        return _attempt_brief_invalid(
+            f"Accepted attempt brief could not be verified: {error}. Report the exact accepted brief and defect to the human; do not retry unchanged, reconstruct or overwrite accepted bytes.",
+            FailureDetails(
+                observed=(
+                    *brief_reference_facts,
+                    FailureFact("sha256", reference.content_sha256),
+                    FailureFact("size_bytes", reference.size_bytes),
+                ),
+                mismatches=(
+                    FailureMismatch(
+                        "accepted_brief_bytes",
+                        "match the accepted selector, size, and SHA-256",
+                        "unreadable or mismatched",
+                    ),
+                ),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    if isinstance(brief, work_brief_models.WorkBriefFailure):
+        return _attempt_brief_invalid(
+            brief.message
+            + f" Report accepted brief '{durable.work_root / reference.selector}' and its canonical-content defect to the human; do not rewrite accepted bytes.",
+            FailureDetails(
+                observed=brief_reference_facts,
+                mismatches=(FailureMismatch("accepted_brief", "canonical work brief", "invalid canonical content"),),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    if (failure := queries.validate_attempt_brief_identity(context, brief)) is not None:
+        return _attempt_brief_invalid(
+            failure.message
+            + f" Report accepted brief '{durable.work_root / reference.selector}' and the current attempt identity mismatch to the human; do not normalize or rewrite accepted facts.",
+            FailureDetails(
+                observed=(
+                    FailureFact("attempt_id", context.attempt_id),
+                    FailureFact("brief_attempt_id", brief.attempt_id),
+                    FailureFact("brief_item_id", brief.item_id),
+                    FailureFact("brief_scope_revision", brief.accepted_scope.revision),
+                    FailureFact("brief_scope_digest", brief.accepted_scope.digest),
+                ),
+                mismatches=(FailureMismatch("accepted_brief_identity", "match the current attempt", "different"),),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    stored_reference = store.read_artifact_reference_by_id(context.brief_artifact_ref_id)
+    if stored_reference is None or (
+        stored_reference.selector,
+        stored_reference.content_sha256,
+        stored_reference.size_bytes,
+    ) != (reference.selector, reference.content_sha256, reference.size_bytes):
+        return _attempt_brief_invalid(
+            f"Accepted brief reference identity differs from attempt '{context.attempt_id}' at '{durable.work_root / reference.selector}'. Report the conflicting reference facts to the human; preserve accepted bytes and ledger state.",
+            FailureDetails(
+                observed=brief_reference_facts,
+                mismatches=(
+                    FailureMismatch(
+                        "accepted_brief_reference",
+                        "match the attempt brief reference",
+                        "absent or different",
+                    ),
+                ),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
+    accepted_brief = contracts.AcceptedBriefIdentity(
+        int(context.brief_artifact_ref_id),
+        str(durable.work_root / reference.selector),
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+        stored_reference.accepted_revision,
+        context.accepted_scope_revision,
+        context.accepted_scope_digest,
+    )
+    return _LiveAttemptInspectionContext(context, brief, accepted_brief)
+
+
+def _read_attempt_inspection(
     raw: Mapping[str, JsonValue], token: execution.CancellationToken
 ) -> execution.TypedOperationResult[contracts.AttemptInspectionResult]:
     token.checkpoint()
@@ -2635,132 +2692,12 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
     if isinstance(context, execution.TypedOperationResult):
         return execution.TypedOperationResult(context.record, context.classification, context.commit_reference)
     token.checkpoint()
-    accepted_brief: contracts.AcceptedBriefIdentity | None = None
-    owner_task_id: TaskId | None = None
-    decoded_brief: work_brief_models.AcceptedBrief | None = None
     if isinstance(context, query_models.NonterminalAttemptContextFacts):
-        reference = context.brief_reference
-        try:
-            brief = work_briefs.decode_canonical_accepted_brief(read_reference(durable.work_root, reference))
-        except ArtifactError as error:
-            return execution.TypedOperationResult(
-                _attempt_brief_invalid(
-                    f"Accepted attempt brief could not be verified: {error}. Report the exact accepted brief and defect to the human; do not retry unchanged, reconstruct or overwrite accepted bytes.",
-                    FailureDetails(
-                        observed=(
-                            FailureFact("attempt_id", request.attempt_id),
-                            FailureFact("artifact_ref_id", int(context.brief_artifact_ref_id)),
-                            FailureFact("selector", reference.selector),
-                            FailureFact("sha256", reference.content_sha256),
-                            FailureFact("size_bytes", reference.size_bytes),
-                        ),
-                        mismatches=(
-                            FailureMismatch(
-                                "accepted_brief_bytes",
-                                "match the accepted selector, size, and SHA-256",
-                                "unreadable or mismatched",
-                            ),
-                        ),
-                        retry=RetryDisposition.DO_NOT_RETRY,
-                        effect=EffectDisposition.UNCHANGED,
-                        changed_surfaces=(),
-                        alternatives=(),
-                    ),
-                ),
-                "rejected",
-                None,
-            )
-        if isinstance(brief, work_brief_models.WorkBriefFailure):
-            return execution.TypedOperationResult(
-                _attempt_brief_invalid(
-                    brief.message
-                    + f" Report accepted brief '{durable.work_root / reference.selector}' and its canonical-content defect to the human; do not rewrite accepted bytes.",
-                    FailureDetails(
-                        observed=(
-                            FailureFact("attempt_id", request.attempt_id),
-                            FailureFact("artifact_ref_id", int(context.brief_artifact_ref_id)),
-                            FailureFact("selector", reference.selector),
-                        ),
-                        mismatches=(
-                            FailureMismatch("accepted_brief", "canonical work brief", "invalid canonical content"),
-                        ),
-                        retry=RetryDisposition.DO_NOT_RETRY,
-                        effect=EffectDisposition.UNCHANGED,
-                        changed_surfaces=(),
-                        alternatives=(),
-                    ),
-                ),
-                "rejected",
-                None,
-            )
-        if (failure := queries.validate_attempt_brief_identity(context, brief)) is not None:
-            return execution.TypedOperationResult(
-                _attempt_brief_invalid(
-                    failure.message
-                    + f" Report accepted brief '{durable.work_root / reference.selector}' and the current attempt identity mismatch to the human; do not normalize or rewrite accepted facts.",
-                    FailureDetails(
-                        observed=(
-                            FailureFact("attempt_id", request.attempt_id),
-                            FailureFact("brief_attempt_id", brief.attempt_id),
-                            FailureFact("brief_item_id", brief.item_id),
-                            FailureFact("brief_scope_revision", brief.accepted_scope.revision),
-                            FailureFact("brief_scope_digest", brief.accepted_scope.digest),
-                        ),
-                        mismatches=(
-                            FailureMismatch("accepted_brief_identity", "match the current attempt", "different"),
-                        ),
-                        retry=RetryDisposition.DO_NOT_RETRY,
-                        effect=EffectDisposition.UNCHANGED,
-                        changed_surfaces=(),
-                        alternatives=(),
-                    ),
-                ),
-                "rejected",
-                None,
-            )
-        owner_task_id = TaskId(brief.owner_task_id)
-        decoded_brief = brief
-        stored_reference = store.read_artifact_reference_by_id(context.brief_artifact_ref_id)
-        if stored_reference is None or (
-            stored_reference.selector,
-            stored_reference.content_sha256,
-            stored_reference.size_bytes,
-        ) != (reference.selector, reference.content_sha256, reference.size_bytes):
-            return execution.TypedOperationResult(
-                _attempt_brief_invalid(
-                    f"Accepted brief reference identity differs from attempt '{request.attempt_id}' at '{durable.work_root / reference.selector}'. Report the conflicting reference facts to the human; preserve accepted bytes and ledger state.",
-                    FailureDetails(
-                        observed=(
-                            FailureFact("attempt_id", request.attempt_id),
-                            FailureFact("artifact_ref_id", int(context.brief_artifact_ref_id)),
-                            FailureFact("selector", reference.selector),
-                        ),
-                        mismatches=(
-                            FailureMismatch(
-                                "accepted_brief_reference",
-                                "match the attempt brief reference",
-                                "absent or different",
-                            ),
-                        ),
-                        retry=RetryDisposition.DO_NOT_RETRY,
-                        effect=EffectDisposition.UNCHANGED,
-                        changed_surfaces=(),
-                        alternatives=(),
-                    ),
-                ),
-                "rejected",
-                None,
-            )
-        accepted_brief = contracts.AcceptedBriefIdentity(
-            int(context.brief_artifact_ref_id),
-            str(durable.work_root / reference.selector),
-            reference.selector,
-            reference.content_sha256,
-            reference.size_bytes,
-            stored_reference.accepted_revision,
-            context.accepted_scope_revision,
-            context.accepted_scope_digest,
-        )
+        inspection = _read_live_attempt_inspection_context(durable, store, context)
+        if isinstance(inspection, contracts.AttemptBriefInvalid):
+            return execution.TypedOperationResult(inspection, "rejected", None)
+    else:
+        inspection = context
     attempt_root = durable.work_root / "attempts" / request.attempt_id
     try:
         result = _evidence_reference(attempt_root / "result.md")
@@ -2788,7 +2725,30 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
     recovery = _mcp_candidate_recovery(durable, store, context, request.attempt_id)
     if isinstance(recovery, contracts.AttemptBriefInvalid):
         return execution.TypedOperationResult(recovery, "rejected", None)
-    current_review, candidate_review = _current_candidate_review(durable, store, context, decoded_brief, result, review)
+    if isinstance(inspection, query_models.TerminalAttemptContextFacts):
+        terminal = queries.project_terminal_attempt_continuation(inspection)
+        return execution.TypedOperationResult(
+            contracts.TerminalAttemptInspectionSuccess(
+                "pinboard-mcp-attempt-inspection-result/v2",
+                "ok",
+                _mcp_attempt_continuation(terminal),
+                recovery,
+                None,
+                result,
+                review,
+                blocker,
+                False,
+                "unchanged",
+                "safe-to-repeat",
+                (),
+            ),
+            "ok",
+            str(inspection.project_revision),
+        )
+    context = inspection.attempt
+    current_review, candidate_review = _current_candidate_review(
+        durable, store, context, inspection.brief, result, review
+    )
     candidate_lineage = _candidate_lineage_for_disposition(
         request.project_root,
         durable,
@@ -2800,10 +2760,9 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
     )
     if isinstance(candidate_lineage, contracts.AttemptBriefInvalid):
         return execution.TypedOperationResult(candidate_lineage, "rejected", None)
-    continuation = queries.project_attempt_continuation(
+    continuation = queries.project_nonterminal_attempt_continuation(
         context,
-        owner_task_id,
-        decoded_brief,
+        inspection.brief,
         request.reconciliation,
         candidate_lineage,
         current_review is not None,
@@ -2837,21 +2796,25 @@ def _read_attempt_inspection(  # noqa: C901 - exact read path preserves independ
             "rejected",
             None,
         )
-    result = _attempt_inspection_success(
-        request.project_root,
-        request.work_root,
-        continuation,
+    inspected = contracts.NonterminalAttemptInspectionSuccess(
+        "pinboard-mcp-attempt-inspection-result/v2",
+        "ok",
+        _mcp_attempt_continuation(continuation),
         recovery,
         candidate_review,
-        accepted_brief,
-        ()
-        if not isinstance(context, query_models.NonterminalAttemptContextFacts)
-        else tuple(query_models.amendment_view(value) for value in context.amendments.current),
+        inspection.brief_identity,
+        tuple(query_models.amendment_view(value) for value in context.amendments.current),
         result,
         review,
         blocker,
+        False,
+        "unchanged",
+        "safe-to-repeat",
+        (),
+        _review_launch_invocations(request.project_root, request.work_root, continuation),
+        instructions.native_document("recovery-launch"),
     )
-    return execution.TypedOperationResult(result, "ok", str(context.project_revision))
+    return execution.TypedOperationResult(inspected, "ok", str(context.project_revision))
 
 
 def _attempt_brief_invalid(message: str, details: FailureDetails) -> contracts.AttemptBriefInvalid:

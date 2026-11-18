@@ -34,6 +34,7 @@ from pinboard.domain.identifiers import AttemptId, ReviewId
 
 @dataclass(frozen=True, slots=True)
 class SelectedDispatch:
+    action: decision_models.DispatchAction
     attempt: query_models.NonterminalAttemptContextFacts
     brief_reference: BriefArtifactRef
 
@@ -137,7 +138,7 @@ def select_dispatch(
         or attempt.state != work_models.AttemptState.ACTIVE
     ):
         return DispatchFailure(DispatchRejectionCode.ATTEMPT_NOT_ACTIVE, f"Attempt '{attempt_id}' is not active.", None)
-    return SelectedDispatch(attempt, attempt.brief_reference)
+    return SelectedDispatch(current, attempt, attempt.brief_reference)
 
 
 def _find_ready_review_reference(

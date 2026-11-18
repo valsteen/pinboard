@@ -536,44 +536,30 @@ def _review_round_selection(choice: contracts.ReviewLaunchChoice) -> review_oper
             assert_never(unreachable)
 
 
-def _dispatch_invalid(
-    code: diagnostic_codes.DispatchInvalidCode, message: str
-) -> execution.TypedOperationResult[contracts.DispatchResult]:
-    return execution.TypedOperationResult(
-        contracts.DispatchInvalid(
-            "pinboard-mcp-dispatch-result/v1",
-            "rejected",
-            code,
-            message,
-            False,
-            "unchanged",
-            "correct-input",
-            (),
-            (),
-            (),
-        ),
+def _dispatch_invalid(code: diagnostic_codes.DispatchInvalidCode, message: str) -> contracts.DispatchInvalid:
+    return contracts.DispatchInvalid(
+        "pinboard-mcp-dispatch-result/v1",
         "rejected",
-        None,
+        code,
+        message,
+        False,
+        "unchanged",
+        "correct-input",
+        (),
+        (),
+        (),
     )
 
 
-def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and distinct readiness/worker effects
-    raw: Mapping[str, JsonValue], token: execution.CancellationToken
-) -> execution.TypedOperationResult[contracts.DispatchResult]:
-    token.checkpoint()
-    schema = "pinboard-mcp-dispatch-result/v1"
-    try:
-        request = msgspec.convert(
-            raw,
-            type=contracts.DispatchRequest,
-            strict=True,
-            dec_hook=dispatch_models.dispatch_environment_dec_hook,
-        )
-        source_checkout, durable = common.resolve_mcp_roots(request.project_root, request.work_root)
-    except (msgspec.ValidationError, ValueError, OSError) as error:
-        return _dispatch_invalid("DISPATCH_INVALID", f"Cannot decode dispatch request: {error}")
-    choice = request.dispatch
-    attempt_id = choice.receipt.action_id.subject
+@dataclass(frozen=True, slots=True)
+class _WorkerDispatchPreparation:
+    request: contracts.DispatchChoiceBase
+    choice: dispatch_operations.DispatchPreparationChoice
+
+
+def _dispatch_preparation(  # noqa: C901, PLR0912 - exact inline and verified-file leaves
+    choice: contracts.DispatchChoice,
+) -> _WorkerDispatchPreparation | contracts.ReplacementReadinessChoice | contracts.DispatchInvalid:
     if isinstance(
         choice,
         (
@@ -621,8 +607,13 @@ def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and dis
                         candidate_review.current_candidate,
                     )
                 case contracts.ReplacementReadinessFileChoice():
-                    preparation_choice = msgspec.json.decode(
-                        review_bytes, type=work_brief_models.CorrectionSourceReview
+                    return contracts.ReplacementReadinessChoice(
+                        choice.receipt,
+                        choice.checkpoint_id,
+                        msgspec.json.decode(review_bytes, type=work_brief_models.CorrectionSourceReview),
+                        choice.current_candidate,
+                        choice.review_id,
+                        choice.correction_history_id,
                     )
                 case _ as unreachable:
                     assert_never(unreachable)
@@ -657,9 +648,46 @@ def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and dis
                     choice.brief_review.current_candidate,
                 )
             case contracts.ReplacementReadinessChoice():
-                preparation_choice = choice.brief_review
+                return choice
             case _ as unreachable:
                 assert_never(unreachable)
+    return _WorkerDispatchPreparation(choice, preparation_choice)
+
+
+def _dispatch_publication_failure(
+    project_root: str,
+    durable: DurableRoots,
+    store: WorkStore,
+    schema: Literal["pinboard-mcp-dispatch-result/v1"],
+    attempt_id: str,
+    failure: dispatch_operations.DispatchFailure | ArtifactAcceptanceFailure | ArtifactWriteFailure,
+) -> execution.TypedOperationResult[contracts.DispatchResult]:
+    refresh_warning = common._refresh_published_ledger(durable, store, failure.details, datetime.now(UTC))
+    return _job_failure(project_root, str(durable.work_root), schema, attempt_id, failure, refresh_warning)
+
+
+def _dispatch_job(
+    raw: Mapping[str, JsonValue], token: execution.CancellationToken
+) -> execution.TypedOperationResult[contracts.DispatchResult]:
+    token.checkpoint()
+    schema = "pinboard-mcp-dispatch-result/v1"
+    try:
+        request = msgspec.convert(
+            raw,
+            type=contracts.DispatchRequest,
+            strict=True,
+            dec_hook=dispatch_models.dispatch_environment_dec_hook,
+        )
+        source_checkout, durable = common.resolve_mcp_roots(request.project_root, request.work_root)
+    except (msgspec.ValidationError, ValueError, OSError) as error:
+        return execution.TypedOperationResult(
+            _dispatch_invalid("DISPATCH_INVALID", f"Cannot decode dispatch request: {error}"), "rejected", None
+        )
+    prepared = _dispatch_preparation(request.dispatch)
+    if isinstance(prepared, contracts.DispatchInvalid):
+        return execution.TypedOperationResult(prepared, "rejected", None)
+    receipt = request.dispatch.receipt
+    attempt_id = receipt.action_id.subject
     store = common.compose_store(durable)
     token.checkpoint()
     action = actions.select_exact_project_action(
@@ -669,53 +697,36 @@ def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and dis
         action = action.failure()
     if isinstance(action, DecisionFailure):
         return _job_failure(request.project_root, str(durable.work_root), schema, attempt_id, action, None)
-    supplied_action = replace(
-        action, capability=replace(action.capability, subject_revision=choice.receipt.subject_revision)
-    )
+    supplied_action = replace(action, capability=replace(action.capability, subject_revision=receipt.subject_revision))
     token.checkpoint()
     # Publication has entered its commit section: finish terminal effects before honoring cancellation.
-    if isinstance(choice, (contracts.ReplacementReadinessChoice, contracts.ReplacementReadinessFileChoice)):
-        assert isinstance(preparation_choice, work_brief_models.CorrectionSourceReview)
-        publication = dispatch_operations.prepare_replacement_readiness(
+    if isinstance(prepared, contracts.ReplacementReadinessChoice):
+        readiness = dispatch_operations.prepare_replacement_readiness(
             store,
             ArtifactRepository(durable),
             source_checkout,
             supplied_action,
-            choice.checkpoint_id,
-            preparation_choice,
-            choice.current_candidate,
-            ReviewId(choice.review_id),
-            HistoryId(choice.correction_history_id),
+            prepared.checkpoint_id,
+            prepared.brief_review,
+            prepared.current_candidate,
+            ReviewId(prepared.review_id),
+            HistoryId(prepared.correction_history_id),
         )
-    else:
-        assert not isinstance(preparation_choice, work_brief_models.CorrectionSourceReview)
-        publication = dispatch_operations.prepare_dispatch(
-            store,
-            ArtifactRepository(durable),
-            source_checkout,
-            supplied_action,
-            choice.checkpoint_id,
-            choice.environment,
-            None if choice.prompt is None else choice.prompt.encode(),
-            preparation_choice,
-        )
-    if isinstance(publication, (dispatch_operations.DispatchFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
-        refresh_warning = common._refresh_published_ledger(durable, store, publication.details, datetime.now(UTC))
-        return _job_failure(
-            request.project_root, str(durable.work_root), schema, attempt_id, publication, refresh_warning
-        )
-    surfaces = _job_publication_surfaces(publication.changed_surfaces)
-    view_warning = _job_publication_warning(durable, store, surfaces, datetime.now(UTC))
-    if isinstance(publication, dispatch_operations.ReplacementReadiness):
+        if isinstance(
+            readiness, (dispatch_operations.DispatchFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)
+        ):
+            return _dispatch_publication_failure(request.project_root, durable, store, schema, attempt_id, readiness)
+        surfaces = _job_publication_surfaces(readiness.changed_surfaces)
+        view_warning = _job_publication_warning(durable, store, surfaces, datetime.now(UTC))
         result = contracts.ReplacementReadinessReady(
             schema,
             "replacement-ready",
             attempt_id,
-            choice.checkpoint_id,
-            publication.candidate,
-            common._review_evidence_reference(publication.proof),
-            common._review_evidence_reference(publication.ready_review),
-            f"Protect current candidate {publication.candidate} using your own attempt authority, then commission a full candidate review "
+            prepared.checkpoint_id,
+            readiness.candidate,
+            common._review_evidence_reference(readiness.proof),
+            common._review_evidence_reference(readiness.ready_review),
+            f"Protect current candidate {readiness.candidate} using your own attempt authority, then commission a full candidate review "
             "against the replacement brief, retaining every prior finding. Obtain a new current return before correction dispatch.",
             bool(surfaces),
             "committed" if surfaces else "unchanged",
@@ -724,9 +735,23 @@ def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and dis
             view_warning,
         )
         return execution.TypedOperationResult(
-            result, "committed" if surfaces else "unchanged", str(publication.ready_review.accepted_revision)
+            result, "committed" if surfaces else "unchanged", str(readiness.ready_review.accepted_revision)
         )
-    assert not isinstance(choice, (contracts.ReplacementReadinessChoice, contracts.ReplacementReadinessFileChoice))
+    choice = prepared.request
+    publication = dispatch_operations.prepare_dispatch(
+        store,
+        ArtifactRepository(durable),
+        source_checkout,
+        supplied_action,
+        choice.checkpoint_id,
+        choice.environment,
+        None if choice.prompt is None else choice.prompt.encode(),
+        prepared.choice,
+    )
+    if isinstance(publication, (dispatch_operations.DispatchFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+        return _dispatch_publication_failure(request.project_root, durable, store, schema, attempt_id, publication)
+    surfaces = _job_publication_surfaces(publication.changed_surfaces)
+    view_warning = _job_publication_warning(durable, store, surfaces, datetime.now(UTC))
     result = contracts.DispatchReady(
         "ready",
         publication.reference,

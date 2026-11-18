@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, assert_never
+from typing import Literal, assert_never, overload
 
 import msgspec
 
@@ -396,6 +396,24 @@ def project_action_semantics(semantics: decision_models.ActionSemantics) -> acti
         semantics.lifecycle_precondition,
         semantics.practical_result,
     )
+
+
+@overload
+def project_action(
+    action: decision_models.Action, *, include_input_contract: Literal[True]
+) -> action_models.ActionView: ...
+
+
+@overload
+def project_action(
+    action: decision_models.Action, *, include_input_contract: Literal[False]
+) -> action_models.ActionSummaryView: ...
+
+
+@overload
+def project_action(
+    action: decision_models.Action, *, include_input_contract: bool
+) -> action_models.ProjectedActionView: ...
 
 
 def project_action(

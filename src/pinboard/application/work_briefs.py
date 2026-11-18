@@ -668,10 +668,9 @@ def decode_canonical_work_brief_review_needs_correction(
     return review
 
 
-def needs_correction_review_key(brief: work_brief_models.WorkBrief) -> str:
-    checkpoint = brief.checkpoint
-    if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
-        raise ValueError("Local checkpoints do not use needs-correction brief reviews.")
+def needs_correction_review_key(
+    brief: work_brief_models.WorkBrief, checkpoint: work_brief_models.CrossBoundaryCheckpoint
+) -> str:
     brief_sha256 = hashlib.sha256(canonical_work_brief_bytes(brief)).hexdigest()
     checkpoint_sha256 = hashlib.sha256(canonical_checkpoint_bytes(checkpoint)).hexdigest()
     identity_sha256 = hashlib.sha256(
@@ -713,7 +712,12 @@ def read_accepted_work_brief(
         reference.created_at,
         reference.owners,
     )
-    return work_brief_models.AcceptedWorkBrief(brief_reference, brief)
+    checkpoint = brief.checkpoint
+    if not isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
+        return work_brief_models.WorkBriefFailure(
+            work_brief_models.WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews."
+        )
+    return work_brief_models.AcceptedWorkBrief(brief_reference, brief, checkpoint)
 
 
 def publish_brief_review_needs_correction(
@@ -739,12 +743,14 @@ def publish_brief_review_needs_correction(
     selected = read_accepted_work_brief(store, reader, brief_artifact_ref_id)
     if isinstance(selected, work_brief_models.WorkBriefFailure):
         return selected
-    if (failure := validate_work_brief_review_needs_correction(review, selected.brief)) is not None:
+    if (
+        failure := validate_work_brief_review_needs_correction(review, selected.brief, selected.checkpoint)
+    ) is not None:
         return failure
     return publish_accepted_evidence(
         store,
         publisher,
-        needs_correction_review_key(selected.brief),
+        needs_correction_review_key(selected.brief, selected.checkpoint),
         review.artifact_revision,
         ".json",
         canonical_work_brief_review_needs_correction_bytes(review),
@@ -762,38 +768,24 @@ def read_brief_review_status(
     selected = read_accepted_work_brief(store, reader, brief_artifact_ref_id)
     if isinstance(selected, work_brief_models.WorkBriefFailure):
         return selected
-    checkpoint = _review_checkpoint(selected.brief)
-    if isinstance(checkpoint, work_brief_models.WorkBriefFailure):
-        return checkpoint
-    reference = store.read_latest_evidence_reference(needs_correction_review_key(selected.brief))
+    reference = store.read_latest_evidence_reference(needs_correction_review_key(selected.brief, selected.checkpoint))
     if reference is None:
         return work_brief_models.NoNeedsCorrectionEvidence(selected)
     review = decode_canonical_work_brief_review_needs_correction(reader.read(reference))
     if isinstance(review, work_brief_models.WorkBriefFailure):
         return review
-    if (failure := validate_work_brief_review_needs_correction(review, selected.brief)) is not None:
+    if (
+        failure := validate_work_brief_review_needs_correction(review, selected.brief, selected.checkpoint)
+    ) is not None:
         return failure
     return work_brief_models.NeedsCorrectionEvidence(selected, reference, review)
-
-
-def _review_checkpoint(
-    brief: work_brief_models.WorkBrief,
-) -> work_brief_models.CrossBoundaryCheckpoint | work_brief_models.WorkBriefFailure:
-    checkpoint = brief.checkpoint
-    if isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint):
-        return checkpoint
-    return work_brief_models.WorkBriefFailure(
-        work_brief_models.WorkBriefErrorCode.REVIEW_INVALID, "Local checkpoints do not use brief reviews."
-    )
 
 
 def validate_work_brief_review_needs_correction(
     review: work_brief_models.WorkBriefReviewNeedsCorrection,
     brief: work_brief_models.WorkBrief,
+    checkpoint: work_brief_models.CrossBoundaryCheckpoint,
 ) -> work_brief_models.WorkBriefFailure | None:
-    checkpoint = _review_checkpoint(brief)
-    if isinstance(checkpoint, work_brief_models.WorkBriefFailure):
-        return checkpoint
     if review.attempt_id != brief.attempt_id or review.checkpoint_id != checkpoint.checkpoint_id:
         return work_brief_models.WorkBriefFailure(
             work_brief_models.WorkBriefErrorCode.REVIEW_INVALID,

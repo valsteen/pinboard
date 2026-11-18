@@ -54,9 +54,15 @@ class TransitionReceipt:
 
 
 @dataclass(frozen=True, slots=True)
-class SelectedTransition:
-    action: decision_models.Action
-    command: decision_models.TransitionCommand
+class SelectedDirectTransition:
+    command: decision_models.DirectTransitionCommand
+    actor_task_id: TaskId | None
+    actor_host_id: HostId | None
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedArtifactTransition:
+    command: decision_models.ArtifactSensitiveCommand
     actor_task_id: TaskId | None
     actor_host_id: HostId | None
 
@@ -206,7 +212,7 @@ def select_transition(
     payload: bytes | action_models.InputPayload,
     observed_at: datetime,
 ) -> DecisionResult[
-    SelectedTransition,
+    SelectedDirectTransition | SelectedArtifactTransition,
     Literal[
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
         DecisionFailureCode.ACTION_NOT_MUTATING,
@@ -271,7 +277,16 @@ def select_transition(
         return command
     if (failure := _validate_replacement_brief(source_checkout, store, artifacts, command)) is not None:
         return failure
-    return SelectedTransition(action, command, receipt.actor_task_id, receipt.actor_host_id)
+    if isinstance(
+        command,
+        (
+            decision_models.AcceptCheckpointCommand,
+            decision_models.CoveredCompleteCommand,
+            decision_models.SubmitReviewCommand,
+        ),
+    ):
+        return SelectedArtifactTransition(command, receipt.actor_task_id, receipt.actor_host_id)
+    return SelectedDirectTransition(command, receipt.actor_task_id, receipt.actor_host_id)
 
 
 def transition_brief_identity(
@@ -294,22 +309,13 @@ def transition_brief_identity(
 def commit_direct_transition(
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
-    selected: SelectedTransition,
+    selected: SelectedDirectTransition,
     operation_time: datetime,
     read_authorization_time: Callable[[], datetime],
 ) -> DecisionResult[CommittedEffect, TransitionFailureCode]:
     """Commit a transition whose contract has no candidate or evidence publication phase."""
 
     command = selected.command
-    if isinstance(
-        command,
-        (
-            decision_models.AcceptCheckpointCommand,
-            decision_models.CoveredCompleteCommand,
-            decision_models.SubmitReviewCommand,
-        ),
-    ):
-        raise ValueError("Artifact-sensitive transitions require the shared artifact execution path.")
     brief_identity = transition_brief_identity(store, command, artifacts)
     if isinstance(brief_identity, DecisionFailure):
         return brief_identity

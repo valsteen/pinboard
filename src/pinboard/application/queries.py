@@ -91,8 +91,8 @@ def decode_recorded_pause_reason(
     The caller supplies only the receipt whose project revision is the attempt's
     subject revision. A pause keeps its reason as receipt evidence and a paused
     rebind carries it forward; checkpoint acceptance and every other receipt
-    present no pause reason. A pause or rebind receipt whose outcome does not
-    decode is returned as damaged for the consuming read to name.
+    present no pause reason. Return nonempty evidence verbatim and allow null.
+    An undecodable outcome or explicitly empty evidence is damaged.
     """
 
     if attempt_state != work_models.AttemptState.PAUSED:
@@ -103,13 +103,17 @@ def decode_recorded_pause_reason(
                 defect = f"The pause outcome uses {outcome_schema!r} instead of transition-receipt/v1."
             else:
                 try:
-                    return (
+                    reason = (
                         msgspec.json.Decoder(history.TransitionReceiptOutcome, strict=True)
                         .decode(outcome_payload)
                         .evidence
                     )
                 except msgspec.DecodeError as error:
                     defect = f"The pause outcome does not decode as transition-receipt/v1: {error}"
+                else:
+                    if reason != "":
+                        return reason
+                    defect = "The pause outcome records an empty reason."
             return query_models.DamagedTransitionReceipt(attempt_id, history_id, committed_at, pause_action, defect)
         case _:
             return None
@@ -201,7 +205,7 @@ def validate_attempt_brief_identity(
     )
 
 
-def _terminal_attempt_continuation(
+def project_terminal_attempt_continuation(
     context: query_models.TerminalAttemptContextFacts,
 ) -> query_models.TerminalAttemptContinuation:
     constructor: type[query_models.TerminalAttemptContinuation]
@@ -242,114 +246,92 @@ def _held_payload(unblocker: work_models.Unblocker | None) -> unblockers.Unblock
     return unblockers.unblocker_payload(unblocker)
 
 
-def project_attempt_continuation(
-    context: query_models.AttemptContextFacts,
-    owner_task_id: TaskId | None,
-    brief: work_brief_models.AcceptedBrief | None,
+def project_nonterminal_attempt_continuation(
+    context: query_models.NonterminalAttemptContextFacts,
+    brief: work_brief_models.AcceptedBrief,
     reconciliation: query_models.AttemptReconciliation | None,
     candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
 ) -> DecisionResult[
-    query_models.AttemptContinuation,
+    query_models.NonterminalAttemptContinuation,
     Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ITEM_STATUS_INCONSISTENT],
 ]:
-    """Select a continuation from one exact named-attempt context.
+    """Select a live continuation using the attempt's verified accepted brief.
 
     A lifecycle state does not prove that a human decision is missing. Recorded
     pause conditions and accepted scope still determine whether the task must ask.
-    The caller resolves the owner from the verified accepted brief.
     """
-    match context:
-        case query_models.TerminalAttemptContextFacts():
-            return _terminal_attempt_continuation(context)
-        case query_models.NonterminalAttemptContextFacts():
-            if owner_task_id is None:
-                return DecisionFailure(
-                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
-                    "A nonterminal attempt requires its verified owner task identity.",
-                    None,
-                )
-            item = context.work_item
-            attempt_record = work_models.AttemptRecord(
-                context.attempt_id,
-                context.work_item_id,
-                context.state,
-                context.accepted_scope_revision,
-                context.accepted_scope_digest,
-                None if context.candidate_revision is None else CandidateId(context.candidate_revision),
-                context.brief_artifact_ref_id,
-                pause_reason=context.pause_reason,
-                pending_decision_batch=None
-                if context.decision_batch is None
-                else decision_batches.pending_batch(context.attempt_id, context.decision_batch),
+    item = context.work_item
+    attempt_record = work_models.AttemptRecord(
+        context.attempt_id,
+        context.work_item_id,
+        context.state,
+        context.accepted_scope_revision,
+        context.accepted_scope_digest,
+        None if context.candidate_revision is None else CandidateId(context.candidate_revision),
+        context.brief_artifact_ref_id,
+        pause_reason=context.pause_reason,
+        pending_decision_batch=None
+        if context.decision_batch is None
+        else decision_batches.pending_batch(context.attempt_id, context.decision_batch),
+    )
+    groups = project_attempt_action_groups(
+        work_models.ProjectAttemptActionContext(
+            item.work_item_id,
+            item.subject_revision,
+            _live_attempt_item_state(item.state),
+            context.attempt_id,
+            context.subject_revision,
+            attempt_record,
+            item.current_definition_revision,
+            item.current_definition_digest,
+            item.unsatisfied_dependencies,
+            True,
+            item.current_replacement_revision,
+            item.replacement_resolved,
+        ),
+        ActionCapabilityFactory(
+            decision_models.ActorAuthority(
+                decision_models.Role.PROJECT,
+                decision_models.AuthorizationKind.PROJECT,
+                0,
+            ),
+        ),
+    )
+    actions = (*groups.attempt_actions, *groups.item_actions)
+    selected = _next_attempt_operation(context, actions, brief, reconciliation, candidate_lineage, ready_review)
+    if isinstance(selected, DecisionFailure):
+        return selected
+    continuation_arguments = (
+        "pinboard-attempt-continuation/v2",
+        context.attempt_id,
+        context.work_item_id,
+        context.project_revision,
+        TaskId(brief.owner_task_id),
+        False,
+        False,
+        selected,
+        tuple(query_models.continuation_action_identity(value) for value in actions),
+        ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
+        context.decision_batch,
+    )
+    match context.state:
+        case work_models.AttemptState.ACTIVE:
+            return query_models.ActiveAttemptContinuation(*continuation_arguments)
+        case work_models.AttemptState.REVIEW:
+            return query_models.ReviewAttemptContinuation(*continuation_arguments)
+        case work_models.AttemptState.PAUSED | work_models.AttemptState.BLOCKED if item.unblocker is None:
+            return DecisionFailure(
+                DecisionFailureCode.ITEM_STATUS_INCONSISTENT,
+                f"Held attempt '{context.attempt_id}' records no unblocker; run validation to diagnose it.",
+                None,
             )
-            groups = project_attempt_action_groups(
-                work_models.ProjectAttemptActionContext(
-                    item.work_item_id,
-                    item.subject_revision,
-                    _live_attempt_item_state(item.state),
-                    context.attempt_id,
-                    context.subject_revision,
-                    attempt_record,
-                    item.current_definition_revision,
-                    item.current_definition_digest,
-                    item.unsatisfied_dependencies,
-                    True,
-                    item.current_replacement_revision,
-                    item.replacement_resolved,
-                ),
-                ActionCapabilityFactory(
-                    decision_models.ActorAuthority(
-                        decision_models.Role.PROJECT,
-                        decision_models.AuthorizationKind.PROJECT,
-                        0,
-                    ),
-                ),
+        case work_models.AttemptState.PAUSED:
+            return query_models.PausedAttemptContinuation(
+                *continuation_arguments, context.pause_reason, _held_payload(item.unblocker)
             )
-            actions = (*groups.attempt_actions, *groups.item_actions)
-            if brief is None:
-                return DecisionFailure(
-                    DecisionFailureCode.ACTION_NOT_AVAILABLE,
-                    "A nonterminal attempt requires its verified accepted brief.",
-                    None,
-                )
-            selected = _next_attempt_operation(context, actions, brief, reconciliation, candidate_lineage, ready_review)
-            if isinstance(selected, DecisionFailure):
-                return selected
-            continuation_arguments = (
-                "pinboard-attempt-continuation/v2",
-                context.attempt_id,
-                context.work_item_id,
-                context.project_revision,
-                owner_task_id,
-                False,
-                False,
-                selected,
-                tuple(query_models.continuation_action_identity(value) for value in actions),
-                ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
-                context.decision_batch,
-            )
-            match context.state:
-                case work_models.AttemptState.ACTIVE:
-                    return query_models.ActiveAttemptContinuation(*continuation_arguments)
-                case work_models.AttemptState.REVIEW:
-                    return query_models.ReviewAttemptContinuation(*continuation_arguments)
-                case work_models.AttemptState.PAUSED | work_models.AttemptState.BLOCKED if item.unblocker is None:
-                    return DecisionFailure(
-                        DecisionFailureCode.ITEM_STATUS_INCONSISTENT,
-                        f"Held attempt '{context.attempt_id}' records no unblocker; run validation to diagnose it.",
-                        None,
-                    )
-                case work_models.AttemptState.PAUSED:
-                    return query_models.PausedAttemptContinuation(
-                        *continuation_arguments, context.pause_reason, _held_payload(item.unblocker)
-                    )
-                case work_models.AttemptState.BLOCKED:
-                    return query_models.BlockedAttemptContinuation(
-                        *continuation_arguments, _held_payload(item.unblocker)
-                    )
-                case _ as unreachable:
-                    assert_never(unreachable)
+        case work_models.AttemptState.BLOCKED:
+            return query_models.BlockedAttemptContinuation(*continuation_arguments, _held_payload(item.unblocker))
         case _ as unreachable:
             assert_never(unreachable)
 

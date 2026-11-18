@@ -318,14 +318,52 @@ class AttemptReconciliation(msgspec.Struct, frozen=True, forbid_unknown_fields=T
             )
 
 
-class ActionContinuation(msgspec.Struct, tag="action", tag_field="kind", frozen=True, forbid_unknown_fields=True):
-    action_id: str
+type ContinuationActionTarget = Literal["attempt", "item"]
+
+
+class ContinuationActionIdentity(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """One legal action of an attempt continuation, relative to the continuation's own attempt or item."""
+
+    target: ContinuationActionTarget
     action_kind: decision_models.ActionKind
-    condition: str
 
     def __post_init__(self) -> None:
-        if not self.action_id.startswith(f"{self.action_kind.value}:"):
-            raise ValueError("continuation action identity must match its action kind")
+        if decision_models.action_semantics(self.action_kind).subject_kind.value != self.target:
+            raise ValueError("continuation action target must match its action kind")
+
+
+def continuation_action_identity(action: decision_models.LiveAttemptAction) -> ContinuationActionIdentity:
+    """Name one live-attempt action relative to its attempt or item; the action type admits no ledger action."""
+    match action:
+        case (
+            decision_models.AcceptCheckpointAction()
+            | decision_models.AcceptReviewAndContinueAction()
+            | decision_models.BlockAttemptAction()
+            | decision_models.CompleteAction()
+            | decision_models.ContinueAction()
+            | decision_models.DispatchAction()
+            | decision_models.PauseAction()
+            | decision_models.RebindAttemptAction()
+            | decision_models.RecordAmendmentAction()
+            | decision_models.ReturnForCorrectionAction()
+            | decision_models.ReviewCandidateAction()
+        ):
+            return ContinuationActionIdentity("attempt", action.kind)
+        case (
+            decision_models.CloseAction()
+            | decision_models.RecordReplacementAction()
+            | decision_models.ResumeAction()
+            | decision_models.RetainTemporarilyAction()
+            | decision_models.ReviseWorkItemAction()
+        ):
+            return ContinuationActionIdentity("item", action.kind)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+class ActionContinuation(msgspec.Struct, tag="action", tag_field="kind", frozen=True, forbid_unknown_fields=True):
+    action: ContinuationActionIdentity
+    condition: str
 
 
 class ReviewContinuation(
@@ -434,35 +472,15 @@ class AttemptContinuationIdentity(msgspec.Struct, frozen=True, forbid_unknown_fi
     revision: int
 
 
-type ContinuationActionTarget = Literal["attempt", "item"]
-
-
-def continuation_action_target(kind: decision_models.ActionKind) -> ContinuationActionTarget | None:
-    """Return the parent an attempt continuation's action targets, or None for a ledger or proposal action."""
-    match decision_models.action_semantics(kind).subject_kind:
-        case decision_models.ActionSubjectKind.ATTEMPT:
-            return "attempt"
-        case decision_models.ActionSubjectKind.ITEM:
-            return "item"
-        case decision_models.ActionSubjectKind.LEDGER | decision_models.ActionSubjectKind.PROPOSAL:
-            return None
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-def _validate_continuation_action(action_id: str, attempt_id: str, item_id: str) -> None:
-    kind_value, separator, subject = action_id.partition(":")
-    if not separator or not subject:
-        raise ValueError("continuation legal action identities must be canonical")
-    try:
-        kind = decision_models.ActionKind(kind_value)
-    except ValueError as error:
-        raise ValueError("continuation legal action kind must be known") from error
-    target = continuation_action_target(kind)
-    if target is None:
-        raise ValueError("attempt continuations may contain only attempt and item actions")
-    if subject != (attempt_id if target == "attempt" else item_id):
-        raise ValueError("continuation legal action must target its parent attempt or item")
+# The action kinds an active attempt's next operation may name, and those a review attempt's next action may name;
+# the MCP continuation contract validates its wire records against the same sets.
+ACTIVE_NEXT_ACTION_KINDS = (
+    decision_models.ActionKind.CONTINUE,
+    decision_models.ActionKind.REBIND_ATTEMPT,
+    decision_models.ActionKind.PAUSE,
+    decision_models.ActionKind.COMPLETE,
+)
+REVIEW_NEXT_ACTION_KINDS = (decision_models.ActionKind.COMPLETE, decision_models.ActionKind.RETURN_FOR_CORRECTION)
 
 
 class TerminalAttemptContinuation(
@@ -507,7 +525,7 @@ class NonterminalAttemptContinuationBase(AttemptContinuationIdentity, frozen=Tru
     terminal: bool
     user_input_required: bool
     next_operation: NonterminalContinuationOperation
-    legal_actions: tuple[str, ...]
+    legal_actions: tuple[ContinuationActionIdentity, ...]
     forbidden_routes: tuple[Literal["create-user-task", "wake-user-task", "return-ownership-to-parent"], ...]
     decision_batch: decision_batches.DecisionBatchView | None
 
@@ -525,18 +543,16 @@ class NonterminalAttemptContinuationBase(AttemptContinuationIdentity, frozen=Tru
             raise ValueError("an attempt continuation requires the exact forbidden routes")
         if len(set(self.legal_actions)) != len(self.legal_actions):
             raise ValueError("continuation legal actions must be unique")
-        for action_id in self.legal_actions:
-            _validate_continuation_action(action_id, self.attempt_id, self.item_id)
         operation = self.next_operation
         if isinstance(operation, ActionContinuation):
-            if operation.action_id not in self.legal_actions:
+            if operation.action not in self.legal_actions:
                 raise ValueError("continuation action must be one of its legal actions")
         elif isinstance(operation, ReviewContinuation):
             if operation.attempt_id != self.attempt_id or not operation.candidate_revision:
                 raise ValueError("review continuation must target its parent attempt and candidate")
             review_actions = (
-                f"{decision_models.ActionKind.ACCEPT_CHECKPOINT.value}:{self.attempt_id}",
-                f"{decision_models.ActionKind.COMPLETE.value}:{self.attempt_id}",
+                ContinuationActionIdentity("attempt", decision_models.ActionKind.ACCEPT_CHECKPOINT),
+                ContinuationActionIdentity("attempt", decision_models.ActionKind.COMPLETE),
             )
             if not any(action in self.legal_actions for action in review_actions):
                 raise ValueError("review continuation requires a matching checkpoint or completion action")
@@ -564,11 +580,9 @@ class ActiveAttemptContinuation(
     def __post_init__(self) -> None:
         self._validate_common()
         operation = self.next_operation
-        if not isinstance(operation, ActionContinuation) or operation.action_kind not in (
-            decision_models.ActionKind.CONTINUE,
-            decision_models.ActionKind.REBIND_ATTEMPT,
-            decision_models.ActionKind.PAUSE,
-            decision_models.ActionKind.COMPLETE,
+        if (
+            not isinstance(operation, ActionContinuation)
+            or operation.action.action_kind not in ACTIVE_NEXT_ACTION_KINDS
         ):
             raise ValueError("an active continuation requires a continue, rebind, pause, or completion action")
 
@@ -600,11 +614,7 @@ class ReviewAttemptContinuation(
                     RepositoryCleanupContinuation,
                 ),
             )
-            or (
-                isinstance(operation, ActionContinuation)
-                and operation.action_kind
-                in (decision_models.ActionKind.COMPLETE, decision_models.ActionKind.RETURN_FOR_CORRECTION)
-            )
+            or (isinstance(operation, ActionContinuation) and operation.action.action_kind in REVIEW_NEXT_ACTION_KINDS)
         ):
             raise ValueError("a review continuation requires review, completion, or correction work")
 
@@ -634,7 +644,8 @@ class PausedAttemptContinuation(
             isinstance(operation, DependencyContinuation)
             or (
                 isinstance(operation, ActionContinuation)
-                and operation.action_kind in {decision_models.ActionKind.RESUME, decision_models.ActionKind.CLOSE}
+                and operation.action.action_kind
+                in {decision_models.ActionKind.RESUME, decision_models.ActionKind.CLOSE}
             )
         ):
             raise ValueError("a paused continuation requires dependency, resume, or close work")
@@ -661,7 +672,8 @@ class BlockedAttemptContinuation(
             isinstance(operation, DependencyContinuation)
             or (
                 isinstance(operation, ActionContinuation)
-                and operation.action_kind in {decision_models.ActionKind.RESUME, decision_models.ActionKind.CLOSE}
+                and operation.action.action_kind
+                in {decision_models.ActionKind.RESUME, decision_models.ActionKind.CLOSE}
             )
         ):
             raise ValueError("a blocked continuation requires dependency, resume, or close work")

@@ -158,6 +158,11 @@ class SemanticCapture:
     """Publish the exact decoded request and its result evidence to a selected private directory."""
 
     def __init__(self, directory: Path, *, automatic: bool = False) -> None:
+        """Verify the capture directory with a probe file at this filesystem effect boundary.
+
+        A directory that cannot be written, or whose probe cannot be synchronized (the probe is removed first),
+        stops capture startup with `ValueError`; capture never starts against a destination it cannot publish to.
+        """
         try:
             selected = directory.resolve(strict=True)
         except OSError as error:

@@ -1265,6 +1265,10 @@ def decode_transition_request(raw: Mapping[str, JsonValue]) -> TransitionRequest
     leaf. Complete additionally distinguishes its independently required payload
     shapes. These relational choices cannot be an ordinary tagged union. Close
     is not a leaf: it has its own human-confirmed pinboard_close request.
+
+    This is the MCP request decoding boundary: the receipt's action kind is
+    caller-supplied text, so a kind that names no transition leaf raises
+    `ValueError`, which the transition tool returns as a typed request rejection.
     """
 
     inner = raw.get("request")
@@ -2195,11 +2199,9 @@ class ActiveAttemptContinuation(
         self._validate_common()
         self._validate_legal_action_kinds(_ACTIVE_CONTINUATION_ACTION_KINDS)
         operation = self.next_operation
-        if not isinstance(operation, ContinuationAction) or operation.action.action_kind not in (
-            decision_models.ActionKind.CONTINUE,
-            decision_models.ActionKind.REBIND_ATTEMPT,
-            decision_models.ActionKind.PAUSE,
-            decision_models.ActionKind.COMPLETE,
+        if (
+            not isinstance(operation, ContinuationAction)
+            or operation.action.action_kind not in query_models.ACTIVE_NEXT_ACTION_KINDS
         ):
             raise ValueError("an active continuation requires a continue, rebind, pause, or completion action")
 
@@ -2230,8 +2232,7 @@ class ReviewAttemptContinuation(
             )
             or (
                 isinstance(operation, ContinuationAction)
-                and operation.action.action_kind
-                in (decision_models.ActionKind.COMPLETE, decision_models.ActionKind.RETURN_FOR_CORRECTION)
+                and operation.action.action_kind in query_models.REVIEW_NEXT_ACTION_KINDS
             )
         ):
             raise ValueError("a review continuation requires review, completion, or correction work")

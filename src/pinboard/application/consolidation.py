@@ -9,7 +9,7 @@ from typing import assert_never
 import msgspec
 
 from pinboard.application import consolidation_models as models
-from pinboard.application import obligation_coverage, stored_state
+from pinboard.application import obligation_coverage, stored_state, unblockers
 from pinboard.application.dependency_authoring import DependencyCheckpointPin, validate_dependency_brief_pins
 from pinboard.application.mutation_models import CommittedEffect, ConsolidationMutation, MutationReceipt
 from pinboard.application.ports import WorkStore
@@ -23,7 +23,7 @@ from pinboard.domain.proposal_models import ProposalCreationDecision
 def binding(preview: models.Preview, work_root: Path) -> models.Binding:
     return models.Binding(
         str(work_root),
-        "pinboard-consolidation-binding/v2",
+        "pinboard-consolidation-binding/v3",
         sha256(msgspec.json.encode(preview, order="sorted")).hexdigest(),
     )
 
@@ -89,6 +89,19 @@ def _project(selection: models.Selection, facts: models.Facts, change: consolida
         if positions_before.get(item) != positions_after.get(item)
     )
     snapshot = facts.snapshot
+    released_holds: list[models.ReleasedHold] = []
+    for hold in change.released_holds:
+        assert hold.previous_state == work_models.WorkState.BLOCKED
+        assert hold.previous_subject_revision is not None
+        released_holds.append(
+            models.ReleasedHold(
+                hold.work_item_id,
+                "blocked",
+                int(hold.previous_subject_revision),
+                unblockers.ItemsToFinishPayload(hold.unblocker.items),
+            )
+        )
+    projected_releases = tuple(released_holds)
     return models.Preview(
         selection,
         _selected_items(facts),
@@ -116,7 +129,8 @@ def _project(selection: models.Selection, facts: models.Facts, change: consolida
         tuple(sorted(snapshot.command_attempt_authorities, key=lambda value: value.attempt)),
         tuple(sorted(snapshot.command_preparation_authorities, key=lambda value: value.work_item_id)),
         changes,
-        "Sources end as superseded; paused/blocked attempts retain evidence and lose write authority. Campaign and surviving consumer lifecycles, candidates and authority are preserved; their accepted scopes may become stale. No process, launch or repository effect.",
+        projected_releases,
+        models.RELEASED_LIFECYCLE_EFFECT if projected_releases else models.PRESERVED_LIFECYCLE_EFFECT,
         "Declared checkpoints do not enforce execution ordering. Outside consumers wait for the whole campaign unless the separately approved checkpoint mapping covers all their carried prerequisite work.",
     )
 
@@ -224,7 +238,7 @@ def confirm(
             decision_models.AuthorizationKind.PROJECT,
             actor,
             host,
-            "pinboard-consolidation/v2",
+            "pinboard-consolidation/v3",
             work_models.CanonicalJson(msgspec.json.encode(record, order="sorted")),
         )
         return transaction.commit(
@@ -239,10 +253,12 @@ def requested_dependencies(plan: consolidation.Plan) -> tuple[work_models.Depend
 
 def receipt_failure(receipt: stored_state.StoredTransitionReceipt) -> str | None:
     try:
-        record: models.Record | models.CompatibilityRecordV1
+        record: models.Record | models.CompatibilityRecordV2 | models.CompatibilityRecordV1
         if receipt.input_schema == "pinboard-consolidation/v1":
             record = msgspec.json.decode(bytes(receipt.input_payload), type=models.CompatibilityRecordV1)
         elif receipt.input_schema == "pinboard-consolidation/v2":
+            record = msgspec.json.decode(bytes(receipt.input_payload), type=models.CompatibilityRecordV2)
+        elif receipt.input_schema == "pinboard-consolidation/v3":
             record = msgspec.json.decode(bytes(receipt.input_payload), type=models.Record)
         else:
             return "Consolidation input schema is unsupported."

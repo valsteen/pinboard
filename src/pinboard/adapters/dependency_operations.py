@@ -48,6 +48,7 @@ def resolve_dependency_brief_pins(
             (),
             (),
             (),
+            (),
             requested,
         ),
         now,

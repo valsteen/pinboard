@@ -1,10 +1,10 @@
--- SQLite authority schema version 14.
+-- SQLite authority schema version 15.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE project_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     application TEXT NOT NULL CHECK (application = 'pinboard'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 14),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 15),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
     created_at TEXT NOT NULL,
@@ -66,6 +66,18 @@ CREATE TABLE work_item_unblockers (
     item_id TEXT PRIMARY KEY REFERENCES work_items(item_id),
     unblocker_json TEXT NOT NULL CHECK (length(unblocker_json) >= 2)
 ) STRICT;
+
+CREATE TABLE released_item_holds (
+    history_id INTEGER NOT NULL REFERENCES transition_history(history_id),
+    item_id TEXT NOT NULL REFERENCES work_items(item_id),
+    previous_state TEXT NOT NULL CHECK (previous_state = 'blocked'),
+    previous_subject_revision INTEGER NOT NULL CHECK (previous_subject_revision >= 0),
+    unblocker_json TEXT NOT NULL CHECK (length(unblocker_json) >= 2),
+    PRIMARY KEY (history_id, item_id)
+) STRICT;
+
+CREATE INDEX released_item_holds_by_item
+ON released_item_holds(item_id, history_id);
 
 CREATE TABLE work_item_state_counts (
     state TEXT PRIMARY KEY CHECK (state IN (

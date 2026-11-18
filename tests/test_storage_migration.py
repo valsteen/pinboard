@@ -7,8 +7,11 @@ import subprocess
 import tempfile
 import unittest
 from collections.abc import Sequence
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from unittest.mock import patch
+
+import msgspec
 
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import (
@@ -23,12 +26,17 @@ from pinboard.adapters.sqlite.migration import schema_unblockers_v12
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
 from pinboard.application.artifacts import ArtifactPublication, NewArtifact
+from pinboard.application.work_briefs import canonical_work_brief_bytes
 from pinboard.cli.entrypoint import main
 from pinboard.domain import work_models
-from pinboard.domain.identifiers import WorkItemId
+from pinboard.domain.identifiers import TaskId, WorkItemId
+from pinboard.mcp import server as mcp_server
+from tests.artifact_support import write_revision
 from tests.domain_support import expect_success
-from tests.sqlite_support import advanced_v13_copy, downgrade_to_v12
-from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initialize_store
+from tests.native_support import call_advertised_tool
+from tests.sqlite_support import advanced_v13_copy, downgrade_to_v12, downgrade_to_v14
+from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initialize_store, test_definition
+from tests.work_brief_support import work_a_brief
 
 
 class StorageMigrationTests(unittest.TestCase):
@@ -42,6 +50,7 @@ class StorageMigrationTests(unittest.TestCase):
                     "checkpoint_acceptances",
                     "attempt_decision_batches",
                     "work_item_unblockers",
+                    "released_item_holds",
                 }:
                     continue
                 columns = tuple(
@@ -172,10 +181,10 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
             with contextlib.closing(sqlite3.connect(path)) as connection:
                 sqlite_database._verify_v10_schema(connection)
-            for _step in ("v10-to-v11", "v11-to-v12", "v12-to-v13", "v13-to-v14"):
+            for _step in ("v10-to-v11", "v11-to-v12", "v12-to-v13", "v13-to-v14", "v14-to-v15"):
                 current = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
                 self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
-            self.assertEqual(14, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
+            self.assertEqual(15, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
             roots = resolve_durable_roots(project)
             publication = ArtifactRepository(roots).publish(
                 NewArtifact(work_models.ArtifactKind.EVIDENCE, "later", 1, ".txt", b"later")
@@ -802,6 +811,467 @@ class StorageMigrationTests(unittest.TestCase):
                 f"Create {missing_target}, or fix or remove the link {dangling_alias}, then retry.",
                 str(broken.exception),
             )
+
+    def test_v14_step_releases_only_releasable_unstarted_holds_rejects_labels_and_reverses_until_a_new_write(  # noqa: PLR0915 - one v14 hold-release migration, refusal and reversal journey
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory).resolve()
+            subprocess.run(["git", "init", "-b", "main", str(project)], check=True, capture_output=True)
+            brief_model = work_a_brief(project)
+            subprocess.run(["git", "add", "architecture.md"], cwd=project, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"],
+                cwd=project,
+                check=True,
+                capture_output=True,
+            )
+            self.assertEqual(0, self.run_cli(project, "init")[0])
+            roots = resolve_durable_roots(project)
+            path = roots.database_path
+            published_brief = write_revision(
+                roots,
+                NewArtifact(
+                    work_models.ArtifactKind.BRIEF,
+                    brief_model.attempt_id,
+                    brief_model.artifact_revision,
+                    ".json",
+                    canonical_work_brief_bytes(brief_model),
+                ),
+            )
+            base = complete_sqlite_state()
+            extra_defs = []
+
+            def _def_digest(defn: stored_state.StoredDefinition) -> str:
+                encoded = stored_state.stored_definition_bytes(defn)
+                assert isinstance(encoded, bytes)
+                return hashlib.sha256(encoded).hexdigest()
+
+            for item_id, deps in (
+                (WorkItemId("dropped-item"), ()),
+                (WorkItemId("replacer"), ()),
+                (WorkItemId("outside-held"), (WorkItemId("work-b"),)),
+                (WorkItemId("cancelled-held"), (WorkItemId("dropped-item"),)),
+                (WorkItemId("replacement-held"), (WorkItemId("work-b"),)),
+                (WorkItemId("releasable-unstarted"), (WorkItemId("work-b"),)),
+            ):
+                base_def, _ = test_definition(item_id)
+                updated_def = dataclass_replace(base_def, dependencies=deps)
+                digest = _def_digest(updated_def)
+                extra_defs.append(
+                    stored_state.ItemDefinitionRevision(
+                        item_id,
+                        1,
+                        digest,
+                        updated_def,
+                        "Accepted test definition.",
+                        TaskId("test-source"),
+                        None,
+                        digest,
+                        3,
+                        SQLITE_NOW,
+                    )
+                )
+            work_a_def, _ = test_definition(WorkItemId("work-a"))
+            work_a_updated = dataclass_replace(work_a_def, dependencies=(WorkItemId("work-b"),))
+            work_a_digest = _def_digest(work_a_updated)
+            intake_def, _ = test_definition(WorkItemId("intake-work"))
+            intake_updated = dataclass_replace(intake_def, dependencies=(WorkItemId("work-b"), WorkItemId("work-c")))
+            intake_digest = _def_digest(intake_updated)
+            proposal_current = next(
+                v.definition for v in base.lifecycle.definition_revisions if v.item_id == WorkItemId("zz-proposal-a")
+            )
+            proposal_updated = dataclass_replace(proposal_current, dependencies=(WorkItemId("work-b"),))
+            proposal_digest = _def_digest(proposal_updated)
+
+            updated_brief = canonical_work_brief_bytes(
+                msgspec.structs.replace(
+                    brief_model,
+                    accepted_scope=msgspec.structs.replace(
+                        brief_model.accepted_scope, revision=1, digest=work_a_digest
+                    ),
+                )
+            )
+            published_brief = write_revision(
+                roots,
+                NewArtifact(work_models.ArtifactKind.BRIEF, brief_model.attempt_id, 2, ".json", updated_brief),
+            )
+            write_revision(
+                roots, NewArtifact(work_models.ArtifactKind.REQUIREMENTS, "work-a-requirements", 1, ".md", b"# Req\n")
+            )
+            write_revision(
+                roots, NewArtifact(work_models.ArtifactKind.EVIDENCE, "work-a-evidence", 1, ".md", b"# Ev\n")
+            )
+
+            definitions = tuple(
+                dataclass_replace(value, definition=work_a_updated, digest=work_a_digest, after_digest=work_a_digest)
+                if value.item_id == WorkItemId("work-a")
+                else dataclass_replace(
+                    value, definition=intake_updated, digest=intake_digest, after_digest=intake_digest
+                )
+                if value.item_id == WorkItemId("intake-work")
+                else dataclass_replace(
+                    value, definition=proposal_updated, digest=proposal_digest, after_digest=proposal_digest
+                )
+                if value.item_id == WorkItemId("zz-proposal-a")
+                else value
+                for value in base.lifecycle.definition_revisions
+            ) + tuple(extra_defs)
+            work_items = (
+                stored_state.StoredWorkItem(
+                    WorkItemId("intake-work"),
+                    stored_state.StoredWorkItemState.BLOCKED,
+                    None,
+                    None,
+                    None,
+                    "activate",
+                    None,
+                    7,
+                    SQLITE_NOW,
+                    SQLITE_NOW,
+                    1,
+                ),
+                stored_state.StoredWorkItem(
+                    WorkItemId("work-a"),
+                    stored_state.StoredWorkItemState.BLOCKED,
+                    work_models.Timing.MUST_NOW,
+                    "accepted requirement",
+                    None,
+                    "continue",
+                    "Current work remains bounded.",
+                    7,
+                    SQLITE_NOW,
+                    SQLITE_NOW,
+                    2,
+                ),
+                base.lifecycle.work_items[2],
+                base.lifecycle.work_items[3],
+                stored_state.StoredWorkItem(
+                    WorkItemId("zz-proposal-a"),
+                    stored_state.StoredWorkItemState.BLOCKED,
+                    None,
+                    "proposal:zz-proposal-a",
+                    None,
+                    "activate",
+                    None,
+                    7,
+                    SQLITE_NOW,
+                    SQLITE_NOW,
+                    4,
+                ),
+                stored_state.StoredWorkItem(
+                    WorkItemId("dropped-item"),
+                    stored_state.StoredWorkItemState.DROPPED,
+                    None,
+                    None,
+                    "Cancelled.",
+                    None,
+                    None,
+                    7,
+                    SQLITE_NOW,
+                    SQLITE_NOW,
+                    None,
+                ),
+                stored_state.StoredWorkItem(
+                    WorkItemId("replacer"),
+                    stored_state.StoredWorkItemState.READY,
+                    None,
+                    None,
+                    None,
+                    "activate",
+                    None,
+                    7,
+                    SQLITE_NOW,
+                    SQLITE_NOW,
+                    5,
+                ),
+                stored_state.StoredWorkItem(
+                    WorkItemId("outside-held"),
+                    stored_state.StoredWorkItemState.BLOCKED,
+                    None,
+                    None,
+                    None,
+                    "activate",
+                    None,
+                    7,
+                    SQLITE_NOW,
+                    SQLITE_NOW,
+                    6,
+                ),
+                stored_state.StoredWorkItem(
+                    WorkItemId("cancelled-held"),
+                    stored_state.StoredWorkItemState.BLOCKED,
+                    None,
+                    None,
+                    None,
+                    "activate",
+                    None,
+                    7,
+                    SQLITE_NOW,
+                    SQLITE_NOW,
+                    7,
+                ),
+                stored_state.StoredWorkItem(
+                    WorkItemId("replacement-held"),
+                    stored_state.StoredWorkItemState.BLOCKED,
+                    None,
+                    None,
+                    None,
+                    "activate",
+                    None,
+                    7,
+                    SQLITE_NOW,
+                    SQLITE_NOW,
+                    8,
+                ),
+                stored_state.StoredWorkItem(
+                    WorkItemId("releasable-unstarted"),
+                    stored_state.StoredWorkItemState.READY,
+                    None,
+                    None,
+                    None,
+                    "activate",
+                    None,
+                    7,
+                    SQLITE_NOW,
+                    SQLITE_NOW,
+                    9,
+                ),
+            )
+            dependencies = (
+                stored_state.ItemDependency(WorkItemId("work-a"), WorkItemId("work-b"), 0, checkpoint_id=None),
+                stored_state.ItemDependency(WorkItemId("intake-work"), WorkItemId("work-b"), 0, checkpoint_id=None),
+                stored_state.ItemDependency(WorkItemId("intake-work"), WorkItemId("work-c"), 1, checkpoint_id=None),
+                stored_state.ItemDependency(WorkItemId("zz-proposal-a"), WorkItemId("work-b"), 0, checkpoint_id=None),
+                stored_state.ItemDependency(WorkItemId("outside-held"), WorkItemId("work-b"), 0, checkpoint_id=None),
+                stored_state.ItemDependency(
+                    WorkItemId("cancelled-held"), WorkItemId("dropped-item"), 0, checkpoint_id=None
+                ),
+                stored_state.ItemDependency(
+                    WorkItemId("replacement-held"), WorkItemId("work-b"), 0, checkpoint_id=None
+                ),
+                stored_state.ItemDependency(
+                    WorkItemId("releasable-unstarted"), WorkItemId("work-b"), 0, checkpoint_id=None
+                ),
+            )
+            attempts = (
+                dataclass_replace(
+                    base.lifecycle.attempts[0],
+                    state=work_models.AttemptState.BLOCKED,
+                    accepted_scope_digest=work_a_digest,
+                    brief_artifact_ref_id=base.artifact_references[0].artifact_ref_id,
+                ),
+            )
+            unblockers = (
+                stored_state.StoredUnblocker(
+                    WorkItemId("work-a"), work_models.WaitingForItemsToFinish((WorkItemId("work-b"),))
+                ),
+                stored_state.StoredUnblocker(
+                    WorkItemId("intake-work"),
+                    work_models.WaitingForItemsToFinish((WorkItemId("work-b"), WorkItemId("work-c"))),
+                ),
+                stored_state.StoredUnblocker(
+                    WorkItemId("zz-proposal-a"), work_models.WaitingForHumanDecision("Approve legacy?")
+                ),
+                stored_state.StoredUnblocker(
+                    WorkItemId("outside-held"), work_models.WaitingForOutsideCondition("DNS propagated.")
+                ),
+                stored_state.StoredUnblocker(
+                    WorkItemId("cancelled-held"), work_models.WaitingForItemsToFinish((WorkItemId("dropped-item"),))
+                ),
+                stored_state.StoredUnblocker(
+                    WorkItemId("replacement-held"), work_models.WaitingForItemsToFinish((WorkItemId("work-b"),))
+                ),
+            )
+            references = (
+                dataclass_replace(
+                    base.artifact_references[0],
+                    key=published_brief.key,
+                    revision=published_brief.revision,
+                    selector=published_brief.selector,
+                    content_sha256=published_brief.content_sha256,
+                    size_bytes=published_brief.size_bytes,
+                ),
+                dataclass_replace(
+                    base.artifact_references[1],
+                    selector="artifacts/requirements/work-a-requirements/1.md",
+                    content_sha256=hashlib.sha256(b"# Req\n").hexdigest(),
+                    size_bytes=len(b"# Req\n"),
+                ),
+                dataclass_replace(
+                    base.artifact_references[2],
+                    selector="artifacts/evidence/work-a-evidence/1.md",
+                    content_sha256=hashlib.sha256(b"# Ev\n").hexdigest(),
+                    size_bytes=len(b"# Ev\n"),
+                ),
+            )
+            replacements = stored_state.ReplacementRecords(
+                (
+                    stored_state.StoredPlannedReplacement(
+                        WorkItemId("replacement-held"),
+                        1,
+                        WorkItemId("replacer"),
+                        "Replaced by replacer.",
+                        work_models.PlannedReplacementStatus.CURRENT,
+                        TaskId("coordinator"),
+                        SQLITE_NOW,
+                        3,
+                    ),
+                ),
+                (),
+            )
+            proposals = stored_state.ProposalRecords(
+                tuple(
+                    dataclass_replace(
+                        value,
+                        relation=work_models.FollowUpProposalRelation(WorkItemId("work-b")),
+                    )
+                    for value in base.proposals.proposals
+                )
+            )
+            state = dataclass_replace(
+                base,
+                lifecycle=dataclass_replace(
+                    base.lifecycle,
+                    work_items=work_items,
+                    dependencies=dependencies,
+                    attempts=attempts,
+                    definition_revisions=definitions,
+                    unblockers=unblockers,
+                ),
+                artifact_references=references,
+                replacements=replacements,
+                proposals=proposals,
+            )
+            initialize_store(SQLiteWorkStore(path), state)
+            downgrade_to_v14(path)
+            with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute("UPDATE work_items SET state = 'blocked' WHERE item_id = 'releasable-unstarted'")
+                connection.execute(
+                    "UPDATE work_item_state_counts SET item_count = item_count - 1 WHERE state = 'ready'"
+                )
+                connection.execute(
+                    "UPDATE work_item_state_counts SET item_count = item_count + 1 WHERE state = 'blocked'"
+                )
+                connection.execute(
+                    "INSERT INTO work_item_unblockers (item_id, unblocker_json) VALUES (?, ?)",
+                    ("releasable-unstarted", '{"items":["work-b"],"kind":"items"}'),
+                )
+                sqlite_database._verify_v14_schema(connection)
+            original = path.read_bytes()
+            revision_before = state.lifecycle.project.revision
+            history_count_before = len(state.transition_receipts)
+
+            for subcommand in (("status",), ("export",)):
+                code, refused_cli = self.run_cli(project, *subcommand)
+                self.assertEqual(12, code, subcommand)
+                self.assertEqual("SCHEMA_UNSUPPORTED", refused_cli["code"])
+                self.assertIn("sqlite-v14", str(refused_cli["message"]))
+                self.assertIn("sqlite-v15", str(refused_cli["message"]))
+                self.assertIn("migrate-schema", str(refused_cli["message"]))
+            validate_code, refused_validate = self.run_cli(project, "validate")
+            self.assertNotEqual(0, validate_code, refused_validate)
+            self.assertFalse(refused_validate["valid"], refused_validate)
+            self.assertIn("sqlite-v14", str(refused_validate["diagnostics"]))
+            self.assertIn("sqlite-v15", str(refused_validate["diagnostics"]))
+            refused_mcp = call_advertised_tool(
+                mcp_server.OVERVIEW_TOOL,
+                {
+                    "project_root": str(project),
+                    "work_root": str(roots.work_root),
+                    "max_items": 25,
+                    "continuation": None,
+                },
+            )
+            self.assertEqual(("rejected", "SCHEMA_UNSUPPORTED"), (refused_mcp["status"], refused_mcp["code"]))
+            self.assertEqual(original, path.read_bytes())
+
+            label_file = self.write_labels(path, hashlib.sha256(original).hexdigest(), [])
+            code, rejected_labels = self.run_cli(project, "migrate-schema", "--labels", str(label_file))
+            self.assertNotEqual(0, code)
+            self.assertIn("only to the v12 step", str(rejected_labels["message"]))
+            self.assertIn("sqlite-v14", str(rejected_labels["message"]))
+            self.assertEqual(original, path.read_bytes())
+
+            code, planned = self.run_cli(project, "migrate-schema")
+            self.assertEqual(0, code, planned)
+            plan = planned["plan"]
+            assert isinstance(plan, dict)
+            self.assertEqual("pinboard-schema-plan/v9", plan["schema"])
+            self.assertEqual("hold-releases-advance", plan["kind"])
+            self.assertEqual(
+                [
+                    {
+                        "item_id": "releasable-unstarted",
+                        "previous_state": "blocked",
+                        "previous_subject_revision": 7,
+                        "unblocker": {"kind": "items", "items": ["work-b"]},
+                    }
+                ],
+                plan["released_holds"],
+            )
+            self.assertEqual(original, path.read_bytes())
+
+            plan_id = str(planned["plan_id"])
+            code, migrated = self.run_cli(project, "migrate-schema", "--apply", plan_id)
+            self.assertEqual(0, code, migrated)
+            self.assertEqual(
+                ("migrated", "sqlite-v15", None), (migrated["status"], migrated["authority"], migrated["warning"])
+            )
+            evidence = path.parent / "migration"
+            self.assertTrue((evidence / f"{plan_id}.json").is_file())
+            self.assertEqual(original, (evidence / f"{plan_id}.v14").read_bytes())
+
+            reloaded = SQLiteWorkStore(path).validated_snapshot()
+            self.assertEqual(15, reloaded.lifecycle.project.schema_version)
+            self.assertEqual(revision_before, reloaded.lifecycle.project.revision)
+            self.assertEqual(history_count_before, len(reloaded.transition_receipts))
+            self.assertEqual((), reloaded.lifecycle.released_holds)
+            states = {value.item_id: value.state for value in reloaded.lifecycle.work_items}
+            self.assertEqual(stored_state.StoredWorkItemState.READY, states[WorkItemId("releasable-unstarted")])
+            for kept_held in (
+                "work-a",
+                "intake-work",
+                "zz-proposal-a",
+                "outside-held",
+                "cancelled-held",
+                "replacement-held",
+            ):
+                self.assertEqual(stored_state.StoredWorkItemState.BLOCKED, states[WorkItemId(kept_held)], kept_held)
+            self.assertNotIn(
+                WorkItemId("releasable-unstarted"),
+                {value.item_id for value in reloaded.lifecycle.unblockers},
+            )
+            self.assertEqual(0, self.run_cli(project, "validate")[0])
+            code, exported = self.run_cli(project, "export")
+            self.assertEqual(0, code, exported)
+            self.assertEqual(
+                ("pinboard-project-export/v7", "sqlite-v15", [], []),
+                (exported["schema"], exported["authority"], exported["amendments"], exported["released_holds"]),
+            )
+
+            unchanged = self.run_cli(project, "migrate-schema", "--apply", plan_id)[1]
+            self.assertEqual("unchanged", unchanged["status"])
+            reverse = self.run_cli(project, "migrate-schema", "--reverse", plan_id)[1]
+            reversed_result = self.run_cli(project, "migrate-schema", "--apply", str(reverse["plan_id"]))[1]
+            self.assertEqual(("reversed", "sqlite-v14"), (reversed_result["status"], reversed_result["authority"]))
+            self.assertEqual(original, path.read_bytes())
+
+            self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", plan_id)[0])
+            publication = ArtifactRepository(roots).publish(
+                NewArtifact(work_models.ArtifactKind.EVIDENCE, "after-v15", 1, ".txt", b"after")
+            )
+            assert isinstance(publication, ArtifactPublication)
+            expect_success(
+                SQLiteWorkStore(path).accept_artifact_reference(
+                    roots.work_root, publication.reference, SQLITE_NOW, ownership=None
+                )
+            )
+            later = path.read_bytes()
+            code, refused_reverse = self.run_cli(project, "migrate-schema", "--reverse", plan_id)
+            self.assertNotEqual(0, code)
+            self.assertIn("changed after schema migration", str(refused_reverse["message"]))
+            self.assertEqual(later, path.read_bytes())
 
     def test_retired_root_migration_rejects_all_forms_without_effects(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

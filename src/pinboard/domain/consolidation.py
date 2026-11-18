@@ -44,6 +44,7 @@ class Change:
     replacements: tuple[work_models.PlannedReplacement, ...]
     source_closures: tuple[decision_models.WorkItemClosureChange, ...]
     campaign_membership: initiatives.MembershipEffect
+    released_holds: tuple[decision_models.ReleasedItemHold, ...]
 
 
 def _merge_waits(values: tuple[work_models.Dependency, ...]) -> tuple[work_models.Dependency, ...]:
@@ -411,9 +412,11 @@ def decide(
             if item.work_item_id not in source_ids
         )
         + (() if owner is not None else (owner_item,)),
+        history_items=tuple(dict.fromkeys((*snapshot.history_items, *(value.item_id for value in plan.sources)))),
     )
     endings = _source_endings(snapshot, surviving, plan, selected, actor, now)
     if isinstance(endings, DecisionFailure):
         return endings
     replacements, closures = endings
-    return Change(campaign, dependent_revisions, replacements, closures, membership_effect)
+    released_holds = decisions.release_unstarted_holds(surviving, revised_definitions)
+    return Change(campaign, dependent_revisions, replacements, closures, membership_effect, released_holds)

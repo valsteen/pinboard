@@ -9,7 +9,12 @@ import sqlite3
 import msgspec
 
 from pinboard.adapters.sqlite.database import decode_row
-from pinboard.application import query_models
+from pinboard.adapters.sqlite.dependencies import read_accepted_checkpoints
+from pinboard.adapters.sqlite.lifecycle import read_item_unblockers, read_selected_dependency_states
+from pinboard.adapters.sqlite.replacements import read_current_replacements
+from pinboard.application import query_models, stored_state
+from pinboard.domain import work_models
+from pinboard.domain.identifiers import WorkItemId
 
 
 class _Revision(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -26,14 +31,71 @@ class _RoadmapCounts(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     off_roadmap_count: int
 
 
+class _OverviewRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: str
+    state: work_models.WorkState
+    position: int
+    label: str
+    attempt_id: str | None
+    dependency_count: int
+    unsatisfied_dependency_count: int
+
+
+def _resume_needed_by_item(connection: sqlite3.Connection, rows: tuple[_OverviewRow, ...]) -> dict[str, bool]:
+    held_ids = tuple(
+        WorkItemId(row.item_id)
+        for row in rows
+        if row.state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}
+    )
+    if not held_ids:
+        return {}
+    held_unblockers = read_item_unblockers(connection, held_ids)
+    items_hold_ids = tuple(
+        item_id for item_id in held_ids if isinstance(held_unblockers.get(item_id), work_models.WaitingForItemsToFinish)
+    )
+    if not items_hold_ids:
+        return {}
+    dependency_rows = read_selected_dependency_states(connection, items_hold_ids)
+    accepted_checkpoints = read_accepted_checkpoints(
+        connection, (row.target for values in dependency_rows.values() for row in values)
+    )
+    replacements, dispositions = read_current_replacements(connection, items_hold_ids)
+    replacements_by_item = {relation.affected_item: relation for relation in replacements}
+    dispositions_by_item = {
+        (disposition.affected_item, disposition.relation_revision): disposition for disposition in dispositions
+    }
+    result: dict[str, bool] = {}
+    for item_id in items_hold_ids:
+        unsatisfied = tuple(
+            row.target
+            for row in dependency_rows.get(item_id, ())
+            if not work_models.dependency_satisfied(
+                row.target,
+                stored_state.prerequisite_outcome(row.state) == work_models.PrerequisiteOutcome.FINISHED,
+                accepted_checkpoints,
+            )
+        )
+        relation = replacements_by_item.get(item_id)
+        disposition = None if relation is None else dispositions_by_item.get((item_id, relation.relation_revision))
+        replacement_resolved = relation is None or not work_models.replacement_withholds_resume(
+            relation.status,
+            relation.replacement_cost,
+            None if disposition is None else disposition.accepted_cost,
+        )
+        result[str(item_id)] = work_models.resume_available(unsatisfied, replacement_resolved)
+    return result
+
+
 def read_overview_page(
     connection: sqlite3.Connection, after_position: int, max_items: int
 ) -> query_models.DiscoveryFacts:
     revision = decode_row(
         connection.execute("SELECT revision FROM project_meta WHERE singleton = 1").fetchone(), _Revision
     ).revision
-    rows = connection.execute(
-        """
+    rows = tuple(
+        decode_row(row, _OverviewRow)
+        for row in connection.execute(
+            """
         WITH selected AS MATERIALIZED (
             SELECT item_id, state, queue_position FROM work_items
             WHERE queue_position > ? ORDER BY queue_position LIMIT ?
@@ -64,9 +126,23 @@ def read_overview_page(
         LEFT JOIN attempts AS attempt ON attempt.item_id = selected.item_id AND attempt.state != 'done'
         ORDER BY selected.queue_position
         """,
-        (after_position, max_items),
-    ).fetchall()
-    items = tuple(decode_row(row, query_models.DiscoveryItem) for row in rows)
+            (after_position, max_items),
+        ).fetchall()
+    )
+    resume_needed = _resume_needed_by_item(connection, rows)
+    items = tuple(
+        query_models.DiscoveryItem(
+            row.item_id,
+            row.state,
+            row.position,
+            row.label,
+            row.attempt_id,
+            row.dependency_count,
+            row.unsatisfied_dependency_count,
+            resume_needed.get(row.item_id, False),
+        )
+        for row in rows
+    )
     next_row = connection.execute(
         """
         SELECT item.item_id FROM work_items AS item

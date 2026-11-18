@@ -53,6 +53,7 @@ def _rediscover_dispatch_action(
                 related_work_item_ids=(),
                 dependency_closure_roots=(),
                 live_dependent_roots=(),
+                live_dependent_attempt_ids=(),
                 attempt_ids=(supplied.capability.subject,),
                 proposal_ids=(),
                 artifact_ref_ids=(),

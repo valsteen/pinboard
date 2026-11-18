@@ -15,7 +15,7 @@ from pinboard.domain import work_models
 from pinboard.mcp import server as mcp_server
 from tests.checkpoint_support import CheckpointFixture
 from tests.native_support import native_tools
-from tests.sqlite_support import downgrade_to_v13
+from tests.sqlite_support import advanced_v14_copy, downgrade_to_v13
 from tests.support import JsonObject
 from tests.test_item_status_facts import ItemLifecycleSupport
 
@@ -216,7 +216,7 @@ class AttemptAmendmentJourneyTest(ItemLifecycleSupport):
             tuple(value.amendment.amendment_class for value in fresh.lifecycle.amendments),
         )
         exported = self.run_json_cli(*fixture.common, "export")
-        self.assertEqual("pinboard-project-export/v6", exported["schema"])
+        self.assertEqual("pinboard-project-export/v7", exported["schema"])
         self.assertEqual(
             [value.value for value in work_models.AmendmentClass],
             [self.json_object(value)["amendment_class"] for value in self.json_array(exported["amendments"])],
@@ -255,7 +255,7 @@ class AttemptAmendmentJourneyTest(ItemLifecycleSupport):
         assert isinstance(applied, schema_procedure.AppliedSchema), applied
         self.assertEqual(("forward", 14), (applied.direction, applied.resulting_version))
         self.assertEqual(original, (path.parent / "migration" / f"{preview.plan_id}.v13").read_bytes())
-        self.assertEqual(expected, SQLiteWorkStore(path).validated_snapshot())
+        self.assertEqual(expected, SQLiteWorkStore(advanced_v14_copy(path)).validated_snapshot())
         resumed = schema_procedure.apply_schema(path, preview.plan_id)
         assert isinstance(resumed, schema_procedure.AppliedSchema), resumed
         self.assertEqual((), resumed.changed_surfaces)
@@ -265,8 +265,14 @@ class AttemptAmendmentJourneyTest(ItemLifecycleSupport):
         assert isinstance(restored, schema_procedure.AppliedSchema), restored
         self.assertEqual(original, path.read_bytes())
         self.assertIsInstance(schema_procedure.apply_schema(path, preview.plan_id), schema_procedure.AppliedSchema)
+        holds = schema_procedure.preview_schema(path)
+        assert isinstance(holds, schema_procedure.PlannedSchema), holds
+        self.assertIsInstance(schema_procedure.apply_schema(path, holds.plan_id), schema_procedure.AppliedSchema)
         self.amend(fixture)
         later = path.read_bytes()
+        self.assertIsInstance(
+            schema_procedure.preview_schema(path, holds.plan_id), schema_procedure.SchemaProcedureFailure
+        )
         self.assertIsInstance(
             schema_procedure.preview_schema(path, preview.plan_id), schema_procedure.SchemaProcedureFailure
         )

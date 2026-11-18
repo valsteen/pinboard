@@ -155,7 +155,7 @@ def stored_close_outcome(value: work_models.CloseOutcome) -> StoredWorkItemState
 @dataclass(frozen=True, slots=True)
 class ProjectRecord:
     application: Literal["pinboard"]
-    schema_version: Literal[14]
+    schema_version: Literal[15]
     revision: int
     host_epoch: int
     created_at: datetime
@@ -397,12 +397,24 @@ class StoredAttemptAmendment:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredReleasedHold:
+    """One unstarted items hold released automatically at the named transition receipt."""
+
+    history_id: HistoryId
+    item_id: WorkItemId
+    previous_state: StoredWorkItemState
+    previous_subject_revision: int
+    unblocker: work_models.WaitingForItemsToFinish
+
+
+@dataclass(frozen=True, slots=True)
 class LifecycleRecords:
     project: ProjectRecord
     decision_batch_references: tuple[DecisionBatchReference, ...] = field(kw_only=True)
     checkpoint_acceptances: tuple[CheckpointAcceptance, ...] = field(kw_only=True)
     unblockers: tuple[StoredUnblocker, ...] = field(kw_only=True)
     amendments: tuple[StoredAttemptAmendment, ...] = field(kw_only=True)
+    released_holds: tuple[StoredReleasedHold, ...] = field(kw_only=True)
     work_items: tuple[StoredWorkItem, ...] = ()
     dependencies: tuple[ItemDependency, ...] = ()
     attempts: tuple[StoredAttempt, ...] = ()

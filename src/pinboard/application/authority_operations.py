@@ -73,7 +73,7 @@ def _supplied_attempt_authority(
     operation_time: datetime,
 ) -> work_models.CommandAttemptAuthority | None:
     snapshot = store.read_decision_facts(
-        query_models.DecisionScope((), (), (), (), (attempt_id,), (), (), (), ()), operation_time
+        query_models.DecisionScope((), (), (), (), (), (attempt_id,), (), (), (), ()), operation_time
     ).snapshot
     current = snapshot.command_attempt_authority(attempt_id)
     return None if current is None else replace(current, lease_id=lease_id, generation=generation)
@@ -180,7 +180,7 @@ def _supplied_preparation_authority(
     operation_time: datetime,
 ) -> work_models.PreparationCommandAuthority | None:
     snapshot = store.read_decision_facts(
-        query_models.DecisionScope((work_item_id,), (), (), (), (), (), (), (), ()), operation_time
+        query_models.DecisionScope((work_item_id,), (), (), (), (), (), (), (), (), ()), operation_time
     ).snapshot
     current = snapshot.command_preparation_authority(work_item_id)
     return None if current is None else replace(current, lease_id=lease_id, generation=generation)

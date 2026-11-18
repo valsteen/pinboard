@@ -16,7 +16,7 @@ def read_facts(connection: sqlite3.Connection, plan: consolidation.Plan, now: da
     selected = (*tuple(value.item_id for value in plan.sources), plan.campaign_id)
     sources = tuple(value.item_id for value in plan.sources)
     first = read_selected_decision_facts(
-        connection, query_models.DecisionScope(selected, (), (), sources, (), (), (), (), ()), now
+        connection, query_models.DecisionScope(selected, (), (), sources, (), (), (), (), (), ()), now
     ).snapshot
     primary = tuple(dict.fromkeys((*selected, *(item.work_item_id for item in first.items))))
     roots = tuple(
@@ -33,8 +33,21 @@ def read_facts(connection: sqlite3.Connection, plan: consolidation.Plan, now: da
             (),
             (),
             (),
+            (),
             tuple(
-                value for value in plan.definition.dependencies if isinstance(value, work_models.CheckpointDependency)
+                dict.fromkeys(
+                    (
+                        *(
+                            value
+                            for value in plan.definition.dependencies
+                            if isinstance(value, work_models.CheckpointDependency)
+                        ),
+                        *(
+                            work_models.CheckpointDependency(plan.campaign_id, value.checkpoint)
+                            for value in plan.checkpoint_targets
+                        ),
+                    )
+                )
             ),
         ),
         now,

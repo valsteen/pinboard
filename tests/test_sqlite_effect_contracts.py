@@ -111,12 +111,12 @@ class SQLiteEffectContractTest(unittest.TestCase):
             live_large = count()
             statements.clear()
             small = store.read_decision_facts(
-                query_models.DecisionScope(added_ids[:1], (), (), (), (), (), (), (), ()), SQLITE_NOW
+                query_models.DecisionScope(added_ids[:1], (), (), (), (), (), (), (), (), ()), SQLITE_NOW
             )
             small_count = count()
             statements.clear()
             large = store.read_decision_facts(
-                query_models.DecisionScope(added_ids, (), (), (), (), (), (), (), ()), SQLITE_NOW
+                query_models.DecisionScope(added_ids, (), (), (), (), (), (), (), (), ()), SQLITE_NOW
             )
             large_count = count()
             selected_sql = tuple(statements)
@@ -279,7 +279,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
             completion_statements = tuple(statements)
             statements.clear()
             selected = store.read_decision_facts(
-                query_models.DecisionScope((), (), (), (), (), (), (), (AttemptId("work-a-1"),), ()), SQLITE_NOW
+                query_models.DecisionScope((), (), (), (), (), (), (), (), (AttemptId("work-a-1"),), ()), SQLITE_NOW
             )
             decision_statements = tuple(statements)
         assert first is not None and grown is not None
@@ -464,7 +464,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
             store.read_current_action_snapshot(SQLITE_NOW)
             store.read_current_parallel_snapshot(SQLITE_NOW)
             store.read_decision_facts(
-                query_models.DecisionScope((WorkItemId("work-a"),), (), (), (), (), (), (), (), ()), SQLITE_NOW
+                query_models.DecisionScope((WorkItemId("work-a"),), (), (), (), (), (), (), (), (), ()), SQLITE_NOW
             )
 
         self.assertFalse(any("from artifact_refs" in statement.lower() for statement in statements))
@@ -521,10 +521,10 @@ class SQLiteEffectContractTest(unittest.TestCase):
     def test_decision_artifacts_and_dependency_closure_are_explicit(self) -> None:
         _path, store = self._store()
         focused = store.read_decision_facts(
-            query_models.DecisionScope((WorkItemId("work-a"),), (), (), (), (), (), (), (), ()), SQLITE_NOW
+            query_models.DecisionScope((WorkItemId("work-a"),), (), (), (), (), (), (), (), (), ()), SQLITE_NOW
         ).snapshot
         artifact = store.read_decision_facts(
-            query_models.DecisionScope((WorkItemId("work-a"),), (), (), (), (), (), (ArtifactRefId(1),), (), ()),
+            query_models.DecisionScope((WorkItemId("work-a"),), (), (), (), (), (), (), (ArtifactRefId(1),), (), ()),
             SQLITE_NOW,
         ).snapshot
 
@@ -537,14 +537,18 @@ class SQLiteEffectContractTest(unittest.TestCase):
         _chain_path, store = self._store(state)
 
         direct = store.read_decision_facts(
-            query_models.DecisionScope((WorkItemId("work-a"),), (), (), (), (), (), (), (), ()), SQLITE_NOW
+            query_models.DecisionScope((WorkItemId("work-a"),), (), (), (), (), (), (), (), (), ()), SQLITE_NOW
         ).snapshot
         closed = store.read_decision_facts(
-            query_models.DecisionScope((WorkItemId("work-a"),), (), (WorkItemId("work-c"),), (), (), (), (), (), ()),
+            query_models.DecisionScope(
+                (WorkItemId("work-a"),), (), (WorkItemId("work-c"),), (), (), (), (), (), (), ()
+            ),
             SQLITE_NOW,
         ).snapshot
         terminal_closed = store.read_decision_facts(
-            query_models.DecisionScope((WorkItemId("work-a"),), (), (WorkItemId("work-b"),), (), (), (), (), (), ()),
+            query_models.DecisionScope(
+                (WorkItemId("work-a"),), (), (WorkItemId("work-b"),), (), (), (), (), (), (), ()
+            ),
             SQLITE_NOW,
         ).snapshot
 

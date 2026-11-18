@@ -269,7 +269,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual(
             query_models.ItemStatus(
                 "pinboard-item-status/v7",
-                "sqlite-v14",
+                "sqlite-v15",
                 "12",
                 "work-a",
                 "Work work-a",
@@ -308,7 +308,7 @@ class SQLiteQueriesTest(unittest.TestCase):
         self.assertEqual(
             query_models.ItemStatus(
                 "pinboard-item-status/v7",
-                "sqlite-v14",
+                "sqlite-v15",
                 "12",
                 "work-b",
                 "Work work-b",

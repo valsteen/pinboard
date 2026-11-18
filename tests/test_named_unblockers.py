@@ -111,7 +111,10 @@ def _held_change_unblocker(decision: decision_models.Decision) -> work_models.Un
 
 class HoldingDecisionTest(unittest.TestCase):
     def test_every_holding_transition_records_each_kind_of_unblocker(self) -> None:
-        ready = _snapshot(_item("build", work_models.WorkState.READY, depends_on=(WorkItemId("survey"),)))
+        ready = _snapshot(
+            _item("build", work_models.WorkState.READY, depends_on=(WorkItemId("survey"),)),
+            _item("survey", work_models.WorkState.READY),
+        )
         active = _snapshot(
             _item("build", work_models.WorkState.ACTIVE, attempt="build-1", depends_on=(WorkItemId("survey"),)),
             attempts=(attempt_record("build-1", "build", work_models.AttemptState.ACTIVE, 1, DIGEST),),
@@ -145,18 +148,27 @@ class HoldingDecisionTest(unittest.TestCase):
                     self.assertEqual(unblocker, _held_change_unblocker(decision))
 
     def test_unnamed_empty_or_unaccepted_unblockers_are_rejected_unchanged(self) -> None:
-        ready = _snapshot(_item("build", work_models.WorkState.READY, depends_on=(WorkItemId("survey"),)))
+        ready = _snapshot(
+            _item("build", work_models.WorkState.READY, depends_on=(WorkItemId("survey"),)),
+            _item("survey", work_models.WorkState.READY),
+        )
+        satisfied_ready = _snapshot(_item("build", work_models.WorkState.READY, depends_on=(WorkItemId("survey"),)))
         block_item = action(decision_models.BlockWorkItemAction, WorkItemId("build"))
-        for unblocker, named in (
-            (work_models.WaitingForItemsToFinish((WorkItemId("elsewhere"),)), "elsewhere"),
-            (work_models.WaitingForItemsToFinish(()), "distinct items"),
-            (work_models.WaitingForItemsToFinish((WorkItemId("survey"), WorkItemId("survey"))), "distinct items"),
-            (work_models.WaitingForHumanDecision("   "), "state its text"),
-            (work_models.WaitingForOutsideCondition(""), "state its text"),
+        for snapshot, unblocker, named in (
+            (ready, work_models.WaitingForItemsToFinish((WorkItemId("elsewhere"),)), "elsewhere"),
+            (ready, work_models.WaitingForItemsToFinish(()), "distinct items"),
+            (
+                ready,
+                work_models.WaitingForItemsToFinish((WorkItemId("survey"), WorkItemId("survey"))),
+                "distinct items",
+            ),
+            (satisfied_ready, work_models.WaitingForItemsToFinish((WorkItemId("survey"),)), "already ready to start"),
+            (ready, work_models.WaitingForHumanDecision("   "), "state its text"),
+            (ready, work_models.WaitingForOutsideCondition(""), "state its text"),
         ):
-            with self.subTest(unblocker=unblocker):
+            with self.subTest(unblocker=unblocker, named=named):
                 rejected = decision_outcome(
-                    ready, decision_models.BlockWorkItemCommand(block_item, work_models.BlockInput(unblocker)), NOW
+                    snapshot, decision_models.BlockWorkItemCommand(block_item, work_models.BlockInput(unblocker)), NOW
                 )
                 assert isinstance(rejected, DecisionFailure)
                 self.assertEqual(DecisionFailureCode.TRANSITION_INPUT_INVALID, rejected.code)

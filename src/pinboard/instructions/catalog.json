@@ -9,7 +9,7 @@
   "documents": {
     "worker-codex": {
       "path": "worker-codex.md",
-      "sha256": "ebb152a1d09690cb0d3f532ace065ef05822611efa8530e3ec02346017a2c176",
+      "sha256": "14bdb7639ff9107f605b71b9465171ff226eb0178d933514b84026b34d6c9dc9",
       "size_bytes": 29566,
       "owners": [
         "role.worker",
@@ -54,7 +54,7 @@
     },
     "worker-claude-code": {
       "path": "worker-claude-code.md",
-      "sha256": "ae785ac5b6cc0f6cb95b7fceb53e4dce1ce251fda61dfa5a1f2288871389c600",
+      "sha256": "471d60a1fc70274e7ee5161cdbcc47b150f83f382f999d4f048d936f9cb2d8ca",
       "size_bytes": 34319,
       "owners": [
         "role.worker",
@@ -104,7 +104,7 @@
     },
     "worker-antigravity": {
       "path": "worker-antigravity.md",
-      "sha256": "d2d7228da843f79dd198ee55248449cb155902ee4fe3549829c8b64683c16d77",
+      "sha256": "d63180ec37db6ed16d5d3f8a5aaf1959c98f752482bf94b291b7de22e67059a7",
       "size_bytes": 33043,
       "owners": [
         "role.worker",

@@ -157,3 +157,15 @@ class LedgerSnapshot:
         return work_models.resume_available(
             self.unsatisfied_dependencies(item.depends_on), self.unresolved_replacement(item.work_item_id) is None
         )
+
+    def releasable_unstarted_hold(self, item: work_models.WorkItem) -> work_models.WaitingForItemsToFinish | None:
+        """Return the unstarted items hold that has nothing left to wait for, or None."""
+
+        if (
+            item.state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}
+            and item.attempt is None
+            and isinstance(item.unblocker, work_models.WaitingForItemsToFinish)
+            and self.resume_available(item)
+        ):
+            return item.unblocker
+        return None

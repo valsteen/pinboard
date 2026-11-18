@@ -7,7 +7,7 @@ reads the filesystem, or obtains time. Expected stale CAS writes return a
 
 import hashlib
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
@@ -20,6 +20,7 @@ from pinboard.adapters.sqlite.artifacts import read_artifact_references_by_ids
 from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.dependencies import DependencyRow, DependencyTargetRow, read_accepted_checkpoints
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
+from pinboard.adapters.sqlite.models import AttemptIdRow
 from pinboard.application import queries, query_models, released_receipt_compatibility, stored_state, unblockers
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
@@ -151,6 +152,53 @@ def decode_history_action_kind(
         return released_receipt_compatibility.decode_released_action_kind(value)
     except ValueError as error:
         raise StorageError(StorageErrorCode.INVALID_STATE, "Stored history has an unknown action kind.") from error
+
+
+def _stored_json(column: str, value: str) -> work_models.CanonicalJson:
+    encoded = value.encode("utf-8")
+    try:
+        msgspec.json.decode(encoded, type=msgspec.Raw)
+    except msgspec.DecodeError as error:
+        raise StorageError(StorageErrorCode.INVALID_STATE, f"Column {column!r} has invalid JSON.") from error
+    return work_models.CanonicalJson(encoded)
+
+
+def stored_receipt_from_row(value: TransitionHistoryRow) -> stored_state.StoredTransitionReceipt:
+    return stored_state.StoredTransitionReceipt(
+        value.history_id,
+        value.project_revision,
+        value.action_id,
+        decode_history_action_kind(value.action_kind),
+        value.subject_id,
+        value.artifact_ref_id,
+        value.authorization,
+        value.actor_task_id,
+        value.actor_host_id,
+        value.input_schema,
+        _stored_json("input_json", value.input_json),
+        value.outcome_schema,
+        _stored_json("outcome_json", value.outcome_json),
+        value.committed_at,
+    )
+
+
+def read_history_receipts_by_ids(
+    connection: sqlite3.Connection, history_ids: tuple[HistoryId, ...]
+) -> dict[HistoryId, stored_state.StoredTransitionReceipt]:
+    return {
+        receipt.history_id: receipt
+        for receipt in (
+            stored_receipt_from_row(decode_row(row, TransitionHistoryRow))
+            for row in select_by_ids(
+                connection,
+                """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
+                          authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
+                          input_json, outcome_schema, outcome_json, committed_at
+                   FROM transition_history WHERE history_id IN ({ids})""",
+                history_ids,
+            )
+        )
+    }
 
 
 def _consumed_receipt(row: sqlite3.Row) -> query_models.ConsumedTransitionReceipt:
@@ -1171,6 +1219,7 @@ def read_lifecycle(
             for item_id, unblocker in sorted(read_all_item_unblockers(connection).items())
         ),
         amendments=read_all_amendments(connection),
+        released_holds=read_all_released_holds(connection),
     )
 
 
@@ -1279,6 +1328,207 @@ def read_all_item_unblockers(connection: sqlite3.Connection) -> dict[WorkItemId,
 
 class _UnblockerItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     item_id: WorkItemId
+
+
+class _ReleasedHoldRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: HistoryId
+    item_id: WorkItemId
+    previous_state: stored_state.StoredWorkItemState
+    previous_subject_revision: int
+    unblocker_json: str
+
+
+class _ItemReleasedHoldViewRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    history_id: HistoryId
+    project_revision: int
+    action_id: ActionId
+    committed_at: datetime
+    item_id: WorkItemId
+    previous_state: stored_state.StoredWorkItemState
+    previous_subject_revision: int
+    unblocker_json: str
+
+
+def _decode_released_items_unblocker(
+    history_id: HistoryId, item_id: WorkItemId, unblocker_json: str
+) -> work_models.WaitingForItemsToFinish:
+    try:
+        decoded = unblockers.decode_unblocker(unblocker_json)
+    except (msgspec.DecodeError, ValueError) as error:
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            f"Released hold for '{item_id}' at receipt {history_id} records an unreadable unblocker: {error}",
+        ) from error
+    if not isinstance(decoded, work_models.WaitingForItemsToFinish):
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            f"Released hold for '{item_id}' at receipt {history_id} must record an items unblocker.",
+        )
+    if unblockers.encode_unblocker(decoded).decode("utf-8") != unblocker_json:
+        raise StorageError(
+            StorageErrorCode.INVALID_STATE,
+            f"Released hold for '{item_id}' at receipt {history_id} is not canonical.",
+        )
+    return decoded
+
+
+def _stored_released_hold(row: sqlite3.Row) -> stored_state.StoredReleasedHold:
+    value = decode_row(row, _ReleasedHoldRow)
+    return stored_state.StoredReleasedHold(
+        value.history_id,
+        value.item_id,
+        value.previous_state,
+        value.previous_subject_revision,
+        _decode_released_items_unblocker(value.history_id, value.item_id, value.unblocker_json),
+    )
+
+
+def read_all_released_holds(connection: sqlite3.Connection) -> tuple[stored_state.StoredReleasedHold, ...]:
+    return tuple(
+        _stored_released_hold(row)
+        for row in connection.execute(
+            """SELECT history_id, item_id, previous_state, previous_subject_revision, unblocker_json
+               FROM released_item_holds
+               ORDER BY history_id, item_id"""
+        ).fetchall()
+    )
+
+
+def read_released_holds_by_history_ids(
+    connection: sqlite3.Connection, history_ids: Iterable[HistoryId]
+) -> dict[HistoryId, tuple[stored_state.StoredReleasedHold, ...]]:
+    grouped: dict[HistoryId, list[stored_state.StoredReleasedHold]] = {}
+    for row in select_by_ids(
+        connection,
+        """SELECT history_id, item_id, previous_state, previous_subject_revision, unblocker_json
+           FROM released_item_holds
+           WHERE history_id IN ({ids})
+           ORDER BY history_id, item_id""",
+        history_ids,
+    ):
+        hold = _stored_released_hold(row)
+        grouped.setdefault(hold.history_id, []).append(hold)
+    return {history_id: tuple(values) for history_id, values in grouped.items()}
+
+
+def read_item_released_hold_views(
+    connection: sqlite3.Connection, item_ids: Iterable[WorkItemId]
+) -> dict[WorkItemId, tuple[query_models.ItemReleasedHoldView, ...]]:
+    grouped: dict[WorkItemId, list[query_models.ItemReleasedHoldView]] = {}
+    for row in select_by_ids(
+        connection,
+        """SELECT released.history_id, history.project_revision, history.action_id, history.committed_at,
+                  released.item_id, released.previous_state, released.previous_subject_revision,
+                  released.unblocker_json
+           FROM released_item_holds AS released INDEXED BY released_item_holds_by_item
+           JOIN transition_history AS history ON history.history_id = released.history_id
+           WHERE released.item_id IN ({ids})
+           ORDER BY released.item_id, released.history_id""",
+        item_ids,
+    ):
+        value = decode_row(row, _ItemReleasedHoldViewRow)
+        grouped.setdefault(value.item_id, []).append(
+            query_models.ItemReleasedHoldView(
+                value.history_id,
+                value.project_revision,
+                value.action_id,
+                value.committed_at,
+                value.previous_state,
+                value.previous_subject_revision,
+                _decode_released_items_unblocker(value.history_id, value.item_id, value.unblocker_json),
+            )
+        )
+    return {item_id: tuple(values) for item_id, values in grouped.items()}
+
+
+def read_held_attempt_ids(connection: sqlite3.Connection, item_ids: tuple[WorkItemId, ...]) -> tuple[AttemptId, ...]:
+    """Read paused or blocked open attempt IDs for the selected items in attempt-ID order."""
+
+    return tuple(
+        decode_row(row, AttemptIdRow).attempt_id
+        for row in select_by_ids(
+            connection,
+            """SELECT attempt_id FROM attempts INDEXED BY one_live_attempt_per_item
+               WHERE item_id IN ({ids}) AND state != 'done' AND state IN ('paused', 'blocked')
+               ORDER BY attempt_id""",
+            item_ids,
+        )
+    )
+
+
+def persist_released_holds(
+    connection: sqlite3.Connection,
+    before_items: Mapping[WorkItemId, stored_state.StoredWorkItem],
+    released_holds: tuple[decision_models.ReleasedItemHold, ...],
+    history_id: HistoryId,
+    revision: int,
+    now: datetime,
+) -> DecisionFailure | None:
+    """Release each newly releasable unstarted items hold to ready and record provenance at ``history_id``."""
+
+    for hold in released_holds:
+        before = before_items.get(hold.work_item_id)
+        if (
+            before is None
+            or hold.previous_state != work_models.WorkState.BLOCKED
+            or stored_state.live_work_state(before.state) != hold.previous_state
+            or (
+                hold.previous_subject_revision is not None
+                and str(before.subject_revision) != hold.previous_subject_revision
+            )
+        ):
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE, "A released unstarted hold changed before commit.", None
+            )
+        open_attempt = connection.execute(
+            "SELECT 1 FROM attempts INDEXED BY one_live_attempt_per_item WHERE item_id = ? AND state != 'done'",
+            (hold.work_item_id,),
+        ).fetchone()
+        if open_attempt is not None:
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE, "A released unstarted hold changed before commit.", None
+            )
+        encoded = unblockers.encode_unblocker(hold.unblocker).decode("utf-8")
+        current_unblocker = connection.execute(
+            "SELECT unblocker_json FROM work_item_unblockers WHERE item_id = ?",
+            (hold.work_item_id,),
+        ).fetchone()
+        if current_unblocker is None or str(current_unblocker[0]) != encoded:
+            return DecisionFailure(
+                DecisionFailureCode.ACTION_NOT_AVAILABLE, "A released unstarted hold changed before commit.", None
+            )
+        if (
+            failure := require_one_changed_row(
+                connection.execute(
+                    """
+                    UPDATE work_items
+                    SET state = 'ready', subject_revision = ?, updated_at = ?
+                    WHERE item_id = ? AND state = ? AND subject_revision IN (?, ?) AND queue_position IS NOT NULL
+                    """,
+                    (
+                        revision,
+                        now.isoformat(),
+                        hold.work_item_id,
+                        before.state.value,
+                        before.subject_revision,
+                        revision,
+                    ),
+                ),
+                "A released unstarted hold changed before commit.",
+            )
+        ) is not None:
+            return failure
+        write_item_unblocker(connection, hold.work_item_id, None)
+        move_item_state_count(connection, before.state, stored_state.StoredWorkItemState.READY)
+        connection.execute(
+            """
+            INSERT INTO released_item_holds (
+                history_id, item_id, previous_state, previous_subject_revision, unblocker_json
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (history_id, hold.work_item_id, before.state.value, before.subject_revision, encoded),
+        )
+    return None
 
 
 def set_item_state(

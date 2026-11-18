@@ -75,11 +75,11 @@ def operate(
             if isinstance(preview, DecisionFailure):
                 return rejected(preview.code, preview.message, "refresh-action")
             result = contracts.PreviewResult(
-                "pinboard-consolidation-preview-result/v2",
+                "pinboard-consolidation-preview-result/v3",
                 "ok",
                 preview,
                 consolidation.binding(preview, durable.work_root),
-                "Show the complete campaign, exact carried work, original source waits, surviving consumer changes, queue and lifecycle consequences; then stop for a separate explicit human confirmation of this map. Confirmation authorizes no launch, process or repository effect.",
+                "Show the complete campaign, exact carried work, original source waits, surviving consumer changes, released unstarted holds, queue and lifecycle consequences; then stop for a separate explicit human confirmation of this map. Confirmation authorizes no launch, process or repository effect.",
                 False,
                 "unchanged",
                 "safe-to-repeat",

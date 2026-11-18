@@ -19,6 +19,7 @@ from pinboard.adapters.sqlite.migration import database as migration_database
 from pinboard.adapters.sqlite.migration.schema_amendments_v13 import upgrade_v13_connection
 from pinboard.adapters.sqlite.migration.schema_decisions_v10 import _upgrade_v10_connection
 from pinboard.adapters.sqlite.migration.schema_dependencies_v9 import _upgrade_v9_connection
+from pinboard.adapters.sqlite.migration.schema_holds_v14 import project_v14_for_current_readers
 from pinboard.adapters.sqlite.migration.schema_membership_v11 import _upgrade_v11_connection
 from pinboard.adapters.sqlite.migration.schema_unblockers_v12 import project_v12_for_current_readers
 from pinboard.adapters.sqlite.models import OpenMode
@@ -204,6 +205,7 @@ def _read_compatibility_v9_state(connection: sqlite3.Connection) -> stored_state
         _upgrade_v11_connection(projection, None)
         project_v12_for_current_readers(projection)
         upgrade_v13_connection(projection, None)
+        project_v14_for_current_readers(projection)
         return read_state(projection)
 
 
@@ -318,13 +320,14 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
             version = database._read_pinboard_schema_version(connection)
             if version == 6:
                 return migration_database.inspect_schema_migration(path)
-            if version == database.SCHEMA_VERSION:
-                database._verify_current_schema(connection)
-                database.verify_database_integrity(connection)
-                return version, source, None
-            if version == 12:
-                # The v12 postimage depends on hold labels, so its labelled preview predicts it separately.
-                database._verify_v12_schema(connection)
+            if version in (12, 14, database.SCHEMA_VERSION):
+                # v12 and v14 previews compute label-bound or release-bound plans separately.
+                if version == 12:
+                    database._verify_v12_schema(connection)
+                elif version == 14:
+                    database._verify_v14_schema(connection)
+                else:
+                    database._verify_current_schema(connection)
                 database.verify_database_integrity(connection)
                 return version, source, None
             if version == 13:

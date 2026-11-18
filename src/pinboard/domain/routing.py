@@ -66,5 +66,11 @@ def validate_action_route(snapshot: LedgerSnapshot, action: decision_models.Acti
             f"Action '{decision_models.action_id(action)}' has no current executable definition. Read the exact item and repair its definition through the supported revision action; do not reconstruct stored state.",
             None,
         )
+    if (
+        isinstance(action, decision_models.ResumeAction)
+        and (item := snapshot.work_item(action.capability.subject)) is not None
+        and item.attempt is None
+    ):
+        return None
     route = require_route_facts(anchor)
     return route if isinstance(route, DecisionFailure) else None

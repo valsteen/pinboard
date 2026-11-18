@@ -201,8 +201,12 @@ def execute(  # noqa: C901, PLR0912, PLR0915 - exact inline/file leaves retain a
     refreshed = common._refresh_affected_views(
         durable,
         common.compose_store(durable),
-        AffectedViews((item_id,), (), (HistoryId(result.evidence[-1].history_id),)),
+        AffectedViews(
+            result.affected_item_ids,
+            result.affected_attempt_ids,
+            (HistoryId(result.state.evidence[-1].history_id),),
+        ),
         datetime.now(UTC),
     )
     warning = None if refreshed.warning is None else f"{refreshed.warning.message} {refreshed.warning.repair}"
-    return _present(result, committed=True, profile=profile, view_warning=warning)
+    return _present(result.state, committed=True, profile=profile, view_warning=warning)

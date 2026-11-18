@@ -63,13 +63,16 @@ from pinboard.adapters.sqlite.lifecycle import (
     read_branch_owners,
     read_current_definitions,
     read_definition_histories,
+    read_history_receipts_by_ids,
     read_item_closure,
+    read_item_released_hold_views,
     read_item_status,
     read_item_unblockers,
     read_latest_checkpoint_acceptance,
     read_parallel_preview_lifecycle,
     read_receipts_at_revisions,
     read_recorded_pause_reasons,
+    read_released_holds_by_history_ids,
     read_selected_dependency_states,
     reject_damaged_pause_receipt,
 )
@@ -198,7 +201,7 @@ def _read_archive_projections(
             archived_attempt_ids,
         )
     )
-    archive_receipts = tuple(sqlite_state.read_history_receipts_by_ids(connection, archive_history_ids).values())
+    archive_receipts = tuple(read_history_receipts_by_ids(connection, archive_history_ids).values())
     archive_definitions = tuple(
         decode_definition_revision(row)
         for row in select_by_ids(
@@ -319,6 +322,7 @@ def _read_generated_view_facts(  # noqa: PLR0915 - one selected read of every pr
     replacements_by_item = {value.affected_item: value for value in replacements}
     dispositions_by_item = {value.affected_item: value for value in dispositions}
     review_history_by_item = sqlite_state.read_review_history_for_items(connection, item_ids)
+    item_released_holds = read_item_released_hold_views(connection, view_item_ids)
     items: list[query_models.ItemProjectionFacts] = []
     for item_id in item_ids:
         item = selected_items.get(item_id)
@@ -375,6 +379,7 @@ def _read_generated_view_facts(  # noqa: PLR0915 - one selected read of every pr
                 review_history_by_item.get(item_id, ()),
                 None if (attempt_id := selected_attempts.get(item_id)) is None else pause_reasons.get(attempt_id),
                 None if attempt_id is None else batches.get(attempt_id),
+                item_released_holds.get(item_id, ()),
             )
         )
     holds = {value.work_item.item_id: value.overview.hold for value in items if value.overview is not None}
@@ -426,9 +431,12 @@ def _read_generated_view_facts(  # noqa: PLR0915 - one selected read of every pr
                 attempt_amendments.get(attempt_id, ()),
             )
         )
-    selected_receipts = sqlite_state.read_history_receipts_by_ids(connection, history_ids)
+    selected_receipts = read_history_receipts_by_ids(connection, history_ids)
+    released_holds_by_history = read_released_holds_by_history_ids(connection, history_ids)
     receipts = tuple(
-        receipt for history_id in history_ids if (receipt := selected_receipts.get(history_id)) is not None
+        query_models.HistoryProjectionFacts(receipt, released_holds_by_history.get(history_id, ()))
+        for history_id in history_ids
+        if (receipt := selected_receipts.get(history_id)) is not None
     )
     if len(receipts) != len(history_ids):
         raise StorageError(StorageErrorCode.INVALID_STATE, "An affected history projection is missing.")
@@ -1023,7 +1031,7 @@ class SQLiteWorkStore:
                                 (lease_id, generation),
                             ).fetchall()
                         )
-                        scope = query_models.DecisionScope((), (), (), (), attempt_ids, (), (), (), ())
+                        scope = query_models.DecisionScope((), (), (), (), (), attempt_ids, (), (), (), ())
                     case decision_models.Role.PREPARER:
                         item_ids = tuple(
                             decode_row(row, ItemIdRow).item_id
@@ -1040,7 +1048,7 @@ class SQLiteWorkStore:
                                 (lease_id, generation),
                             ).fetchall()
                         )
-                        scope = query_models.DecisionScope(item_ids, (), (), (), (), (), (), (), ())
+                        scope = query_models.DecisionScope(item_ids, (), (), (), (), (), (), (), (), ())
                     case decision_models.Role.PROJECT | decision_models.Role.OBSERVER:
                         raise StorageError(
                             StorageErrorCode.INVARIANT_VIOLATION,

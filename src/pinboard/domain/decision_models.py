@@ -1146,10 +1146,19 @@ type NonCheckpointDecisionChange = (
 
 
 @dataclass(frozen=True, slots=True)
+class ReleasedItemHold:
+    work_item_id: WorkItemId
+    previous_state: work_models.WorkState
+    previous_subject_revision: str | None
+    unblocker: work_models.WaitingForItemsToFinish
+
+
+@dataclass(frozen=True, slots=True)
 class TransitionDecision:
     action: NonCheckpointTransitionAction
     change: NonCheckpointDecisionChange
     receipt: TransitionReceipt
+    released_holds: tuple[ReleasedItemHold, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1157,6 +1166,7 @@ class CheckpointAcceptanceDecision:
     action: AcceptCheckpointAction
     change: CheckpointAcceptanceChange
     receipt: TransitionReceipt
+    released_holds: tuple[ReleasedItemHold, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1164,6 +1174,7 @@ class CompletionAcceptanceDecision:
     action: CompleteAction
     change: CoveredCompletionChange
     receipt: TransitionReceipt
+    released_holds: tuple[ReleasedItemHold, ...]
 
 
 type Decision = TransitionDecision | CheckpointAcceptanceDecision | CompletionAcceptanceDecision

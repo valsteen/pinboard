@@ -56,7 +56,7 @@ from pinboard.application.artifact_publication import (
     PublishedFailureDetails,
     UnpublishedFailureDetails,
 )
-from pinboard.application.ports import StaleCommitCode, WorkStore
+from pinboard.application.ports import StaleWriteCode, WorkStore
 from pinboard.diagnostic_codes import (
     BriefReviewRejectedCode,
     BriefSourcesRejectedCode,
@@ -1491,7 +1491,7 @@ def _overview_rejected(message: str) -> execution.TypedOperationResult[contracts
     )
 
 
-def _order_rejected_code(code: OrderDecisionCode | StaleCommitCode) -> OrderRejectedCode:
+def _order_rejected_code(code: OrderDecisionCode | StaleWriteCode) -> OrderRejectedCode:
     """Name the order rejection for each code service.reorder declares."""
     match code:
         case DecisionFailureCode.ACTION_NOT_AVAILABLE:

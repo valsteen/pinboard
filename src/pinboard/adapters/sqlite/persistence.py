@@ -32,7 +32,6 @@ from pinboard.adapters.sqlite.authority import (
     write_preparation_authority,
 )
 from pinboard.adapters.sqlite.database import (
-    StaleWriteCode,
     decode_row,
     open_database,
     require_one_changed_row,
@@ -94,7 +93,7 @@ from pinboard.application.mutation_models import (
     TransitionMutation,
 )
 from pinboard.application.mutations import stored_transition_receipt
-from pinboard.application.ports import ArtifactReferenceAcceptance, CommitFailureCode
+from pinboard.application.ports import ArtifactReferenceAcceptance, CommitFailureCode, StaleWriteCode
 from pinboard.domain import consolidation, decision_models, work_models
 from pinboard.domain import initiatives as initiative_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision

@@ -171,9 +171,8 @@ class DecisionFailure[Code: DecisionFailureCode]:
     """An expected rejection whose code is one of the codes its producer declares.
 
     A producer declares its range as a ``Literal`` subset of ``DecisionFailureCode``, so its consumer matches only
-    those codes. The default is the transitional whole vocabulary for producers that do not declare a range yet. The
-    fields are ``Final`` so that both type checkers treat a narrow failure as assignable to a wider one, and the class
-    is ``final`` so that narrowing a result by ``isinstance`` keeps only the declared failure.
+    those codes. The fields are ``Final`` so that both type checkers treat a narrow failure as assignable to a wider
+    one, and the class is ``final`` so that narrowing a result by ``isinstance`` keeps only the declared failure.
     """
 
     code: Final[Code]

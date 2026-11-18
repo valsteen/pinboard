@@ -18,7 +18,7 @@ from datetime import datetime
 from functools import cache
 from itertools import batched
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final
 from urllib.parse import quote
 
 import msgspec
@@ -28,6 +28,7 @@ from pinboard.adapters.files.file_io import DurableRoots, ensure_directory_chain
 from pinboard.adapters.sqlite.errors import SQLiteSchemaError, StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.application import stored_state
+from pinboard.application.ports import StaleWriteCode
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 
 APPLICATION: Final = "pinboard"
@@ -57,9 +58,6 @@ def select_by_ids(
         for group in batched(selected, 400, strict=False)
         for row in connection.execute(query.format(ids=", ".join("?" for _ in group)), group).fetchall()
     )
-
-
-type StaleWriteCode = Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]
 
 
 def stale_write(message: str) -> DecisionFailure[StaleWriteCode]:

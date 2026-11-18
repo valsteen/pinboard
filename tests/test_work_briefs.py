@@ -664,17 +664,21 @@ class WorkBriefBoundaryTest(unittest.TestCase):
 
     def test_needs_correction_review_is_canonical_digest_bound_and_independent(self) -> None:
         value = example_work_brief()
+        checkpoint = value.checkpoint
+        assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
         candidate = needs_correction_review(value)
         review = expect_work_brief_success(decode_canonical_work_brief_review_needs_correction(candidate))
 
         self.assertEqual(candidate, canonical_work_brief_review_needs_correction_bytes(review))
-        self.assertIsNone(validate_work_brief_review_needs_correction(review, value))
+        self.assertIsNone(validate_work_brief_review_needs_correction(review, value, checkpoint))
         same_owner = validate_work_brief_review_needs_correction(
-            replace(review, reviewer_task_id=value.owner_task_id), value
+            replace(review, reviewer_task_id=value.owner_task_id), value, checkpoint
         )
         assert same_owner is not None
         self.assertEqual(work_brief_models.WorkBriefErrorCode.REVIEW_NOT_INDEPENDENT, same_owner.code)
-        stale = validate_work_brief_review_needs_correction(replace(review, accepted_brief_sha256="f" * 64), value)
+        stale = validate_work_brief_review_needs_correction(
+            replace(review, accepted_brief_sha256="f" * 64), value, checkpoint
+        )
         assert stale is not None
         self.assertEqual(work_brief_models.WorkBriefErrorCode.REVIEW_STALE, stale.code)
 

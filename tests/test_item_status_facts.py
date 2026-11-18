@@ -369,7 +369,29 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
             self.verdict(fixture),
         )
         self.assertIsNone(self.json_object(self.json_array(self.item_leaf(fixture)["attempts"])[0])["pause_reason"])
+        continuation = self.json_object(self.inspection(fixture)["continuation"])
+        self.assertEqual("paused", continuation["state"])
+        self.assertIsNone(continuation["pause_reason"])
         self.assert_valid(fixture)
+
+    def test_attempt_inspection_preserves_whitespace_only_pause_reason(self) -> None:
+        fixture = self.native_fixture(self.active_fixture())
+        reason = " \t"
+        action = self.project_action(fixture, "pause:work-a-1")
+        paused = fixture.call_advertised_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(fixture, action, {"reason": reason, "unblocker": HOLD_UNBLOCKER}),
+        )
+        self.assertEqual("committed", paused["status"], paused)
+
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").read_attempt_inspection_context(AttemptId("work-a-1"))
+        assert isinstance(fresh, query_models.NonterminalAttemptContextFacts)
+        self.assertEqual(work_models.AttemptState.PAUSED, fresh.state)
+        self.assertEqual(reason, fresh.pause_reason)
+
+        continuation = self.json_object(self.inspection(fixture)["continuation"])
+        self.assertEqual("paused", continuation["state"])
+        self.assertEqual(reason, continuation["pause_reason"])
 
     def test_current_checkpoint_reports_the_current_brief_and_its_exact_remaining_work(self) -> None:
         fixture = self.native_fixture(self.checkpoint_fixture())
@@ -593,7 +615,10 @@ class ItemStatusFactsTest(ItemLifecycleSupport):
             fixture = self.damaged_receipt_fixture(receipt)
             damaged_history = self.latest_history_id(fixture)
             clean_state = self.receipt_probe_state(fixture)
-            for label, columns in damage:
+            cases = damage
+            if receipt in (decision_models.ActionKind.PAUSE, decision_models.ActionKind.REBIND_ATTEMPT):
+                cases = (*damage, ("empty-reason", {"outcome_json": '{"evidence":"","outcome":null}'}))
+            for label, columns in cases:
                 with self.subTest(receipt=receipt.value, damage=label):
                     if receipt == decision_models.ActionKind.ACCEPT_CHECKPOINT and label == "outcome-schema":
                         columns = {"outcome_schema": "checkpoint-acceptance/v9"}

@@ -2152,6 +2152,8 @@ class SupersededAttemptContinuation(
 
 
 class NonterminalAttemptContinuationBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Decoded MCP results validate legal actions and the next operation against the state tag."""
+
     schema: Literal["pinboard-attempt-continuation/v2"]
     attempt_id: PathComponent
     item_id: PathComponent

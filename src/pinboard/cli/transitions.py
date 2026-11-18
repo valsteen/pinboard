@@ -106,7 +106,7 @@ def close(
     committed = lifecycle_operations.commit_direct_transition(
         store,
         ArtifactRepository(durable),
-        lifecycle_operations.SelectedTransition(selected_action, decoded, command.task_id, command.host_id),
+        lifecycle_operations.SelectedDirectTransition(decoded, command.task_id, command.host_id),
         datetime.now(UTC),
         lambda: datetime.now(UTC),
     )

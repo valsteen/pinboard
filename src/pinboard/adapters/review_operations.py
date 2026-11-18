@@ -58,7 +58,7 @@ from pinboard.domain.errors import (
     FailureMismatch,
     RetryDisposition,
 )
-from pinboard.domain.identifiers import AttemptId, CandidateId, HistoryId, TaskId
+from pinboard.domain.identifiers import AttemptId, CandidateId, HistoryId
 
 
 class NoPriorCheckpointPackage(msgspec.Struct, tag="absent", tag_field="kind", frozen=True, forbid_unknown_fields=True):
@@ -1148,9 +1148,7 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
         )
         is not None
     )
-    continuation = queries.project_attempt_continuation(
-        attempt, TaskId(brief.owner_task_id), brief, None, None, ready_review
-    )
+    continuation = queries.project_nonterminal_attempt_continuation(attempt, brief, None, None, ready_review)
     if isinstance(continuation, DecisionFailure):
         return continuation
     operation = continuation.next_operation

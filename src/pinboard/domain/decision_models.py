@@ -877,9 +877,9 @@ class RejectProposalCommand:
     value: work_models.ReasonInput
 
 
-type TransitionCommand = (
-    AcceptCheckpointCommand
-    | AcceptReviewAndContinueCommand
+type ArtifactSensitiveCommand = AcceptCheckpointCommand | CoveredCompleteCommand | SubmitReviewCommand
+type DirectTransitionCommand = (
+    AcceptReviewAndContinueCommand
     | ActivateCommand
     | PauseCommand
     | BlockCommand
@@ -887,7 +887,6 @@ type TransitionCommand = (
     | CloseCommand
     | RebindAttemptCommand
     | ResumeCommand
-    | SubmitReviewCommand
     | ReturnForCorrectionCommand
     | RecordAmendmentCommand
     | RecordReplacementCommand
@@ -896,8 +895,8 @@ type TransitionCommand = (
     | RetainTemporarilyCommand
     | ReviseWorkItemCommand
     | RejectProposalCommand
-    | CoveredCompleteCommand
 )
+type TransitionCommand = DirectTransitionCommand | ArtifactSensitiveCommand
 type NonCheckpointTransitionCommand = (
     AcceptReviewAndContinueCommand
     | ActivateCommand

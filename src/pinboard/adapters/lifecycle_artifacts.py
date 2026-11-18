@@ -32,7 +32,7 @@ from pinboard.adapters.files.root import (
     read_untracked_paths,
     read_working_tree_candidate,
 )
-from pinboard.adapters.lifecycle_operations import SelectedTransition
+from pinboard.adapters.lifecycle_operations import SelectedArtifactTransition
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.application import (
     artifact_identity,
@@ -90,12 +90,6 @@ from pinboard.domain.errors import (
 )
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CheckpointId
 
-# Candidate-sensitive transitions also refuse a missing commissioned candidate review.
-type ArtifactSensitiveCommand = (
-    decision_models.SubmitReviewCommand
-    | decision_models.AcceptCheckpointCommand
-    | decision_models.CoveredCompleteCommand
-)
 type ArtifactTransitionFailureCode = TransitionFailureCode | Literal[DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED]
 
 
@@ -747,7 +741,7 @@ def _accept_checkpoint(
     work_root: Path,
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
-    selected: SelectedTransition,
+    selected: SelectedArtifactTransition,
     command: decision_models.AcceptCheckpointCommand,
     operation_time: datetime,
     read_authorization_time: Callable[[], datetime],
@@ -1112,7 +1106,7 @@ def _complete(
     work_root: Path,
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
-    selected: SelectedTransition,
+    selected: SelectedArtifactTransition,
     command: decision_models.CoveredCompleteCommand,
     operation_time: datetime,
     read_authorization_time: Callable[[], datetime],
@@ -1169,20 +1163,19 @@ def execute_artifact_transition(
     work_root: Path,
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
-    selected: SelectedTransition,
-    command: ArtifactSensitiveCommand,
+    selected: SelectedArtifactTransition,
     operation_time: datetime,
     read_authorization_time: Callable[[], datetime],
 ) -> ArtifactTransitionResult:
-    """Execute the selected transition's artifact-sensitive command, which the caller passes narrowed."""
-    match command:
-        case decision_models.SubmitReviewCommand():
+    """Execute the selected artifact-sensitive transition."""
+    match selected.command:
+        case decision_models.SubmitReviewCommand() as command:
             return _submit_review(source_checkout, store, artifacts, command, operation_time, read_authorization_time)
-        case decision_models.AcceptCheckpointCommand():
+        case decision_models.AcceptCheckpointCommand() as command:
             return _accept_checkpoint(
                 work_root, store, artifacts, selected, command, operation_time, read_authorization_time
             )
-        case decision_models.CoveredCompleteCommand():
+        case decision_models.CoveredCompleteCommand() as command:
             return _complete(
                 source_checkout, work_root, store, artifacts, selected, command, operation_time, read_authorization_time
             )

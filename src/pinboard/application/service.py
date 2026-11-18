@@ -248,7 +248,10 @@ def _commit_attempt_authority_change(
     transaction: WorkTransaction,
     requested_change: authority_models.AttemptAuthorityOperation,
 ) -> DecisionResult[AttemptAuthorityMutationResult, AttemptAuthorityChangeCode]:
-    """Decide and persist inside the caller's existing transaction."""
+    """Decide, persist, and verify the written authority inside the caller's transaction.
+
+    Raise RuntimeError to roll back if the storage effect's readback differs from the decision.
+    """
 
     match requested_change:
         case authority_models.AcquireInitialAttemptAuthority(
@@ -335,7 +338,7 @@ def _commit_attempt_authority_change(
         or _project_retained_attempt_authority(decision_context, retained, attempt_id) != proposed_replacement
     ):
         raise RuntimeError("Committed attempt authority did not reload exactly inside its transaction.")
-    return AttemptAuthorityMutationResult(committed, retained)
+    return AttemptAuthorityMutationResult(committed, retained, proposed_replacement.work_item_id)
 
 
 def _project_retained_preparation_authority(
@@ -444,7 +447,10 @@ def _commit_preparation_authority_change(
     transaction: WorkTransaction,
     requested_change: authority_models.PreparationAuthorityOperation,
 ) -> DecisionResult[PreparationAuthorityMutationResult, PreparationAuthorityChangeCode]:
-    """Decide and persist inside the caller's existing transaction."""
+    """Decide, persist, and verify the written authority inside the caller's transaction.
+
+    Raise RuntimeError to roll back if the storage effect's readback differs from the decision.
+    """
 
     match requested_change:
         case authority_models.AcquireInitialPreparationAuthority(
@@ -537,7 +543,10 @@ def create_proposal(
     actor_host_id: HostId,
     dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[ProposalCreationResult, ProposalCreationFailureCode]:
-    """Reread locked state, decide, and commit proposal facts plus their ready item."""
+    """Reread locked state, decide, and commit proposal facts plus their ready item.
+
+    Raise RuntimeError to roll back if the storage effect's item readback is absent, out of order, or outside READY.
+    """
 
     with store.write() as transaction:
         allocation = transaction.read_mutation_allocation()

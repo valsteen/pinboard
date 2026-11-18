@@ -530,6 +530,7 @@ class NonterminalAttemptContinuationBase(AttemptContinuationIdentity, frozen=Tru
     decision_batch: decision_batches.DecisionBatchView | None
 
     def _validate_common(self) -> None:
+        """Check the continuation's identity and relationships among its projected facts."""
         if (
             not self.attempt_id
             or not self.item_id
@@ -556,14 +557,6 @@ class NonterminalAttemptContinuationBase(AttemptContinuationIdentity, frozen=Tru
             )
             if not any(action in self.legal_actions for action in review_actions):
                 raise ValueError("review continuation requires a matching checkpoint or completion action")
-        elif isinstance(operation, ReconcileRepositoryContinuation) and (
-            not operation.candidate_revision or not operation.condition
-        ):
-            raise ValueError("repository reconciliation continuation requires its reviewed candidate and condition")
-        elif isinstance(operation, DependencyContinuation) and (
-            not operation.dependencies or len(set(operation.dependencies)) != len(operation.dependencies)
-        ):
-            raise ValueError("dependency continuations require unique dependencies")
 
 
 class ActiveAttemptContinuation(
@@ -579,12 +572,6 @@ class ActiveAttemptContinuation(
 
     def __post_init__(self) -> None:
         self._validate_common()
-        operation = self.next_operation
-        if (
-            not isinstance(operation, ActionContinuation)
-            or operation.action.action_kind not in ACTIVE_NEXT_ACTION_KINDS
-        ):
-            raise ValueError("an active continuation requires a continue, rebind, pause, or completion action")
 
 
 class ReviewAttemptContinuation(
@@ -600,23 +587,6 @@ class ReviewAttemptContinuation(
 
     def __post_init__(self) -> None:
         self._validate_common()
-        operation = self.next_operation
-        if not (
-            isinstance(
-                operation,
-                (
-                    ReviewContinuation,
-                    ReconcileRepositoryContinuation,
-                    RefreshTargetContinuation,
-                    PermissionRecoveryContinuation,
-                    RepositoryDispositionContinuation,
-                    CommitThenReinspectContinuation,
-                    RepositoryCleanupContinuation,
-                ),
-            )
-            or (isinstance(operation, ActionContinuation) and operation.action.action_kind in REVIEW_NEXT_ACTION_KINDS)
-        ):
-            raise ValueError("a review continuation requires review, completion, or correction work")
 
 
 class PausedAttemptContinuation(
@@ -637,18 +607,6 @@ class PausedAttemptContinuation(
 
     def __post_init__(self) -> None:
         self._validate_common()
-        if self.pause_reason is not None and not self.pause_reason.strip():
-            raise ValueError("a recorded pause reason must be nonempty")
-        operation = self.next_operation
-        if not (
-            isinstance(operation, DependencyContinuation)
-            or (
-                isinstance(operation, ActionContinuation)
-                and operation.action.action_kind
-                in {decision_models.ActionKind.RESUME, decision_models.ActionKind.CLOSE}
-            )
-        ):
-            raise ValueError("a paused continuation requires dependency, resume, or close work")
 
 
 class BlockedAttemptContinuation(
@@ -667,16 +625,6 @@ class BlockedAttemptContinuation(
 
     def __post_init__(self) -> None:
         self._validate_common()
-        operation = self.next_operation
-        if not (
-            isinstance(operation, DependencyContinuation)
-            or (
-                isinstance(operation, ActionContinuation)
-                and operation.action.action_kind
-                in {decision_models.ActionKind.RESUME, decision_models.ActionKind.CLOSE}
-            )
-        ):
-            raise ValueError("a blocked continuation requires dependency, resume, or close work")
 
 
 type NonterminalAttemptContinuation = (

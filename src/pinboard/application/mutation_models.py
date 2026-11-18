@@ -69,6 +69,7 @@ class PreparationStart:
 class AttemptAuthorityMutationResult:
     effect: CommittedEffect
     authority: query_models.AttemptAuthorityStatus
+    work_item_id: WorkItemId
 
 
 @dataclass(frozen=True, slots=True)

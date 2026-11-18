@@ -984,22 +984,13 @@ def _apply_transition(
         )
     token.checkpoint()
     ended_amendments = _amendments_ended_by_rebind(store, selected.command)
-    command = selected.command
-    if isinstance(
-        command,
-        (
-            decision_models.AcceptCheckpointCommand,
-            decision_models.CoveredCompleteCommand,
-            decision_models.SubmitReviewCommand,
-        ),
-    ):
+    if isinstance(selected, lifecycle_operations.SelectedArtifactTransition):
         committed = lifecycle_artifacts.execute_artifact_transition(
             source_checkout,
             durable.work_root,
             store,
             artifacts,
             selected,
-            command,
             operation_time,
             lambda: datetime.now(UTC),
         )
@@ -1344,10 +1335,7 @@ def _committed_authority(
             return execution.TypedOperationResult[contracts.PreparationAuthorityResult](
                 result, classification, str(revision)
             )
-        case AttemptAuthorityMutationResult(authority=retained):
-            item_id = effect.receipt.transition.work_item_id
-            if item_id is None:
-                raise RuntimeError("Attempt authority mutation did not identify its item.")
+        case AttemptAuthorityMutationResult(authority=retained, work_item_id=item_id):
             result = contracts.AttemptAuthorityCommitted(
                 "pinboard-mcp-attempt-authority-result/v1",
                 retained.attempt_id,

@@ -280,9 +280,12 @@ def encode_completion_acceptance_outcome(*, candidate: str, evidence: str) -> by
     return msgspec.json.encode(CompletionAcceptanceOutcome(candidate, evidence, "complete"), order="sorted")
 
 
+type DefinitionInvalidCode = Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID]
+
+
 def work_item_definition_payload(
     definition: work_models.WorkItemDefinition,
-) -> DecisionResult[DefinitionPayload]:
+) -> DecisionResult[DefinitionPayload, DefinitionInvalidCode]:
     carries_origins = any(isinstance(value, work_models.CarriedWorkObligation) for value in definition.obligations)
     route = definition.route_facts
     if route is None:
@@ -347,14 +350,18 @@ def work_item_definition_payload(
         return DecisionFailure(DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Definition is invalid: {error}", None)
 
 
-def work_item_definition_bytes(definition: work_models.WorkItemDefinition) -> DecisionResult[bytes]:
+def work_item_definition_bytes(
+    definition: work_models.WorkItemDefinition,
+) -> DecisionResult[bytes, DefinitionInvalidCode]:
     payload = work_item_definition_payload(definition)
     if isinstance(payload, DecisionFailure):
         return payload
     return _encoded_record(payload)
 
 
-def work_item_definition_digest(definition: work_models.WorkItemDefinition) -> DecisionResult[str]:
+def work_item_definition_digest(
+    definition: work_models.WorkItemDefinition,
+) -> DecisionResult[str, DefinitionInvalidCode]:
     payload = work_item_definition_bytes(definition)
     if isinstance(payload, DecisionFailure):
         return payload

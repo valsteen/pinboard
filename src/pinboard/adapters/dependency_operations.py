@@ -17,6 +17,7 @@ from pinboard.application.dependency_authoring import (
     DependencyCheckpointPin,
     DependencyDefinitionPin,
     DependencyFinishedProducerPin,
+    DependencyPinFailureCode,
     new_checkpoint_dependencies,
 )
 from pinboard.application.work_briefs import decode_canonical_accepted_brief
@@ -32,7 +33,7 @@ def resolve_dependency_brief_pins(
     dependent: WorkItemId | None,
     dependencies: tuple[work_models.Dependency, ...],
     now: datetime,
-) -> DecisionResult[tuple[DependencyCheckpointPin, ...]]:
+) -> DecisionResult[tuple[DependencyCheckpointPin, ...], DependencyPinFailureCode]:
     requested = tuple(value for value in dependencies if isinstance(value, work_models.CheckpointDependency))
     if not requested:
         return ()
@@ -80,7 +81,7 @@ def _declared_pin(
     references: Mapping[ArtifactRefId, stored_state.ArtifactReference],
     lineages: Mapping[AttemptId, query_models.AttemptLineage],
     target: work_models.CheckpointDependency,
-) -> DecisionResult[DependencyCheckpointPin]:
+) -> DecisionResult[DependencyCheckpointPin, DependencyPinFailureCode]:
     """Pin a target the live producer declares in its current definition or current accepted brief."""
 
     item = snapshot.work_item(target.item_id)

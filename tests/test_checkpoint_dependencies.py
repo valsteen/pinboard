@@ -17,6 +17,7 @@ from pinboard.adapters.sqlite import dependencies as sqlite_dependencies
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
+    ports,
     proposal_models,
     proposals,
     queries,
@@ -28,11 +29,13 @@ from pinboard.application import (
 )
 from pinboard.application.dependency_authoring import (
     DependencyAcceptancePin,
+    DependencyCheckpointPin,
     DependencyDefinitionPin,
     DependencyFinishedProducerPin,
+    DependencyPinFailureCode,
 )
 from pinboard.domain import history, work_models
-from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.errors import DecisionFailure, DecisionResult
 from pinboard.domain.identifiers import CheckpointId, HostId, TaskId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.mcp import server as mcp_server
@@ -431,6 +434,73 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
             ("A reworded unlock.", (dependency,)),
             (reloaded.unlock, reloaded.dependencies),
         )
+
+    def stale_proposal(self, message: str) -> JsonObject:
+        return {
+            "schema": "pinboard-mcp-proposal-result/v2",
+            "status": "rejected",
+            "code": "ITEM_DEFINITION_STALE",
+            "message": message,
+            "state_changed": False,
+            "effect": "unchanged",
+            "retry": "refresh-action",
+            "changed_surfaces": [],
+            "observed": [],
+            "mismatches": [],
+            "recovery": "Inspect the named prerequisite's item status and accepted brief, then select one of its "
+            "current declared checkpoints again before retrying the proposal.",
+        }
+
+    def test_proposal_on_a_checkpoint_of_a_stale_accepted_brief_is_a_typed_rejection(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        checkpoint = fixture.brief.checkpoint.checkpoint_id
+        revised = self.revise(fixture, "work-a", "Clarify the producer objective.", objective="A revised objective.")
+        self.assertEqual("committed", revised["status"], revised)
+        before = fixture.store.validated_snapshot()
+
+        rejected = self.create(fixture, "stale-child", {"item": "work-a", "checkpoint": checkpoint})
+
+        self.assertEqual(
+            self.stale_proposal(
+                f"Prerequisite 'work-a' has an invalid or stale current accepted brief. Inspect and reconcile that "
+                f"prerequisite before authoring checkpoint '{checkpoint}'."
+            ),
+            rejected,
+        )
+        self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def test_proposal_whose_prerequisite_changes_before_the_write_lock_is_a_typed_rejection(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        checkpoint = fixture.brief.checkpoint.checkpoint_id
+        after_revision: list[stored_state.StoredWorkState] = []
+
+        def revise_after_resolving(
+            store: ports.WorkStore,
+            artifacts: ArtifactRepository,
+            dependent: WorkItemId | None,
+            dependencies: tuple[work_models.Dependency, ...],
+            now: datetime,
+        ) -> DecisionResult[tuple[DependencyCheckpointPin, ...], DependencyPinFailureCode]:
+            pins = resolve_dependency_brief_pins(store, artifacts, dependent, dependencies, now)
+            assert not isinstance(pins, DecisionFailure), pins
+            revised = self.revise(
+                fixture, "work-a", "Clarify the producer objective.", objective="A revised objective."
+            )
+            assert revised["status"] == "committed", revised
+            after_revision.append(fixture.store.validated_snapshot())
+            return pins
+
+        with patch("pinboard.mcp.mutation_operations.resolve_dependency_brief_pins", new=revise_after_resolving):
+            rejected = self.create(fixture, "locked-child", {"item": "work-a", "checkpoint": checkpoint})
+
+        self.assertEqual(
+            self.stale_proposal(
+                f"Prerequisite 'work-a' changed its accepted brief or definition while checkpoint '{checkpoint}' was "
+                "selected. Inspect that prerequisite and select its current declared checkpoint again."
+            ),
+            rejected,
+        )
+        self.assertEqual(after_revision, [fixture.store.validated_snapshot()])
 
     def test_revision_authors_accepted_checkpoint_after_rebind_and_keeps_cycle_refusal(self) -> None:
         fixture = self.accepted_package_fixture(local=True)

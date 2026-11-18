@@ -17,7 +17,13 @@ import msgspec
 
 from pinboard.adapters.sqlite.amendments import read_all_amendments, read_amendment_facts
 from pinboard.adapters.sqlite.artifacts import read_artifact_references_by_ids
-from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
+from pinboard.adapters.sqlite.database import (
+    StaleWriteCode,
+    decode_row,
+    require_one_changed_row,
+    select_by_ids,
+    stale_write,
+)
 from pinboard.adapters.sqlite.dependencies import DependencyRow, DependencyTargetRow, read_accepted_checkpoints
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import AttemptIdRow
@@ -1251,7 +1257,7 @@ def compact_queue(
 def make_queue_space(
     connection: sqlite3.Connection,
     position: int,
-) -> DecisionFailure | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     rows = connection.execute(
         "SELECT item_id, queue_position FROM work_items WHERE queue_position >= ? ORDER BY queue_position DESC",
         (position,),
@@ -1463,7 +1469,7 @@ def persist_released_holds(
     history_id: HistoryId,
     revision: int,
     now: datetime,
-) -> DecisionFailure | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     """Release each newly releasable unstarted items hold to ready and record provenance at ``history_id``."""
 
     for hold in released_holds:
@@ -1477,26 +1483,20 @@ def persist_released_holds(
                 and str(before.subject_revision) != hold.previous_subject_revision
             )
         ):
-            return DecisionFailure(
-                DecisionFailureCode.ACTION_NOT_AVAILABLE, "A released unstarted hold changed before commit.", None
-            )
+            return stale_write("A released unstarted hold changed before commit.")
         open_attempt = connection.execute(
             "SELECT 1 FROM attempts INDEXED BY one_live_attempt_per_item WHERE item_id = ? AND state != 'done'",
             (hold.work_item_id,),
         ).fetchone()
         if open_attempt is not None:
-            return DecisionFailure(
-                DecisionFailureCode.ACTION_NOT_AVAILABLE, "A released unstarted hold changed before commit.", None
-            )
+            return stale_write("A released unstarted hold changed before commit.")
         encoded = unblockers.encode_unblocker(hold.unblocker).decode("utf-8")
         current_unblocker = connection.execute(
             "SELECT unblocker_json FROM work_item_unblockers WHERE item_id = ?",
             (hold.work_item_id,),
         ).fetchone()
         if current_unblocker is None or str(current_unblocker[0]) != encoded:
-            return DecisionFailure(
-                DecisionFailureCode.ACTION_NOT_AVAILABLE, "A released unstarted hold changed before commit.", None
-            )
+            return stale_write("A released unstarted hold changed before commit.")
         if (
             failure := require_one_changed_row(
                 connection.execute(

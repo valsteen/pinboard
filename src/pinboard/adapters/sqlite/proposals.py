@@ -12,7 +12,7 @@ from typing import assert_never
 import msgspec
 
 from pinboard.adapters.sqlite import initiatives as initiative_storage
-from pinboard.adapters.sqlite.database import decode_row, require_one_changed_row, select_by_ids
+from pinboard.adapters.sqlite.database import StaleWriteCode, decode_row, require_one_changed_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     append_definition_revision,
@@ -347,7 +347,7 @@ def insert_planned_replacement(
 def create_proposal(  # noqa: C901, PLR0912 - one atomic proposal and explicit roadmap disposition
     connection: sqlite3.Connection,
     mutation: ProposalCreationMutation,
-) -> DecisionFailure | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     decision = mutation.decision
     intake = decision.proposal
     ready_item = decision.ready_item

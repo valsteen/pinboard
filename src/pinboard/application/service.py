@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from datetime import datetime
-from typing import assert_never, overload
+from typing import Literal, assert_never, overload
 
 import msgspec
 
@@ -14,7 +14,11 @@ from pinboard.application.artifacts import (
     EvidenceArtifactRef,
     WorkBriefIdentity,
 )
-from pinboard.application.dependency_authoring import DependencyCheckpointPin, validate_dependency_brief_pins
+from pinboard.application.dependency_authoring import (
+    DependencyCheckpointPin,
+    DependencyPinFailureCode,
+    validate_dependency_brief_pins,
+)
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     AttemptAuthorityMutationResult,
@@ -62,7 +66,7 @@ from pinboard.domain.identifiers import (
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.domain.ordering import OrderRequest, decide_order
-from pinboard.domain.proposal_decisions import decide_proposal_creation
+from pinboard.domain.proposal_decisions import ProposalCreationDecisionCode, decide_proposal_creation
 from pinboard.domain.proposal_models import (
     CreateProposalOperation,
 )
@@ -464,6 +468,14 @@ def _commit_preparation_authority_change(
     return PreparationAuthorityMutationResult(committed, retained)
 
 
+type ProposalCreationFailureCode = (
+    DependencyPinFailureCode  # resolved and locked checkpoint targets
+    | Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID]  # obligation origins
+    | ProposalCreationDecisionCode
+    | Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]  # stale proposal write
+)
+
+
 def create_proposal(
     store: WorkStore,
     operation: CreateProposalOperation,
@@ -472,7 +484,7 @@ def create_proposal(
     actor_task_id: TaskId,
     actor_host_id: HostId,
     dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
-) -> DecisionResult[ProposalCreationResult]:
+) -> DecisionResult[ProposalCreationResult, ProposalCreationFailureCode]:
     """Reread locked state, decide, and commit proposal facts plus their ready item."""
 
     with store.write() as transaction:
@@ -560,7 +572,7 @@ def create_proposal(
             work_models.CanonicalJson(b"{}"),
         )
         mutation = ProposalCreationMutation(mutation_receipt, accepted_decision)
-        committed = transaction.commit(mutation)
+        committed = transaction.commit_proposal(mutation)
         if isinstance(committed, DecisionFailure):
             return committed
         retained = transaction.read_created_proposal_item(accepted_decision.ready_item.work_item_id)

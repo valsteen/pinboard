@@ -1,8 +1,8 @@
-from typing import assert_never
+from typing import Literal, assert_never
 
 from pinboard.domain import initiatives, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.history import work_item_definition_digest
+from pinboard.domain.history import DefinitionInvalidCode, work_item_definition_digest
 from pinboard.domain.identifiers import WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.domain.proposal_models import (
@@ -12,13 +12,24 @@ from pinboard.domain.proposal_models import (
     ReadyProposalWorkItem,
 )
 
+type ProposalCreationDecisionCode = (
+    Literal[
+        DecisionFailureCode.PROPOSAL_ALREADY_EXISTS,
+        DecisionFailureCode.ITEM_ALREADY_EXISTS,
+        DecisionFailureCode.ITEM_NOT_FOUND,
+        DecisionFailureCode.PROPOSAL_INVALID,
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    ]
+    | DefinitionInvalidCode
+)
+
 
 def decide_proposal_creation(  # noqa: C901, PLR0912 - exhaustive proposal relation decisions
     snapshot: LedgerSnapshot,
     operation: CreateProposalOperation,
     live_item_count: int,
     membership_facts: initiatives.MembershipIntentFacts,
-) -> DecisionResult[ProposalCreationDecision]:
+) -> DecisionResult[ProposalCreationDecision, ProposalCreationDecisionCode]:
     intake = operation.intake
     if snapshot.proposal(intake.proposal_id) is not None:
         return DecisionFailure(DecisionFailureCode.PROPOSAL_ALREADY_EXISTS, "Proposal identity already exists.", None)

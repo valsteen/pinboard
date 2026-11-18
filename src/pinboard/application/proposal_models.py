@@ -1,24 +1,10 @@
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from datetime import date as HumanDate
-from typing import Annotated, Literal, override
+from typing import Annotated, Literal
 
 import msgspec
 
-from pinboard.domain.errors import DecisionFailureCode, FailureDetails
 from pinboard.domain.history import DependencyPayload, OriginObligationPayload, RouteFactsPayload, WorkObligationPayload
-
-
-@dataclass(frozen=True, slots=True)
-class ProposalFailure:
-    code: DecisionFailureCode
-    message: str
-    details: FailureDetails | None
-
-    @override
-    def __str__(self) -> str:
-        return f"{self.code.value}: {self.message}"
-
 
 type ProposalJsonValue = bool | int | float | str | list[ProposalJsonValue] | dict[str, ProposalJsonValue] | None
 

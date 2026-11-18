@@ -1,7 +1,7 @@
 """Persist one accepted application mutation inside one SQLite write transaction."""
 
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +32,7 @@ from pinboard.adapters.sqlite.authority import (
     write_preparation_authority,
 )
 from pinboard.adapters.sqlite.database import (
+    StaleWriteCode,
     decode_row,
     open_database,
     require_one_changed_row,
@@ -1157,11 +1158,16 @@ def _mutation_released_holds(mutation: StoredStateMutation) -> tuple[decision_mo
             assert_never(unreachable)
 
 
-def _persist(
+def _persist[Code: DecisionFailureCode](
     connection: sqlite3.Connection,
     mutation: StoredStateMutation,
-) -> DecisionFailure | None:
-    """Persist one targeted accepted mutation without rebuilding unrelated relations."""
+    persist_change: Callable[[_PersistenceFacts], DecisionFailure[Code] | None],
+) -> DecisionFailure[Code | StaleWriteCode] | None:
+    """Persist one targeted accepted mutation without rebuilding unrelated relations.
+
+    ``persist_change`` writes the mutation's own rows, so its declared failure range, joined with the stale
+    project-revision refusal, is the range of the whole persistence step.
+    """
 
     receipt = stored_transition_receipt(mutation)
     allocation = connection.execute(
@@ -1185,7 +1191,7 @@ def _persist(
         )
     facts = _read_persistence_facts(connection, mutation)
     connection.execute("PRAGMA defer_foreign_keys = ON")
-    if (failure := _persist_state_change(connection, facts, mutation)) is not None:
+    if (failure := persist_change(facts)) is not None:
         return failure
     if (
         failure := require_one_changed_row(
@@ -1309,7 +1315,9 @@ class SQLiteWorkTransaction:
 
         return self._active_connection()
 
-    def _select[Value](self, result: DecisionResult[Value]) -> DecisionResult[Value]:
+    def _select[Value, Code: DecisionFailureCode](
+        self, result: DecisionResult[Value, Code]
+    ) -> DecisionResult[Value, Code]:
         if isinstance(result, DecisionFailure):
             self._active_connection().rollback()
             self._rejected = True
@@ -1410,6 +1418,16 @@ class SQLiteWorkTransaction:
         return 0 if row is None else decode_row(row, GenerationRow).generation_high_water
 
     def commit(self, mutation: StoredStateMutation) -> DecisionResult[CommittedEffect]:
+        return self._commit(mutation, lambda facts: _persist_state_change(self.connection, facts, mutation))
+
+    def commit_proposal(self, mutation: ProposalCreationMutation) -> DecisionResult[CommittedEffect, StaleWriteCode]:
+        return self._commit(mutation, lambda _facts: create_proposal(self.connection, mutation))
+
+    def _commit[Code: DecisionFailureCode](
+        self,
+        mutation: StoredStateMutation,
+        persist_change: Callable[[_PersistenceFacts], DecisionFailure[Code] | None],
+    ) -> DecisionResult[CommittedEffect, Code | StaleWriteCode]:
         item_ids, own_attempt_ids = _committed_effect_ids(self.connection, mutation)
         continuation_attempt_id = own_attempt_ids[0] if own_attempt_ids else None
         attempt_ids = _held_attempt_ids(self.connection, item_ids, own_attempt_ids)
@@ -1420,7 +1438,7 @@ class SQLiteWorkTransaction:
             ).fetchone()
             if row is not None:
                 continuation_attempt_id = decode_row(row, AttemptIdRow).attempt_id
-        if (failure := _persist(self.connection, mutation)) is not None:
+        if (failure := _persist(self.connection, mutation, persist_change)) is not None:
             return self._select(failure)
         if (
             continuation_attempt_id is None

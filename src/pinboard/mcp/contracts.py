@@ -3065,6 +3065,20 @@ class ProposalDuplicate(_UnchangedResult, msgspec.Struct, frozen=True, forbid_un
     recovery: NonEmptyText
 
 
+class ProposalStale(_UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-proposal-result/v2"]
+    status: Literal["rejected"]
+    code: diagnostic_codes.ProposalStaleCode
+    message: NonEmptyText
+    state_changed: bool
+    effect: Literal["unchanged"]
+    retry: Literal["refresh-action"]
+    changed_surfaces: Empty
+    observed: Empty
+    mismatches: Empty
+    recovery: NonEmptyText
+
+
 class ArtifactReferenceResult(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     artifact_ref_id: PositiveInt
     kind: Literal["brief"]
@@ -3785,7 +3799,9 @@ type ArtifactVerificationResult = (
     ArtifactVerified | ArtifactVerificationInvalid | ArtifactReferenceMismatch | ArtifactBytesInvalid
 )
 type BriefLookupResult = ArtifactVerified | BriefLookupInvalid | BriefNotFound | ArtifactBytesInvalid
-type ProposalResult = ProposalCommitted | ProposalCommittedWithWarning | ProposalRejected | ProposalDuplicate
+type ProposalResult = (
+    ProposalCommitted | ProposalCommittedWithWarning | ProposalRejected | ProposalDuplicate | ProposalStale
+)
 
 type BriefPublicationResult = (
     BriefCommitted

@@ -206,6 +206,8 @@ type ProposalRejectedCode = Literal[
 
 type ProposalDuplicateCode = Literal["PROPOSAL_ALREADY_EXISTS"]
 
+type ProposalStaleCode = Literal["ITEM_DEFINITION_STALE"]
+
 type SelectedInputRejectedCode = Annotated[
     Literal["INPUT_FILE_UNREADABLE", "INPUT_FILE_DIGEST_MISMATCH"],
     CodeMeanings(

@@ -1026,21 +1026,36 @@ def _landed_cleanup_plan(
             target=landed.target,
             retry=RetryDisposition.DO_NOT_RETRY,
         )
+    presence_check = (
+        f"pinboard_item_status with operation:'integration', item_id:'{snapshot.work_item_id}', the confirmed target "
+        "and the same roots"
+    )
     match observation:
         case ReviewedDiffPresent():
             return LocalCleanupPlan(snapshot.branch, landed.retain_local_resources)
         case ReviewedDiffAbsent(target_revision=revision):
             message = f"The reviewed diff is absent from local target '{landed.target}' at {revision}."
+            continuation = (
+                f"Confirm that '{landed.target}' is the intended landing target. If the reviewed change has not landed "
+                f"there yet, leave completion pending until it does, then check it with {presence_check}. If a rebase, "
+                "merge or conflict resolution, including your own, changed the reviewed content before it landed, the recorded "
+                "review does not cover what landed: select return-for-correction for attempt "
+                f"'{snapshot.attempt_id}', rebind it to a replacement brief based on the target commit that content "
+                "builds on, resubmit that commit and commission its review through pinboard_review_job before "
+                "completing. Omitting landed does not record a review of the landed content."
+            )
         case TargetUnresolved():
             message = f"Cannot resolve local target '{landed.target}' to a commit."
+            continuation = (
+                "Establish the intended local target and confirm that it contains the reviewed diff. "
+                f"Use {presence_check}. Once it reports content-present for this candidate, discover completion "
+                "through pinboard_actions and supply the confirmed target."
+            )
         case _ as unreachable:
             assert_never(unreachable)
     return _landing_rejected(
         message,
-        "Establish the intended local target and confirm that it contains the reviewed diff. "
-        f"Use pinboard_item_status with operation:'integration', item_id:'{snapshot.work_item_id}', the confirmed "
-        "target and the same roots. Once it reports content-present for this candidate, discover completion "
-        "through pinboard_actions and supply the confirmed target.",
+        continuation,
         candidate=candidate,
         target=landed.target,
         retry=RetryDisposition.CORRECT_INPUT,

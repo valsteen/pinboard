@@ -31,10 +31,10 @@ from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, Lea
 from pinboard.domain.ledger import LedgerSnapshot
 
 # A compare-and-set write whose recorded state changed after the transaction read it.
-type StaleCommitCode = Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]
+type StaleWriteCode = Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]
 # Lifecycle persistence also refuses a stored definition that no longer validates or matches its revision.
 type CommitFailureCode = (
-    StaleCommitCode | Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID, DecisionFailureCode.ITEM_DEFINITION_STALE]
+    StaleWriteCode | Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID, DecisionFailureCode.ITEM_DEFINITION_STALE]
 )
 
 
@@ -90,11 +90,11 @@ class WorkTransaction(Protocol):
 
     def commit(self, mutation: StoredStateMutation) -> DecisionResult[CommittedEffect, CommitFailureCode]: ...
 
-    def commit_proposal(self, mutation: ProposalCreationMutation) -> DecisionResult[CommittedEffect, StaleCommitCode]:
+    def commit_proposal(self, mutation: ProposalCreationMutation) -> DecisionResult[CommittedEffect, StaleWriteCode]:
         """Commit one proposal creation, whose only expected refusal is a stale compare-and-set write."""
         ...
 
-    def commit_order(self, mutation: OrderMutation) -> DecisionResult[CommittedEffect, StaleCommitCode]:
+    def commit_order(self, mutation: OrderMutation) -> DecisionResult[CommittedEffect, StaleWriteCode]:
         """Commit one live-order permutation, whose only expected refusal is a stale compare-and-set write."""
         ...
 

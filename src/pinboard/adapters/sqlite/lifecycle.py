@@ -18,7 +18,6 @@ import msgspec
 from pinboard.adapters.sqlite.amendments import read_all_amendments, read_amendment_facts
 from pinboard.adapters.sqlite.artifacts import read_artifact_references_by_ids
 from pinboard.adapters.sqlite.database import (
-    StaleWriteCode,
     decode_row,
     require_one_changed_row,
     select_by_ids,
@@ -28,6 +27,7 @@ from pinboard.adapters.sqlite.dependencies import DependencyRow, DependencyTarge
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import AttemptIdRow
 from pinboard.application import queries, query_models, released_receipt_compatibility, stored_state, unblockers
+from pinboard.application.ports import StaleWriteCode
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.history import (

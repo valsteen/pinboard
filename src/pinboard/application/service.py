@@ -37,7 +37,7 @@ from pinboard.application.mutations import (
     project_review_submission_mutation,
     project_transition_mutation,
 )
-from pinboard.application.ports import StaleCommitCode, WorkStore, WorkTransaction
+from pinboard.application.ports import StaleWriteCode, WorkStore, WorkTransaction
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.authority_decisions import (
     decide_attempt_authority,
@@ -1046,7 +1046,7 @@ def reorder(
     actor_task_id: TaskId,
     actor_host_id: HostId,
     now: datetime,
-) -> DecisionResult[CommittedEffect, OrderDecisionCode | StaleCommitCode]:
+) -> DecisionResult[CommittedEffect, OrderDecisionCode | StaleWriteCode]:
     """Compare the complete live sequence under the write lock, then commit its permutation."""
     with store.write() as transaction:
         change = decide_order(transaction.read_live_order(), expected, requested)

@@ -94,12 +94,13 @@ from pinboard.application.mutation_models import (
     TransitionMutation,
 )
 from pinboard.application.mutations import stored_transition_receipt
-from pinboard.application.ports import ArtifactReferenceAcceptance
+from pinboard.application.ports import ArtifactReferenceAcceptance, CommitFailureCode
 from pinboard.domain import consolidation, decision_models, work_models
 from pinboard.domain import initiatives as initiative_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, WorkItemId
+from pinboard.domain.ordering import OrderChange
 from pinboard.domain.proposal_models import ProposalCreationDecision
 
 
@@ -381,7 +382,9 @@ def _persist_definition_revision(
     facts: _PersistenceFacts,
     decision: DefinitionRevisionDecision,
     project_revision: int,
-) -> DecisionFailure | None:
+) -> (
+    DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ITEM_DEFINITION_STALE]] | None
+):
     stored = stored_state.ItemDefinitionRevision(
         decision.work_item_id,
         decision.revision,
@@ -410,7 +413,7 @@ def _persist_closure(
     change: decision_models.WorkItemClosureChange,
     revision: int,
     now: datetime,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
     if (
         failure := set_item_state(
             connection,
@@ -451,7 +454,7 @@ def _persist_amendment_lifecycle(
     change: decision_models.AmendmentChange,
     revision: int,
     now: datetime,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
     """Advance the amended attempt's revision; an attempt in review returns to active with its candidate cleared."""
 
     attempt = facts.attempt(change.attempt)
@@ -508,12 +511,14 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
     connection: sqlite3.Connection,
     facts: _PersistenceFacts,
     mutation: TransitionMutation,
-) -> DecisionFailure | None:
+) -> DecisionFailure[CommitFailureCode] | None:
     change = mutation.decision.change
     revision = mutation.receipt.project_revision
     now = mutation.decision.receipt.decided_at
 
-    def advance_item_revision(item: WorkItemId) -> DecisionFailure | None:
+    def advance_item_revision(
+        item: WorkItemId,
+    ) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
         current = facts.work_item(item)
         return require_one_changed_row(
             connection.execute(
@@ -876,7 +881,7 @@ def _persist_checkpoint_acceptance(
     connection: sqlite3.Connection,
     facts: _PersistenceFacts,
     mutation: CheckpointAcceptanceMutation,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
     change = mutation.decision.change
     artifacts = mutation.checkpoint_artifacts
     revision = mutation.receipt.project_revision
@@ -954,7 +959,7 @@ def _persist_completion_acceptance(
     connection: sqlite3.Connection,
     facts: _PersistenceFacts,
     mutation: CompletionAcceptanceMutation,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
     change = mutation.decision.change
     artifacts = mutation.completion_artifacts
     revision = mutation.receipt.project_revision
@@ -1005,11 +1010,39 @@ def _persist_completion_acceptance(
     return None
 
 
+def _persist_order(connection: sqlite3.Connection, change: OrderChange) -> DecisionFailure[StaleWriteCode] | None:
+    moved = change.changed_positions
+    # Move changed entries above the live range before assigning unique final positions.
+    for position, item in moved:
+        if (
+            failure := require_one_changed_row(
+                connection.execute(
+                    "UPDATE work_items SET queue_position = ? WHERE item_id = ? AND queue_position IS NOT NULL",
+                    (len(change.before) + position, item),
+                ),
+                "A reordered live item disappeared.",
+            )
+        ) is not None:
+            return failure
+    for position, item in moved:
+        if (
+            failure := require_one_changed_row(
+                connection.execute(
+                    "UPDATE work_items SET queue_position = ? WHERE item_id = ? AND queue_position = ?",
+                    (position, item, len(change.before) + position),
+                ),
+                "A reordered live item changed before final positioning.",
+            )
+        ) is not None:
+            return failure
+    return None
+
+
 def _persist_state_change(  # noqa: C901, PLR0912 - exhaustive closed mutation persistence
     connection: sqlite3.Connection,
     facts: _PersistenceFacts,
     mutation: StoredStateMutation,
-) -> DecisionFailure | None:
+) -> DecisionFailure[CommitFailureCode] | None:
     match mutation:
         case ConsolidationMutation(change=change):
             match change.campaign:
@@ -1078,31 +1111,7 @@ def _persist_state_change(  # noqa: C901, PLR0912 - exhaustive closed mutation p
                 mutation,
             )
         case OrderMutation(change=change):
-            moved = change.changed_positions
-            # Move changed entries above the live range before assigning unique final positions.
-            for position, item in moved:
-                if (
-                    failure := require_one_changed_row(
-                        connection.execute(
-                            "UPDATE work_items SET queue_position = ? WHERE item_id = ? AND queue_position IS NOT NULL",
-                            (len(change.before) + position, item),
-                        ),
-                        "A reordered live item disappeared.",
-                    )
-                ) is not None:
-                    return failure
-            for position, item in moved:
-                if (
-                    failure := require_one_changed_row(
-                        connection.execute(
-                            "UPDATE work_items SET queue_position = ? WHERE item_id = ? AND queue_position = ?",
-                            (position, item, len(change.before) + position),
-                        ),
-                        "A reordered live item changed before final positioning.",
-                    )
-                ) is not None:
-                    return failure
-            return None
+            return _persist_order(connection, change)
         case TransitionMutation():
             return _persist_transition(connection, facts, mutation)
         case ReviewSubmissionMutation():
@@ -1417,11 +1426,14 @@ class SQLiteWorkTransaction:
         ).fetchone()
         return 0 if row is None else decode_row(row, GenerationRow).generation_high_water
 
-    def commit(self, mutation: StoredStateMutation) -> DecisionResult[CommittedEffect]:
+    def commit(self, mutation: StoredStateMutation) -> DecisionResult[CommittedEffect, CommitFailureCode]:
         return self._commit(mutation, lambda facts: _persist_state_change(self.connection, facts, mutation))
 
     def commit_proposal(self, mutation: ProposalCreationMutation) -> DecisionResult[CommittedEffect, StaleWriteCode]:
         return self._commit(mutation, lambda _facts: create_proposal(self.connection, mutation))
+
+    def commit_order(self, mutation: OrderMutation) -> DecisionResult[CommittedEffect, StaleWriteCode]:
+        return self._commit(mutation, lambda _facts: _persist_order(self.connection, mutation.change))
 
     def _commit[Code: DecisionFailureCode](
         self,
@@ -1455,7 +1467,7 @@ def accept_artifact_reference(
     published: ArtifactRef,
     accepted_at: datetime,
     ownership: artifact_identity.Ownership | None,
-) -> DecisionResult[ArtifactReferenceAcceptance]:
+) -> DecisionResult[ArtifactReferenceAcceptance, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     """Accept and exactly reload one immutable artifact inside one write transaction."""
     with SQLiteWorkTransaction(database_path) as transaction:
         try:

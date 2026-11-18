@@ -2,9 +2,11 @@
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+from typing import Literal
 
 from pinboard.domain import decision_models, decisions, history, initiatives, proposal_models, work_models
 from pinboard.domain.definition_decisions import (
+    DefinitionRevisionCode,
     DefinitionRevisionDecision,
     decide_definition_revision,
     introduces_dependency_cycle,
@@ -12,6 +14,19 @@ from pinboard.domain.definition_decisions import (
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import CheckpointId, ProposalId, TaskId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
+
+type ConsolidationDecisionCode = Literal[
+    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
+    DecisionFailureCode.ITEM_ALREADY_EXISTS,
+    DecisionFailureCode.ITEM_DEFINITION_INVALID,
+    DecisionFailureCode.ITEM_DEFINITION_STALE,
+    DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID,
+    DecisionFailureCode.ITEM_DEPENDENCY_CYCLE,
+    DecisionFailureCode.ITEM_NOT_FOUND,
+    DecisionFailureCode.LIVE_DEPENDENTS,
+    DecisionFailureCode.REPLACEMENT_INVALID,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +76,18 @@ def _merge_waits(values: tuple[work_models.Dependency, ...]) -> tuple[work_model
 type SelectedSource = tuple[Source, work_models.WorkItem, work_models.DefinitionAnchor]
 
 
-def _select_sources(snapshot: LedgerSnapshot, plan: Plan) -> DecisionResult[tuple[SelectedSource, ...]]:
+def _select_sources(
+    snapshot: LedgerSnapshot, plan: Plan
+) -> DecisionResult[
+    tuple[SelectedSource, ...],
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.ITEM_ALREADY_EXISTS,
+        DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID,
+        DecisionFailureCode.ITEM_DEPENDENCY_CYCLE,
+        DecisionFailureCode.ITEM_NOT_FOUND,
+    ],
+]:
     source_ids = frozenset(value.item_id for value in plan.sources)
     cohort = source_ids | {plan.campaign_id}
     owner = snapshot.work_item(plan.campaign_id)
@@ -166,7 +192,9 @@ def _carry_definition(
 
 def _retarget_definitions(
     snapshot: LedgerSnapshot, plan: Plan, campaign_definition: work_models.WorkItemDefinition
-) -> DecisionResult[dict[WorkItemId, work_models.WorkItemDefinition]]:
+) -> DecisionResult[
+    dict[WorkItemId, work_models.WorkItemDefinition], Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID]
+]:
     source_ids = {value.item_id for value in plan.sources}
     cohort = source_ids | {plan.campaign_id}
     targets = {value.consumer: value for value in plan.checkpoint_targets}
@@ -211,7 +239,7 @@ def _revision_changes(
     definitions: dict[WorkItemId, work_models.WorkItemDefinition],
     actor: TaskId,
     now: datetime,
-) -> DecisionResult[tuple[DefinitionRevisionDecision, ...]]:
+) -> DecisionResult[tuple[DefinitionRevisionDecision, ...], DefinitionRevisionCode]:
     revisions = []
     for item_id, definition in definitions.items():
         if item_id == plan.campaign_id and plan.create:
@@ -284,7 +312,12 @@ def _source_endings(
     actor: TaskId,
     now: datetime,
 ) -> DecisionResult[
-    tuple[tuple[work_models.PlannedReplacement, ...], tuple[decision_models.WorkItemClosureChange, ...]]
+    tuple[tuple[work_models.PlannedReplacement, ...], tuple[decision_models.WorkItemClosureChange, ...]],
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.LIVE_DEPENDENTS,
+        DecisionFailureCode.REPLACEMENT_INVALID,
+    ],
 ]:
     replacements = []
     closures = []
@@ -330,7 +363,7 @@ def decide(
     actor: TaskId,
     now: datetime,
     membership_effect: initiatives.MembershipEffect,
-) -> DecisionResult[Change]:
+) -> DecisionResult[Change, ConsolidationDecisionCode]:
     selected = _select_sources(snapshot, plan)
     if isinstance(selected, DecisionFailure):
         return selected

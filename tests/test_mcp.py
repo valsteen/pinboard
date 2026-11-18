@@ -53,6 +53,7 @@ from pinboard.application.artifact_publication import (
     ArtifactAcceptanceFailure,
     ArtifactPublication,
     ArtifactWriteFailure,
+    PublishedArtifactRejected,
 )
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.mutation_models import CommittedEffect
@@ -614,7 +615,7 @@ class McpTransportTest(unittest.TestCase):
                 task_id: TaskId,
                 host_id: HostId,
                 now: datetime,
-            ) -> CommittedEffect | DecisionFailure:
+            ) -> CommittedEffect | DecisionFailure[DecisionFailureCode]:
                 result = original(selected_store, expected, replacement, task_id, host_id, now)
                 entered.cancel()
                 return result
@@ -662,7 +663,7 @@ class McpTransportTest(unittest.TestCase):
             prior_overview = fresh.read_overview_page(0, 25)
             with patch(
                 "pinboard.adapters.files.views.atomic_replace",
-                side_effect=FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "injected view failure"),
+                side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "injected view failure"),
             ):
                 warning_view = mcp_reads._order({"request": request}, mcp_execution.CancellationToken()).record
             assert isinstance(warning_view, contracts.OrderCommitted)
@@ -684,7 +685,7 @@ class McpTransportTest(unittest.TestCase):
             initialize_database(roots, SQLITE_NOW)
             with patch(
                 "pinboard.adapters.files.views.atomic_replace",
-                side_effect=FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "injected view failure"),
+                side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "injected view failure"),
             ):
                 view = mcp_reads._order(
                     {
@@ -900,7 +901,7 @@ class McpTransportTest(unittest.TestCase):
 
         def controlled_decision(
             observed: tuple[WorkItemId, ...], expected: tuple[WorkItemId, ...], requested: tuple[WorkItemId, ...]
-        ) -> DecisionResult[ordering.OrderChange]:
+        ) -> DecisionResult[ordering.OrderChange, DecisionFailureCode]:
             if requested == current[::-1]:
                 locked.set()
                 if not contender_started.wait(2):
@@ -1337,6 +1338,7 @@ class McpTransportTest(unittest.TestCase):
             assert not isinstance(accepted_corrected, DecisionFailure)
             assert not isinstance(accepted_corrected, ArtifactAcceptanceFailure)
             assert not isinstance(accepted_corrected, ArtifactWriteFailure)
+            assert not isinstance(accepted_corrected, PublishedArtifactRejected)
             assert not isinstance(accepted_corrected, work_brief_models.WorkBriefFailure)
             corrected_status = await call(
                 mcp_server.BRIEF_REVIEW_TOOL,
@@ -1473,6 +1475,7 @@ class McpTransportTest(unittest.TestCase):
         assert not isinstance(published_local, DecisionFailure)
         assert not isinstance(published_local, ArtifactAcceptanceFailure)
         assert not isinstance(published_local, ArtifactWriteFailure)
+        assert not isinstance(published_local, PublishedArtifactRejected)
         assert not isinstance(published_local, work_brief_models.WorkBriefFailure)
         for operation in ("status", "publish"):
             request: dict[str, contracts.JsonValue] = {
@@ -1596,6 +1599,7 @@ class McpTransportTest(unittest.TestCase):
         assert not isinstance(published, DecisionFailure)
         assert not isinstance(published, ArtifactAcceptanceFailure)
         assert not isinstance(published, ArtifactWriteFailure)
+        assert not isinstance(published, PublishedArtifactRejected)
         assert not isinstance(published, work_brief_models.WorkBriefFailure)
         reference = published.reference
         review = msgspec.json.decode(

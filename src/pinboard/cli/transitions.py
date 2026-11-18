@@ -13,7 +13,7 @@ from pinboard.application import actions, ports, query_models
 from pinboard.cli import cli_commands, work_views
 from pinboard.cli.cli_output import write_json
 from pinboard.cli.errors import CommandFailure, CommandResult
-from pinboard.domain import decision_models
+from pinboard.domain import decision_models, routing
 from pinboard.domain.errors import DecisionFailure, EffectDisposition, FailureAction, FailureDetails, RetryDisposition
 from pinboard.domain.identifiers import ActionId, WorkItemId
 
@@ -90,6 +90,8 @@ def close(
         generation=None,
         action_id=ActionId(f"close:{command.item_id}"),
     )
+    if isinstance(selected, routing.RouteClassificationRequired):
+        selected = selected.failure()
     if isinstance(selected, DecisionFailure):
         return _with_close_alternatives(
             store,

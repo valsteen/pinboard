@@ -7,7 +7,7 @@ The integration content check only reads the ledger, accepted artifacts and Git.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -63,7 +63,7 @@ type ItemIntegrationObservation = (
     | IntegrationEvidenceInvalid
     | IntegrationGitUnavailable
     | query_models.DamagedTransitionReceipt
-    | DecisionFailure
+    | DecisionFailure[Literal[DecisionFailureCode.ITEM_NOT_FOUND]]
 )
 
 
@@ -72,7 +72,9 @@ def read_candidate_evidence(
     store: ports.WorkStore,
     attempt_id: AttemptId,
     candidate: str | None,
-) -> DecisionResult[candidate_snapshots.CandidateSnapshotEvidence]:
+) -> DecisionResult[
+    candidate_snapshots.CandidateSnapshotEvidence, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]
+]:
     context = store.read_candidate_snapshot_context(attempt_id)
     if context is None:
         return DecisionFailure(
@@ -87,7 +89,9 @@ def read_candidate_evidence_from_context(
     work_root: Path,
     context: query_models.CandidateSnapshotContextFacts,
     candidate: str | None,
-) -> DecisionResult[candidate_snapshots.CandidateSnapshotEvidence]:
+) -> DecisionResult[
+    candidate_snapshots.CandidateSnapshotEvidence, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]
+]:
     try:
         encoded = read_reference(work_root, context.reference)
         return candidate_snapshots.verify_candidate_snapshot_context(context, candidate, encoded)
@@ -98,7 +102,7 @@ def read_candidate_evidence_from_context(
 def observe_candidate_lineage(
     source_checkout: Path,
     evidence: candidate_snapshots.CandidateSnapshotEvidence,
-) -> DecisionResult[query_models.CandidateLineage]:
+) -> DecisionResult[query_models.CandidateLineage, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     snapshot = evidence.snapshot
     excluded = candidate_snapshots.excluded_untracked_paths(snapshot)
     try:
@@ -151,7 +155,7 @@ def restore_candidate(
     store: ports.WorkStore,
     attempt_id: AttemptId,
     candidate: str,
-) -> DecisionResult[root.CandidateRestoreSuccess]:
+) -> DecisionResult[root.CandidateRestoreSuccess, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     evidence = read_candidate_evidence(work_root, store, attempt_id, candidate)
     if isinstance(evidence, DecisionFailure):
         return evidence
@@ -238,7 +242,7 @@ def _checkpoint_snapshot(
         attempt_id=str(selected.attempt_id),
         item_id=str(selected.work_item_id),
     )
-    if isinstance(package, work_brief_models.WorkBriefFailure):
+    if isinstance(package, work_brief_models.ReviewEvidenceFailure):
         return IntegrationEvidenceInvalid(selected.attempt_id, package_reference, package.message)
     identity = package.candidate_snapshot
     candidate_reference = store.read_artifact_reference(

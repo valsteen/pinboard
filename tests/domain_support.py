@@ -6,7 +6,7 @@ from typing import Any  # noqa: TID251 - fixture corruption intentionally crosse
 from pinboard.adapters.transition_input import ParsedTransitionInput, TransitionInputFailure
 from pinboard.application import action_models
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionResult
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import (
     AttemptId,
     CandidateId,
@@ -36,7 +36,7 @@ def replace(instance: Any, **changes: Any) -> Any:  # noqa: ANN401
     return dataclass_replace(instance, **changes)
 
 
-def expect_success[T](value: DecisionResult[T]) -> T:
+def expect_success[T, Code: DecisionFailureCode](value: DecisionResult[T, Code]) -> T:
     if isinstance(value, DecisionFailure):
         raise AssertionError(f"Expected success, received {value.code.value}: {value.message}")
     return value

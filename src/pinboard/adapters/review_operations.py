@@ -37,12 +37,14 @@ from pinboard.application import (
 from pinboard.application.artifact_publication import (
     ArtifactAcceptanceFailure,
     ArtifactWriteFailure,
+    PublicationSurface,
+    PublishedArtifactRejected,
+    accepted_publication_surfaces,
     publish_accepted_artifact,
 )
 from pinboard.application.artifacts import BriefArtifactRef, NewArtifact
 from pinboard.domain import history, work_models
 from pinboard.domain.errors import (
-    ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
     DecisionResult,
@@ -164,7 +166,7 @@ class PreparedReviewJob:
 class RecordedCandidateReview:
     reference: stored_state.ArtifactReference
     review: work_brief_models.CandidateReview
-    changed_surfaces: tuple[ChangedSurface, ...]
+    changed_surfaces: tuple[PublicationSurface, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,11 +180,13 @@ class ReviewPromptPublicationFailure:
     cause: ArtifactError | ports.WorkStoreError
 
 
-def _review_job_failure(message: str) -> DecisionFailure:
+def _review_job_failure(message: str) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, message, None)
 
 
-def _read_required_evidence(path: Path, label: str) -> DecisionResult[tuple[str, str]]:
+def _read_required_evidence(
+    path: Path, label: str
+) -> DecisionResult[tuple[str, str], Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     try:
         evidence_bytes = path.read_bytes()
     except OSError as error:
@@ -220,7 +224,7 @@ def _portable(
 
 def _reviewer_prompt_not_commissioned(
     attempt_id: AttemptId, candidate_revision: str, result_sha256: str, reviewer_prompt_sha256: str
-) -> DecisionFailure:
+) -> DecisionFailure[Literal[DecisionFailureCode.REVIEWER_PROMPT_NOT_COMMISSIONED]]:
     return DecisionFailure(
         DecisionFailureCode.REVIEWER_PROMPT_NOT_COMMISSIONED,
         "No reviewer prompt that the review job published for this exact candidate, accepted brief and result.md "
@@ -274,7 +278,14 @@ def _candidate_review_record(
     work_root: Path,
     store: ports.WorkStore,
     claim: ReadyReviewClaim,
-) -> DecisionResult[work_brief_models.CandidateReview]:
+) -> DecisionResult[
+    work_brief_models.CandidateReview,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.REVIEWER_PROMPT_NOT_COMMISSIONED,
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+    ],
+]:
     attempt_id = claim.attempt_id
     candidate_revision = claim.candidate_revision
     result_sha256 = claim.result_sha256
@@ -357,7 +368,14 @@ def record_ready_candidate_review(
     store: ports.WorkStore,
     artifacts: dispatch_models.DispatchArtifactPort,
     claim: ReadyReviewClaim,
-) -> DecisionResult[RecordedCandidateReview | ArtifactAcceptanceFailure | ArtifactWriteFailure]:
+) -> DecisionResult[
+    RecordedCandidateReview | ArtifactAcceptanceFailure | ArtifactWriteFailure | PublishedArtifactRejected,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.REVIEWER_PROMPT_NOT_COMMISSIONED,
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+    ],
+]:
     review = _candidate_review_record(work_root, store, claim)
     if isinstance(review, DecisionFailure):
         return review
@@ -387,13 +405,11 @@ def record_ready_candidate_review(
         datetime.now(UTC),
         artifact_identity.AttemptMembership(AttemptId(review.attempt_id), artifact_identity.AttemptRole.SOURCE),
     )
-    if isinstance(publication, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+    if isinstance(
+        publication, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure, PublishedArtifactRejected)
+    ):
         return publication
-    surfaces = (
-        *((ChangedSurface.IMMUTABLE_ARTIFACT,) if publication.artifact_created else ()),
-        *((ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE, ChangedSurface.LEDGER) if publication.ledger_changed else ()),
-    )
-    return RecordedCandidateReview(publication.reference, review, surfaces)
+    return RecordedCandidateReview(publication.reference, review, accepted_publication_surfaces(publication))
 
 
 @dataclass(frozen=True, slots=True)
@@ -608,7 +624,10 @@ def read_board_history(
 
 def observe_amendment_review(
     store: ports.WorkStore, artifacts: ArtifactRepository, attempt_id: AttemptId
-) -> DecisionResult[tuple[work_models.ClearedSubmission | None, work_models.ReviewBase | None]]:
+) -> DecisionResult[
+    tuple[work_models.ClearedSubmission | None, work_models.ReviewBase | None],
+    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE],
+]:
     """Observe the submission an amendment would clear and the review base it may carry forward.
 
     A review-state attempt's submission is its protected candidate and accepted snapshot, with the ready candidate
@@ -665,7 +684,7 @@ def _candidate_review_required(
     review_sha256: str,
     recorded_reviewer_task_id: str | None,
     mismatches: tuple[FailureMismatch, ...],
-) -> DecisionFailure:
+) -> DecisionFailure[Literal[DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED]]:
     return DecisionFailure(
         DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED,
         message,
@@ -701,7 +720,7 @@ def commissioned_review_snapshot(
     result_sha256: str,
     review_sha256: str,
     reviewer_task_id: str,
-) -> DecisionResult[query_models.CandidateSnapshotContextFacts]:
+) -> DecisionResult[query_models.CandidateSnapshotContextFacts, Literal[DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED]]:
     """Select the protected snapshot reviewed by this reviewer under a Pinboard-published prompt."""
 
     candidate = attempt.candidate_revision
@@ -763,7 +782,7 @@ def commissioned_review_snapshot(
 def _candidate_reconstruction(
     package: work_brief_models.CheckpointReviewPackageV3,
     candidate_bytes: bytes,
-) -> DecisionResult[str]:
+) -> DecisionResult[str, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     snapshot = candidate_snapshots.decode_candidate_snapshot(candidate_bytes)
     if (snapshot.attempt_id, snapshot.item_id, snapshot.candidate) != (
         package.attempt_id,
@@ -783,7 +802,7 @@ def _select_prior_checkpoint_package(
     attempt_id: AttemptId,
     attempt: query_models.NonterminalAttemptContextFacts,
     selection: ReviewRoundSelection,
-) -> DecisionResult[tuple[PriorCheckpointPackageSelection, str]]:
+) -> DecisionResult[tuple[PriorCheckpointPackageSelection, str], Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     match selection:
         case PackageReviewSelection() | PackageCorrectionReviewSelection():
             pass
@@ -805,7 +824,7 @@ def _select_prior_checkpoint_package(
         attempt_id=str(attempt_id),
         item_id=str(attempt.work_item_id),
     )
-    if isinstance(package, work_brief_models.WorkBriefFailure):
+    if isinstance(package, work_brief_models.ReviewEvidenceFailure):
         return _review_job_failure(package.message)
     candidate_reference = facts.checkpoint_candidate_reference
     if candidate_reference is None:
@@ -884,7 +903,9 @@ def _amendments_prompt(current: tuple[stored_state.StoredAttemptAmendment, ...])
     )
 
 
-def _delta_unavailable(attempt: query_models.NonterminalAttemptContextFacts) -> DecisionFailure:
+def _delta_unavailable(
+    attempt: query_models.NonterminalAttemptContextFacts,
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
         "No amendment-only delta review is available for this candidate. It needs a ready review captured by an "
@@ -917,7 +938,7 @@ def _select_delta_round(
     store: ports.WorkStore,
     artifacts: dispatch_models.DispatchArtifactPort,
     attempt: query_models.NonterminalAttemptContextFacts,
-) -> DecisionResult[tuple[ReviewRound, str]]:
+) -> DecisionResult[tuple[ReviewRound, str], Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     current = attempt.amendments.current
     base = amendments.delta_review_base(current, attempt.amendments.later_review_kinds)
     if base is None:
@@ -992,7 +1013,7 @@ def _select_review_round(
     facts: query_models.ReviewJobContextFacts,
     attempt: query_models.NonterminalAttemptContextFacts,
     selection: ReviewRoundSelection,
-) -> DecisionResult[tuple[ReviewRound, str]]:
+) -> DecisionResult[tuple[ReviewRound, str], Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     match selection:
         case InitialReviewSelection() | PackageReviewSelection():
             return InitialReviewRound(), (
@@ -1010,7 +1031,7 @@ def _select_correction_round(
     work_root: Path,
     facts: query_models.ReviewJobContextFacts,
     attempt_id: AttemptId,
-) -> DecisionResult[tuple[ReviewRound, str]]:
+) -> DecisionResult[tuple[ReviewRound, str], Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     correction_receipt = facts.correction_receipt
     if correction_receipt is None:
         return _review_job_failure("Selected correction history does not exist.")
@@ -1059,7 +1080,16 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
     candidate_revision: str,
     selection: ReviewRoundSelection,
 ) -> DecisionResult[
-    PreparedReviewJob | ArtifactAcceptanceFailure | ArtifactWriteFailure | ReviewPromptPublicationFailure
+    PreparedReviewJob
+    | ArtifactAcceptanceFailure
+    | ArtifactWriteFailure
+    | PublishedArtifactRejected
+    | ReviewPromptPublicationFailure,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.ITEM_STATUS_INCONSISTENT,
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+    ],
 ]:
     unavailable = _review_job_failure("Review job requires the current review attempt and exact protected candidate.")
     result_path = work_root / "attempts" / attempt_id / "result.md"
@@ -1195,7 +1225,9 @@ def prepare_review_job(  # noqa: C901, PLR0912 - one ordered candidate-bound rev
         ):
             raise
         return ReviewPromptPublicationFailure(error)
-    if isinstance(publication, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+    if isinstance(
+        publication, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure, PublishedArtifactRejected)
+    ):
         return publication
     return PreparedReviewJob(
         candidate, brief, reference, result_path, digest, prior_package, review_round, publication, return_contract

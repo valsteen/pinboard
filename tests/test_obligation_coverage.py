@@ -8,7 +8,7 @@ import msgspec
 from pinboard.adapters.sqlite import lifecycle
 from pinboard.adapters.sqlite import obligation_coverage as coverage_storage
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import project_export, query_models, stored_state
+from pinboard.application import obligation_coverage, project_export, query_models, stored_state
 from pinboard.domain import history, work_models
 from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import server as mcp_server
@@ -419,6 +419,59 @@ class ObligationCoverageTest(CheckpointPackageSupport):
                     revised = self.revise(fixture, "source-work", values)
                     self.assertEqual("rejected", revised["status"], revised)
                     self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def test_focused_close_reports_unreportable_replacement_coverage_without_retry(self) -> None:
+        with native_tools() as native:
+            fixture = replace(
+                self.checkpoint_fixture(local=True),
+                call_native_tool=native.call_native_tool,
+                call_advertised_tool=native.call_advertised_tool,
+            )
+            self.assertEqual("committed", self.create(fixture, "source-work", [self.own("first")], None)["status"])
+            carries = [self.carried("owner", "source-work", 1, "first")]
+            self.assertEqual("committed", self.create(fixture, "replacement-work", carries, "source-work")["status"])
+            before = fixture.store.validated_snapshot()
+            read = SQLiteWorkStore.read_obligation_coverage
+
+            def without_replacement_definition(
+                store: SQLiteWorkStore, source: WorkItemId, replacement: WorkItemId | None
+            ) -> obligation_coverage.CoverageFacts:
+                return replace(read(store, source, replacement), replacement=None)
+
+            # The planned replacement relation is current, but its retained definition is absent from the read.
+            with patch.object(SQLiteWorkStore, "read_obligation_coverage", without_replacement_definition):
+                result = fixture.call_advertised_tool(
+                    mcp_server.ACTIONS_TOOL,
+                    {
+                        "request": {
+                            **self.roots(fixture),
+                            "role": "project",
+                            "action_id": {"kind": "close", "subject": "source-work"},
+                        }
+                    },
+                )
+
+            self.assertEqual(
+                {
+                    "schema": "pinboard-mcp-actions-result/v1",
+                    "status": "rejected",
+                    "code": "ITEM_NOT_FOUND",
+                    "message": "Close coverage cannot be reported because coverage replacement 'replacement-work' "
+                    "has no retained definition. Report this stored state to the human; repeating this action "
+                    "cannot succeed until it changes.",
+                    "state_changed": False,
+                    "effect": "unchanged",
+                    "retry": "do-not-retry",
+                    "changed_surfaces": [],
+                    "observed": [
+                        {"field": "source_item", "value": "source-work"},
+                        {"field": "replacement_item", "value": "replacement-work"},
+                    ],
+                    "mismatches": [],
+                },
+                result,
+            )
+            self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_older_source_origin_is_provenance_and_never_current_coverage(self) -> None:
         with native_tools() as native:

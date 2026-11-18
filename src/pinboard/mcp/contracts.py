@@ -1635,6 +1635,18 @@ class ActionUnavailable(_UnchangedReadRejection, frozen=True):
     retry: Literal["refresh-action"]
 
 
+class ActionEvidenceDamaged(_UnchangedReadRejection, frozen=True):
+    schema: Literal["pinboard-mcp-actions-result/v1"]
+    code: diagnostic_codes.ActionUnavailableCode
+    retry: Literal["do-not-retry"]
+
+
+class ActionCoverageUnavailable(_UnchangedReadRejection, frozen=True):
+    schema: Literal["pinboard-mcp-actions-result/v1"]
+    code: diagnostic_codes.ActionCoverageUnavailableCode
+    retry: Literal["do-not-retry"]
+
+
 class ActionRouteClassificationRequired(_ReadEvidenceUnavailable, frozen=True):
     schema: Literal["pinboard-mcp-actions-result/v1"]
     code: Literal["ROUTE_CLASSIFICATION_REQUIRED"]
@@ -3783,6 +3795,8 @@ type ActionsResult = (
     | CloseActionsSuccess
     | ActionsInvalid
     | ActionUnavailable
+    | ActionEvidenceDamaged
+    | ActionCoverageUnavailable
     | ActionRouteClassificationRequired
     | AttemptLeaseRequired
 )

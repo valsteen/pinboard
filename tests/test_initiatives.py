@@ -525,7 +525,7 @@ class InitiativeTest(CheckpointPackageSupport):
         fixture = self.checkpoint_fixture(local=True)
         with patch(
             "pinboard.adapters.files.views.atomic_replace",
-            side_effect=FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "roadmap.html unavailable"),
+            side_effect=FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "roadmap.html unavailable"),
         ):
             result = self.mutate(
                 fixture,

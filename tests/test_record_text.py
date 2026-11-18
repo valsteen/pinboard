@@ -447,4 +447,4 @@ class RecordTextProjectionTest(RecordTextSupport):
                     attempt_id="work-a-1",
                     item_id="work-a",
                 )
-                self.assertEqual(accepted, not isinstance(validated, work_brief_models.WorkBriefFailure))
+                self.assertEqual(accepted, not isinstance(validated, work_brief_models.ReviewEvidenceFailure))

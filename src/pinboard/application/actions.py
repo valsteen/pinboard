@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import assert_never
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -17,6 +17,7 @@ from pinboard.domain.errors import (
     EffectDisposition,
     FailureDetails,
     FailureFact,
+    FailureMismatch,
     RetryDisposition,
 )
 from pinboard.domain.identifiers import ActionId, AttemptId, LeaseId, ProposalId, WorkItemId
@@ -81,7 +82,10 @@ def discover_current_actions(
     *,
     lease_id: LeaseId | None = None,
     generation: int | None = None,
-) -> DecisionResult[tuple[decision_models.Action, ...]]:
+) -> DecisionResult[
+    tuple[decision_models.Action, ...],
+    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ATTEMPT_LEASE_REQUIRED],
+]:
     """Discover actions from application-owned current facts."""
 
     selected_generation = generation if generation is not None else 0
@@ -160,7 +164,13 @@ def select_current_actions(
     lease_id: LeaseId | None,
     generation: int | None,
     action_id: ActionId | None,
-) -> DecisionResult[ActionSelection]:
+) -> (
+    DecisionResult[
+        ActionSelection,
+        Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ATTEMPT_LEASE_REQUIRED],
+    ]
+    | routing.RouteClassificationRequired
+):
     """Read the minimum current facts and select an optional exact legal action."""
 
     if role == decision_models.Role.OBSERVER or (
@@ -195,8 +205,8 @@ def select_current_actions(
         )
     selected = tuple(action for action in discovered if decision_models.action_id(action) == action_id)
     if selected:
-        if (failure := routing.validate_action_route(snapshot, selected[0])) is not None:
-            return failure
+        if (refused := routing.validate_action_route(snapshot, selected[0])) is not None:
+            return refused
         return ActionSelection(selected, snapshot)
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
@@ -225,30 +235,57 @@ def completion_candidate_recovery(
     return query_models.CompletionCandidateRequired(attempt.attempt_id)
 
 
+@dataclass(frozen=True, slots=True)
+class AcceptedEvidenceDamaged:
+    """Accepted evidence a focused action projects is damaged, so no unchanged retry can succeed."""
+
+    message: str
+    observed: tuple[FailureFact, ...]
+    mismatches: tuple[FailureMismatch, ...]
+
+
+def _completion_context_changed(
+    attempt_id: AttemptId, message: str
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
+    return DecisionFailure(
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        message,
+        FailureDetails(
+            observed=(FailureFact("attempt_id", str(attempt_id)),),
+            mismatches=(),
+            retry=RetryDisposition.REFRESH_ACTION,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
 def completion_input_contract(
     reader: ports.WorkStore,
     artifacts: ArtifactReader,
     action: decision_models.CompleteAction,
     semantics: action_models.ActionSemanticsView,
 ) -> (
-    DecisionResult[action_models.CompletionInputContractView]
+    DecisionResult[action_models.CompletionInputContractView, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]
+    | AcceptedEvidenceDamaged
     | query_models.CompletionCandidateRequired
     | query_models.CompletionRecoveryRequired
 ):
-    """Read only this attempt's final completion evidence and exact payload leaf."""
+    """Read only this attempt's final completion evidence and exact payload leaf.
+
+    A completion context that changed since discovery is unavailable until it is read again; a missing accepted
+    package reference is damaged stored evidence that no fresh read repairs.
+    """
     completion = reader.read_completion_context(action.capability.subject)
     if completion is None:
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "Completion attempt disappeared; reinspect the focused action.",
-            None,
+        return _completion_context_changed(
+            action.capability.subject, "Completion attempt disappeared; reinspect the focused action."
         )
     attempt = completion.attempt
     if not isinstance(attempt, query_models.NonterminalAttemptContextFacts):
-        return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE,
-            "Completion requires a current nonterminal attempt.",
-            None,
+        return _completion_context_changed(
+            action.capability.subject, "Completion requires a current nonterminal attempt."
         )
     brief = work_briefs.decode_canonical_accepted_brief(artifacts.read(attempt.brief_reference))
     if isinstance(brief, work_brief_models.WorkBriefFailure):
@@ -278,8 +315,14 @@ def completion_input_contract(
     for checkpoint in completion.checkpoints:
         reference = checkpoint.package_reference
         if reference is None:
-            return DecisionFailure(
-                DecisionFailureCode.ACTION_NOT_AVAILABLE, "An accepted checkpoint package reference is missing.", None
+            return AcceptedEvidenceDamaged(
+                "An accepted checkpoint package reference is missing. Report this accepted evidence defect to the "
+                "human; do not retry unchanged or reconstruct the package.",
+                (
+                    FailureFact("attempt_id", str(attempt.attempt_id)),
+                    FailureFact("checkpoint_history_id", int(checkpoint.receipt.history_id)),
+                ),
+                (FailureMismatch("checkpoint_package_reference", "accepted package reference", None),),
             )
         packages.append(
             action_models.CompletionPackageView(

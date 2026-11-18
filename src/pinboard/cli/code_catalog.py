@@ -7,7 +7,7 @@ import msgspec
 
 from pinboard import __version__, diagnostic_codes
 from pinboard.adapters.dispatch_operations import DispatchErrorCode
-from pinboard.adapters.files.errors import ArtifactErrorCode, FileIOErrorCode, RootErrorCode
+from pinboard.adapters.files.errors import ArtifactErrorCode, FileIOErrorCode, RootErrorCode, ViewRefreshErrorCode
 from pinboard.adapters.sqlite.errors import StorageErrorCode
 from pinboard.application import query_models, service, work_brief_models
 from pinboard.application.brief_source_models import BriefSourceErrorCode
@@ -33,11 +33,13 @@ _FAILURE_ENUMS: tuple[type[DescribedCode], ...] = (
     initiatives.RejectionCode,
     BriefSourceErrorCode,
     work_brief_models.WorkBriefErrorCode,
+    work_brief_models.ReviewEvidenceErrorCode,
     DispatchRejectionCode,
     query_models.IntegrationUnavailableReason,
     query_models.ParallelReasonCode,
     ArtifactErrorCode,
     FileIOErrorCode,
+    ViewRefreshErrorCode,
     RootErrorCode,
     StorageErrorCode,
     DispatchErrorCode,

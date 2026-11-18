@@ -6,7 +6,7 @@ authority selection, legality decision, or persistence effect.
 """
 
 from dataclasses import dataclass
-from typing import assert_never, override
+from typing import Literal, assert_never, override
 
 import msgspec
 
@@ -23,10 +23,14 @@ from pinboard.domain.identifiers import (
     WorkItemId,
 )
 
+type TransitionInputFailureCode = Literal[
+    DecisionFailureCode.ACTION_NOT_MUTATING, DecisionFailureCode.TRANSITION_INPUT_INVALID
+]
+
 
 @dataclass(frozen=True, slots=True)
 class TransitionInputFailure:
-    code: DecisionFailureCode
+    code: TransitionInputFailureCode
     message: str
     details: FailureDetails | None
 

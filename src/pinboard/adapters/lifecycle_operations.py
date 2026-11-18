@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, assert_never
 
 from pinboard.adapters import review_operations
 from pinboard.adapters.dependency_operations import resolve_dependency_brief_pins
@@ -16,13 +16,14 @@ from pinboard.adapters.transition_input import ParsedTransitionInput, Transition
 from pinboard.application import action_models, actions, ports, service, work_brief_models
 from pinboard.application.artifacts import WorkBriefIdentity
 from pinboard.application.mutation_models import CommittedEffect
+from pinboard.application.service import TransitionFailureCode
 from pinboard.application.work_briefs import (
     decode_canonical_accepted_brief,
     read_selected_work_brief_identity,
     validate_executable_work_brief,
     validate_reviewed_authority_digests,
 )
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, routing, work_models
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -54,7 +55,9 @@ class SelectedTransition:
     actor_host_id: HostId | None
 
 
-def _input_failure(message: str, mismatches: tuple[FailureMismatch, ...]) -> DecisionFailure:
+def _input_failure(
+    message: str, mismatches: tuple[FailureMismatch, ...]
+) -> DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     return DecisionFailure(
         DecisionFailureCode.TRANSITION_INPUT_INVALID,
         message,
@@ -75,7 +78,7 @@ def resolve_activation(
     artifacts: ArtifactRepository,
     action: decision_models.Action,
     decoded: action_models.ActivateInputPayload,
-) -> DecisionResult[decision_models.ActivateCommand]:
+) -> DecisionResult[decision_models.ActivateCommand, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     if not isinstance(action, decision_models.ActivateAction):
         raise AssertionError("Activate input requires an activate action.")
     artifact_ref_id = ArtifactRefId(decoded.brief_artifact_ref_id)
@@ -150,7 +153,7 @@ def resolve_amendment(
     artifacts: ArtifactRepository,
     action: decision_models.Action,
     decoded: action_models.RecordAmendmentInputPayload,
-) -> DecisionResult[decision_models.RecordAmendmentCommand]:
+) -> DecisionResult[decision_models.RecordAmendmentCommand, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     if not isinstance(action, decision_models.RecordAmendmentAction):
         raise AssertionError("Amendment input requires a record-amendment action.")
     observed = review_operations.observe_amendment_review(store, artifacts, action.capability.subject)
@@ -170,7 +173,7 @@ def _validate_replacement_brief(
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
     command: decision_models.TransitionCommand,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]] | None:
     match command:
         case decision_models.ResumeCommand(value=value) if value.brief_artifact_ref_id is not None:
             reference_id = value.brief_artifact_ref_id
@@ -198,7 +201,16 @@ def select_transition(
     receipt: TransitionReceipt,
     payload: bytes | action_models.InputPayload,
     observed_at: datetime,
-) -> DecisionResult[SelectedTransition]:
+) -> DecisionResult[
+    SelectedTransition,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.ACTION_NOT_MUTATING,
+        DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+        DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+    ],
+]:
     """Select one exact current receipt and decode its exact leaf payload."""
 
     selected = actions.select_current_actions(
@@ -209,6 +221,8 @@ def select_transition(
         generation=receipt.generation,
         action_id=receipt.action_id,
     )
+    if isinstance(selected, routing.RouteClassificationRequired):
+        return selected.failure()
     if isinstance(selected, DecisionFailure):
         return selected
     action = selected.actions[0]
@@ -237,7 +251,12 @@ def select_transition(
     decoded: ParsedTransitionInput | TransitionInputFailure = parse_transition_input(action, payload)
     if isinstance(decoded, TransitionInputFailure):
         return DecisionFailure(decoded.code, decoded.message, decoded.details)
-    command: decision_models.TransitionCommand | DecisionFailure
+    command: (
+        decision_models.TransitionCommand
+        | DecisionFailure[
+            Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.TRANSITION_INPUT_INVALID]
+        ]
+    )
     if isinstance(decoded, action_models.ActivateInputPayload):
         command = resolve_activation(source_checkout, store, artifacts, action, decoded)
     elif isinstance(decoded, action_models.RecordAmendmentInputPayload):
@@ -255,7 +274,7 @@ def transition_brief_identity(
     store: ports.WorkStore,
     command: decision_models.TransitionCommand,
     artifacts: ArtifactRepository,
-) -> DecisionResult[WorkBriefIdentity | None]:
+) -> DecisionResult[WorkBriefIdentity | None, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     match command:
         case (
             decision_models.ActivateCommand(value=value)
@@ -274,7 +293,7 @@ def commit_direct_transition(
     selected: SelectedTransition,
     operation_time: datetime,
     read_authorization_time: Callable[[], datetime],
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[CommittedEffect, TransitionFailureCode]:
     """Commit a transition whose contract has no candidate or evidence publication phase."""
 
     command = selected.command

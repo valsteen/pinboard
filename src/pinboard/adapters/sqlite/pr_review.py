@@ -8,7 +8,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -364,7 +364,15 @@ type Payload = (
 )
 
 
-def _check(state: ReviewState, payload: Payload) -> DecisionFailure | None:  # noqa: C901, PLR0912
+type _ReviewCheckCode = Literal[
+    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    DecisionFailureCode.ITEM_DEFINITION_STALE,
+    DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
+    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+]
+
+
+def _check(state: ReviewState, payload: Payload) -> DecisionFailure[_ReviewCheckCode] | None:  # noqa: C901, PLR0912
     if not isinstance(payload, pr_reviews.ReviewClose) and state.route_facts is None:
         return DecisionFailure(
             DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
@@ -532,7 +540,7 @@ def write(  # noqa: C901, PLR0912, PLR0915
     actor_task_id: str,
     actor_host_id: str,
     now: datetime,
-) -> DecisionResult[WriteResult]:
+) -> DecisionResult[WriteResult, _ReviewCheckCode | Literal[DecisionFailureCode.ITEM_NOT_FOUND]]:
     connection = open_database(path, OpenMode.READ_WRITE)
     try:
         with write_transaction(connection):

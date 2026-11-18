@@ -81,7 +81,7 @@ def _backfill_attempts(
         certificate = references.get(("evidence", history_archives.archive_key(str(attempt.attempt_id)), 1))
         if certificate is not None:
             archive = history_archives.decode_archive(data[certificate.artifact_ref_id])
-            if isinstance(archive, work_brief_models.WorkBriefFailure):
+            if isinstance(archive, work_brief_models.ReviewEvidenceFailure):
                 raise ValueError(archive.message)
             if (archive.attempt_id, archive.item_id) != (str(attempt.attempt_id), str(attempt.item_id)):
                 raise ValueError("The v8 archive names another attempt or item.")
@@ -136,7 +136,7 @@ def _backfill_checkpoint(
                 )
         return
     package = work_briefs.decode_canonical_checkpoint_review_package(data[reference.artifact_ref_id])
-    if isinstance(package, work_brief_models.WorkBriefFailure):
+    if isinstance(package, work_brief_models.ReviewEvidenceFailure):
         raise ValueError(package.message)
     if (package.attempt_id, package.checkpoint.id) != (str(attempt_id), str(checkpoint_id)):
         raise ValueError("The v8 checkpoint payload differs from its acceptance.")
@@ -166,7 +166,7 @@ def _backfill_completion(
 ) -> None:
     attempt_id = AttemptId(str(receipt.subject_id))
     package = work_briefs.decode_canonical_historical_completion_review_package(data[reference.artifact_ref_id])
-    if isinstance(package, work_brief_models.WorkBriefFailure):
+    if isinstance(package, work_brief_models.ReviewEvidenceFailure):
         raise ValueError(package.message)
     if package.attempt_id != str(attempt_id) or (reference.kind, reference.key, reference.revision) != (
         work_models.ArtifactKind.EVIDENCE,
@@ -212,13 +212,13 @@ def _read_compatibility_v9_state(connection: sqlite3.Connection) -> stored_state
 def _verify_backfill(connection: sqlite3.Connection, data: dict[ArtifactRefId, bytes]) -> None:
     migrated = _read_compatibility_v9_state(connection)
     verified_archives = history_archives.verify_archives(migrated, data)
-    if isinstance(verified_archives, work_brief_models.WorkBriefFailure):
+    if isinstance(verified_archives, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
         raise ValueError(verified_archives.message)
     candidate_snapshots.validate_candidate_snapshot_history(migrated, data, verified_archives)
     checkpoints = lifecycle_packages.validate_checkpoint_review_packages(
         migrated.lifecycle, migrated.artifact_references, migrated.transition_receipts, data, verified_archives
     )
-    if isinstance(checkpoints, work_brief_models.WorkBriefFailure):
+    if isinstance(checkpoints, work_brief_models.ReviewEvidenceFailure):
         raise ValueError(checkpoints.message)
     completions = lifecycle_packages.validate_completion_review_packages(
         migrated.lifecycle,
@@ -228,7 +228,7 @@ def _verify_backfill(connection: sqlite3.Connection, data: dict[ArtifactRefId, b
         checkpoints,
         verified_archives,
     )
-    if isinstance(completions, work_brief_models.WorkBriefFailure):
+    if isinstance(completions, work_brief_models.ReviewEvidenceFailure):
         raise ValueError(completions.message)
 
 

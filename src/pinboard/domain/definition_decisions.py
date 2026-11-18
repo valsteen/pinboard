@@ -1,11 +1,21 @@
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import TaskId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
+
+type DefinitionRevisionCode = Literal[
+    DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
+    DecisionFailureCode.ITEM_DEFINITION_INVALID,
+    DecisionFailureCode.ITEM_DEFINITION_STALE,
+    DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID,
+    DecisionFailureCode.ITEM_DEPENDENCY_CYCLE,
+    DecisionFailureCode.ITEM_NOT_FOUND,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +53,7 @@ def decide_definition_revision(
     work_item_id: WorkItemId,
     value: work_models.ReviseWorkItemDefinitionInput,
     now: datetime,
-) -> DecisionResult[DefinitionRevisionDecision]:
+) -> DecisionResult[DefinitionRevisionDecision, DefinitionRevisionCode]:
     if snapshot.work_item(work_item_id) is None:
         if work_item_id in snapshot.history_items:
             return DecisionFailure(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, assert_never, overload
@@ -32,7 +32,14 @@ from pinboard.application import (
     query_models,
     work_brief_models,
 )
-from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
+from pinboard.application.artifact_publication import (
+    ArtifactAcceptanceFailure,
+    ArtifactWriteFailure,
+    PublicationSurface,
+    PublishedArtifactRejected,
+    PublishedFailureDetails,
+    UnpublishedFailureDetails,
+)
 from pinboard.application.candidate_identity import (
     WorkingTreeCommitRequired,
     WorkingTreeSubmittable,
@@ -40,7 +47,7 @@ from pinboard.application.candidate_identity import (
     working_tree_submission,
 )
 from pinboard.application.ports import WorkStore
-from pinboard.domain import decision_models
+from pinboard.domain import decision_models, routing
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -167,9 +174,26 @@ def _mcp_launch_envelope(
             assert_never(unreachable)
 
 
+# Action selection, candidate review recording and review-job preparation are the job paths' decision failures.
+type JobDecisionCode = Literal[
+    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+    DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
+    DecisionFailureCode.ITEM_STATUS_INCONSISTENT,
+    DecisionFailureCode.REVIEWER_PROMPT_NOT_COMMISSIONED,
+    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+]
 type JobFailure = (
-    DecisionFailure | dispatch_operations.DispatchFailure | ArtifactAcceptanceFailure | ArtifactWriteFailure
+    DecisionFailure[JobDecisionCode]
+    | PublishedArtifactRejected
+    | dispatch_operations.DispatchFailure
+    | ArtifactAcceptanceFailure
+    | ArtifactWriteFailure
 )
+type _JobResult = (
+    execution.TypedOperationResult[contracts.DispatchResult] | execution.TypedOperationResult[contracts.ReviewJobResult]
+)
+type _JobSchema = Literal["pinboard-mcp-dispatch-result/v1", "pinboard-mcp-review-job-result/v2"]
 
 
 @overload
@@ -189,7 +213,10 @@ def _job_failure(
     work_root: str,
     schema: Literal["pinboard-mcp-review-job-result/v2"],
     attempt_id: str,
-    failure: DecisionFailure | ArtifactAcceptanceFailure | ArtifactWriteFailure,
+    failure: DecisionFailure[JobDecisionCode]
+    | PublishedArtifactRejected
+    | ArtifactAcceptanceFailure
+    | ArtifactWriteFailure,
     refresh_warning: ViewWarning | None,
 ) -> execution.TypedOperationResult[contracts.ReviewJobResult]: ...
 
@@ -197,15 +224,13 @@ def _job_failure(
 def _job_failure(
     project_root: str,
     work_root: str,
-    schema: Literal["pinboard-mcp-dispatch-result/v1", "pinboard-mcp-review-job-result/v2"],
+    schema: _JobSchema,
     attempt_id: str,
     failure: JobFailure,
     refresh_warning: ViewWarning | None,
-) -> (
-    execution.TypedOperationResult[contracts.DispatchResult] | execution.TypedOperationResult[contracts.ReviewJobResult]
-):
-    details = failure.details
-    observed, mismatches = common._failure_evidence(details)
+) -> _JobResult:
+    """Project one job failure; published details mark a failure after publication, others changed nothing."""
+    observed, mismatches = common._failure_evidence(failure.details)
     observed += (
         contracts.FailureObservation("inspection_tool", tool_names.ATTEMPT_INSPECT_TOOL),
         contracts.FailureObservation(
@@ -221,118 +246,181 @@ def _job_failure(
             ).decode(),
         ),
     )
-    infrastructure_code: Literal["ARTIFACT_ACCEPTANCE_FAILED", "ARTIFACT_PUBLICATION_FAILED"] | None
+    suffix = (
+        ("" if refresh_warning is None else f" {refresh_warning.message} {refresh_warning.repair}")
+        + " Inspect this attempt with inspection_tool and inspection_input in observed before choosing another action. Preserve any published selectors; do not replay after a committed or uncertain effect."
+    )
+    evidence = _JobFailureEvidence(schema, attempt_id, observed, mismatches)
     match failure:
         case ArtifactAcceptanceFailure() | ArtifactWriteFailure():
-            infrastructure_code = (
+            infrastructure_code: Literal["ARTIFACT_ACCEPTANCE_FAILED", "ARTIFACT_PUBLICATION_FAILED"] = (
                 "ARTIFACT_ACCEPTANCE_FAILED"
                 if isinstance(failure, ArtifactAcceptanceFailure)
                 else "ARTIFACT_PUBLICATION_FAILED"
             )
-            code, message = infrastructure_code, str(failure.cause)
+            message = str(failure.cause) + suffix
+            match failure.details:
+                case PublishedFailureDetails(changed_surfaces=surfaces):
+                    return _job_failed_after_publication(evidence, infrastructure_code, message, surfaces)
+                case UnpublishedFailureDetails(retry=retry):
+                    return _job_infrastructure_failure(
+                        evidence, infrastructure_code, message, common.publication_retry(retry)
+                    )
+                case _ as unreachable:
+                    assert_never(unreachable)
+        case PublishedArtifactRejected():
+            return _job_failed_after_publication(
+                evidence,
+                DecisionFailureCode.ACTION_NOT_AVAILABLE.value,
+                failure.message + suffix,
+                failure.details.changed_surfaces,
+            )
         case DecisionFailure() | dispatch_operations.DispatchFailure():
-            infrastructure_code = None
-            code, message = failure.code.value, failure.message
+            message = failure.message + suffix
+            match failure.details:
+                case PublishedFailureDetails(changed_surfaces=surfaces):
+                    return _job_failed_after_publication(evidence, failure.code.value, message, surfaces)
+                case FailureDetails(retry=retry):
+                    return _job_rejected(evidence, failure.code.value, message, retry)
+                case None:
+                    return _job_rejected(evidence, failure.code.value, message, RetryDisposition.CORRECT_INPUT)
+                case _ as unreachable:
+                    assert_never(unreachable)
         case _ as unreachable:
             assert_never(unreachable)
-    if refresh_warning is not None:
-        message += f" {refresh_warning.message} {refresh_warning.repair}"
-    message += " Inspect this attempt with inspection_tool and inspection_input in observed before choosing another action. Preserve any published selectors; do not replay after a committed or uncertain effect."
-    retry = RetryDisposition.CORRECT_INPUT if details is None else details.retry
-    if details is not None and details.effect == EffectDisposition.COMMITTED:
-        surfaces = _job_publication_surfaces(details.changed_surfaces)
-        assert retry == RetryDisposition.DO_NOT_RETRY
-        if schema == "pinboard-mcp-dispatch-result/v1":
-            return execution.TypedOperationResult(
-                contracts.DispatchFailedAfterPublication(
-                    schema,
-                    "failed-after-publication",
-                    attempt_id,
-                    code,
-                    message,
-                    True,
-                    "committed",
-                    "do-not-retry",
-                    surfaces,
-                    observed,
-                    mismatches,
-                ),
-                "committed-failure",
-                None,
-            )
+
+
+@dataclass(frozen=True, slots=True)
+class _JobFailureEvidence:
+    schema: _JobSchema
+    attempt_id: str
+    observed: tuple[contracts.FailureObservation, ...]
+    mismatches: tuple[contracts.FailureMismatch, ...]
+
+
+def _job_failed_after_publication(
+    evidence: _JobFailureEvidence, code: str, message: str, surfaces: tuple[PublicationSurface, ...]
+) -> _JobResult:
+    published = _job_publication_surfaces(surfaces)
+    if evidence.schema == "pinboard-mcp-dispatch-result/v1":
         return execution.TypedOperationResult(
-            contracts.ReviewJobFailedAfterPublication(
-                schema,
+            contracts.DispatchFailedAfterPublication(
+                evidence.schema,
                 "failed-after-publication",
-                attempt_id,
+                evidence.attempt_id,
                 code,
                 message,
                 True,
                 "committed",
                 "do-not-retry",
-                surfaces,
-                observed,
-                mismatches,
+                published,
+                evidence.observed,
+                evidence.mismatches,
             ),
             "committed-failure",
             None,
         )
-    if infrastructure_code is not None:
-        assert retry in {RetryDisposition.RETRY_SAME_INPUT, RetryDisposition.DO_NOT_RETRY}
-        infrastructure_retry = "retry-same-input" if retry == RetryDisposition.RETRY_SAME_INPUT else "do-not-retry"
-        if schema == "pinboard-mcp-dispatch-result/v1":
-            return execution.TypedOperationResult(
-                contracts.DispatchInfrastructureFailure(
-                    schema,
-                    "infrastructure-failure",
-                    attempt_id,
-                    infrastructure_code,
-                    message,
-                    False,
-                    "unchanged",
-                    infrastructure_retry,
-                    (),
-                    observed,
-                    mismatches,
-                ),
-                "infrastructure-failure",
-                None,
-            )
+    return execution.TypedOperationResult(
+        contracts.ReviewJobFailedAfterPublication(
+            evidence.schema,
+            "failed-after-publication",
+            evidence.attempt_id,
+            code,
+            message,
+            True,
+            "committed",
+            "do-not-retry",
+            published,
+            evidence.observed,
+            evidence.mismatches,
+        ),
+        "committed-failure",
+        None,
+    )
+
+
+def _job_infrastructure_failure(
+    evidence: _JobFailureEvidence,
+    code: Literal["ARTIFACT_ACCEPTANCE_FAILED", "ARTIFACT_PUBLICATION_FAILED"],
+    message: str,
+    retry: Literal["retry-same-input", "do-not-retry"],
+) -> _JobResult:
+    if evidence.schema == "pinboard-mcp-dispatch-result/v1":
         return execution.TypedOperationResult(
-            contracts.ReviewJobInfrastructureFailure(
-                schema,
+            contracts.DispatchInfrastructureFailure(
+                evidence.schema,
                 "infrastructure-failure",
-                attempt_id,
-                infrastructure_code,
+                evidence.attempt_id,
+                code,
                 message,
                 False,
                 "unchanged",
-                infrastructure_retry,
+                retry,
                 (),
-                observed,
-                mismatches,
+                evidence.observed,
+                evidence.mismatches,
             ),
             "infrastructure-failure",
             None,
         )
-    if schema == "pinboard-mcp-dispatch-result/v1":
+    return execution.TypedOperationResult(
+        contracts.ReviewJobInfrastructureFailure(
+            evidence.schema,
+            "infrastructure-failure",
+            evidence.attempt_id,
+            code,
+            message,
+            False,
+            "unchanged",
+            retry,
+            (),
+            evidence.observed,
+            evidence.mismatches,
+        ),
+        "infrastructure-failure",
+        None,
+    )
+
+
+def _job_rejected(evidence: _JobFailureEvidence, code: str, message: str, retry: RetryDisposition) -> _JobResult:
+    if evidence.schema == "pinboard-mcp-dispatch-result/v1":
         return execution.TypedOperationResult(
             contracts.DispatchRejected(
-                schema, "rejected", attempt_id, code, message, False, "unchanged", retry, (), observed, mismatches
+                evidence.schema,
+                "rejected",
+                evidence.attempt_id,
+                code,
+                message,
+                False,
+                "unchanged",
+                retry,
+                (),
+                evidence.observed,
+                evidence.mismatches,
             ),
             "rejected",
             None,
         )
     return execution.TypedOperationResult(
         contracts.ReviewJobRejected(
-            schema, "rejected", attempt_id, code, message, False, "unchanged", retry, (), observed, mismatches
+            evidence.schema,
+            "rejected",
+            evidence.attempt_id,
+            code,
+            message,
+            False,
+            "unchanged",
+            retry,
+            (),
+            evidence.observed,
+            evidence.mismatches,
         ),
         "rejected",
         None,
     )
 
 
-def _job_publication_surface(surface: ChangedSurface) -> contracts.JobPublicationSurface:
+def _job_publication_surface(surface: PublicationSurface) -> contracts.JobPublicationSurface:
     match surface:
         case ChangedSurface.IMMUTABLE_ARTIFACT:
             return "immutable-artifact"
@@ -340,18 +428,13 @@ def _job_publication_surface(surface: ChangedSurface) -> contracts.JobPublicatio
             return "accepted-artifact-reference"
         case ChangedSurface.LEDGER:
             return "ledger"
-        case (
-            ChangedSurface.REPOSITORY_GIT_EXCLUDE
-            | ChangedSurface.MIGRATION_EVIDENCE
-            | ChangedSurface.SELECTED_OUTPUT
-            | ChangedSurface.SOURCE_CHECKOUT
-        ):
-            raise AssertionError("Job publication changed an unsupported surface.")
         case _ as unreachable:
             assert_never(unreachable)
 
 
-def _job_publication_surfaces(surfaces: tuple[ChangedSurface, ...]) -> tuple[contracts.JobPublicationSurface, ...]:
+def _job_publication_surfaces(
+    surfaces: tuple[PublicationSurface, ...],
+) -> tuple[contracts.JobPublicationSurface, ...]:
     converted = tuple(_job_publication_surface(surface) for surface in surfaces)
     return tuple(
         surface for surface in ("immutable-artifact", "accepted-artifact-reference", "ledger") if surface in converted
@@ -397,7 +480,7 @@ def _record_ready_review(
         return _job_failure(
             project_root, str(durable.work_root), schema, choice.attempt_id, replace(recorded, details=details), None
         )
-    if isinstance(recorded, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+    if isinstance(recorded, (ArtifactAcceptanceFailure, ArtifactWriteFailure, PublishedArtifactRejected)):
         return _job_failure(project_root, str(durable.work_root), schema, choice.attempt_id, recorded, None)
     reference = recorded.reference
     surfaces = _job_publication_surfaces(recorded.changed_surfaces)
@@ -583,6 +666,8 @@ def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and dis
         generation=None,
         action_id=ActionId(f"dispatch:{attempt_id}"),
     )
+    if isinstance(selected, routing.RouteClassificationRequired):
+        selected = selected.failure()
     if isinstance(selected, DecisionFailure):
         return _job_failure(request.project_root, str(durable.work_root), schema, attempt_id, selected, None)
     action = selected.actions[0]
@@ -718,7 +803,9 @@ def _review_job(
         choice.candidate_revision,
         selection,
     )
-    if isinstance(prepared, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+    if isinstance(
+        prepared, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure, PublishedArtifactRejected)
+    ):
         refresh_warning = common._refresh_published_ledger(durable, store, prepared.details, datetime.now(UTC))
         return _job_failure(
             request.project_root, str(durable.work_root), schema, choice.attempt_id, prepared, refresh_warning

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import shlex
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Literal, assert_never
 
 import msgspec
 
+from pinboard import diagnostic_codes
 from pinboard.adapters import candidate_evidence, dispatch_operations, review_operations
 from pinboard.adapters.files import file_io, root, views
 from pinboard.adapters.files import fixture_review as fixture_review_files
@@ -50,8 +52,11 @@ from pinboard.application.artifact_publication import (
     AcceptedArtifactPublication,
     ArtifactAcceptanceFailure,
     ArtifactWriteFailure,
+    PublishedArtifactRejected,
+    PublishedFailureDetails,
+    UnpublishedFailureDetails,
 )
-from pinboard.application.ports import WorkStore
+from pinboard.application.ports import StaleCommitCode, WorkStore
 from pinboard.diagnostic_codes import (
     BriefReviewRejectedCode,
     BriefSourcesRejectedCode,
@@ -81,22 +86,21 @@ from pinboard.domain.identifiers import (
     WorkItemId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
+from pinboard.domain.ordering import OrderDecisionCode
 from pinboard.mcp import common, contracts, execution, host_profiles, instructions, tool_names
 from pinboard.mcp.contracts import JsonValue
 
 _ITEM_STATUS_RESULT_SCHEMA = "pinboard-mcp-item-status-result/v3"
 
 
-def _read_retry(details: FailureDetails | None) -> Literal["correct-input", "refresh-action", "do-not-retry"]:
-    if details is None or details.retry == RetryDisposition.CORRECT_INPUT:
+def _read_retry(details: dispatch_operations.CorrectionReadDetails | None) -> Literal["correct-input"]:
+    if details is None:
         return "correct-input"
     match details.retry:
-        case RetryDisposition.REFRESH_ACTION:
-            return "refresh-action"
-        case RetryDisposition.DO_NOT_RETRY:
-            return "do-not-retry"
-        case _:
-            raise ValueError(f"Unsupported read retry disposition: {details.retry.value}.")
+        case RetryDisposition.CORRECT_INPUT:
+            return "correct-input"
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _branch_owner_not_found(branch: str, work_root: Path) -> execution.TypedOperationResult[contracts.ItemStatusResult]:
@@ -148,41 +152,56 @@ def _integration_git_failure(
 
 
 def _item_status_failure(
-    code: DecisionFailureCode, message: str, details: FailureDetails | None
+    code: Literal[
+        DecisionFailureCode.ITEM_NOT_FOUND,
+        DecisionFailureCode.ITEM_DEFINITION_INVALID,
+        DecisionFailureCode.ITEM_STATUS_INCONSISTENT,
+    ],
+    message: str,
+    details: FailureDetails | None,
 ) -> execution.TypedOperationResult[contracts.ItemStatusResult]:
-    record: contracts.ItemStatusInvalid | contracts.ItemStatusUnavailable | contracts.ItemStatusInconsistent
+    unavailable: Literal["ITEM_NOT_FOUND", "ITEM_DEFINITION_INVALID"]
     match code:
-        case DecisionFailureCode.ITEM_NOT_FOUND | DecisionFailureCode.ITEM_DEFINITION_INVALID:
-            unavailable = "ITEM_NOT_FOUND" if code == DecisionFailureCode.ITEM_NOT_FOUND else "ITEM_DEFINITION_INVALID"
-            record = contracts.ItemStatusUnavailable(
-                _ITEM_STATUS_RESULT_SCHEMA,
-                "rejected",
-                unavailable,
-                message,
-                False,
-                "unchanged",
-                "correct-input",
-                (),
-                (),
-                (),
-            )
+        case DecisionFailureCode.ITEM_NOT_FOUND:
+            unavailable = "ITEM_NOT_FOUND"
+        case DecisionFailureCode.ITEM_DEFINITION_INVALID:
+            unavailable = "ITEM_DEFINITION_INVALID"
         case DecisionFailureCode.ITEM_STATUS_INCONSISTENT:
             observed, mismatches = common._failure_evidence(details)
-            record = contracts.ItemStatusInconsistent(
-                _ITEM_STATUS_RESULT_SCHEMA,
+            return execution.TypedOperationResult(
+                contracts.ItemStatusInconsistent(
+                    _ITEM_STATUS_RESULT_SCHEMA,
+                    "rejected",
+                    "ITEM_STATUS_INCONSISTENT",
+                    message,
+                    False,
+                    "unchanged",
+                    "do-not-retry",
+                    (),
+                    observed,
+                    mismatches,
+                ),
                 "rejected",
-                "ITEM_STATUS_INCONSISTENT",
-                message,
-                False,
-                "unchanged",
-                "do-not-retry",
-                (),
-                observed,
-                mismatches,
+                None,
             )
-        case _:
-            raise ValueError(f"Unsupported item-status failure: {code.value}.")
-    return execution.TypedOperationResult(record, "rejected", None)
+        case _ as unreachable:
+            assert_never(unreachable)
+    return execution.TypedOperationResult(
+        contracts.ItemStatusUnavailable(
+            _ITEM_STATUS_RESULT_SCHEMA,
+            "rejected",
+            unavailable,
+            message,
+            False,
+            "unchanged",
+            "correct-input",
+            (),
+            (),
+            (),
+        ),
+        "rejected",
+        None,
+    )
 
 
 def _damaged_receipt_evidence(
@@ -429,7 +448,7 @@ def _read_correction_context(
         HistoryId(request.correction_history_id),
         dispatch_operations.ReturnedCorrectionStart(),
     )
-    if isinstance(context, dispatch_operations.DispatchFailure):
+    if isinstance(context, dispatch_operations.CorrectionReadFailure):
         return _correction_rejected(
             context.code.value,
             context.message
@@ -442,7 +461,7 @@ def _read_correction_context(
 
 
 def _correction_rejected(
-    code: str, message: str, details: FailureDetails | None
+    code: str, message: str, details: dispatch_operations.CorrectionReadDetails | None
 ) -> execution.TypedOperationResult[contracts.CorrectionContextResult]:
     observed, mismatches = common._failure_evidence(details)
     return execution.TypedOperationResult(
@@ -564,7 +583,7 @@ def _read_return_context(
     artifacts = ArtifactRepository(durable)
     history_id = HistoryId(request.selection.return_history_id)
     evidence = dispatch_operations.read_returned_evidence(store, artifacts, AttemptId(request.attempt_id), history_id)
-    if isinstance(evidence, dispatch_operations.DispatchFailure):
+    if isinstance(evidence, dispatch_operations.CorrectionReadFailure):
         return _return_rejected(
             evidence.code.value,
             evidence.message
@@ -602,7 +621,7 @@ def _read_return_context(
         case contracts.CurrentCandidateReturnSelection():
             source_checkout = resolve_source_checkout_root(Path(request.project_root))
             binding = dispatch_operations.observe_correction_candidate(source_checkout)
-            if isinstance(binding, dispatch_operations.DispatchFailure):
+            if isinstance(binding, dispatch_operations.CorrectionReadFailure):
                 return _return_rejected(binding.code.value, binding.message, binding.details)
             correction = dispatch_operations.read_correction_context(
                 store,
@@ -612,7 +631,7 @@ def _read_return_context(
                 history_id,
                 dispatch_operations.ReviewedCurrentCorrectionStart(binding),
             )
-            if isinstance(correction, dispatch_operations.DispatchFailure):
+            if isinstance(correction, dispatch_operations.CorrectionReadFailure):
                 return _return_rejected(
                     correction.code.value,
                     correction.message
@@ -635,7 +654,7 @@ def _read_return_context(
 
 
 def _return_rejected(
-    code: str, message: str, details: FailureDetails | None
+    code: str, message: str, details: dispatch_operations.CorrectionReadDetails | None
 ) -> execution.TypedOperationResult[contracts.ReturnContextResult]:
     observed, mismatches = common._failure_evidence(details)
     return execution.TypedOperationResult(
@@ -775,8 +794,6 @@ def _plan_file_error_code(code: FileIOErrorCode) -> BriefSourcesRejectedCode:
             return "FILE_ALREADY_EXISTS"
         case FileIOErrorCode.FILE_PUBLISH_FAILED:
             return "FILE_PUBLISH_FAILED"
-        case FileIOErrorCode.VIEW_REFRESH_FAILED:
-            raise ValueError("Source plan publication does not refresh views.")
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -988,8 +1005,8 @@ def _read_item_definition(
                 code = "ITEM_NOT_FOUND"
             case DecisionFailureCode.ITEM_DEFINITION_INVALID:
                 code = "ITEM_DEFINITION_INVALID"
-            case _:
-                raise ValueError(selected.message)
+            case _ as unreachable:
+                assert_never(unreachable)
         return execution.TypedOperationResult(
             contracts.ItemDefinitionRejected(
                 "pinboard-mcp-item-definition-result/v1",
@@ -1038,7 +1055,7 @@ def _brief_review(  # noqa: PLR0912 - independent status, file input and publica
         request = msgspec.convert(raw, type=contracts.BriefReviewEnvelope, strict=True).request
         durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
-        return _brief_review_rejected("BRIEF_REVIEW_REQUEST_INVALID", str(error), None)
+        return _brief_review_rejected("BRIEF_REVIEW_REQUEST_INVALID", str(error), "correct-input", None)
     token.checkpoint()
     store = common.compose_store(durable)
     repository = ArtifactRepository(durable)
@@ -1056,6 +1073,7 @@ def _brief_review(  # noqa: PLR0912 - independent status, file input and publica
                     f"'{request.work_root}' could not verify its accepted bytes: {error}. "
                     "Report this exact reference and defect to the human; do not retry unchanged, "
                     "reconstruct or overwrite accepted bytes.",
+                    "do-not-retry",
                     FailureDetails(
                         observed=(FailureFact("brief_artifact_ref_id", request.brief_artifact_ref_id),),
                         mismatches=(
@@ -1074,6 +1092,7 @@ def _brief_review(  # noqa: PLR0912 - independent status, file input and publica
                     _brief_review_failure_code(selected),
                     selected.message
                     + f" Check accepted brief reference {request.brief_artifact_ref_id} at work_root '{request.work_root}'. Correct a mistaken selection; report damaged accepted bytes to the human without rewriting them.",
+                    "correct-input",
                     None,
                 )
             token.checkpoint()
@@ -1082,13 +1101,14 @@ def _brief_review(  # noqa: PLR0912 - independent status, file input and publica
             if isinstance(request, contracts.BriefReviewPublishFileRequest):
                 review_bytes = file_io.read_verified_input(Path(request.review_path), request.review_sha256)
                 if isinstance(review_bytes, file_io.SelectedInputFailure):
-                    return _brief_review_rejected(review_bytes.code, review_bytes.message, None)
+                    return _brief_review_rejected(review_bytes.code, review_bytes.message, "correct-input", None)
                 try:
                     review = msgspec.json.decode(review_bytes, type=work_brief_models.WorkBriefReviewNeedsCorrection)
                 except msgspec.DecodeError as error:
                     return _brief_review_rejected(
                         "BRIEF_REVIEW_REQUEST_INVALID",
                         f"Cannot decode selected review '{request.review_path}' with verified SHA-256 {request.review_sha256}: {error}. Correct that file to the needs-correction review schema before retrying.",
+                        "correct-input",
                         None,
                     )
             else:
@@ -1113,9 +1133,10 @@ def _brief_review(  # noqa: PLR0912 - independent status, file input and publica
                     _brief_review_failure_code(publication),
                     publication.message
                     + " Correct the named review binding against pinboard_brief_review operation status for the same brief reference and roots; independent assessment must remain independent. Report damaged accepted evidence to the human without rewriting it.",
+                    "correct-input",
                     None,
                 )
-            if isinstance(publication, DecisionFailure):
+            if isinstance(publication, (DecisionFailure, PublishedArtifactRejected)):
                 return _brief_review_decision_failure(publication)
             return _brief_review_publication_result(publication, correction, durable, store)
         case _ as unreachable:
@@ -1129,10 +1150,30 @@ def _brief_review_status(
 ) -> execution.TypedOperationResult[contracts.BriefReviewResult]:
     schema = "pinboard-mcp-brief-review-result/v1"
     checkpoint = selected.accepted_brief.brief.checkpoint
-    current_definition = queries.select_item_definition(store, WorkItemId(selected.accepted_brief.brief.item_id))
+    item_id = selected.accepted_brief.brief.item_id
+    current_definition = queries.select_item_definition(store, WorkItemId(item_id))
     if isinstance(current_definition, DecisionFailure):
-        raise ValueError(
-            f"Cannot verify the brief against its current accepted definition: {current_definition.message}"
+        match current_definition.code:
+            case DecisionFailureCode.ITEM_NOT_FOUND:
+                cause = f"its item '{item_id}' has no record"
+            case DecisionFailureCode.ITEM_DEFINITION_INVALID:
+                cause = f"item '{item_id}' has an invalid current definition"
+            case _ as unreachable:
+                assert_never(unreachable)
+        return _brief_review_rejected(
+            "WORK_BRIEF_INVALID",
+            f"Cannot verify the brief against its current accepted definition because {cause}: "
+            f"{current_definition.message} Report this stored state to the human; repeating this read cannot "
+            "succeed until the item's accepted definition is restored.",
+            "do-not-retry",
+            FailureDetails(
+                observed=(FailureFact("item_id", item_id),),
+                mismatches=(),
+                retry=RetryDisposition.DO_NOT_RETRY,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
         )
     assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
     reference = selected.accepted_brief.reference
@@ -1247,7 +1288,10 @@ def _brief_review_publication_result(
 
 
 def _brief_review_rejected(
-    code: BriefReviewRejectedCode, message: str, details: FailureDetails | None
+    code: BriefReviewRejectedCode,
+    message: str,
+    retry: Literal["correct-input", "do-not-retry"],
+    details: FailureDetails | None,
 ) -> execution.TypedOperationResult[contracts.BriefReviewResult]:
     observed, mismatches = common._failure_evidence(details)
     return execution.TypedOperationResult(
@@ -1258,9 +1302,7 @@ def _brief_review_rejected(
             message,
             False,
             "unchanged",
-            "do-not-retry"
-            if details is not None and details.retry == RetryDisposition.DO_NOT_RETRY
-            else "correct-input",
+            retry,
             (),
             observed,
             mismatches,
@@ -1284,35 +1326,36 @@ def _brief_review_failure_code(failure: work_brief_models.WorkBriefFailure) -> B
             return "WORK_BRIEF_REVIEW_NOT_INDEPENDENT"
         case work_brief_models.WorkBriefErrorCode.REVIEW_STALE:
             return "WORK_BRIEF_REVIEW_STALE"
-        case _:
-            raise ValueError(failure.message)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _brief_review_decision_failure(
-    failure: DecisionFailure,
+    failure: DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | PublishedArtifactRejected,
 ) -> execution.TypedOperationResult[contracts.BriefReviewResult]:
-    if failure.code != DecisionFailureCode.ACTION_NOT_AVAILABLE:
-        raise ValueError(failure.message)
-    details = failure.details
-    if details is not None and details.effect == EffectDisposition.COMMITTED:
-        observed, mismatches = common._failure_evidence(details)
-        return execution.TypedOperationResult(
-            contracts.BriefReviewPublishedRejection(
-                "pinboard-mcp-brief-review-result/v1",
+    match failure:
+        case PublishedArtifactRejected(details=details):
+            observed, mismatches = common._failure_evidence(details)
+            return execution.TypedOperationResult(
+                contracts.BriefReviewPublishedRejection(
+                    "pinboard-mcp-brief-review-result/v1",
+                    "rejected",
+                    "ACTION_NOT_AVAILABLE",
+                    failure.message,
+                    True,
+                    "committed",
+                    "do-not-retry",
+                    ("immutable-artifact",),
+                    observed,
+                    mismatches,
+                ),
                 "rejected",
-                "ACTION_NOT_AVAILABLE",
-                failure.message,
-                True,
-                "committed",
-                "do-not-retry",
-                ("immutable-artifact",),
-                observed,
-                mismatches,
-            ),
-            "rejected",
-            None,
-        )
-    return _brief_review_rejected("ACTION_NOT_AVAILABLE", failure.message, details)
+                None,
+            )
+        case DecisionFailure():
+            return _brief_review_rejected("ACTION_NOT_AVAILABLE", failure.message, "correct-input", failure.details)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _brief_review_publication_failure(
@@ -1328,36 +1371,39 @@ def _brief_review_publication_failure(
         message = f"The review's immutable publication could not be completed. {failure.cause}"
         recovery = publication_recovery
     record: contracts.BriefReviewInfrastructureFailure | contracts.BriefReviewInfrastructureUnchangedFailure
-    if failure.details.effect == EffectDisposition.COMMITTED:
-        record = contracts.BriefReviewInfrastructureFailure(
-            schema,
-            "failed-after-publication",
-            code,
-            message,
-            True,
-            "committed",
-            "do-not-retry",
-            ("immutable-artifact",),
-            (),
-            (),
-            failure.selector,
-            recovery,
-        )
-    else:
-        record = contracts.BriefReviewInfrastructureUnchangedFailure(
-            schema,
-            "infrastructure-failure",
-            code,
-            message,
-            False,
-            "unchanged",
-            "retry-same-input" if failure.details.retry == RetryDisposition.RETRY_SAME_INPUT else "do-not-retry",
-            (),
-            (),
-            (),
-            failure.selector,
-            recovery,
-        )
+    match failure.details:
+        case PublishedFailureDetails():
+            record = contracts.BriefReviewInfrastructureFailure(
+                schema,
+                "failed-after-publication",
+                code,
+                message,
+                True,
+                "committed",
+                "do-not-retry",
+                ("immutable-artifact",),
+                (),
+                (),
+                failure.selector,
+                recovery,
+            )
+        case UnpublishedFailureDetails(retry=retry):
+            record = contracts.BriefReviewInfrastructureUnchangedFailure(
+                schema,
+                "infrastructure-failure",
+                code,
+                message,
+                False,
+                "unchanged",
+                common.publication_retry(retry),
+                (),
+                (),
+                (),
+                failure.selector,
+                recovery,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
     return execution.TypedOperationResult(record, "infrastructure-failure", failure.selector)
 
 
@@ -1445,49 +1491,21 @@ def _overview_rejected(message: str) -> execution.TypedOperationResult[contracts
     )
 
 
-def _order_rejected_code(code: DecisionFailureCode) -> OrderRejectedCode:
-    """Name the order rejection for each code service.reorder returns; other codes are defects in that owner."""
+def _order_rejected_code(code: OrderDecisionCode | StaleCommitCode) -> OrderRejectedCode:
+    """Name the order rejection for each code service.reorder declares."""
     match code:
         case DecisionFailureCode.ACTION_NOT_AVAILABLE:
             return "ACTION_NOT_AVAILABLE"
         case DecisionFailureCode.TRANSITION_INPUT_INVALID:
             return "TRANSITION_INPUT_INVALID"
-        case (
-            DecisionFailureCode.ACTION_NOT_MUTATING
-            | DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED
-            | DecisionFailureCode.ATTEMPT_LEASE_REQUIRED
-            | DecisionFailureCode.ATTEMPT_LEASE_EXPIRED
-            | DecisionFailureCode.ATTEMPT_NOT_FOUND
-            | DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED
-            | DecisionFailureCode.DEPENDENCY_NOT_SATISFIED
-            | DecisionFailureCode.HISTORY_RECORD_EXISTS
-            | DecisionFailureCode.ITEM_ALREADY_EXISTS
-            | DecisionFailureCode.ITEM_DEFINITION_INVALID
-            | DecisionFailureCode.ITEM_DEFINITION_STALE
-            | DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED
-            | DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID
-            | DecisionFailureCode.ITEM_DEPENDENCY_CYCLE
-            | DecisionFailureCode.ITEM_NOT_FOUND
-            | DecisionFailureCode.ITEM_STATUS_INCONSISTENT
-            | DecisionFailureCode.LIVE_DEPENDENTS
-            | DecisionFailureCode.LEASE_FENCED
-            | DecisionFailureCode.PROPOSAL_NOT_FOUND
-            | DecisionFailureCode.PROPOSAL_ALREADY_EXISTS
-            | DecisionFailureCode.PROPOSAL_INVALID
-            | DecisionFailureCode.REPLACEMENT_INVALID
-            | DecisionFailureCode.REPLACEMENT_STALE
-            | DecisionFailureCode.REVIEWER_PROMPT_NOT_COMMISSIONED
-            | DecisionFailureCode.SCHEMA_MIGRATION_INVALID
-            | DecisionFailureCode.SCHEMA_MIGRATION_FAILED
-        ):
-            raise ValueError(f"Live-order reordering cannot return failure code {code.value}.")
         case _ as unreachable:
             assert_never(unreachable)
 
 
 def _order_rejected(
-    code: OrderRejectedCode, message: str, recovery: contracts.OrderRecovery | None
+    code: OrderRejectedCode, message: str, details: FailureDetails | None, recovery: contracts.OrderRecovery | None
 ) -> execution.TypedOperationResult[contracts.OrderResult]:
+    observed, mismatches = common._failure_evidence(details)
     return execution.TypedOperationResult(
         contracts.OrderRejected(
             "pinboard-mcp-order-result/v1",
@@ -1498,8 +1516,8 @@ def _order_rejected(
             "unchanged",
             "correct-input",
             (),
-            (),
-            (),
+            observed,
+            mismatches,
             recovery,
         ),
         "rejected",
@@ -1516,7 +1534,7 @@ def _order(
         request = msgspec.convert(raw, type=contracts.OrderEnvelope, strict=True).request
         durable = common._resolve_durable(request.project_root, request.work_root)
     except (msgspec.ValidationError, ValueError, OSError) as error:
-        return _order_rejected("ORDER_INVALID", f"Cannot decode order request: {error}", None)
+        return _order_rejected("ORDER_INVALID", f"Cannot decode order request: {error}", None, None)
     recovery = contracts.OrderRecovery(
         "pinboard_overview",
         contracts.OverviewRequest(request.project_root, request.work_root, 25, None),
@@ -1534,9 +1552,7 @@ def _order(
         now,
     )
     if isinstance(committed, DecisionFailure):
-        if committed.details is not None:
-            raise ValueError("Live-order reordering returned failure details that an order rejection cannot carry.")
-        return _order_rejected(_order_rejected_code(committed.code), committed.message, recovery)
+        return _order_rejected(_order_rejected_code(committed.code), committed.message, committed.details, recovery)
     refreshed = common._refresh_affected_views(
         durable,
         store,
@@ -1657,7 +1673,9 @@ def _parallel_preview(
 
 
 def _action_failure_details(
-    failure: DecisionFailure,
+    failure: DecisionFailure[
+        Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ATTEMPT_LEASE_REQUIRED]
+    ],
     role: decision_models.Role,
     lease_id: LeaseId | None,
     generation: int | None,
@@ -1666,10 +1684,6 @@ def _action_failure_details(
     project_root: str,
     work_root: str,
 ) -> FailureDetails:
-    if failure.code in {DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED, DecisionFailureCode.ITEM_DEFINITION_INVALID}:
-        if failure.details is None:
-            raise RuntimeError("Route recovery requires the exact current definition facts.")
-        return failure.details
     observations = (
         FailureFact("role", role.value),
         FailureFact("lease_id", lease_id),
@@ -1735,8 +1749,8 @@ def _action_failure_details(
                 changed_surfaces=(),
                 alternatives=(),
             )
-        case _:
-            raise RuntimeError(f"Unsupported action-discovery failure '{failure.code.value}'.")
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _action_roots(request: contracts.ActionsRequest) -> DurableRoots:
@@ -1819,6 +1833,8 @@ def _read_actions(
         generation=selected_generation,
         action_id=selected_action,
     )
+    if isinstance(selected, routing.RouteClassificationRequired):
+        return _actions_rejected(selected)
     if isinstance(selected, DecisionFailure):
         if (
             selected_action_id is not None
@@ -1827,23 +1843,24 @@ def _read_actions(
         ):
             recovery = _unavailable_completion_recovery(store, AttemptId(selected_action_id.subject))
             if recovery is not None:
-                failure = _completion_warning(
-                    recovery.attempt_id, recovery.reason, request.project_root, request.work_root
+                return _actions_rejected(
+                    _completion_warning(recovery.attempt_id, recovery.reason, request.project_root, request.work_root)
                 )
-                return _actions_rejected(failure.code, failure.message, failure.details)
         return _actions_rejected(
-            selected.code,
-            selected.message,
-            _action_failure_details(
-                selected,
-                selected_role,
-                selected_lease,
-                selected_generation,
-                selected_action,
-                selected_action_id,
-                request.project_root,
-                request.work_root,
-            ),
+            DecisionFailure(
+                selected.code,
+                selected.message,
+                _action_failure_details(
+                    selected,
+                    selected_role,
+                    selected_lease,
+                    selected_generation,
+                    selected_action,
+                    selected_action_id,
+                    request.project_root,
+                    request.work_root,
+                ),
+            )
         )
     token.checkpoint()
     return _project_actions(
@@ -1887,8 +1904,8 @@ def _project_actions(
             instruction_reader=instruction_reader,
         )
         match projected:
-            case DecisionFailure():
-                return _actions_rejected(projected.code, projected.message, projected.details)
+            case DecisionFailure() | actions.AcceptedEvidenceDamaged() | _CloseCoverageUnavailable():
+                return _actions_rejected(projected)
             case contracts.CompletionActionView():
                 return execution.TypedOperationResult(
                     contracts.CompletionActionsSuccess(
@@ -1914,48 +1931,72 @@ def _project_actions(
     )
 
 
-def _actions_rejected(
-    code: DecisionFailureCode, message: str, details: FailureDetails | None
-) -> execution.TypedOperationResult[contracts.ActionsResult]:
+@dataclass(frozen=True, slots=True)
+class _CloseCoverageUnavailable:
+    """A focused close whose planned-replacement coverage cannot be reported from the retained definitions."""
+
+    code: obligation_coverage.PairCoverageFailureCode
+    message: str
+    observed: tuple[FailureFact, ...]
+
+
+type _ActionsRejection = (
+    DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ATTEMPT_LEASE_REQUIRED]]
+    | routing.RouteClassificationRequired
+    | actions.AcceptedEvidenceDamaged
+    | _CloseCoverageUnavailable
+)
+
+
+def _actions_rejected(failure: _ActionsRejection) -> execution.TypedOperationResult[contracts.ActionsResult]:
+    """Project one actions rejection; an unavailable action is always refreshable, damaged evidence never."""
     schema = "pinboard-mcp-actions-result/v1"
-    observed, mismatches = common._failure_evidence(details)
-    record: contracts.ActionUnavailable | contracts.AttemptLeaseRequired | contracts.ActionRouteClassificationRequired
-    match code:
-        case DecisionFailureCode.ACTION_NOT_AVAILABLE:
-            if details is None or details.retry != RetryDisposition.REFRESH_ACTION:
-                # The installed action contract cannot represent this failed projection.
-                raise ValueError(message)
-            record = contracts.ActionUnavailable(
-                schema,
-                "rejected",
-                "ACTION_NOT_AVAILABLE",
-                message,
-                False,
-                "unchanged",
-                "refresh-action",
-                (),
-                observed,
-                mismatches,
-            )
-        case DecisionFailureCode.ATTEMPT_LEASE_REQUIRED:
-            record = contracts.AttemptLeaseRequired(
-                schema,
-                "rejected",
-                "ATTEMPT_LEASE_REQUIRED",
-                message,
-                False,
-                "unchanged",
-                "reacquire-authority",
-                (),
-                observed,
-                mismatches,
-            )
-        case DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED:
+    record: (
+        contracts.ActionUnavailable
+        | contracts.AttemptLeaseRequired
+        | contracts.ActionRouteClassificationRequired
+        | contracts.ActionEvidenceDamaged
+        | contracts.ActionCoverageUnavailable
+    )
+    match failure:
+        case DecisionFailure():
+            observed, mismatches = common._failure_evidence(failure.details)
+            match failure.code:
+                case DecisionFailureCode.ACTION_NOT_AVAILABLE:
+                    record = contracts.ActionUnavailable(
+                        schema,
+                        "rejected",
+                        "ACTION_NOT_AVAILABLE",
+                        failure.message,
+                        False,
+                        "unchanged",
+                        "refresh-action",
+                        (),
+                        observed,
+                        mismatches,
+                    )
+                case DecisionFailureCode.ATTEMPT_LEASE_REQUIRED:
+                    record = contracts.AttemptLeaseRequired(
+                        schema,
+                        "rejected",
+                        "ATTEMPT_LEASE_REQUIRED",
+                        failure.message,
+                        False,
+                        "unchanged",
+                        "reacquire-authority",
+                        (),
+                        observed,
+                        mismatches,
+                    )
+                case _ as unreachable:
+                    assert_never(unreachable)
+        case routing.RouteClassificationRequired():
+            observed, mismatches = common._failure_evidence(failure.details)
             record = contracts.ActionRouteClassificationRequired(
                 schema,
                 "rejected",
                 "ROUTE_CLASSIFICATION_REQUIRED",
-                message,
+                failure.message,
                 False,
                 "unchanged",
                 "correct-input",
@@ -1963,8 +2004,43 @@ def _actions_rejected(
                 observed,
                 mismatches,
             )
-        case _:
-            raise ValueError(message)
+        case actions.AcceptedEvidenceDamaged():
+            record = contracts.ActionEvidenceDamaged(
+                schema,
+                "rejected",
+                "ACTION_NOT_AVAILABLE",
+                failure.message,
+                False,
+                "unchanged",
+                "do-not-retry",
+                (),
+                tuple(contracts.FailureObservation(fact.field, fact.value) for fact in failure.observed),
+                tuple(
+                    contracts.FailureMismatch(fact.field, fact.expected, fact.observed) for fact in failure.mismatches
+                ),
+            )
+        case _CloseCoverageUnavailable():
+            match failure.code:
+                case DecisionFailureCode.ITEM_NOT_FOUND:
+                    code: diagnostic_codes.ActionCoverageUnavailableCode = "ITEM_NOT_FOUND"
+                case DecisionFailureCode.ITEM_DEFINITION_INVALID:
+                    code = "ITEM_DEFINITION_INVALID"
+                case _ as unreachable:
+                    assert_never(unreachable)
+            record = contracts.ActionCoverageUnavailable(
+                schema,
+                "rejected",
+                code,
+                failure.message,
+                False,
+                "unchanged",
+                "do-not-retry",
+                (),
+                tuple(contracts.FailureObservation(fact.field, fact.value) for fact in failure.observed),
+                (),
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
     return execution.TypedOperationResult(record, "rejected", None)
 
 
@@ -1980,7 +2056,14 @@ def _mcp_action(
     profile: host_profiles.HostProfile,
     instruction_reader: instructions.InstructionReader,
     artifacts: ArtifactRepository,
-) -> DecisionResult[contracts.ActionView | contracts.CompletionActionView | contracts.CloseActionView]:
+) -> (
+    DecisionResult[
+        contracts.ActionView | contracts.CompletionActionView | contracts.CloseActionView,
+        Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE],
+    ]
+    | actions.AcceptedEvidenceDamaged
+    | _CloseCoverageUnavailable
+):
     """Project a legal action; focused ending detail adds its current decision evidence."""
     anchor = routing.action_definition(snapshot, action)
     projected = actions.project_action(action, include_input_contract=True)
@@ -1995,22 +2078,15 @@ def _mcp_action(
         try:
             completion = actions.completion_input_contract(store, artifacts, action, projected.semantics)
         except ArtifactError as error:
-            return DecisionFailure(
-                DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            return actions.AcceptedEvidenceDamaged(
                 f"Accepted attempt brief could not be verified: {error}. Report the exact accepted brief and defect to the human; do not retry unchanged, reconstruct or overwrite accepted bytes.",
-                FailureDetails(
-                    observed=(FailureFact("attempt_id", str(action.capability.subject)),),
-                    mismatches=(
-                        FailureMismatch(
-                            "accepted_brief_bytes",
-                            "match the accepted selector, size, and SHA-256",
-                            "unreadable or mismatched",
-                        ),
+                (FailureFact("attempt_id", str(action.capability.subject)),),
+                (
+                    FailureMismatch(
+                        "accepted_brief_bytes",
+                        "match the accepted selector, size, and SHA-256",
+                        "unreadable or mismatched",
                     ),
-                    retry=RetryDisposition.DO_NOT_RETRY,
-                    effect=EffectDisposition.UNCHANGED,
-                    changed_surfaces=(),
-                    alternatives=(),
                 ),
             )
         if isinstance(completion, query_models.CompletionCandidateRequired):
@@ -2022,7 +2098,7 @@ def _mcp_action(
             )
         if isinstance(completion, query_models.CompletionRecoveryRequired):
             return _completion_warning(completion.attempt_id, completion.reason, project_root, work_root)
-        if isinstance(completion, DecisionFailure):
+        if isinstance(completion, (DecisionFailure, actions.AcceptedEvidenceDamaged)):
             return completion
         return contracts.CompletionActionView(
             identity,
@@ -2038,9 +2114,10 @@ def _mcp_action(
         )
     if isinstance(action, decision_models.CloseAction) and focused:
         facts = store.read_obligation_coverage(action.capability.subject, None)
-        coverage = None if facts.replacement_item is None else obligation_coverage.report(facts)
+        replacement_item = facts.replacement_item
+        coverage = None if replacement_item is None else obligation_coverage.report_pair(facts, replacement_item)
         if isinstance(coverage, DecisionFailure):
-            return coverage
+            return _close_coverage_unavailable(coverage, facts)
         return contracts.CloseActionView(
             identity,
             projected.label,
@@ -2068,12 +2145,37 @@ def _mcp_action(
     )
 
 
+def _close_coverage_unavailable(
+    failure: DecisionFailure[obligation_coverage.PairCoverageFailureCode], facts: obligation_coverage.CoverageFacts
+) -> _CloseCoverageUnavailable:
+    """State the stored-state cause without the coverage tool's retry advice, which this action does not offer."""
+    observed = (
+        FailureFact("source_item", str(facts.source_item)),
+        FailureFact("replacement_item", None if facts.replacement_item is None else str(facts.replacement_item)),
+    )
+    match failure.code:
+        case DecisionFailureCode.ITEM_NOT_FOUND:
+            missing = (
+                f"source '{facts.source_item}'" if facts.source is None else f"replacement '{facts.replacement_item}'"
+            )
+            return _CloseCoverageUnavailable(
+                failure.code,
+                f"Close coverage cannot be reported because coverage {missing} has no retained definition. "
+                "Report this stored state to the human; repeating this action cannot succeed until it changes.",
+                observed,
+            )
+        case DecisionFailureCode.ITEM_DEFINITION_INVALID:
+            return _CloseCoverageUnavailable(failure.code, failure.message, observed)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _completion_warning(
     attempt_id: AttemptId,
     reason: str,
     project_root: str,
     work_root: str,
-) -> DecisionFailure:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     """Report pending closure evidence with one read-only inspection."""
     inspection: dict[str, JsonValue] = {
         "project_root": project_root,

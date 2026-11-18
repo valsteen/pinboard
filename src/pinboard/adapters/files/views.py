@@ -21,7 +21,7 @@ from typing import Literal, assert_never
 import msgspec
 
 from pinboard.adapters.files import roadmap as roadmap_files
-from pinboard.adapters.files.errors import FileIOError, FileIOErrorCode
+from pinboard.adapters.files.errors import FileIOError, ViewRefreshError
 from pinboard.adapters.files.file_io import atomic_replace, ensure_child_directory
 from pinboard.adapters.files.models import ViewRefreshResult, ViewWarning
 from pinboard.application import (
@@ -1706,14 +1706,12 @@ def _board_lock(view_root: Path) -> Generator[None]:
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o644)
     except OSError as error:
-        raise FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, f"Board lock could not be opened: {path}") from error
+        raise ViewRefreshError(f"Board lock could not be opened: {path}") from error
     try:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
         except OSError as error:
-            raise FileIOError(
-                FileIOErrorCode.VIEW_REFRESH_FAILED, f"Board lock could not be acquired: {path}"
-            ) from error
+            raise ViewRefreshError(f"Board lock could not be acquired: {path}") from error
         yield
     finally:
         os.close(descriptor)
@@ -1743,7 +1741,7 @@ def refresh_facts(
     try:
         damaged = _write_facts(facts, work_root, attempt_briefs)
         _write_board(ensure_child_directory(work_root, "views"), board_reader, now)
-    except (FileIOError, ports.WorkStoreError) as error:
+    except (FileIOError, ViewRefreshError, ports.WorkStoreError) as error:
         return ViewRefreshResult(
             facts.project_revision,
             ViewWarning(
@@ -1825,7 +1823,7 @@ def rebuild_facts(
         view_root = ensure_child_directory(work_root, "views")
         damaged = _write_facts(facts, work_root, attempt_briefs)
         _write_board(view_root, board_reader, now)
-    except (FileIOError, ports.WorkStoreError) as error:
+    except (FileIOError, ViewRefreshError, ports.WorkStoreError) as error:
         return ViewRefreshResult(
             facts.project_revision,
             ViewWarning(

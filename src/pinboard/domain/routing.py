@@ -1,6 +1,7 @@
 """Recorded route presence; absence is retained data, never an inferred classification."""
 
-from typing import assert_never
+from dataclasses import dataclass
+from typing import Literal, assert_never, final
 
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
@@ -17,12 +18,23 @@ from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 
 
-def require_route_facts(anchor: work_models.DefinitionAnchor) -> DecisionResult[work_models.RouteFacts]:
-    route = anchor.definition.route_facts
-    if route is not None:
-        return route
-    return DecisionFailure(
-        DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
+@final
+@dataclass(frozen=True, slots=True)
+class RouteClassificationRequired:
+    """A route-dependent action on a current definition that records no route facts.
+
+    Its details always name the definition, so a consumer that projects them needs no absence check.
+    """
+
+    message: str
+    details: FailureDetails
+
+    def failure(self) -> DecisionFailure[Literal[DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED]]:
+        return DecisionFailure(DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED, self.message, self.details)
+
+
+def route_classification_required(anchor: work_models.DefinitionAnchor) -> RouteClassificationRequired:
+    return RouteClassificationRequired(
         f"Item '{anchor.work_item_id}' definition revision {anchor.revision} ({anchor.digest}) has no recorded route facts. "
         "Revise its complete current definition with explicitly supplied size_class, architecture_impact, "
         "external_effects and declares_checkpoints; do not infer defaults. This grants no action availability. "
@@ -42,6 +54,15 @@ def require_route_facts(anchor: work_models.DefinitionAnchor) -> DecisionResult[
     )
 
 
+def require_route_facts(
+    anchor: work_models.DefinitionAnchor,
+) -> DecisionResult[work_models.RouteFacts, Literal[DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED]]:
+    route = anchor.definition.route_facts
+    if route is not None:
+        return route
+    return route_classification_required(anchor).failure()
+
+
 def action_definition(snapshot: LedgerSnapshot, action: decision_models.Action) -> work_models.DefinitionAnchor | None:
     semantics = decision_models.action_semantics(action.kind)
     match semantics.subject_kind:
@@ -56,7 +77,9 @@ def action_definition(snapshot: LedgerSnapshot, action: decision_models.Action) 
             assert_never(unreachable)
 
 
-def validate_action_route(snapshot: LedgerSnapshot, action: decision_models.Action) -> DecisionFailure | None:
+def validate_action_route(
+    snapshot: LedgerSnapshot, action: decision_models.Action
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | RouteClassificationRequired | None:
     if not decision_models.action_semantics(action.kind).requires_recorded_route:
         return None
     anchor = action_definition(snapshot, action)
@@ -72,5 +95,6 @@ def validate_action_route(snapshot: LedgerSnapshot, action: decision_models.Acti
         and item.attempt is None
     ):
         return None
-    route = require_route_facts(anchor)
-    return route if isinstance(route, DecisionFailure) else None
+    if anchor.definition.route_facts is None:
+        return route_classification_required(anchor)
+    return None

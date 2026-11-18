@@ -36,9 +36,13 @@ class OrderChange:
         )
 
 
+# A live order that changed since the caller read it is unavailable; a malformed permutation is invalid input.
+type OrderDecisionCode = Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.TRANSITION_INPUT_INVALID]
+
+
 def decide_order(
     current: tuple[WorkItemId, ...], expected: tuple[WorkItemId, ...], requested: tuple[WorkItemId, ...]
-) -> DecisionResult[OrderChange]:
+) -> DecisionResult[OrderChange, OrderDecisionCode]:
     if current != expected:
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,

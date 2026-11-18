@@ -171,7 +171,7 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                     AttemptId("work-a-1"),
                     HistoryId(history_id),
                 )
-                assert not isinstance(reloaded, dispatch_operations.DispatchFailure)
+                assert not isinstance(reloaded, dispatch_operations.CorrectionReadFailure)
                 self.assertEqual(snapshot, reloaded.snapshot)
 
     def native_fixture(self, fixture: CheckpointFixture) -> CheckpointFixture:

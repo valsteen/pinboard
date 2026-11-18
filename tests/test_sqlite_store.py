@@ -87,7 +87,7 @@ class SQLiteStoreTest(unittest.TestCase):
         self.assertEqual(StorageErrorCode.INVARIANT_VIOLATION, raised.exception.code, state_name)
         self.assertEqual(0, store.validated_snapshot().lifecycle.project.revision)
 
-    def _assert_action_not_available[T](self, result: T | DecisionFailure) -> None:
+    def _assert_action_not_available[T, Code: DecisionFailureCode](self, result: T | DecisionFailure[Code]) -> None:
         self.assertIsInstance(result, DecisionFailure)
         assert isinstance(result, DecisionFailure)
         self.assertEqual(DecisionFailureCode.ACTION_NOT_AVAILABLE, result.code)

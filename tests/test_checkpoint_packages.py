@@ -226,7 +226,7 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                     checkpoint_packages.validate_checkpoint_package_closure(
                         changed_package, references, {**data, reference.artifact_ref_id: raw}
                     ),
-                    work_brief_models.WorkBriefFailure,
+                    work_brief_models.ReviewEvidenceFailure,
                 )
 
     def test_completion_package_round_trips_exact_closed_identities_and_coverage(self) -> None:
@@ -268,7 +268,9 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         encoded = work_brief_compatibility_models.canonical_historical_completion_review_package_bytes(package)
 
         self.assertEqual(package, work_briefs.decode_canonical_historical_completion_review_package(encoded))
-        self.assertIsInstance(decode_canonical_completion_review_package(encoded), work_brief_models.WorkBriefFailure)
+        self.assertIsInstance(
+            decode_canonical_completion_review_package(encoded), work_brief_models.ReviewEvidenceFailure
+        )
         payload = json.loads(encoded)
         for changes in (
             {"unknown": True},
@@ -287,18 +289,18 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                     work_briefs.decode_canonical_historical_completion_review_package(
                         msgspec.json.encode(payload | changes, order="sorted") + b"\n"
                     ),
-                    work_brief_models.WorkBriefFailure,
+                    work_brief_models.ReviewEvidenceFailure,
                 )
         self.assertIsInstance(
             work_briefs.decode_canonical_historical_completion_review_package(encoded.rstrip()),
-            work_brief_models.WorkBriefFailure,
+            work_brief_models.ReviewEvidenceFailure,
         )
         mixed = json.loads(encoded)
         assert isinstance(mixed, dict)
         mixed["accepted_brief"]["role"] = "terminal-result"
         self.assertIsInstance(
             work_briefs.decode_canonical_historical_completion_review_package(json.dumps(mixed).encode()),
-            work_brief_models.WorkBriefFailure,
+            work_brief_models.ReviewEvidenceFailure,
         )
 
     def test_current_completion_package_round_trips_without_checkpoint_history(self) -> None:
@@ -361,9 +363,9 @@ class CheckpointPackageTest(CheckpointPackageSupport):
         assert isinstance(payload, dict)
         payload["schema"] = "pinboard-checkpoint-review-package/v2"
         rejected = work_briefs.decode_checkpoint_review_package(msgspec.json.encode(payload))
-        self.assertIsInstance(rejected, work_brief_models.WorkBriefFailure)
-        assert isinstance(rejected, work_brief_models.WorkBriefFailure)
-        self.assertEqual(work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID, rejected.code)
+        self.assertIsInstance(rejected, work_brief_models.ReviewEvidenceFailure)
+        assert isinstance(rejected, work_brief_models.ReviewEvidenceFailure)
+        self.assertEqual(work_brief_models.ReviewEvidenceErrorCode.PACKAGE_INVALID, rejected.code)
 
     def test_checkpoint_acceptance_preserves_verified_candidate_diff_in_v3_package(self) -> None:
         fixture = self.accepted_package_fixture()

@@ -69,7 +69,7 @@ class PreparationAuthorityTest(unittest.TestCase):
         )
         started = Event()
         finished = Event()
-        results: list[DecisionFailure | PreparationStart] = []
+        results: list[DecisionFailure[DecisionFailureCode] | PreparationStart] = []
 
         def start() -> None:
             started.set()
@@ -107,7 +107,7 @@ class PreparationAuthorityTest(unittest.TestCase):
         store, database_path = self._store()
         before = store.validated_snapshot()
         barrier = Barrier(2)
-        results: list[DecisionFailure | PreparationStart] = []
+        results: list[DecisionFailure[DecisionFailureCode] | PreparationStart] = []
 
         def start(identity: str) -> None:
             barrier.wait(timeout=5)

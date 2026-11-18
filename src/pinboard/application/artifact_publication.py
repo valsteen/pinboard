@@ -1,12 +1,11 @@
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pinboard.application import artifact_identity, query_models, stored_state
 from pinboard.application.artifacts import (
     ArtifactPublication,
-    ArtifactRef,
     BriefArtifactRef,
     CurrentAttemptWorkBriefIdentity,
     NewArtifact,
@@ -20,6 +19,7 @@ from pinboard.domain.errors import (
     DecisionFailureCode,
     DecisionResult,
     EffectDisposition,
+    FailureAction,
     FailureDetails,
     FailureFact,
     FailureMismatch,
@@ -45,34 +45,57 @@ class AcceptedArtifactPublication:
     ledger_changed: bool
 
 
+# The durable surfaces an artifact publication can change; no other surface reaches a publication result.
+type PublicationSurface = Literal[
+    ChangedSurface.IMMUTABLE_ARTIFACT, ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE, ChangedSurface.LEDGER
+]
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedFailureDetails:
+    """Failure evidence after publication changed durable surfaces, so the caller must not retry or replay it."""
+
+    observed: tuple[FailureFact, ...]
+    mismatches: tuple[FailureMismatch, ...]
+    changed_surfaces: tuple[PublicationSurface, ...]
+    alternatives: tuple[FailureAction, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class UnpublishedFailureDetails:
+    """Failure evidence before publication changed anything; only a retryable store failure may repeat."""
+
+    observed: tuple[FailureFact, ...]
+    mismatches: tuple[FailureMismatch, ...]
+    retry: Literal[RetryDisposition.RETRY_SAME_INPUT, RetryDisposition.DO_NOT_RETRY]
+
+
 @dataclass(frozen=True, slots=True)
 class ArtifactAcceptanceFailure:
     selector: str
     cause: WorkStoreError
-    details: FailureDetails
+    details: PublishedFailureDetails | UnpublishedFailureDetails
 
 
 @dataclass(frozen=True, slots=True)
 class ArtifactWriteFailure:
     selector: str
     cause: Exception
-    details: FailureDetails
+    details: PublishedFailureDetails
 
 
-def _committed_artifact_details(
-    reference: ArtifactRef,
-    prior: FailureDetails | None,
-) -> FailureDetails:
-    return FailureDetails(
-        observed=(
-            FailureFact("published_artifact_selector", reference.selector),
-            *(() if prior is None else prior.observed),
-        ),
-        mismatches=() if prior is None else prior.mismatches,
-        retry=RetryDisposition.DO_NOT_RETRY,
-        effect=EffectDisposition.COMMITTED,
-        changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
-        alternatives=(),
+@dataclass(frozen=True, slots=True)
+class PublishedArtifactRejected:
+    """The artifact was published immutably, but its accepted reference lost a stale compare-and-set write."""
+
+    message: str
+    details: PublishedFailureDetails
+
+
+def accepted_publication_surfaces(publication: AcceptedArtifactPublication) -> tuple[PublicationSurface, ...]:
+    return (
+        *((ChangedSurface.IMMUTABLE_ARTIFACT,) if publication.artifact_created else ()),
+        *((ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE, ChangedSurface.LEDGER) if publication.ledger_changed else ()),
     )
 
 
@@ -82,10 +105,14 @@ def publish_accepted_artifact(
     artifact: NewArtifact,
     accepted_at: datetime,
     ownership: artifact_identity.Ownership | None,
-) -> DecisionResult[AcceptedArtifactPublication | ArtifactAcceptanceFailure | ArtifactWriteFailure]:
+) -> DecisionResult[
+    AcceptedArtifactPublication | ArtifactAcceptanceFailure | ArtifactWriteFailure | PublishedArtifactRejected,
+    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE],
+]:
     """Publish immutable bytes, then accept their verified reference in SQLite.
 
-    A newly published immutable artifact cannot be rolled back if SQLite acceptance fails.
+    A newly published immutable artifact cannot be rolled back if SQLite acceptance fails, so a failure after it
+    carries published failure details; a refused acceptance without a new artifact remains an unchanged rejection.
     """
 
     publication = publisher.publish(artifact)
@@ -93,6 +120,7 @@ def publish_accepted_artifact(
         return publication
     published_reference = publication.reference
     artifact_created = publication.created
+    selector_facts = (FailureFact("published_artifact_selector", published_reference.selector),)
     try:
         accepted = store.accept_artifact_reference(publisher.work_root, published_reference, accepted_at, ownership)
     except WorkStoreError as error:
@@ -101,25 +129,25 @@ def publish_accepted_artifact(
         return ArtifactAcceptanceFailure(
             published_reference.selector,
             error,
-            FailureDetails(
-                observed=(FailureFact("published_artifact_selector", published_reference.selector),),
-                mismatches=(),
-                retry=(
-                    RetryDisposition.DO_NOT_RETRY
-                    if artifact_created or not error.retryable
-                    else RetryDisposition.RETRY_SAME_INPUT
-                ),
-                effect=EffectDisposition.COMMITTED if artifact_created else EffectDisposition.UNCHANGED,
-                changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,) if artifact_created else (),
-                alternatives=(),
+            PublishedFailureDetails(selector_facts, (), (ChangedSurface.IMMUTABLE_ARTIFACT,), ())
+            if artifact_created
+            else UnpublishedFailureDetails(
+                selector_facts,
+                (),
+                RetryDisposition.RETRY_SAME_INPUT if error.retryable else RetryDisposition.DO_NOT_RETRY,
             ),
         )
     if isinstance(accepted, DecisionFailure):
         if artifact_created:
-            return DecisionFailure(
-                accepted.code,
+            prior = accepted.details
+            return PublishedArtifactRejected(
                 accepted.message,
-                _committed_artifact_details(published_reference, accepted.details),
+                PublishedFailureDetails(
+                    (*selector_facts, *(() if prior is None else prior.observed)),
+                    () if prior is None else prior.mismatches,
+                    (ChangedSurface.IMMUTABLE_ARTIFACT,),
+                    (),
+                ),
             )
         return accepted
     return AcceptedArtifactPublication(accepted.reference, artifact_created, accepted.ledger_changed)
@@ -129,7 +157,10 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
     facts: query_models.DecisionFacts,
     command: decision_models.TransitionCommand,
     identity: WorkBriefIdentity | None,
-) -> DecisionFailure | None:
+) -> (
+    DecisionFailure[Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID, DecisionFailureCode.TRANSITION_INPUT_INVALID]]
+    | None
+):
     """Validate a selected brief identity against exact locked decision facts."""
 
     snapshot = facts.snapshot

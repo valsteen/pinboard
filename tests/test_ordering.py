@@ -15,7 +15,7 @@ from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import service, stored_state
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.domain import work_models
-from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HostId, LeaseId, TaskId, WorkItemId
 from pinboard.mcp import server as mcp_server
 from tests.native_support import call_native_tool
@@ -39,7 +39,7 @@ class OrderingTest(unittest.TestCase):
 
     def reorder(
         self, expected: tuple[WorkItemId, ...], requested: tuple[WorkItemId, ...]
-    ) -> CommittedEffect | DecisionFailure:
+    ) -> CommittedEffect | DecisionFailure[DecisionFailureCode]:
         return service.reorder(self.store, expected, requested, TaskId("owner"), HostId("local"), SQLITE_NOW)
 
     def native_order(self, order: JsonObject) -> JsonObject:

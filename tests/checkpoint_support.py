@@ -814,7 +814,7 @@ class CheckpointPackageSupport(unittest.TestCase):
         package = decode_canonical_checkpoint_review_package(
             (fixture.work / fixture.package_reference.selector).read_bytes()
         )
-        if isinstance(package, work_brief_models.WorkBriefFailure):
+        if isinstance(package, work_brief_models.ReviewEvidenceFailure):
             self.fail(str(package))
         return package
 

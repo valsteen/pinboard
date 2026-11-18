@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
+from typing import Literal, assert_never
 
+from pinboard.adapters import dispatch_operations
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.models import AffectedViews, UnavailableViewRefresh, ViewRefreshResult, ViewWarning
@@ -20,11 +22,13 @@ from pinboard.application import (
     work_brief_models,
     work_briefs,
 )
+from pinboard.application.artifact_publication import PublishedFailureDetails, UnpublishedFailureDetails
 from pinboard.application.ports import GeneratedViewReader
 from pinboard.domain import work_models
 from pinboard.domain.errors import (
     ChangedSurface,
     FailureDetails,
+    RetryDisposition,
 )
 from pinboard.domain.identifiers import AttemptId
 from pinboard.mcp import contracts, tool_names
@@ -122,7 +126,11 @@ def _candidate_recovery_view(
 
 
 def _failure_evidence(
-    details: FailureDetails | None,
+    details: FailureDetails
+    | PublishedFailureDetails
+    | UnpublishedFailureDetails
+    | dispatch_operations.CorrectionReadDetails
+    | None,
 ) -> tuple[tuple[contracts.FailureObservation, ...], tuple[contracts.FailureMismatch, ...]]:
     if details is None:
         return (), ()
@@ -159,13 +167,33 @@ def _refresh_affected_views(
         )
 
 
+def publication_retry(
+    retry: Literal[RetryDisposition.RETRY_SAME_INPUT, RetryDisposition.DO_NOT_RETRY],
+) -> Literal["retry-same-input", "do-not-retry"]:
+    match retry:
+        case RetryDisposition.RETRY_SAME_INPUT:
+            return "retry-same-input"
+        case RetryDisposition.DO_NOT_RETRY:
+            return "do-not-retry"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _refresh_published_ledger(
-    durable: DurableRoots, store: GeneratedViewReader, details: FailureDetails | None, now: datetime
+    durable: DurableRoots,
+    store: GeneratedViewReader,
+    details: FailureDetails | PublishedFailureDetails | UnpublishedFailureDetails | None,
+    now: datetime,
 ) -> ViewWarning | None:
     """Refresh an earlier confirmed ledger commit even when later publication failed."""
-    if details is None or ChangedSurface.LEDGER not in details.changed_surfaces:
-        return None
-    return _refresh_affected_views(durable, store, AffectedViews((), (), ()), now).warning
+    match details:
+        case PublishedFailureDetails() if ChangedSurface.LEDGER in details.changed_surfaces:
+            return _refresh_affected_views(durable, store, AffectedViews((), (), ()), now).warning
+        case PublishedFailureDetails() | UnpublishedFailureDetails() | FailureDetails() | None:
+            # Only a publication that changed durable surfaces can have committed the ledger.
+            return None
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _review_evidence_reference(reference: stored_state.ArtifactReference) -> contracts.ReviewEvidenceReference:

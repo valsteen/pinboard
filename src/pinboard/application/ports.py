@@ -20,6 +20,7 @@ from pinboard.application.mutation_models import (
     CheckpointMutationAllocation,
     CommittedEffect,
     MutationAllocation,
+    OrderMutation,
     ProposalCreationMutation,
     StoredStateMutation,
 )
@@ -28,6 +29,13 @@ from pinboard.domain import consolidation, decision_models, initiatives, work_mo
 from pinboard.domain.errors import DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, LeaseId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
+
+# A compare-and-set write whose recorded state changed after the transaction read it.
+type StaleCommitCode = Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]
+# Lifecycle persistence also refuses a stored definition that no longer validates or matches its revision.
+type CommitFailureCode = (
+    StaleCommitCode | Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID, DecisionFailureCode.ITEM_DEFINITION_STALE]
+)
 
 
 class WorkStoreError(RuntimeError):
@@ -80,12 +88,14 @@ class WorkTransaction(Protocol):
 
     def read_preparation_generation(self, work_item_id: WorkItemId) -> int: ...
 
-    def commit(self, mutation: StoredStateMutation) -> DecisionResult[CommittedEffect]: ...
+    def commit(self, mutation: StoredStateMutation) -> DecisionResult[CommittedEffect, CommitFailureCode]: ...
 
-    def commit_proposal(
-        self, mutation: ProposalCreationMutation
-    ) -> DecisionResult[CommittedEffect, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
+    def commit_proposal(self, mutation: ProposalCreationMutation) -> DecisionResult[CommittedEffect, StaleCommitCode]:
         """Commit one proposal creation, whose only expected refusal is a stale compare-and-set write."""
+        ...
+
+    def commit_order(self, mutation: OrderMutation) -> DecisionResult[CommittedEffect, StaleCommitCode]:
+        """Commit one live-order permutation, whose only expected refusal is a stale compare-and-set write."""
         ...
 
 
@@ -114,7 +124,7 @@ class WorkStore(Protocol):
         published: ArtifactRef,
         accepted_at: datetime,
         ownership: artifact_identity.Ownership | None,
-    ) -> DecisionResult[ArtifactReferenceAcceptance]: ...
+    ) -> DecisionResult[ArtifactReferenceAcceptance, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]: ...
 
     def read_artifact_reference(
         self, kind: work_models.ArtifactKind, key: str, revision: int

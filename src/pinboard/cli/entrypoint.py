@@ -11,6 +11,7 @@ import io
 import os
 import sys
 from collections.abc import Sequence
+from dataclasses import replace as dataclass_replace
 from typing import TextIO, assert_never, override
 
 from pinboard.adapters.files.errors import (
@@ -35,6 +36,7 @@ from pinboard.cli.errors import (
     CommandFailure,
     ExportMediaFailure,
     InitializationAfterCommittedEffects,
+    ReviewEvidenceFailure,
     ViewRefreshFailure,
     WorkBriefFailure,
     initialization_failure_details,
@@ -121,13 +123,15 @@ def _parse_arguments(
         return 2
 
 
-def _failure_exit_code(result: int | CommandFailure | WorkBriefFailure | InitializationAfterCommittedEffects) -> int:
+def _failure_exit_code(
+    result: int | CommandFailure | WorkBriefFailure | ReviewEvidenceFailure | InitializationAfterCommittedEffects,
+) -> int:
     match result:
         case int():
             return result
         case CommandFailure():
             return 11
-        case WorkBriefFailure():
+        case WorkBriefFailure() | ReviewEvidenceFailure():
             return 16
         case InitializationAfterCommittedEffects():
             return 12
@@ -136,7 +140,7 @@ def _failure_exit_code(result: int | CommandFailure | WorkBriefFailure | Initial
 
 
 def _present_expected_result(
-    result: int | CommandFailure | WorkBriefFailure | InitializationAfterCommittedEffects,
+    result: int | CommandFailure | WorkBriefFailure | ReviewEvidenceFailure | InitializationAfterCommittedEffects,
     operation: str,
     roots: cli_commands.ResolvedRoots | None,
     *,
@@ -156,12 +160,12 @@ def _present_expected_result(
                 file=sys.stderr,
             )
         return exit_code
-    if isinstance(result, WorkBriefFailure):
+    if isinstance(result, (WorkBriefFailure, ReviewEvidenceFailure)):
         if roots is None:
             raise AssertionError("Accepted-evidence failure requires the selected work root.")
-        result = WorkBriefFailure(
-            result.code,
-            f"{result.message} Report this accepted-evidence defect under '{roots.work}' to the human for diagnosis; preserve authoritative state and do not reconstruct accepted bytes.",
+        result = dataclass_replace(
+            result,
+            message=f"{result.message} Report this accepted-evidence defect under '{roots.work}' to the human for diagnosis; preserve authoritative state and do not reconstruct accepted bytes.",
         )
     if json_requested:
         if isinstance(result, CommandFailure) and result.code == DecisionFailureCode.ITEM_STATUS_INCONSISTENT:

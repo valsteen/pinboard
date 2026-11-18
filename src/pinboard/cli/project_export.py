@@ -78,7 +78,7 @@ def _read_and_encode_artifacts(
 
 def export_project(
     durable: DurableRoots, store: ports.ProjectExportReader, _command: cli_commands.ExportCommand
-) -> work_brief_models.WorkBriefResult[int] | ExportMediaFailure:
+) -> work_brief_models.BriefEvidenceResult[int] | ExportMediaFailure:
     captured_state = project_export.merge_project_export_batches(store.read_project_export_batches())
     artifact_repository = ArtifactRepository(durable)
     artifacts = _read_and_encode_artifacts(captured_state, artifact_repository)
@@ -86,7 +86,7 @@ def export_project(
         return artifacts
     projected_references, encoded_contents, verified_artifacts = artifacts
     archived = history_archives.verify_archives(captured_state, verified_artifacts)
-    if isinstance(archived, work_brief_models.WorkBriefFailure):
+    if isinstance(archived, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
         return archived
     try:
         candidate_snapshots.validate_candidate_snapshot_history(captured_state, verified_artifacts, archived)
@@ -102,7 +102,7 @@ def export_project(
         verified_artifacts,
         archived,
     )
-    if isinstance(checkpoint_packages, work_brief_models.WorkBriefFailure):
+    if isinstance(checkpoint_packages, work_brief_models.ReviewEvidenceFailure):
         return checkpoint_packages
     completion_packages = lifecycle_packages.validate_completion_review_packages(
         captured_state.lifecycle,
@@ -112,15 +112,15 @@ def export_project(
         checkpoint_packages,
         archived,
     )
-    if isinstance(completion_packages, work_brief_models.WorkBriefFailure):
+    if isinstance(completion_packages, work_brief_models.ReviewEvidenceFailure):
         return completion_packages
     for receipt in captured_state.transition_receipts:
         if (
             receipt.action_kind == decision_models.ActionKind.CANCEL
             and (message := cancellation.receipt_failure(receipt)) is not None
         ):
-            return work_brief_models.WorkBriefFailure(
-                work_brief_models.WorkBriefErrorCode.PACKAGE_PROVENANCE_INVALID, message
+            return work_brief_models.ReviewEvidenceFailure(
+                work_brief_models.ReviewEvidenceErrorCode.PACKAGE_PROVENANCE_INVALID, message
             )
     portable_package = project_export.project_export_from_state(
         captured_state,

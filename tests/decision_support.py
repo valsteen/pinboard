@@ -13,7 +13,7 @@ def project_inactive_attempt_authority(
     state: stored_state.StoredWorkState,
     attempt_id: AttemptId,
     now: datetime,
-) -> DecisionResult[authority_models.InactiveAttemptAuthority]:
+) -> DecisionResult[authority_models.InactiveAttemptAuthority, DecisionFailureCode]:
     """Select exact retained inactive authority after ordinary interruption recovery."""
 
     attempt = next((value for value in state.lifecycle.attempts if value.attempt_id == attempt_id), None)
@@ -339,7 +339,7 @@ def discover_actions(
     lease_id: LeaseId | None = None,
     generation: int | None = None,
     now: datetime,
-) -> DecisionResult[tuple[decision_models.Action, ...]]:
+) -> DecisionResult[tuple[decision_models.Action, ...], DecisionFailureCode]:
     """Project a complete fixture and discover its currently legal actions."""
 
     return discover_current_actions(

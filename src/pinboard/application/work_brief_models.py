@@ -32,13 +32,18 @@ class WorkBriefErrorCode(DescribedCode):
         "WORK_BRIEF_REVIEW_NOT_INDEPENDENT",
         "The independent work-brief review was not supplied by a separate reviewer.",
     )
-    REVIEW_NOT_READY = (
-        "WORK_BRIEF_REVIEW_NOT_READY",
-        "The independent work-brief review has not satisfied the recorded review prerequisites.",
-    )
     REVIEW_STALE = (
         "WORK_BRIEF_REVIEW_STALE",
         "The independent work-brief review no longer matches the current recorded revision.",
+    )
+
+
+class ReviewEvidenceErrorCode(DescribedCode):
+    """Readiness and package defects in review evidence, which brief and brief-review reads never produce."""
+
+    REVIEW_NOT_READY = (
+        "WORK_BRIEF_REVIEW_NOT_READY",
+        "The independent work-brief review has not satisfied the recorded review prerequisites.",
     )
     PACKAGE_INVALID = (
         "CHECKPOINT_REVIEW_PACKAGE_INVALID",
@@ -65,6 +70,21 @@ class WorkBriefFailure:
 
 
 type WorkBriefResult[T] = T | WorkBriefFailure
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewEvidenceFailure:
+    code: ReviewEvidenceErrorCode
+    message: str
+
+    @override
+    def __str__(self) -> str:
+        return f"{self.code.value}: {self.message}"
+
+
+type ReviewEvidenceResult[T] = T | ReviewEvidenceFailure
+# History closure reads decode accepted briefs and validate review packages, so they carry either family.
+type BriefEvidenceResult[T] = T | WorkBriefFailure | ReviewEvidenceFailure
 type WorkBriefJsonValue = bool | int | float | str | list[WorkBriefJsonValue] | dict[str, WorkBriefJsonValue] | None
 
 type NonEmptyText = Annotated[str, msgspec.Meta(min_length=1)]

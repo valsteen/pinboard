@@ -440,7 +440,7 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
         fresh = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
         all_bytes = {value.artifact_ref_id: artifacts.read(value) for value in fresh.artifact_references}
         verified = history_archives.verify_archives(fresh, all_bytes)
-        assert not isinstance(verified, work_brief_models.WorkBriefFailure)
+        assert not isinstance(verified, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure))
         candidate_snapshots.validate_candidate_snapshot_history(fresh, all_bytes, verified)
         self.assert_archive_readable(fixture, archive)
         self.assertEqual(
@@ -589,7 +589,7 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
                 history_archives.derive_archive(
                     replace(facts, attempt=replace(attempt, state=work_models.AttemptState.ACTIVE)), source_bytes, ()
                 ),
-                work_brief_models.WorkBriefFailure,
+                work_brief_models.ReviewEvidenceFailure,
             )
         for changed in (
             replace_struct(archive, attempt_sha256="0" * 64),
@@ -605,7 +605,7 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
                 )
                 self.assertIsInstance(
                     history_archives.verify_archive(reference, encoded, facts, source_bytes),
-                    work_brief_models.WorkBriefFailure,
+                    work_brief_models.ReviewEvidenceFailure,
                 )
         for wrong_reference in (
             replace(accepted.reference, kind=work_models.ArtifactKind.RESULT),
@@ -615,13 +615,13 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
                 history_archives.verify_archive(
                     wrong_reference, artifacts.read(accepted.reference), facts, source_bytes
                 ),
-                work_brief_models.WorkBriefFailure,
+                work_brief_models.ReviewEvidenceFailure,
             )
         missing = dict(source_bytes)
         del missing[facts.artifact_references[0].artifact_ref_id]
         self.assertIsInstance(
             history_archives.verify_archive(accepted.reference, artifacts.read(accepted.reference), facts, missing),
-            work_brief_models.WorkBriefFailure,
+            work_brief_models.ReviewEvidenceFailure,
         )
         payload = json.loads(history_archives.canonical_archive_bytes(archive))
         for malformed in (
@@ -630,12 +630,12 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
         ):
             self.assertIsInstance(
                 history_archives.decode_archive(msgspec.json.encode(malformed, order="sorted") + b"\n"),
-                work_brief_models.WorkBriefFailure,
+                work_brief_models.ReviewEvidenceFailure,
             )
-        self.assertIsInstance(history_archives.decode_archive(b"{}"), work_brief_models.WorkBriefFailure)
+        self.assertIsInstance(history_archives.decode_archive(b"{}"), work_brief_models.ReviewEvidenceFailure)
         self.assertIsInstance(
             history_archives.decode_archive(history_archives.canonical_archive_bytes(archive).rstrip()),
-            work_brief_models.WorkBriefFailure,
+            work_brief_models.ReviewEvidenceFailure,
         )
         self.replace_artifact_bytes(
             fixture,
@@ -726,7 +726,7 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
                     with self.subTest(captured=captured_checkpoints):
                         self.assertIsInstance(
                             history_archives.derive_archive(facts, source_bytes, captured_checkpoints),
-                            work_brief_models.WorkBriefFailure,
+                            work_brief_models.ReviewEvidenceFailure,
                         )
                 missing_candidate_facts = replace(
                     facts,
@@ -746,11 +746,11 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
                     history_archives.derive_archive(missing_candidate_facts, source_bytes, (unavailable,)),
                     history_archives.HistoryArchive
                     if schema == "pinboard-checkpoint-review-package/v1"
-                    else work_brief_models.WorkBriefFailure,
+                    else work_brief_models.ReviewEvidenceFailure,
                 )
                 self.assertIsInstance(
                     history_archives.derive_archive(missing_candidate_facts, source_bytes, (captured,)),
-                    work_brief_models.WorkBriefFailure,
+                    work_brief_models.ReviewEvidenceFailure,
                 )
                 invalid_receipts = tuple(
                     replace(value, outcome_payload=work_models.CanonicalJson(b"{}"))
@@ -762,5 +762,5 @@ class HistoryArchiveTest(SubmittedCandidateSupport):
                     history_archives.derive_archive(
                         replace(facts, transition_receipts=invalid_receipts), source_bytes, (captured,)
                     ),
-                    work_brief_models.WorkBriefFailure,
+                    work_brief_models.ReviewEvidenceFailure,
                 )

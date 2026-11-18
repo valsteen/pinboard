@@ -320,7 +320,7 @@ class PauseDecisionsTest(CheckpointPackageSupport):
     def test_committed_migration_to_current_reports_committed_when_the_view_refresh_after_it_fails(self) -> None:
         for failure in (
             ArtifactError(ArtifactErrorCode.STORAGE_IO_ERROR, "Controlled brief read failure."),
-            FileIOError(FileIOErrorCode.VIEW_REFRESH_FAILED, "Controlled view write failure."),
+            FileIOError(FileIOErrorCode.FILE_PUBLISH_FAILED, "Controlled view write failure."),
         ):
             with self.subTest(failure=type(failure).__name__):
                 fixture = self.checkpoint_fixture()

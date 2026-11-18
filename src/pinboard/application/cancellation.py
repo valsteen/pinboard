@@ -3,13 +3,14 @@
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
+from typing import Literal
 
 import msgspec
 
 from pinboard.application import cancellation_models as models
 from pinboard.application import stored_state
 from pinboard.application.mutation_models import CancellationMutation, CommittedEffect, MutationReceipt
-from pinboard.application.ports import WorkStore
+from pinboard.application.ports import CommitFailureCode, WorkStore
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ActionId, HistorySubjectId, HostId, TaskId, WorkItemId
@@ -24,7 +25,9 @@ def binding(preview: models.CompatibilityCancellationPreviewV1, work_root: Path)
     )
 
 
-def preview(store: WorkStore, item_id: WorkItemId) -> DecisionResult[models.CancellationPreview]:
+def preview(
+    store: WorkStore, item_id: WorkItemId
+) -> DecisionResult[models.CancellationPreview, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     value = store.read_cancellation_preview(item_id)
     if value is None:
         return DecisionFailure(
@@ -44,7 +47,7 @@ def confirm(
     actor_host_id: HostId,
     now: datetime,
     work_root: Path,
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[CommittedEffect, CommitFailureCode]:
     with store.write() as transaction:
         current = transaction.read_cancellation_preview(item_id)
         if current is None or binding(current, work_root) != expected:

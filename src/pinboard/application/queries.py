@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
-from typing import assert_never
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -46,7 +46,7 @@ from pinboard.domain.ledger import LedgerSnapshot
 def select_attempt_context(
     reader: ports.AttemptContextReader,
     attempt_id: AttemptId,
-) -> DecisionResult[query_models.AttemptContextFacts]:
+) -> DecisionResult[query_models.AttemptContextFacts, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     selected = reader.read_attempt_context(attempt_id)
     if selected is None:
         return DecisionFailure(
@@ -64,7 +64,7 @@ def select_review_job_context(
     correction_history_id: HistoryId | None,
     result_sha256: str | None,
     review_sha256: str | None,
-) -> DecisionResult[query_models.ReviewJobContextFacts]:
+) -> DecisionResult[query_models.ReviewJobContextFacts, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     selected = reader.read_review_job_context(
         attempt_id, checkpoint_history_id, correction_history_id, result_sha256, review_sha256
     )
@@ -175,7 +175,7 @@ def damaged_receipt_validation_recovery(damaged: query_models.DamagedTransitionR
 def validate_attempt_brief_identity(
     context: query_models.NonterminalAttemptContextFacts,
     brief: work_brief_models.AcceptedBrief,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
     """Require one decoded brief to be the exact accepted identity for an attempt."""
 
     if (
@@ -249,7 +249,10 @@ def project_attempt_continuation(
     reconciliation: query_models.AttemptReconciliation | None,
     candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
-) -> DecisionResult[query_models.AttemptContinuation]:
+) -> DecisionResult[
+    query_models.AttemptContinuation,
+    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ITEM_STATUS_INCONSISTENT],
+]:
     """Select a continuation from one exact named-attempt context.
 
     A lifecycle state does not prove that a human decision is missing. Recorded
@@ -359,7 +362,8 @@ def _select_repository_disposition(
 ) -> DecisionResult[
     query_models.ActionContinuation
     | query_models.RepositoryDispositionContinuation
-    | query_models.CommitThenReinspectContinuation
+    | query_models.CommitThenReinspectContinuation,
+    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE],
 ]:
     if candidate_lineage == query_models.CandidateLineage.COMMIT_CURRENT:
         return query_models.RepositoryDispositionContinuation(reconciliation.target_revision, reconciliation.relation)
@@ -408,7 +412,8 @@ def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-
     actions: tuple[decision_models.Action, ...],
     brief: work_brief_models.AcceptedBrief,
 ) -> DecisionResult[
-    query_models.ActionContinuation | query_models.ReviewContinuation | query_models.ReconciliationContinuation
+    query_models.ActionContinuation | query_models.ReviewContinuation | query_models.ReconciliationContinuation,
+    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE],
 ]:
     """Select the sole remaining reviewed-candidate operation from caller-observed repository facts."""
 
@@ -472,7 +477,7 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
     reconciliation: query_models.AttemptReconciliation | None,
     candidate_lineage: query_models.CandidateLineage | None,
     ready_review: bool,
-) -> DecisionResult[query_models.NonterminalContinuationOperation]:
+) -> DecisionResult[query_models.NonterminalContinuationOperation, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     if context.state == work_models.AttemptState.REVIEW:
         if context.candidate_revision is None:
             return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Review has no protected candidate.", None)
@@ -1662,7 +1667,17 @@ def project_item_status(
     work_item_id: WorkItemId,
     now: datetime,
     board: query_models.BoardPages,
-) -> DecisionResult[query_models.ItemStatus] | query_models.DamagedTransitionReceipt:
+) -> (
+    DecisionResult[
+        query_models.ItemStatus,
+        Literal[
+            DecisionFailureCode.ITEM_DEFINITION_INVALID,
+            DecisionFailureCode.ITEM_NOT_FOUND,
+            DecisionFailureCode.ITEM_STATUS_INCONSISTENT,
+        ],
+    ]
+    | query_models.DamagedTransitionReceipt
+):
     facts = reader.read_item_status(work_item_id)
     if facts is None:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' was not found.", None)
@@ -1899,7 +1914,10 @@ def select_integration_source(
 
 def select_item_definition(
     reader: ports.ItemDefinitionReader, work_item_id: WorkItemId
-) -> DecisionResult[query_models.ItemDefinition]:
+) -> DecisionResult[
+    query_models.ItemDefinition,
+    Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID, DecisionFailureCode.ITEM_NOT_FOUND],
+]:
     selected = reader.read_item_definition(work_item_id)
     if selected.item_subject_revision is None:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' does not exist.", None)
@@ -1927,7 +1945,7 @@ def select_item_definition_history(
     *,
     limit: int,
     before_revision: int | None,
-) -> DecisionResult[query_models.ItemDefinitionHistory]:
+) -> DecisionResult[query_models.ItemDefinitionHistory, Literal[DecisionFailureCode.ITEM_NOT_FOUND]]:
     selected = reader.read_item_definition_history(work_item_id, limit=limit, before_revision=before_revision)
     if not selected.item_exists:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' does not exist.", None)

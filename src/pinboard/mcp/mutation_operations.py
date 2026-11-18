@@ -39,6 +39,9 @@ from pinboard.application.artifact_publication import (
     AcceptedArtifactPublication,
     ArtifactAcceptanceFailure,
     ArtifactWriteFailure,
+    PublishedArtifactRejected,
+    PublishedFailureDetails,
+    UnpublishedFailureDetails,
 )
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutationResult,
@@ -65,6 +68,14 @@ from pinboard.domain.identifiers import (
 from pinboard.mcp import common, contracts, execution, tool_names
 from pinboard.mcp.contracts import JsonValue
 
+# Transition and authority rejections both reach the shared retry decision, so their codes are its input.
+# Selecting a transition adds the advisory-action refusal to every transition execution failure.
+type TransitionOperationCode = (
+    lifecycle_artifacts.ArtifactTransitionFailureCode | Literal[DecisionFailureCode.ACTION_NOT_MUTATING]
+)
+type TransitionRejectionCode = (
+    TransitionOperationCode | Literal[DecisionFailureCode.ATTEMPT_LEASE_EXPIRED, DecisionFailureCode.LEASE_FENCED]
+)
 _ARCHITECTURE_IMPACT_KIND_PATH = "$.brief.checkpoint.architecture_impact.kind"
 _ARCHITECTURE_IMPACT_KINDS = ("none", "read-only", "update-required")
 
@@ -365,29 +376,31 @@ def _brief_published_file(
 
 
 def _brief_publication_rejected(
-    failure: DecisionFailure,
+    failure: DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | PublishedArtifactRejected,
 ) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
-    if failure.code != DecisionFailureCode.ACTION_NOT_AVAILABLE:
-        raise ValueError(failure.message)
-    details = failure.details
-    if details is not None and details.effect == EffectDisposition.COMMITTED:
-        return execution.TypedOperationResult(
-            contracts.BriefPublishedRejection(
-                "pinboard-mcp-brief-publication-result/v1",
+    match failure:
+        case PublishedArtifactRejected(details=details):
+            observed, mismatches = common._failure_evidence(details)
+            return execution.TypedOperationResult(
+                contracts.BriefPublishedRejection(
+                    "pinboard-mcp-brief-publication-result/v1",
+                    "rejected",
+                    "ACTION_NOT_AVAILABLE",
+                    failure.message,
+                    True,
+                    "committed",
+                    "do-not-retry",
+                    ("immutable-artifact",),
+                    observed,
+                    mismatches,
+                ),
                 "rejected",
-                "ACTION_NOT_AVAILABLE",
-                failure.message,
-                True,
-                "committed",
-                "do-not-retry",
-                ("immutable-artifact",),
-                _observations(details),
-                _mismatches(details),
-            ),
-            "rejected",
-            None,
-        )
-    return _brief_failure("ACTION_NOT_AVAILABLE", failure.message)
+                None,
+            )
+        case DecisionFailure():
+            return _brief_failure("ACTION_NOT_AVAILABLE", failure.message)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _brief_publication_failed(
@@ -406,36 +419,39 @@ def _brief_publication_failed(
         else "Inspect the published selector and repair immutable publication before continuing."
     )
     schema = "pinboard-mcp-brief-publication-result/v1"
-    if failure.details.effect == EffectDisposition.COMMITTED:
-        result = contracts.BriefPublicationInfrastructureFailure(
-            schema,
-            "failed-after-publication",
-            code,
-            message,
-            True,
-            "committed",
-            "do-not-retry",
-            ("immutable-artifact",),
-            (),
-            (),
-            failure.selector,
-            recovery,
-        )
-    else:
-        result = contracts.BriefPublicationInfrastructureUnchangedFailure(
-            schema,
-            "infrastructure-failure",
-            code,
-            message,
-            False,
-            "unchanged",
-            "retry-same-input" if failure.details.retry == RetryDisposition.RETRY_SAME_INPUT else "do-not-retry",
-            (),
-            (),
-            (),
-            failure.selector,
-            recovery,
-        )
+    match failure.details:
+        case PublishedFailureDetails():
+            result = contracts.BriefPublicationInfrastructureFailure(
+                schema,
+                "failed-after-publication",
+                code,
+                message,
+                True,
+                "committed",
+                "do-not-retry",
+                ("immutable-artifact",),
+                (),
+                (),
+                failure.selector,
+                recovery,
+            )
+        case UnpublishedFailureDetails(retry=retry):
+            result = contracts.BriefPublicationInfrastructureUnchangedFailure(
+                schema,
+                "infrastructure-failure",
+                code,
+                message,
+                False,
+                "unchanged",
+                common.publication_retry(retry),
+                (),
+                (),
+                (),
+                failure.selector,
+                recovery,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
     return execution.TypedOperationResult(result, "infrastructure-failure", failure.selector)
 
 
@@ -448,7 +464,7 @@ def _publish_brief(
     publication = work_briefs.publish_work_brief(store, ArtifactRepository(durable), decoded, now)
     if isinstance(publication, work_brief_models.WorkBriefFailure):
         return _brief_failure("WORK_BRIEF_INVALID", publication.message)
-    if isinstance(publication, DecisionFailure):
+    if isinstance(publication, (DecisionFailure, PublishedArtifactRejected)):
         return _brief_publication_rejected(publication)
     if isinstance(publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         return _brief_publication_failed(publication)
@@ -613,7 +629,7 @@ _ATTEMPT_LEASE_CODES = frozenset(
 
 def _transition_rejected(
     action_id: contracts.ActionIdentity,
-    failure: DecisionFailure,
+    failure: DecisionFailure[TransitionOperationCode],
     *,
     continuation: str | None,
 ) -> execution.TypedOperationResult[contracts.TransitionResult]:
@@ -729,11 +745,11 @@ def _transition_current_state_route(kind: decision_models.ActionKind, *, item_st
 
 
 def _with_completion_reinspection(
-    failure: DecisionFailure,
+    failure: DecisionFailure[TransitionOperationCode],
     identity: contracts.ActionIdentity,
     project_root: str,
     work_root: str,
-) -> DecisionFailure:
+) -> DecisionFailure[TransitionOperationCode]:
     """Attach the read-only focused route after any rejected completion receipt.
 
     A missing commissioned review keeps its own retry and names one evidence inspection.
@@ -1173,22 +1189,39 @@ def _committed_item_status(
     )
 
 
-def _rejection_retry(failure: DecisionFailure) -> RetryDisposition:
+def _rejection_retry(failure: DecisionFailure[TransitionRejectionCode]) -> RetryDisposition:
     if failure.details is not None:
         return failure.details.retry
-    if failure.code in {
-        DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
-        DecisionFailureCode.ATTEMPT_LEASE_EXPIRED,
-        DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
-        DecisionFailureCode.LEASE_FENCED,
-    }:
-        return RetryDisposition.REACQUIRE_AUTHORITY
-    if failure.code in {
-        DecisionFailureCode.ACTION_NOT_AVAILABLE,
-        DecisionFailureCode.ITEM_DEFINITION_STALE,
-    }:
-        return RetryDisposition.REFRESH_ACTION
-    return RetryDisposition.CORRECT_INPUT
+    match failure.code:
+        case (
+            DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED
+            | DecisionFailureCode.ATTEMPT_LEASE_EXPIRED
+            | DecisionFailureCode.ATTEMPT_LEASE_REQUIRED
+            | DecisionFailureCode.LEASE_FENCED
+        ):
+            return RetryDisposition.REACQUIRE_AUTHORITY
+        case DecisionFailureCode.ACTION_NOT_AVAILABLE | DecisionFailureCode.ITEM_DEFINITION_STALE:
+            return RetryDisposition.REFRESH_ACTION
+        case (
+            DecisionFailureCode.ACTION_NOT_MUTATING
+            | DecisionFailureCode.ATTEMPT_NOT_FOUND
+            | DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED
+            | DecisionFailureCode.DEPENDENCY_NOT_SATISFIED
+            | DecisionFailureCode.HISTORY_RECORD_EXISTS
+            | DecisionFailureCode.ITEM_DEFINITION_INVALID
+            | DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED
+            | DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID
+            | DecisionFailureCode.ITEM_DEPENDENCY_CYCLE
+            | DecisionFailureCode.ITEM_NOT_FOUND
+            | DecisionFailureCode.LIVE_DEPENDENTS
+            | DecisionFailureCode.PROPOSAL_NOT_FOUND
+            | DecisionFailureCode.REPLACEMENT_INVALID
+            | DecisionFailureCode.REPLACEMENT_STALE
+            | DecisionFailureCode.TRANSITION_INPUT_INVALID
+        ):
+            return RetryDisposition.CORRECT_INPUT
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _fallback_subject(subject: JsonValue) -> str:
@@ -1198,7 +1231,21 @@ def _fallback_subject(subject: JsonValue) -> str:
     return subject
 
 
-def _authority_rejection_message(failure: DecisionFailure) -> str:
+def _authority_rejection_message(
+    failure: DecisionFailure[
+        Literal[
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+            DecisionFailureCode.ATTEMPT_LEASE_EXPIRED,
+            DecisionFailureCode.ITEM_DEFINITION_INVALID,
+            DecisionFailureCode.ITEM_DEFINITION_STALE,
+            DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
+            DecisionFailureCode.LEASE_FENCED,
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+        ]
+    ],
+) -> str:
     return (
         failure.message
         + " Follow next_step_tool with next_step_input in observed to inspect the current subject. This rejection grants no authority; do not borrow a conflicting owner's lease or revoke it without authorization."

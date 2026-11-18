@@ -33,7 +33,7 @@ from pinboard.application.ports import WorkStore
 from pinboard.application.work_briefs import canonical_work_brief_bytes
 from pinboard.cli.entrypoint import main
 from pinboard.domain import authority_models, decision_models, history, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionResult
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import (
     ActionId,
@@ -72,7 +72,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
             actor_task_id: TaskId,
             actor_host_id: HostId,
             dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
-        ) -> DecisionResult[ProposalCreationResult]:
+        ) -> DecisionResult[ProposalCreationResult, DecisionFailureCode]:
             result = original_create(
                 store,
                 operation,

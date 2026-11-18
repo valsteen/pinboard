@@ -12,7 +12,7 @@ from pathlib import Path
 import msgspec
 
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
-from pinboard.adapters.files.errors import ArtifactError, FileIOError, FileIOErrorCode
+from pinboard.adapters.files.errors import ArtifactError, FileIOError, ViewRefreshErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, ensure_directory_chain
 from pinboard.adapters.files.root import ensure_git_exclude
 from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_facts
@@ -52,7 +52,7 @@ def initialize_work_state(
     default_work_root: bool,
     store: ports.GeneratedViewSetReader,
     now: datetime | None = None,
-) -> work_brief_models.WorkBriefResult[InitReceipt | InitializationAfterCommittedEffects] | ViewRefreshFailure:
+) -> work_brief_models.BriefEvidenceResult[InitReceipt | InitializationAfterCommittedEffects] | ViewRefreshFailure:
     git_exclude_path = ensure_git_exclude(shared_repository_root) if default_work_root else None
     database_path: Path | None = None
     try:
@@ -79,7 +79,7 @@ def initialize_work_state(
                 rendered_attempt_briefs,
             )
         archived_briefs = archive_attempt_views(projection_facts, ArtifactRepository(roots), rendered_attempt_briefs)
-        if isinstance(archived_briefs, work_brief_models.WorkBriefFailure):
+        if isinstance(archived_briefs, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
             return (
                 archived_briefs
                 if git_exclude_path is None and database_path is None
@@ -90,7 +90,8 @@ def initialize_work_state(
         )
         if rebuild_result.warning is not None:
             failure: ViewRefreshFailure = CliEffectFailure(
-                FileIOErrorCode.VIEW_REFRESH_FAILED, f"{rebuild_result.warning.message} {rebuild_result.warning.repair}"
+                ViewRefreshErrorCode.VIEW_REFRESH_FAILED,
+                f"{rebuild_result.warning.message} {rebuild_result.warning.repair}",
             )
             return (
                 failure
@@ -170,7 +171,7 @@ def validate_loaded_work_state(
             diagnostics.append(_error_diagnostic(error.code.value, work_root / reference.selector, str(error)))
     all_attempt_briefs = dict(attempt_briefs)
     archived = history_archives.verify_archives(state, verified_artifacts)
-    if isinstance(archived, work_brief_models.WorkBriefFailure):
+    if isinstance(archived, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
         diagnostics.append(_error_diagnostic(archived.code.value, work_root, archived.message))
     else:
         all_attempt_briefs.update(
@@ -178,7 +179,11 @@ def validate_loaded_work_state(
         )
     try:
         candidate_snapshots.validate_candidate_snapshot_history(
-            state, verified_artifacts, {} if isinstance(archived, work_brief_models.WorkBriefFailure) else archived
+            state,
+            verified_artifacts,
+            {}
+            if isinstance(archived, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure))
+            else archived,
         )
     except ValueError as error:
         diagnostics.append(
@@ -189,9 +194,11 @@ def validate_loaded_work_state(
         state.artifact_references,
         state.transition_receipts,
         verified_artifacts,
-        {} if isinstance(archived, work_brief_models.WorkBriefFailure) else archived,
+        {}
+        if isinstance(archived, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure))
+        else archived,
     )
-    if isinstance(packages, work_brief_models.WorkBriefFailure):
+    if isinstance(packages, work_brief_models.ReviewEvidenceFailure):
         diagnostics.append(_error_diagnostic(packages.code.value, work_root, packages.message))
     else:
         completion_packages = lifecycle_packages.validate_completion_review_packages(
@@ -200,9 +207,11 @@ def validate_loaded_work_state(
             state.transition_receipts,
             verified_artifacts,
             packages,
-            {} if isinstance(archived, work_brief_models.WorkBriefFailure) else archived,
+            {}
+            if isinstance(archived, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure))
+            else archived,
         )
-        if isinstance(completion_packages, work_brief_models.WorkBriefFailure):
+        if isinstance(completion_packages, work_brief_models.ReviewEvidenceFailure):
             diagnostics.append(
                 _error_diagnostic(completion_packages.code.value, work_root, completion_packages.message)
             )

@@ -43,10 +43,6 @@ class FileIOErrorCode(DescribedCode):
         "FILE_PUBLISH_FAILED",
         "The selected immutable file could not be published; inspect the returned effect before retrying.",
     )
-    VIEW_REFRESH_FAILED = (
-        "VIEW_REFRESH_FAILED",
-        "Generated view refresh failed, including a failure to open or acquire the board view lock.",
-    )
 
 
 class FileIOError(RuntimeError):
@@ -55,6 +51,23 @@ class FileIOError(RuntimeError):
     def __init__(self, code: FileIOErrorCode, message: str) -> None:
         self.code = code
         super().__init__(f"{code.value}: {message}")
+
+
+class ViewRefreshErrorCode(DescribedCode):
+    VIEW_REFRESH_FAILED = (
+        "VIEW_REFRESH_FAILED",
+        "Generated view refresh failed, including a failure to open or acquire the board view lock.",
+    )
+
+
+class ViewRefreshError(RuntimeError):
+    """Generated-view refresh could not take the board lock; no file publication raises it."""
+
+    code: ViewRefreshErrorCode
+
+    def __init__(self, message: str) -> None:
+        self.code = ViewRefreshErrorCode.VIEW_REFRESH_FAILED
+        super().__init__(f"{self.code.value}: {message}")
 
 
 class ImmutableFilePublishedError(FileIOError):

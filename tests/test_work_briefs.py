@@ -72,16 +72,17 @@ from tests.work_brief_support import (
 )
 
 
-def expect_work_brief_success[T](result: work_brief_models.WorkBriefResult[T]) -> T:
-    if isinstance(result, work_brief_models.WorkBriefFailure):
+def expect_work_brief_success[T](result: work_brief_models.BriefEvidenceResult[T]) -> T:
+    if isinstance(result, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
         raise AssertionError(str(result))
     return result
 
 
 def expect_work_brief_failure[T](
-    result: work_brief_models.WorkBriefResult[T], code: work_brief_models.WorkBriefErrorCode
-) -> work_brief_models.WorkBriefFailure:
-    if not isinstance(result, work_brief_models.WorkBriefFailure):
+    result: work_brief_models.BriefEvidenceResult[T],
+    code: work_brief_models.WorkBriefErrorCode | work_brief_models.ReviewEvidenceErrorCode,
+) -> work_brief_models.WorkBriefFailure | work_brief_models.ReviewEvidenceFailure:
+    if not isinstance(result, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
         raise AssertionError(f"Expected {code.value}, received success: {result!r}")
     if result.code != code:
         raise AssertionError(f"Expected {code.value}, received {result.code.value}: {result.message}")
@@ -714,7 +715,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                     binding["role"] = "brief-review"
                     rejected = expect_work_brief_failure(
                         decode_checkpoint_review_package(msgspec.json.encode(invalid)),
-                        work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
+                        work_brief_models.ReviewEvidenceErrorCode.PACKAGE_INVALID,
                     )
                     self.assertIn("artifact roles and kinds do not match their bindings", rejected.message)
 
@@ -791,7 +792,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                 )
                 expect_work_brief_failure(
                     decode_canonical_checkpoint_review_package(encoded[:-1]),
-                    work_brief_models.WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
+                    work_brief_models.ReviewEvidenceErrorCode.PACKAGE_NOT_CANONICAL,
                 )
 
         portable = work_brief_models.CheckpointReviewPackageV3(
@@ -825,7 +826,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         payload["unknown"] = True
         expect_work_brief_failure(
             decode_checkpoint_review_package(msgspec.json.encode(payload)),
-            work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
+            work_brief_models.ReviewEvidenceErrorCode.PACKAGE_INVALID,
         )
         invalid_payloads = []
         wrong_role = msgspec.json.decode(canonical_checkpoint_review_package_bytes(local))
@@ -854,7 +855,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
         for invalid_payload in invalid_payloads:
             expect_work_brief_failure(
                 decode_checkpoint_review_package(msgspec.json.encode(invalid_payload)),
-                work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
+                work_brief_models.ReviewEvidenceErrorCode.PACKAGE_INVALID,
             )
 
     def test_markdown_is_a_complete_generated_projection(self) -> None:

@@ -2,7 +2,7 @@ import hashlib
 from collections.abc import Mapping
 from datetime import datetime
 from types import MappingProxyType
-from typing import Protocol, assert_never
+from typing import Literal, Protocol, assert_never
 
 import msgspec
 
@@ -19,6 +19,7 @@ from pinboard.application.artifact_publication import (
     ArtifactPublisher,
     ArtifactReader,
     ArtifactWriteFailure,
+    PublishedArtifactRejected,
     publish_accepted_artifact,
 )
 from pinboard.application.artifacts import (
@@ -60,7 +61,8 @@ def publish_work_brief(
     AcceptedArtifactPublication
     | ArtifactAcceptanceFailure
     | ArtifactWriteFailure
-    | DecisionFailure
+    | PublishedArtifactRejected
+    | DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]
     | work_brief_models.WorkBriefFailure
 ):
     if (failure := _validate_current_definition(store, brief)) is not None:
@@ -711,7 +713,8 @@ def publish_brief_review_needs_correction(
     AcceptedArtifactPublication
     | ArtifactAcceptanceFailure
     | ArtifactWriteFailure
-    | DecisionFailure
+    | PublishedArtifactRejected
+    | DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]
     | work_brief_models.WorkBriefFailure
 ):
     """Validate an independent negative review, publish bytes, then accept their reference.
@@ -811,12 +814,12 @@ def validate_work_brief_review_needs_correction(
 
 def decode_checkpoint_review_package(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[work_brief_models.CheckpointReviewPackageV3]:
+) -> work_brief_models.ReviewEvidenceResult[work_brief_models.CheckpointReviewPackageV3]:
     try:
         return msgspec.json.decode(data, type=work_brief_models.CheckpointReviewPackageV3)
     except msgspec.DecodeError as error:
-        return work_brief_models.WorkBriefFailure(
-            work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
+        return work_brief_models.ReviewEvidenceFailure(
+            work_brief_models.ReviewEvidenceErrorCode.PACKAGE_INVALID,
             f"Cannot decode checkpoint review package: {error}",
         )
 
@@ -827,13 +830,13 @@ def canonical_checkpoint_review_package_bytes(package: work_brief_models.Checkpo
 
 def decode_canonical_checkpoint_review_package(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[work_brief_models.CheckpointReviewPackageV3]:
+) -> work_brief_models.ReviewEvidenceResult[work_brief_models.CheckpointReviewPackageV3]:
     package = decode_checkpoint_review_package(data)
-    if isinstance(package, work_brief_models.WorkBriefFailure):
+    if isinstance(package, work_brief_models.ReviewEvidenceFailure):
         return package
     if data != canonical_checkpoint_review_package_bytes(package):
-        return work_brief_models.WorkBriefFailure(
-            work_brief_models.WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
+        return work_brief_models.ReviewEvidenceFailure(
+            work_brief_models.ReviewEvidenceErrorCode.PACKAGE_NOT_CANONICAL,
             "Checkpoint review package bytes are not the canonical msgspec encoding.",
         )
     return package
@@ -841,12 +844,12 @@ def decode_canonical_checkpoint_review_package(
 
 def decode_completion_review_package(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[work_brief_models.CompletionReviewPackage]:
+) -> work_brief_models.ReviewEvidenceResult[work_brief_models.CompletionReviewPackage]:
     try:
         return msgspec.json.decode(data, type=work_brief_models.CompletionReviewPackage)
     except msgspec.DecodeError as error:
-        return work_brief_models.WorkBriefFailure(
-            work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
+        return work_brief_models.ReviewEvidenceFailure(
+            work_brief_models.ReviewEvidenceErrorCode.PACKAGE_INVALID,
             f"Cannot decode completion review package: {error}",
         )
 
@@ -857,7 +860,7 @@ def canonical_completion_review_package_bytes(package: work_brief_models.Complet
 
 def decode_canonical_historical_completion_review_package(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[work_brief_compatibility_models.HistoricalCompletionReviewPackage]:
+) -> work_brief_models.ReviewEvidenceResult[work_brief_compatibility_models.HistoricalCompletionReviewPackage]:
     """Read completion history without admitting original facts as current input."""
     try:
         schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
@@ -866,13 +869,13 @@ def decode_canonical_historical_completion_review_package(
             return decode_canonical_completion_review_package(data)
         package = msgspec.json.decode(data, type=work_brief_compatibility_models.HistoricalCompletionReviewPackageV1)
     except msgspec.DecodeError as error:
-        return work_brief_models.WorkBriefFailure(
-            work_brief_models.WorkBriefErrorCode.PACKAGE_INVALID,
+        return work_brief_models.ReviewEvidenceFailure(
+            work_brief_models.ReviewEvidenceErrorCode.PACKAGE_INVALID,
             f"Cannot decode historical completion review package facts: {error}",
         )
     if data != work_brief_compatibility_models.canonical_historical_completion_review_package_bytes(package):
-        return work_brief_models.WorkBriefFailure(
-            work_brief_models.WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
+        return work_brief_models.ReviewEvidenceFailure(
+            work_brief_models.ReviewEvidenceErrorCode.PACKAGE_NOT_CANONICAL,
             "Historical completion review package bytes are not the canonical msgspec encoding.",
         )
     return package
@@ -880,13 +883,13 @@ def decode_canonical_historical_completion_review_package(
 
 def decode_canonical_completion_review_package(
     data: bytes,
-) -> work_brief_models.WorkBriefResult[work_brief_models.CompletionReviewPackage]:
+) -> work_brief_models.ReviewEvidenceResult[work_brief_models.CompletionReviewPackage]:
     package = decode_completion_review_package(data)
-    if isinstance(package, work_brief_models.WorkBriefFailure):
+    if isinstance(package, work_brief_models.ReviewEvidenceFailure):
         return package
     if data != canonical_completion_review_package_bytes(package):
-        return work_brief_models.WorkBriefFailure(
-            work_brief_models.WorkBriefErrorCode.PACKAGE_NOT_CANONICAL,
+        return work_brief_models.ReviewEvidenceFailure(
+            work_brief_models.ReviewEvidenceErrorCode.PACKAGE_NOT_CANONICAL,
             "Completion review package bytes are not the canonical msgspec encoding.",
         )
     return package
@@ -895,7 +898,7 @@ def decode_canonical_completion_review_package(
 def validate_work_brief_review(
     review: work_brief_models.WorkBriefReview,
     brief: work_brief_models.WorkBrief | work_brief_compatibility_models.HistoricalWorkBriefV3,
-) -> work_brief_models.WorkBriefFailure | None:
+) -> work_brief_models.WorkBriefFailure | work_brief_models.ReviewEvidenceFailure | None:
     """Check exact ready-review facts; current callers separately require current briefs."""
     checkpoint = brief.checkpoint
     if not isinstance(
@@ -930,8 +933,8 @@ def validate_work_brief_review(
     expected = {(record.authority_id, record.family, _owner_key(record.owner)) for record in checkpoint.coverage}
     observed = {(record.authority_id, record.family, _owner_key(record.owner)) for record in review.coverage}
     if len(observed) != len(review.coverage) or observed != expected:
-        return work_brief_models.WorkBriefFailure(
-            work_brief_models.WorkBriefErrorCode.REVIEW_NOT_READY,
+        return work_brief_models.ReviewEvidenceFailure(
+            work_brief_models.ReviewEvidenceErrorCode.REVIEW_NOT_READY,
             "Brief review must contain exactly one covered result for every coverage owner.",
         )
     return None
@@ -1260,7 +1263,7 @@ def current_attempt_work_brief_identity(
 def read_selected_work_brief_identity(
     reference: stored_state.ArtifactReference | BriefArtifactRef | None,
     artifacts: ArtifactReader,
-) -> DecisionResult[WorkBriefIdentity | None]:
+) -> DecisionResult[WorkBriefIdentity | None, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
         return None
     identity = decode_work_brief_identity(artifacts.read(reference))

@@ -1,7 +1,7 @@
 """Concrete stdout effects shared by installed command presenters."""
 
 import sys
-from typing import Literal
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -82,14 +82,20 @@ def write_json[T](value: T) -> None:
     sys.stdout.write(render_json(value).decode())
 
 
-def write_rejected_operation(operation: str, failure: CommandFailure | work_brief_models.WorkBriefFailure) -> None:
+def write_rejected_operation(
+    operation: str,
+    failure: CommandFailure | work_brief_models.WorkBriefFailure | work_brief_models.ReviewEvidenceFailure,
+) -> None:
     """Present one expected failure without reconstructing facts from its prose message."""
-    details = None if isinstance(failure, work_brief_models.WorkBriefFailure) else failure.details
-    default_retry = (
-        RetryDisposition.CORRECT_INPUT
-        if isinstance(failure, work_brief_models.WorkBriefFailure)
-        else RetryDisposition.DO_NOT_RETRY
-    )
+    match failure:
+        case CommandFailure():
+            details = failure.details
+            default_retry = RetryDisposition.DO_NOT_RETRY
+        case work_brief_models.WorkBriefFailure() | work_brief_models.ReviewEvidenceFailure():
+            details = None
+            default_retry = RetryDisposition.CORRECT_INPUT
+        case _ as unreachable:
+            assert_never(unreachable)
     write_operation_rejection(
         operation,
         failure.code.value,

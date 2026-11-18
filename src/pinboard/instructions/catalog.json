@@ -33,8 +33,8 @@
     },
     "reviewer-codex": {
       "path": "reviewer-codex.md",
-      "sha256": "874b709215d3f0ec0dc2427d7e81ffed124680e4360cecf815aaae57f5f688bc",
-      "size_bytes": 14359,
+      "sha256": "9e78c158cc8edaa9b90e9aca14419bda7082c7d84582eece81b774e9dd783d32",
+      "size_bytes": 14366,
       "owners": [
         "procedure.reviewer",
         "shared.protocol",
@@ -82,8 +82,8 @@
     },
     "reviewer-claude-code": {
       "path": "reviewer-claude-code.md",
-      "sha256": "58c526cae96b27ce1bdd5ce63c15bc54f9164056182416c8a28ea77da10e33aa",
-      "size_bytes": 17992,
+      "sha256": "4415f0a9004fef8485e41680e0098566f202f4560527e086214785977078d7c6",
+      "size_bytes": 17999,
       "owners": [
         "procedure.reviewer",
         "shared.protocol",
@@ -130,8 +130,8 @@
     },
     "reviewer-antigravity": {
       "path": "reviewer-antigravity.md",
-      "sha256": "d32dfbdfecd5c167c42bd5c028eb035b223f28f982458098407381dbcb0f9275",
-      "size_bytes": 17880,
+      "sha256": "0498c3bfbe47f8f99fabdae7c42cefad38198e12866bd6a4d27e5e90b8925eeb",
+      "size_bytes": 17887,
       "owners": [
         "procedure.reviewer",
         "shared.protocol",

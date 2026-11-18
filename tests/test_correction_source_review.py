@@ -821,9 +821,15 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         self.fixed_native_time()
         for candidate_form in ("commit", "working-tree"):
             with self.subTest(candidate_form=candidate_form):
-                self.cross_base_replacement_recovery(candidate_form)
+                self.cross_base_replacement_recovery(candidate_form, prior_review=True)
 
-    def cross_base_replacement_recovery(self, candidate_form: str) -> None:  # noqa: PLR0915 - one native persisted cross-base journey
+    def test_cross_base_replacement_before_first_review_takes_an_initial_review(self) -> None:
+        """A candidate returned for a base move before any review gets an initial, not a correction, review."""
+
+        self.fixed_native_time()
+        self.cross_base_replacement_recovery("commit", prior_review=False)
+
+    def cross_base_replacement_recovery(self, candidate_form: str, *, prior_review: bool) -> None:  # noqa: PLR0915 - one native persisted cross-base journey
         fixture = self.correction_fixture()
         old_base = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=fixture.project, check=True, capture_output=True, text=True
@@ -837,11 +843,17 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             {"candidate": original},
         )
         self.assertEqual("committed", submitted["status"], submitted)
-        original_review = self.record_commissioned_review(fixture, original, "original-reviewer")
-        original_review_reference = self.json_object(original_review["candidate_review"])
-        original_review_path = fixture.work / str(original_review_reference["selector"])
-        original_review_bytes = original_review_path.read_bytes()
-        original_verdict = self.json_object(json.loads(original_review_bytes))
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        original_verdict: JsonObject | None = None
+        original_review_evidence: tuple[Path, bytes] | None = None
+        if prior_review:
+            original_review = self.record_commissioned_review(fixture, original, "original-reviewer")
+            original_review_reference = self.json_object(original_review["candidate_review"])
+            original_review_path = fixture.work / str(original_review_reference["selector"])
+            original_review_evidence = (original_review_path, original_review_path.read_bytes())
+            original_verdict = self.json_object(json.loads(original_review_evidence[1]))
+        else:
+            (attempt_root / "review.md").unlink()
         original_context = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
         assert original_context is not None
         original_snapshot = (fixture.work / original_context.reference.selector).read_bytes()
@@ -1074,43 +1086,52 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
             (fixture.work / current.reference.selector).read_bytes(),
         ).snapshot
         self.assertEqual(new_base, snapshot.accepted_base_revision)
-        attempt_root = fixture.work / "attempts" / "work-a-1"
         (attempt_root / "result.md").write_bytes(b"Complete rebased result on the new accepted base.\n")
+        correction_round: JsonObject = {
+            "kind": "correction",
+            "candidate_revision": rebased,
+            "correction_history_id": history_id,
+        }
+        if not prior_review:
+            before = fresh.validated_snapshot()
+            refused = self.review_result(fixture, correction_round)
+            self.assertEqual("rejected", refused["status"], refused)
+            self.assertIn("review.md", str(refused["message"]))
+            self.assertEqual(before, fresh.validated_snapshot())
         (attempt_root / "review.md").write_bytes(
             b"New candidate satisfies the replacement; historical finding revalidated.\n"
         )
         job = self.review_result(
             fixture,
-            {
-                "kind": "correction",
-                "candidate_revision": rebased,
-                "correction_history_id": history_id,
-            },
+            correction_round if prior_review else {"kind": "initial", "candidate_revision": rebased},
         )
         self.assertEqual("ready", job["status"], job)
-        old_prompt = original_verdict["reviewer_prompt_sha256"]
-        assert isinstance(old_prompt, str)
-        stale = fixture.call_native_tool(
-            server.REVIEW_JOB_TOOL,
-            {
-                "project_root": str(fixture.project),
-                "work_root": str(fixture.work),
-                "review": self.ready_review_request(fixture, rebased, "new-reviewer", old_prompt),
-            },
-        )
-        self.assertEqual("REVIEWER_PROMPT_NOT_COMMISSIONED", stale["code"], stale)
         prompt = self.json_object(job["prompt_reference"])["sha256"]
         assert isinstance(prompt, str)
         before = fresh.validated_snapshot()
         current_request = self.ready_review_request(fixture, rebased, "new-reviewer", prompt)
-        old_bindings = {
+        old_bindings: dict[str, JsonValue] = {
             "candidate_revision": original,
             "candidate_snapshot_sha256": original_context.reference.content_sha256,
-            "accepted_brief_sha256": self.json_object(original_verdict["accepted_brief"])["content_sha256"],
-            "result_sha256": original_verdict["result_sha256"],
-            "review_sha256": original_verdict["review_sha256"],
-            "reviewer_prompt_sha256": old_prompt,
         }
+        if original_verdict is not None:
+            old_prompt = original_verdict["reviewer_prompt_sha256"]
+            assert isinstance(old_prompt, str)
+            stale = fixture.call_native_tool(
+                server.REVIEW_JOB_TOOL,
+                {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "review": self.ready_review_request(fixture, rebased, "new-reviewer", old_prompt),
+                },
+            )
+            self.assertEqual("REVIEWER_PROMPT_NOT_COMMISSIONED", stale["code"], stale)
+            old_bindings |= {
+                "accepted_brief_sha256": self.json_object(original_verdict["accepted_brief"])["content_sha256"],
+                "result_sha256": original_verdict["result_sha256"],
+                "review_sha256": original_verdict["review_sha256"],
+                "reviewer_prompt_sha256": old_prompt,
+            }
         for field, value in old_bindings.items():
             with self.subTest(stale_review_binding=field):
                 stale = fixture.call_native_tool(
@@ -1134,7 +1155,9 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
         )
         self.assertEqual("recorded", recorded["status"], recorded)
         self.assertEqual(original_snapshot, (fixture.work / original_context.reference.selector).read_bytes())
-        self.assertEqual(original_review_bytes, original_review_path.read_bytes())
+        if original_review_evidence is not None:
+            original_review_path, original_review_bytes = original_review_evidence
+            self.assertEqual(original_review_bytes, original_review_path.read_bytes())
         self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
         self.run_json_cli(*fixture.common, "export")
 

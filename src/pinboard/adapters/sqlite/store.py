@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, assert_never
 
 import msgspec
 
@@ -116,7 +116,7 @@ from pinboard.application.ports import ArtifactReferenceAcceptance
 from pinboard.application.project_export import ProjectExportState
 from pinboard.domain import consolidation, decision_models, history, work_models
 from pinboard.domain import initiatives as initiative_models
-from pinboard.domain.errors import DecisionResult
+from pinboard.domain.errors import DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import (
     ArtifactRefId,
     AttemptId,
@@ -1471,5 +1471,5 @@ class SQLiteWorkStore:
         published: ArtifactRef,
         accepted_at: datetime,
         ownership: artifact_identity.Ownership | None,
-    ) -> DecisionResult[ArtifactReferenceAcceptance]:
+    ) -> DecisionResult[ArtifactReferenceAcceptance, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
         return persist_artifact_reference(self._path, work_root, published, accepted_at, ownership)

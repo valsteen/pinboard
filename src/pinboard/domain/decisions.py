@@ -1,10 +1,14 @@
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import assert_never, overload
+from typing import Literal, assert_never, overload
 
 from pinboard.domain import decision_models, routing, work_models
-from pinboard.domain.definition_decisions import DefinitionRevisionDecision, decide_definition_revision
+from pinboard.domain.definition_decisions import (
+    DefinitionRevisionCode,
+    DefinitionRevisionDecision,
+    decide_definition_revision,
+)
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -17,6 +21,47 @@ from pinboard.domain.errors import (
 )
 from pinboard.domain.identifiers import AttemptId, CheckpointId, LedgerId, ProposalId, SubjectId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
+
+type TransitionDecisionCode = Literal[
+    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+    DecisionFailureCode.ATTEMPT_NOT_FOUND,
+    DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
+    DecisionFailureCode.HISTORY_RECORD_EXISTS,
+    DecisionFailureCode.ITEM_DEFINITION_INVALID,
+    DecisionFailureCode.ITEM_DEFINITION_STALE,
+    DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID,
+    DecisionFailureCode.ITEM_DEPENDENCY_CYCLE,
+    DecisionFailureCode.ITEM_NOT_FOUND,
+    DecisionFailureCode.LIVE_DEPENDENTS,
+    DecisionFailureCode.PROPOSAL_NOT_FOUND,
+    DecisionFailureCode.REPLACEMENT_INVALID,
+    DecisionFailureCode.REPLACEMENT_STALE,
+    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+]
+type AttemptDecisionCode = Literal[
+    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+    DecisionFailureCode.ATTEMPT_NOT_FOUND,
+    DecisionFailureCode.ITEM_DEFINITION_STALE,
+    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+]
+# Activation and resumption refuse a missing, unready or dependency-blocked item.
+type _ItemStartCode = Literal[
+    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    DecisionFailureCode.DEPENDENCY_NOT_SATISFIED,
+    DecisionFailureCode.ITEM_NOT_FOUND,
+    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+]
+# Planned-replacement decisions refuse an unknown item, an invalid replacement or a changed relation.
+type _ReplacementDecisionCode = Literal[
+    DecisionFailureCode.ITEM_NOT_FOUND, DecisionFailureCode.REPLACEMENT_INVALID, DecisionFailureCode.REPLACEMENT_STALE
+]
+type SuppliedActionCode = Literal[
+    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+    DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,14 +132,18 @@ def _context_definition_stale(context: work_models.ProjectAttemptActionContext) 
     )
 
 
-def _require_work_item(snapshot: LedgerSnapshot, work_item_id: WorkItemId) -> DecisionResult[work_models.WorkItem]:
+def _require_work_item(
+    snapshot: LedgerSnapshot, work_item_id: WorkItemId
+) -> DecisionResult[work_models.WorkItem, Literal[DecisionFailureCode.ITEM_NOT_FOUND]]:
     item = snapshot.work_item(work_item_id)
     if item is None:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{work_item_id}' does not exist.", None)
     return item
 
 
-def _require_attempt_item(snapshot: LedgerSnapshot, attempt_id: AttemptId) -> DecisionResult[work_models.WorkItem]:
+def _require_attempt_item(
+    snapshot: LedgerSnapshot, attempt_id: AttemptId
+) -> DecisionResult[work_models.WorkItem, Literal[DecisionFailureCode.ATTEMPT_NOT_FOUND]]:
     item = snapshot.work_item_for_attempt(attempt_id)
     if item is None:
         return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.", None)
@@ -105,7 +154,9 @@ def _require_review_item(
     snapshot: LedgerSnapshot,
     attempt_id: AttemptId,
     unavailable_message: str,
-) -> DecisionResult[work_models.WorkItem]:
+) -> DecisionResult[
+    work_models.WorkItem, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ATTEMPT_NOT_FOUND]
+]:
     item = _require_attempt_item(snapshot, attempt_id)
     if isinstance(item, DecisionFailure):
         return item
@@ -592,7 +643,10 @@ def _project_role_actions(
 
 def available_actions(
     snapshot: LedgerSnapshot, actor: decision_models.ActionActorAuthority
-) -> DecisionResult[tuple[decision_models.Action, ...]]:
+) -> DecisionResult[
+    tuple[decision_models.Action, ...],
+    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ATTEMPT_LEASE_REQUIRED],
+]:
     match actor:
         case decision_models.ObserverActorAuthority():
             return (
@@ -637,11 +691,18 @@ def validate_supplied_action(
     snapshot: LedgerSnapshot,
     actor: decision_models.ActionActorAuthority,
     supplied: decision_models.TransitionAction,
-) -> DecisionFailure | None:
+) -> DecisionFailure[SuppliedActionCode] | None:
     """Reject an action that no longer matches its current subject-scoped mutation authority."""
 
-    if (failure := routing.validate_action_route(snapshot, supplied)) is not None:
-        return failure
+    match routing.validate_action_route(snapshot, supplied):
+        case DecisionFailure() as failure:
+            return failure
+        case routing.RouteClassificationRequired() as required:
+            return required.failure()
+        case None:
+            pass
+        case _ as unreachable:
+            assert_never(unreachable)
     available = available_actions(snapshot, actor)
     if isinstance(available, DecisionFailure):
         return available
@@ -873,7 +934,10 @@ def _accepted_completion_decision(
 
 def _activate(
     snapshot: LedgerSnapshot, command: decision_models.ActivateCommand, now: datetime
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[
+    decision_models.TransitionDecision,
+    _ItemStartCode,
+]:
     action = command.action
     value = command.value
     item_id = action.capability.subject
@@ -941,7 +1005,7 @@ def _activate(
     )
 
 
-def _invalid_unblocker(message: str) -> DecisionFailure:
+def _invalid_unblocker(message: str) -> DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     return DecisionFailure(
         DecisionFailureCode.TRANSITION_INPUT_INVALID,
         f"{message} The ledger is unchanged.",
@@ -960,7 +1024,10 @@ def _hold_unblocker(
     snapshot: LedgerSnapshot,
     item: work_models.WorkItem,
     unblocker: work_models.Unblocker,
-) -> DecisionResult[work_models.Unblocker]:
+) -> DecisionResult[
+    work_models.Unblocker,
+    Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID, DecisionFailureCode.TRANSITION_INPUT_INVALID],
+]:
     """Accept exactly one named unblocker for holding ``item``, or reject it with the ledger unchanged."""
 
     match unblocker:
@@ -1018,7 +1085,15 @@ def _pause_or_block(
     snapshot: LedgerSnapshot,
     command: decision_models.PauseCommand | decision_models.BlockCommand,
     now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[
+    decision_models.TransitionDecision,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.ATTEMPT_NOT_FOUND,
+        DecisionFailureCode.ITEM_DEFINITION_INVALID,
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+    ],
+]:
     action = command.action
     attempt_id = action.capability.subject
     item = _require_attempt_item(snapshot, attempt_id)
@@ -1090,7 +1165,17 @@ def _complete(
     snapshot: LedgerSnapshot,
     command: decision_models.CompleteCommand | decision_models.CoveredCompleteCommand,
     now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision | decision_models.CompletionAcceptanceDecision]:
+) -> DecisionResult[
+    decision_models.TransitionDecision | decision_models.CompletionAcceptanceDecision,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.ATTEMPT_NOT_FOUND,
+        DecisionFailureCode.HISTORY_RECORD_EXISTS,
+        DecisionFailureCode.ITEM_DEFINITION_STALE,
+        DecisionFailureCode.REPLACEMENT_STALE,
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+    ],
+]:
     action = command.action
     attempt_id = action.capability.subject
     item = _require_attempt_item(snapshot, attempt_id)
@@ -1161,7 +1246,14 @@ def superseded_attempt_closure(
     snapshot: LedgerSnapshot,
     item: work_models.WorkItem,
     replacement: work_models.PlannedReplacement | None,
-) -> DecisionResult[decision_models.SupersededAttemptClosure | None]:
+) -> DecisionResult[
+    decision_models.SupersededAttemptClosure | None,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.LIVE_DEPENDENTS,
+        DecisionFailureCode.REPLACEMENT_INVALID,
+    ],
+]:
     if (
         replacement is None
         or replacement.replacement_item in snapshot.dropped_item_ids
@@ -1220,7 +1312,17 @@ def superseded_attempt_closure(
 
 def _close(
     snapshot: LedgerSnapshot, command: decision_models.CloseCommand, now: datetime
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[
+    decision_models.TransitionDecision,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.HISTORY_RECORD_EXISTS,
+        DecisionFailureCode.ITEM_NOT_FOUND,
+        DecisionFailureCode.LIVE_DEPENDENTS,
+        DecisionFailureCode.REPLACEMENT_INVALID,
+        DecisionFailureCode.REPLACEMENT_STALE,
+    ],
+]:
     action = command.action
     value = command.value
     item_id = action.capability.subject
@@ -1284,7 +1386,7 @@ def _close(
 def _resolve_pause_decisions(
     pending: work_models.PendingDecisionBatch | None,
     value: work_models.ResumeInput | work_models.ResolveDecisionsInput,
-) -> DecisionResult[work_models.ResolvedPauseDecisions | None]:
+) -> DecisionResult[work_models.ResolvedPauseDecisions | None, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     if pending is None:
         if isinstance(value, work_models.ResolveDecisionsInput):
             return DecisionFailure(
@@ -1316,7 +1418,10 @@ def _resolve_pause_decisions(
 
 def _resume(
     snapshot: LedgerSnapshot, command: decision_models.ResumeCommand, now: datetime
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[
+    decision_models.TransitionDecision,
+    _ItemStartCode,
+]:
     action = command.action
     value = command.value
     item_id = action.capability.subject
@@ -1406,7 +1511,7 @@ def _rebind_attempt(
     snapshot: LedgerSnapshot,
     command: decision_models.RebindAttemptCommand,
     now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[decision_models.TransitionDecision, AttemptDecisionCode]:
     action = command.action
     value = command.value
     attempt_id = action.capability.subject
@@ -1496,7 +1601,14 @@ def _rebind_attempt(
 
 def _submit_review(
     snapshot: LedgerSnapshot, command: decision_models.SubmitReviewCommand, now: datetime
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[
+    decision_models.TransitionDecision,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.ATTEMPT_NOT_FOUND,
+        DecisionFailureCode.ITEM_DEFINITION_STALE,
+    ],
+]:
     action = command.action
     value = command.value
     attempt_id = action.capability.subject
@@ -1536,7 +1648,15 @@ def _return_for_correction(
     snapshot: LedgerSnapshot,
     command: decision_models.ReturnForCorrectionCommand,
     now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[
+    decision_models.TransitionDecision,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+        DecisionFailureCode.ATTEMPT_NOT_FOUND,
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+    ],
+]:
     action = command.action
     value = command.value
     attempt_id = action.capability.subject
@@ -1582,7 +1702,7 @@ def _record_amendment(
     snapshot: LedgerSnapshot,
     command: decision_models.RecordAmendmentCommand,
     now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[decision_models.TransitionDecision, AttemptDecisionCode]:
     action = command.action
     value = command.value
     attempt_id = action.capability.subject
@@ -1682,7 +1802,7 @@ def _record_amendment(
 def validate_checkpoint_candidate(
     snapshot: LedgerSnapshot,
     command: decision_models.AcceptCheckpointCommand,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]] | None:
     """Return the canonical failure when checkpoint candidate protection does not match."""
 
     attempt = snapshot.attempt(command.action.capability.subject)
@@ -1699,7 +1819,7 @@ def _accept_checkpoint(
     snapshot: LedgerSnapshot,
     command: decision_models.AcceptCheckpointCommand,
     now: datetime,
-) -> DecisionResult[decision_models.CheckpointAcceptanceDecision]:
+) -> DecisionResult[decision_models.CheckpointAcceptanceDecision, AttemptDecisionCode]:
     action = command.action
     value = command.value
     attempt_id = action.capability.subject
@@ -1747,7 +1867,7 @@ def _accept_review_and_continue(
     snapshot: LedgerSnapshot,
     command: decision_models.AcceptReviewAndContinueCommand,
     now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[decision_models.TransitionDecision, AttemptDecisionCode]:
     action = command.action
     value = command.value
     attempt_id = action.capability.subject
@@ -1800,7 +1920,15 @@ def _accept_review_and_continue(
 
 def _block_item(
     snapshot: LedgerSnapshot, command: decision_models.BlockWorkItemCommand, now: datetime
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[
+    decision_models.TransitionDecision,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.ITEM_DEFINITION_INVALID,
+        DecisionFailureCode.ITEM_NOT_FOUND,
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+    ],
+]:
     action = command.action
     item_id = action.capability.subject
     item = _require_work_item(snapshot, item_id)
@@ -1866,7 +1994,10 @@ def _require_unstarted_proposal(
     snapshot: LedgerSnapshot,
     proposal_id: ProposalId,
     unavailable_message: str,
-) -> DecisionResult[tuple[work_models.ProposalRecord, work_models.WorkItem]]:
+) -> DecisionResult[
+    tuple[work_models.ProposalRecord, work_models.WorkItem],
+    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.PROPOSAL_NOT_FOUND],
+]:
     proposal = snapshot.proposal(proposal_id)
     if proposal is None:
         return DecisionFailure(
@@ -1882,7 +2013,14 @@ def _merge_proposal(
     snapshot: LedgerSnapshot,
     command: decision_models.MergeProposalCommand,
     now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[
+    decision_models.TransitionDecision,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.ITEM_NOT_FOUND,
+        DecisionFailureCode.PROPOSAL_NOT_FOUND,
+    ],
+]:
     action = command.action
     value = command.value
     proposal_id = action.capability.subject
@@ -1909,7 +2047,10 @@ def _dispose_proposal(
     snapshot: LedgerSnapshot,
     command: decision_models.RejectProposalCommand,
     now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[
+    decision_models.TransitionDecision,
+    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.PROPOSAL_NOT_FOUND],
+]:
     action = command.action
     proposal_id = action.capability.subject
     current_proposal = _require_unstarted_proposal(
@@ -1935,7 +2076,7 @@ def _revise_item(
     snapshot: LedgerSnapshot,
     command: decision_models.ReviseWorkItemCommand,
     now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[decision_models.TransitionDecision, DefinitionRevisionCode]:
     revision = decide_definition_revision(snapshot, command.action.capability.subject, command.value, now)
     if isinstance(revision, DecisionFailure):
         return revision
@@ -1954,7 +2095,10 @@ def _record_replacement(
     snapshot: LedgerSnapshot,
     command: decision_models.RecordReplacementCommand,
     now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[
+    decision_models.TransitionDecision,
+    _ReplacementDecisionCode,
+]:
     action = command.action
     value = command.value
     item = _require_work_item(snapshot, action.capability.subject)
@@ -2031,7 +2175,10 @@ def _retain_temporarily(
     snapshot: LedgerSnapshot,
     command: decision_models.RetainTemporarilyCommand,
     now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]:
+) -> DecisionResult[
+    decision_models.TransitionDecision,
+    _ReplacementDecisionCode,
+]:
     action = command.action
     value = command.value
     item = _require_work_item(snapshot, action.capability.subject)
@@ -2074,7 +2221,7 @@ def decide(
     snapshot: LedgerSnapshot,
     command: decision_models.AcceptCheckpointCommand,
     now: datetime,
-) -> DecisionResult[decision_models.CheckpointAcceptanceDecision]: ...
+) -> DecisionResult[decision_models.CheckpointAcceptanceDecision, AttemptDecisionCode]: ...
 
 
 @overload
@@ -2082,7 +2229,7 @@ def decide(
     snapshot: LedgerSnapshot,
     command: decision_models.NonCheckpointTransitionCommand,
     now: datetime,
-) -> DecisionResult[decision_models.TransitionDecision]: ...
+) -> DecisionResult[decision_models.TransitionDecision, TransitionDecisionCode]: ...
 
 
 @overload
@@ -2090,14 +2237,14 @@ def decide(
     snapshot: LedgerSnapshot,
     command: decision_models.TransitionCommand,
     now: datetime,
-) -> DecisionResult[decision_models.Decision]: ...
+) -> DecisionResult[decision_models.Decision, TransitionDecisionCode]: ...
 
 
 def decide(  # noqa: C901, PLR0912
     snapshot: LedgerSnapshot,
     command: decision_models.TransitionCommand,
     now: datetime,
-) -> DecisionResult[decision_models.Decision]:
+) -> DecisionResult[decision_models.Decision, TransitionDecisionCode]:
     match command:
         case decision_models.AcceptCheckpointCommand():
             return _accept_checkpoint(snapshot, command, now)

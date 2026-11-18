@@ -143,11 +143,13 @@ def canonical_archive_bytes(archive: HistoryArchive) -> bytes:
     return msgspec.json.encode(archive, order="sorted") + b"\n"
 
 
-def _failure(message: str) -> work_brief_models.WorkBriefFailure:
-    return work_brief_models.WorkBriefFailure(work_brief_models.WorkBriefErrorCode.PACKAGE_PROVENANCE_INVALID, message)
+def _failure(message: str) -> work_brief_models.ReviewEvidenceFailure:
+    return work_brief_models.ReviewEvidenceFailure(
+        work_brief_models.ReviewEvidenceErrorCode.PACKAGE_PROVENANCE_INVALID, message
+    )
 
 
-def decode_archive(data: bytes) -> work_brief_models.WorkBriefResult[HistoryArchive]:
+def decode_archive(data: bytes) -> work_brief_models.ReviewEvidenceResult[HistoryArchive]:
     try:
         archive = msgspec.json.decode(data, type=HistoryArchive)
     except (msgspec.DecodeError, ValueError) as error:
@@ -196,7 +198,7 @@ def _retired_checkpoint(
     reference: stored_state.ArtifactReference,
     facts: stored_state.ArchiveHistoryFacts,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[ArchiveCheckpoint]:
+) -> work_brief_models.BriefEvidenceResult[ArchiveCheckpoint]:
     checkpoint = next((value for value in captured if value.history_id == int(receipt.history_id)), None)
     if checkpoint is None or checkpoint.package_artifact_ref_id != int(reference.artifact_ref_id):
         return _failure("Retired checkpoint lacks its exact accepted archival checkpoint binding.")
@@ -277,7 +279,7 @@ def derive_archive(  # noqa: C901, PLR0912 - one complete original-history proje
     facts: stored_state.ArchiveHistoryFacts,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
     captured_checkpoints: tuple[ArchiveCheckpoint, ...],
-) -> work_brief_models.WorkBriefResult[HistoryArchive]:
+) -> work_brief_models.BriefEvidenceResult[HistoryArchive]:
     """Verify original closure and retained semantics around accepted retired facts."""
 
     attempt = facts.attempt
@@ -335,12 +337,12 @@ def derive_archive(  # noqa: C901, PLR0912 - one complete original-history proje
             package_bytes = artifact_bytes[reference.artifact_ref_id]
             if retired_checkpoint_package(package_bytes):
                 archived = _retired_checkpoint(captured_checkpoints, receipt, reference, facts, artifact_bytes)
-                if isinstance(archived, work_brief_models.WorkBriefFailure):
+                if isinstance(archived, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
                     return archived
                 checkpoints.append(archived)
                 continue
             package = work_briefs.decode_canonical_checkpoint_review_package(package_bytes)
-            if isinstance(package, work_brief_models.WorkBriefFailure):
+            if isinstance(package, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
                 return package
             try:
                 candidate = _candidate(package, references, artifact_bytes)
@@ -362,7 +364,7 @@ def derive_archive(  # noqa: C901, PLR0912 - one complete original-history proje
             completed = work_briefs.decode_canonical_historical_completion_review_package(
                 artifact_bytes[reference.artifact_ref_id]
             )
-            if isinstance(completed, work_brief_models.WorkBriefFailure):
+            if isinstance(completed, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
                 return completed
             completions.append(
                 ArchiveCompletion(
@@ -446,7 +448,7 @@ def verify_archive(
     data: bytes,
     facts: stored_state.ArchiveHistoryFacts,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[HistoryArchive]:
+) -> work_brief_models.BriefEvidenceResult[HistoryArchive]:
     if (
         reference.kind != work_models.ArtifactKind.EVIDENCE
         or artifact_identity.AttemptMembership(facts.attempt.attempt_id, artifact_identity.AttemptRole.ARCHIVE)
@@ -459,10 +461,10 @@ def verify_archive(
     ):
         return _failure("Historical archive does not match its exact accepted certificate reference.")
     supplied = decode_archive(data)
-    if isinstance(supplied, work_brief_models.WorkBriefFailure):
+    if isinstance(supplied, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
         return supplied
     expected = derive_archive(facts, artifact_bytes, supplied.checkpoints)
-    if isinstance(expected, work_brief_models.WorkBriefFailure):
+    if isinstance(expected, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
         return expected
     if canonical_archive_bytes(supplied) != canonical_archive_bytes(expected):
         return _failure("Historical archive differs from its complete original closure, identities or readable facts.")
@@ -472,7 +474,7 @@ def verify_archive(
 def verify_archives(
     state: candidate_snapshots.CandidateSnapshotState,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[Mapping[AttemptId, HistoryArchive]]:
+) -> work_brief_models.BriefEvidenceResult[Mapping[AttemptId, HistoryArchive]]:
     archives: dict[AttemptId, HistoryArchive] = {}
     attempts = {str(value.attempt_id): value for value in state.lifecycle.attempts}
     for reference in state.artifact_references:
@@ -493,7 +495,7 @@ def verify_archives(
             attempt, state.artifact_references, state.transition_receipts, state.lifecycle.definition_revisions
         )
         verified = verify_archive(reference, artifact_bytes[reference.artifact_ref_id], facts, artifact_bytes)
-        if isinstance(verified, work_brief_models.WorkBriefFailure):
+        if isinstance(verified, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
             return verified
         archives[attempt.attempt_id] = verified
     return MappingProxyType(archives)

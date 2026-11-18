@@ -19,10 +19,10 @@ from pinboard.adapters.files.file_io import (
     ensure_directory_chain,
 )
 from pinboard.application import stored_state
-from pinboard.application.artifact_publication import ArtifactWriteFailure
+from pinboard.application.artifact_publication import ArtifactWriteFailure, PublishedFailureDetails
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, BriefArtifactRef, NewArtifact
 from pinboard.domain import work_models
-from pinboard.domain.errors import ChangedSurface, EffectDisposition, FailureDetails, FailureFact, RetryDisposition
+from pinboard.domain.errors import ChangedSurface, FailureFact
 
 _DIRECTORIES: Mapping[work_models.ArtifactKind, str] = MappingProxyType(
     {
@@ -128,13 +128,11 @@ def _publish_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactPub
             return ArtifactWriteFailure(
                 reference.selector,
                 error,
-                FailureDetails(
-                    observed=(FailureFact("published_artifact_selector", reference.selector),),
-                    mismatches=(),
-                    retry=RetryDisposition.DO_NOT_RETRY,
-                    effect=EffectDisposition.COMMITTED,
-                    changed_surfaces=(ChangedSurface.IMMUTABLE_ARTIFACT,),
-                    alternatives=(),
+                PublishedFailureDetails(
+                    (FailureFact("published_artifact_selector", reference.selector),),
+                    (),
+                    (ChangedSurface.IMMUTABLE_ARTIFACT,),
+                    (),
                 ),
             )
         except FileIOError as error:

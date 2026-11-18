@@ -13,7 +13,7 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite.database import initialize_database, translate_database_error
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state
-from pinboard.application.artifact_publication import validate_transition_work_brief
+from pinboard.application.artifact_publication import PublishedFailureDetails, validate_transition_work_brief
 from pinboard.application.artifacts import WorkBriefIdentity
 from pinboard.application.dispatch import publish_dispatch_review, recheck_dispatch_authority
 from pinboard.application.dispatch_models import DispatchFailure
@@ -248,9 +248,7 @@ class OperationFailureTest(unittest.TestCase):
 
         self.assertIsInstance(failure, DispatchFailure)
         assert isinstance(failure, DispatchFailure)
-        assert failure.details is not None
-        self.assertEqual(EffectDisposition.COMMITTED, failure.details.effect)
-        self.assertEqual(RetryDisposition.DO_NOT_RETRY, failure.details.retry)
+        assert isinstance(failure.details, PublishedFailureDetails)
         self.assertEqual((), failure.details.observed)
         self.assertEqual(publication_surfaces, failure.details.changed_surfaces)
 
@@ -281,8 +279,7 @@ class OperationFailureTest(unittest.TestCase):
 
         self.assertIsInstance(collision, DispatchFailure)
         assert isinstance(collision, DispatchFailure)
-        assert collision.details is not None
-        self.assertEqual(EffectDisposition.COMMITTED, collision.details.effect)
+        assert isinstance(collision.details, PublishedFailureDetails)
         self.assertEqual(
             (
                 ChangedSurface.IMMUTABLE_ARTIFACT,

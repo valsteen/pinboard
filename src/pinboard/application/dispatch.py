@@ -6,6 +6,10 @@ from pinboard.application.actions import discover_current_actions
 from pinboard.application.artifact_publication import (
     ArtifactAcceptanceFailure,
     ArtifactWriteFailure,
+    PublicationSurface,
+    PublishedArtifactRejected,
+    PublishedFailureDetails,
+    accepted_publication_surfaces,
     publish_accepted_artifact,
 )
 from pinboard.application.artifacts import BriefArtifactRef, NewArtifact
@@ -18,7 +22,6 @@ from pinboard.application.dispatch_models import (
 from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
-    ChangedSurface,
     DecisionFailure,
     EffectDisposition,
     FailureDetails,
@@ -38,7 +41,7 @@ class SelectedDispatch:
 @dataclass(frozen=True, slots=True)
 class AcceptedDispatchReview:
     reference: stored_state.ArtifactReference
-    changed_surfaces: tuple[ChangedSurface, ...]
+    changed_surfaces: tuple[PublicationSurface, ...]
 
 
 def _rediscover_dispatch_action(
@@ -180,33 +183,29 @@ def publish_dispatch_review(
         )
         if isinstance(rejected_acceptance, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
             return rejected_acceptance
-        if isinstance(rejected_acceptance, DecisionFailure):
+        if isinstance(rejected_acceptance, (DecisionFailure, PublishedArtifactRejected)):
             return DispatchFailure(
                 DispatchRejectionCode.STALE_ACTION,
                 rejected_acceptance.message,
                 rejected_acceptance.details,
             )
         rejected = rejected_acceptance.reference
-        changed_surfaces = (
-            *((ChangedSurface.IMMUTABLE_ARTIFACT,) if rejected_acceptance.artifact_created else ()),
-            *(
-                (ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE, ChangedSurface.LEDGER)
-                if rejected_acceptance.ledger_changed
-                else ()
-            ),
+        changed_surfaces = accepted_publication_surfaces(rejected_acceptance)
+        observed = (
+            FailureFact("published_artifact_selector", rejected.selector),
+            FailureFact("accepted_revision", rejected.accepted_revision),
         )
         return DispatchFailure(
             DispatchRejectionCode.REVIEW_COLLISION,
             f"Ready review already differs; later evidence is preserved at '{rejected.selector}'.",
-            FailureDetails(
-                observed=(
-                    FailureFact("published_artifact_selector", rejected.selector),
-                    FailureFact("accepted_revision", rejected.accepted_revision),
-                ),
+            PublishedFailureDetails(observed, (), changed_surfaces, ())
+            if changed_surfaces
+            else FailureDetails(
+                observed=observed,
                 mismatches=(),
                 retry=RetryDisposition.DO_NOT_RETRY,
-                effect=EffectDisposition.COMMITTED if changed_surfaces else EffectDisposition.UNCHANGED,
-                changed_surfaces=changed_surfaces,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
                 alternatives=(),
             ),
         )
@@ -219,30 +218,19 @@ def publish_dispatch_review(
     )
     if isinstance(accepted_publication, (ArtifactAcceptanceFailure, ArtifactWriteFailure)):
         return accepted_publication
-    if isinstance(accepted_publication, DecisionFailure):
+    if isinstance(accepted_publication, (DecisionFailure, PublishedArtifactRejected)):
         return DispatchFailure(
             DispatchRejectionCode.STALE_ACTION,
             accepted_publication.message,
             accepted_publication.details,
         )
-    accepted = accepted_publication.reference
-    return AcceptedDispatchReview(
-        accepted,
-        (
-            *((ChangedSurface.IMMUTABLE_ARTIFACT,) if accepted_publication.artifact_created else ()),
-            *(
-                (ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE, ChangedSurface.LEDGER)
-                if accepted_publication.ledger_changed
-                else ()
-            ),
-        ),
-    )
+    return AcceptedDispatchReview(accepted_publication.reference, accepted_publication_surfaces(accepted_publication))
 
 
 def recheck_dispatch_authority(
     store: WorkStore,
     supplied: decision_models.DispatchAction,
-    review_publication_surfaces: tuple[ChangedSurface, ...],
+    review_publication_surfaces: tuple[PublicationSurface, ...],
     now: datetime,
 ) -> DispatchFailure | None:
     capability = supplied.capability
@@ -252,21 +240,24 @@ def recheck_dispatch_authority(
     current = rediscovered if isinstance(rediscovered, decision_models.DispatchAction) else None
     if current == supplied:
         return None
+    mismatches = (
+        FailureMismatch(
+            "subject_revision",
+            None if current is None else current.capability.subject_revision,
+            capability.subject_revision,
+        ),
+    )
     return DispatchFailure(
         DispatchRejectionCode.ACTION_UNAVAILABLE,
         "Dispatch authority changed during prompt preparation.",
-        FailureDetails(
+        PublishedFailureDetails((), mismatches, review_publication_surfaces, ())
+        if review_publication_surfaces
+        else FailureDetails(
             observed=(),
-            mismatches=(
-                FailureMismatch(
-                    "subject_revision",
-                    None if current is None else current.capability.subject_revision,
-                    capability.subject_revision,
-                ),
-            ),
-            retry=(RetryDisposition.DO_NOT_RETRY if review_publication_surfaces else RetryDisposition.REFRESH_ACTION),
-            effect=(EffectDisposition.COMMITTED if review_publication_surfaces else EffectDisposition.UNCHANGED),
-            changed_surfaces=review_publication_surfaces,
+            mismatches=mismatches,
+            retry=RetryDisposition.REFRESH_ACTION,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
             alternatives=(),
         ),
     )

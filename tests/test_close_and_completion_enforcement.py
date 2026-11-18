@@ -34,7 +34,7 @@ from pinboard.application.artifact_publication import AcceptedArtifactPublicatio
 from pinboard.application.artifacts import CurrentAttemptWorkBriefIdentity, NewArtifact
 from pinboard.application.project_export import ProjectExport
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import AttemptId, HostId, TaskId, WorkItemId
 from pinboard.mcp import execution as mcp_execution
 from pinboard.mcp import server as mcp_server
@@ -825,7 +825,7 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
             actor_task_id: TaskId,
             actor_host_id: HostId,
             transition_brief_identity: CurrentAttemptWorkBriefIdentity,
-        ) -> DecisionFailure | None:
+        ) -> DecisionFailure[DecisionFailureCode] | None:
             failure = preflight(
                 store,
                 command,

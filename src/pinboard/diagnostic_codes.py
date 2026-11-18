@@ -134,6 +134,8 @@ type ActionUnavailableCode = Literal["ACTION_NOT_AVAILABLE"]
 
 type AttemptLeaseRequiredCode = Literal["ATTEMPT_LEASE_REQUIRED"]
 
+type ActionCoverageUnavailableCode = Literal["ITEM_NOT_FOUND", "ITEM_DEFINITION_INVALID"]
+
 type AttemptInspectInvalidCode = Annotated[
     Literal["ATTEMPT_INSPECT_INVALID"],
     CodeMeanings(((0, "The attempt inspection request failed validation for this operation."),)),

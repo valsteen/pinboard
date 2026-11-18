@@ -2,6 +2,7 @@
 
 import hashlib
 from collections.abc import Mapping
+from typing import Literal
 
 import msgspec
 
@@ -28,8 +29,10 @@ from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, Decisio
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CheckpointId
 
 
-def _invalid(message: str) -> work_brief_models.WorkBriefFailure:
-    return work_brief_models.WorkBriefFailure(work_brief_models.WorkBriefErrorCode.PACKAGE_PROVENANCE_INVALID, message)
+def _invalid(message: str) -> work_brief_models.ReviewEvidenceFailure:
+    return work_brief_models.ReviewEvidenceFailure(
+        work_brief_models.ReviewEvidenceErrorCode.PACKAGE_PROVENANCE_INVALID, message
+    )
 
 
 def canonical_checkpoint_candidate_reference(
@@ -71,7 +74,7 @@ def _portable_reference(
     identity: work_brief_models.PortableArtifactIdentity,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[stored_state.ArtifactReference]:
+) -> work_brief_models.ReviewEvidenceResult[stored_state.ArtifactReference]:
     reference = references.get((identity.kind, identity.key, identity.revision))
     if reference is None:
         return _invalid(f"The {identity.role} identity does not resolve to an accepted artifact reference.")
@@ -89,19 +92,19 @@ def _artifact_identities(
     package: work_brief_models.CheckpointReviewPackageV3,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[stored_state.ArtifactReference]:
+) -> work_brief_models.ReviewEvidenceResult[stored_state.ArtifactReference]:
     accepted_brief = _portable_reference(package.accepted_brief, references, artifact_bytes)
-    if isinstance(accepted_brief, work_brief_models.WorkBriefFailure):
+    if isinstance(accepted_brief, work_brief_models.ReviewEvidenceFailure):
         return accepted_brief
     result = _portable_reference(package.result, references, artifact_bytes)
-    if isinstance(result, work_brief_models.WorkBriefFailure):
+    if isinstance(result, work_brief_models.ReviewEvidenceFailure):
         return result
     implementation_review = _portable_reference(package.implementation_review, references, artifact_bytes)
-    if isinstance(implementation_review, work_brief_models.WorkBriefFailure):
+    if isinstance(implementation_review, work_brief_models.ReviewEvidenceFailure):
         return implementation_review
     checkpoint_id = package.checkpoint.id
     candidate = _portable_reference(package.candidate_snapshot, references, artifact_bytes)
-    if isinstance(candidate, work_brief_models.WorkBriefFailure):
+    if isinstance(candidate, work_brief_models.ReviewEvidenceFailure):
         return candidate
     if not canonical_checkpoint_candidate_reference(package, candidate):
         return _invalid("Checkpoint package candidate snapshot identity is not canonical.")
@@ -133,7 +136,7 @@ def _brief(
     package: work_brief_models.CheckpointReviewPackageV3,
     reference: stored_state.ArtifactReference,
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[work_briefs.CheckpointWorkBriefValue]:
+) -> work_brief_models.ReviewEvidenceResult[work_briefs.CheckpointWorkBriefValue]:
     brief = decode_canonical_historical_work_brief(artifact_bytes[reference.artifact_ref_id])
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return _invalid(f"The package accepted brief is invalid: {brief.message}")
@@ -160,7 +163,7 @@ def _review_basis(
     brief: work_briefs.CheckpointWorkBriefValue,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefFailure | None:
+) -> work_brief_models.ReviewEvidenceFailure | None:
     match brief.checkpoint, package.review_basis:
         case work_brief_models.CrossBoundaryCheckpoint(), work_brief_models.SmallWorkReviewBasis():
             return None
@@ -181,7 +184,7 @@ def _review_basis(
             ),
         ):
             review_reference = _portable_reference(review_identity, references, artifact_bytes)
-            if isinstance(review_reference, work_brief_models.WorkBriefFailure):
+            if isinstance(review_reference, work_brief_models.ReviewEvidenceFailure):
                 return review_reference
             review_key_sha256 = (
                 package.checkpoint.sha256
@@ -233,9 +236,9 @@ def validate_selected_checkpoint_review_package(
     *,
     attempt_id: str,
     item_id: str,
-) -> work_brief_models.WorkBriefResult[work_brief_models.CheckpointReviewPackageV3]:
+) -> work_brief_models.ReviewEvidenceResult[work_brief_models.CheckpointReviewPackageV3]:
     package = decode_canonical_checkpoint_review_package(package_bytes)
-    if isinstance(package, work_brief_models.WorkBriefFailure):
+    if isinstance(package, work_brief_models.ReviewEvidenceFailure):
         return package
     try:
         outcome = msgspec.json.decode(bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome)
@@ -278,16 +281,16 @@ def validate_checkpoint_package_closure(
     package: work_brief_models.CheckpointReviewPackageV3,
     artifact_references: tuple[stored_state.ArtifactReference, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefFailure | None:
+) -> work_brief_models.ReviewEvidenceFailure | None:
     references = {(value.kind.value, value.key, value.revision): value for value in artifact_references}
     accepted_brief = _artifact_identities(package, references, artifact_bytes)
-    if isinstance(accepted_brief, work_brief_models.WorkBriefFailure):
+    if isinstance(accepted_brief, work_brief_models.ReviewEvidenceFailure):
         return accepted_brief
     brief = _brief(package, accepted_brief, artifact_bytes)
-    if isinstance(brief, work_brief_models.WorkBriefFailure):
+    if isinstance(brief, work_brief_models.ReviewEvidenceFailure):
         return brief
     candidate_reference = _portable_reference(package.candidate_snapshot, references, artifact_bytes)
-    if isinstance(candidate_reference, work_brief_models.WorkBriefFailure):
+    if isinstance(candidate_reference, work_brief_models.ReviewEvidenceFailure):
         return candidate_reference
     try:
         snapshot = candidate_snapshots.decode_candidate_snapshot(artifact_bytes[candidate_reference.artifact_ref_id])
@@ -304,14 +307,14 @@ def validate_checkpoint_package_closure(
     return _review_basis(package, brief, references, artifact_bytes)
 
 
-def _correction_failure(message: str) -> DecisionFailure:
+def _correction_failure(message: str) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, message, None)
 
 
 def decode_correction_outcome(
     receipt: stored_state.StoredTransitionReceipt,
     attempt_id: str,
-) -> DecisionResult[history.TransitionReceiptOutcome]:
+) -> DecisionResult[history.TransitionReceiptOutcome, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
     if (
         receipt.action_kind != decision_models.ActionKind.RETURN_FOR_CORRECTION
         or receipt.authorization != decision_models.AuthorizationKind.PROJECT

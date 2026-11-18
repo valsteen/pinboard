@@ -26,6 +26,8 @@ from pinboard.application import artifact_identity
 from pinboard.application.artifact_publication import (
     ArtifactAcceptanceFailure,
     ArtifactWriteFailure,
+    PublishedFailureDetails,
+    UnpublishedFailureDetails,
     publish_accepted_artifact,
 )
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, NewArtifact
@@ -34,8 +36,6 @@ from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
-    EffectDisposition,
-    RetryDisposition,
 )
 from tests.artifact_support import write_revision
 from tests.domain_support import expect_success
@@ -123,20 +123,20 @@ class ArtifactPersistenceTest(unittest.TestCase):
             )
             failures = tuple(future.result() for future in futures)
 
-        self.assertEqual(1, sum(failure.details.effect.value == "committed" for failure in failures))
-        self.assertEqual(1, sum(failure.details.effect.value == "unchanged" for failure in failures))
-        created_failure = next(failure for failure in failures if failure.details.effect.value == "committed")
-        reused_failure = next(failure for failure in failures if failure.details.effect.value == "unchanged")
+        self.assertEqual(1, sum(isinstance(failure.details, PublishedFailureDetails) for failure in failures))
+        self.assertEqual(1, sum(isinstance(failure.details, UnpublishedFailureDetails) for failure in failures))
+        created_failure = next(failure for failure in failures if isinstance(failure.details, PublishedFailureDetails))
+        reused_failure = next(failure for failure in failures if isinstance(failure.details, UnpublishedFailureDetails))
+        created_details = created_failure.details
+        reused_details = reused_failure.details
+        assert isinstance(created_details, PublishedFailureDetails)
+        assert isinstance(reused_details, UnpublishedFailureDetails)
         self.assertEqual("artifacts/evidence/concurrent/1.md", created_failure.selector)
         self.assertIsInstance(created_failure.cause, SQLiteReadOnlyError)
         assert isinstance(reused_failure.cause, SQLiteReadOnlyError)
         self.assertEqual(roots.database_path, reused_failure.cause.database_path)
-        self.assertEqual("do-not-retry", created_failure.details.retry.value)
-        self.assertEqual("do-not-retry", reused_failure.details.retry.value)
-        self.assertEqual(
-            ("immutable-artifact",), tuple(value.value for value in created_failure.details.changed_surfaces)
-        )
-        self.assertEqual((), reused_failure.details.changed_surfaces)
+        self.assertEqual("do-not-retry", reused_details.retry.value)
+        self.assertEqual(("immutable-artifact",), tuple(value.value for value in created_details.changed_surfaces))
         self.assertEqual(b"ready\n", (roots.work_root / created_failure.selector).read_bytes())
         self.assertEqual(before, store.validated_snapshot())
 
@@ -248,8 +248,6 @@ class ArtifactPersistenceTest(unittest.TestCase):
         assert isinstance(publication_failure, ArtifactWriteFailure)
         path = roots.work_root / publication_failure.selector
         self.assertEqual("artifacts/results/attempt-a/1.md", publication_failure.selector)
-        self.assertEqual(EffectDisposition.COMMITTED, publication_failure.details.effect)
-        self.assertEqual(RetryDisposition.DO_NOT_RETRY, publication_failure.details.retry)
         self.assertEqual((ChangedSurface.IMMUTABLE_ARTIFACT,), publication_failure.details.changed_surfaces)
         self.assertEqual(before, SQLiteWorkStore(roots.database_path).validated_snapshot())
         self.assertEqual(b"result\n", path.read_bytes())

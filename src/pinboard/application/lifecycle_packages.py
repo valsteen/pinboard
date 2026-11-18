@@ -23,8 +23,10 @@ from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId
 
 
-def _package_provenance_failure(message: str) -> work_brief_models.WorkBriefFailure:
-    return work_brief_models.WorkBriefFailure(work_brief_models.WorkBriefErrorCode.PACKAGE_PROVENANCE_INVALID, message)
+def _package_provenance_failure(message: str) -> work_brief_models.ReviewEvidenceFailure:
+    return work_brief_models.ReviewEvidenceFailure(
+        work_brief_models.ReviewEvidenceErrorCode.PACKAGE_PROVENANCE_INVALID, message
+    )
 
 
 def _validate_one_checkpoint_package(
@@ -36,7 +38,7 @@ def _validate_one_checkpoint_package(
     definition_digests: Mapping[tuple[str, int], str],
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[project_export.ProjectExportCheckpointPackageV3]:
+) -> work_brief_models.ReviewEvidenceResult[project_export.ProjectExportCheckpointPackageV3]:
     selected = checkpoint_packages.validate_selected_checkpoint_review_package(
         receipt,
         package_reference,
@@ -44,7 +46,7 @@ def _validate_one_checkpoint_package(
         attempt_id=package.attempt_id,
         item_id=package.item_id,
     )
-    if isinstance(selected, work_brief_models.WorkBriefFailure):
+    if isinstance(selected, work_brief_models.ReviewEvidenceFailure):
         return selected
     attempt = attempts.get(package.attempt_id)
     if attempt is None or str(attempt.item_id) != package.item_id or package.item_id not in item_ids:
@@ -77,7 +79,7 @@ def validate_checkpoint_review_packages(
     transition_receipts: tuple[stored_state.StoredTransitionReceipt, ...],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
     archives: Mapping[AttemptId, history_archives.HistoryArchive],
-) -> work_brief_models.WorkBriefResult[tuple[project_export.ProjectExportCheckpointPackageV3, ...]]:
+) -> work_brief_models.ReviewEvidenceResult[tuple[project_export.ProjectExportCheckpointPackageV3, ...]]:
     """Validate historical package provenance from one loaded state and verified bytes."""
 
     references_by_id = {value.artifact_ref_id: value for value in artifact_references}
@@ -112,8 +114,8 @@ def validate_checkpoint_review_packages(
                 return _package_provenance_failure("Retired checkpoint requires its verified terminal archive.")
             continue
         package = decode_canonical_checkpoint_review_package(artifact_bytes[receipt.artifact_ref_id])
-        if isinstance(package, work_brief_models.WorkBriefFailure):
-            return work_brief_models.WorkBriefFailure(
+        if isinstance(package, work_brief_models.ReviewEvidenceFailure):
+            return work_brief_models.ReviewEvidenceFailure(
                 package.code,
                 f"Checkpoint acceptance history {int(receipt.history_id)}: {package.message}",
             )
@@ -127,7 +129,7 @@ def validate_checkpoint_review_packages(
             references,
             artifact_bytes,
         )
-        if isinstance(validated, work_brief_models.WorkBriefFailure):
+        if isinstance(validated, work_brief_models.ReviewEvidenceFailure):
             return validated
         packages.append(validated)
     orphaned = tuple(
@@ -150,7 +152,7 @@ def validate_checkpoint_review_packages(
 
 def _completion_outcome(
     receipt: stored_state.StoredTransitionReceipt,
-) -> work_brief_models.WorkBriefResult[history.CompletionAcceptanceOutcome]:
+) -> work_brief_models.ReviewEvidenceResult[history.CompletionAcceptanceOutcome]:
     try:
         outcome = msgspec.json.decode(bytes(receipt.outcome_payload), type=history.CompletionAcceptanceOutcome)
     except msgspec.DecodeError as error:
@@ -164,7 +166,7 @@ def _completion_outcome(
 
 def _completion_input(
     receipt: stored_state.StoredTransitionReceipt,
-) -> work_brief_models.WorkBriefResult[
+) -> work_brief_models.ReviewEvidenceResult[
     work_brief_compatibility_models.HistoricalCoveredCompletionInput
     | work_brief_compatibility_models.HistoricalReviewedCompletionInputV2
     | action_models.ReviewedCompletionReceiptPayload
@@ -230,7 +232,7 @@ def _completion_reference(
     identity: work_brief_models.CompletionPortableArtifactIdentity,
     references: Mapping[tuple[str, str, int], stored_state.ArtifactReference],
     artifact_bytes: Mapping[ArtifactRefId, bytes],
-) -> work_brief_models.WorkBriefResult[stored_state.ArtifactReference]:
+) -> work_brief_models.ReviewEvidenceResult[stored_state.ArtifactReference]:
     reference = references.get((identity.kind, identity.key, identity.revision))
     if reference is None or (
         reference.selector != identity.selector
@@ -251,7 +253,7 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
     artifact_bytes: Mapping[ArtifactRefId, bytes],
     checkpoint_packages: tuple[project_export.ProjectExportCheckpointPackageV3, ...],
     archives: Mapping[AttemptId, history_archives.HistoryArchive],
-) -> work_brief_models.WorkBriefResult[tuple[project_export.ProjectExportCompletionReviewPackage, ...]]:
+) -> work_brief_models.ReviewEvidenceResult[tuple[project_export.ProjectExportCompletionReviewPackage, ...]]:
     references_by_id = {value.artifact_ref_id: value for value in artifact_references}
     references = {(value.kind.value, value.key, value.revision): value for value in artifact_references}
     attempts = {str(value.attempt_id): value for value in lifecycle.attempts}
@@ -294,10 +296,10 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
         if receipt.outcome_schema != "completion-acceptance/v2":
             continue
         completion_input = _completion_input(receipt)
-        if isinstance(completion_input, work_brief_models.WorkBriefFailure):
+        if isinstance(completion_input, work_brief_models.ReviewEvidenceFailure):
             return completion_input
         outcome = _completion_outcome(receipt)
-        if isinstance(outcome, work_brief_models.WorkBriefFailure):
+        if isinstance(outcome, work_brief_models.ReviewEvidenceFailure):
             return outcome
         if receipt.artifact_ref_id is None:
             return _package_provenance_failure(
@@ -309,7 +311,7 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
                 f"Completion history {int(receipt.history_id)} links an unavailable review package."
             )
         package = decode_canonical_historical_completion_review_package(artifact_bytes[receipt.artifact_ref_id])
-        if isinstance(package, work_brief_models.WorkBriefFailure):
+        if isinstance(package, work_brief_models.ReviewEvidenceFailure):
             return package
         if (
             receipt.action_kind != decision_models.ActionKind.COMPLETE
@@ -344,13 +346,13 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
         terminal_result = _completion_reference(package.terminal_result, references, artifact_bytes)
         final_review = _completion_reference(package.final_review, references, artifact_bytes)
         if any(
-            isinstance(value, work_brief_models.WorkBriefFailure)
+            isinstance(value, work_brief_models.ReviewEvidenceFailure)
             for value in (accepted_brief, terminal_result, final_review)
         ):
             return next(
                 value
                 for value in (accepted_brief, terminal_result, final_review)
-                if isinstance(value, work_brief_models.WorkBriefFailure)
+                if isinstance(value, work_brief_models.ReviewEvidenceFailure)
             )
         assert isinstance(accepted_brief, stored_state.ArtifactReference)
         assert isinstance(terminal_result, stored_state.ArtifactReference)
@@ -386,7 +388,7 @@ def validate_completion_review_packages(  # noqa: C901, PLR0912 - one exact term
             return _package_provenance_failure("Completion checkpoint coverage is incomplete or stale.")
         for row, checkpoint in zip(package.checkpoint_coverage, expected_checkpoints, strict=True):
             package_reference = _completion_reference(row.package, references, artifact_bytes)
-            if isinstance(package_reference, work_brief_models.WorkBriefFailure):
+            if isinstance(package_reference, work_brief_models.ReviewEvidenceFailure):
                 return package_reference
             if (
                 row.checkpoint.id != checkpoint[1]

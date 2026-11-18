@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pinboard.adapters.files.errors import ArtifactError, FileIOErrorCode, RootError, RootErrorCode
+from pinboard.adapters.files.errors import ArtifactError, RootError, RootErrorCode, ViewRefreshErrorCode
 from pinboard.adapters.files.file_io import DurableRoots, resolve_durable_roots
 from pinboard.adapters.files.root import resolve_shared_repository_root, resolve_source_checkout_root
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
@@ -193,7 +193,15 @@ def initialize_state(
         store=store,
         now=operation_time,
     )
-    if isinstance(receipt, (work_brief_models.WorkBriefFailure, InitializationAfterCommittedEffects, CliEffectFailure)):
+    if isinstance(
+        receipt,
+        (
+            work_brief_models.WorkBriefFailure,
+            work_brief_models.ReviewEvidenceFailure,
+            InitializationAfterCommittedEffects,
+            CliEffectFailure,
+        ),
+    ):
         return receipt
     optional_next_skills = (
         () if receipt.resumed else ("repository-readiness", "slop-cleanup", "maintaining-agent-guidance")
@@ -233,7 +241,7 @@ def rebuild_views(
     rebuild_result = work_views.rebuild(durable, store, operation_time)
     if rebuild_result.warning is not None:
         return CliEffectFailure(
-            FileIOErrorCode.VIEW_REFRESH_FAILED,
+            ViewRefreshErrorCode.VIEW_REFRESH_FAILED,
             f"{rebuild_result.warning.message} {rebuild_result.warning.repair} Some replaceable views may already have refreshed; the authoritative ledger is unchanged.",
         )
     print(f"OK VIEWS_REBUILT revision={rebuild_result.database_revision}")

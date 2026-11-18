@@ -13,13 +13,16 @@ from pinboard.application.artifact_publication import (
     ArtifactPublisher,
     ArtifactReader,
     ArtifactWriteFailure,
+    PublicationSurface,
+    PublishedArtifactRejected,
+    PublishedFailureDetails,
+    accepted_publication_surfaces,
     publish_accepted_artifact,
 )
 from pinboard.application.artifacts import NewArtifact
 from pinboard.application.ports import WorkStore
 from pinboard.domain import work_models
 from pinboard.domain.errors import (
-    ChangedSurface,
     DecisionFailure,
     DecisionFailureCode,
     DecisionResult,
@@ -53,7 +56,8 @@ class DispatchRejectionCode(DescribedCode):
 class DispatchFailure:
     code: DispatchRejectionCode | DecisionFailureCode
     message: str
-    details: FailureDetails | None
+    # Published details mark a failure after publication changed durable surfaces; plain details are unchanged.
+    details: FailureDetails | PublishedFailureDetails | None
 
 
 type DispatchResult[T] = T | DispatchFailure
@@ -180,13 +184,13 @@ type NativeLaunchEnvelope = CodexNativeLaunchEnvelope | ClaudeNativeLaunchEnvelo
 
 class PublishedAgentPrompt(str):
     reference: PromptReferenceView
-    changed_surfaces: tuple[ChangedSurface, ...]
+    changed_surfaces: tuple[PublicationSurface, ...]
 
     def __new__(
         cls,
         prompt: str,
         reference: PromptReferenceView,
-        changed_surfaces: tuple[ChangedSurface, ...],
+        changed_surfaces: tuple[PublicationSurface, ...],
     ) -> Self:
         value = super().__new__(cls, prompt)
         value.reference = reference
@@ -259,7 +263,10 @@ def publish_agent_prompt(
     subject: AgentPromptSubject,
     prompt: str,
     accepted_at: datetime,
-) -> DecisionResult[PublishedAgentPrompt | ArtifactAcceptanceFailure | ArtifactWriteFailure]:
+) -> DecisionResult[
+    PublishedAgentPrompt | ArtifactAcceptanceFailure | ArtifactWriteFailure | PublishedArtifactRejected,
+    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE],
+]:
     content = prompt.encode()
     digest = hashlib.sha256(content).hexdigest()
     accepted = publish_accepted_artifact(
@@ -275,15 +282,8 @@ def publish_agent_prompt(
         accepted_at,
         artifact_identity.AttemptMembership(AttemptId(subject.attempt_id), artifact_identity.AttemptRole.SOURCE),
     )
-    if isinstance(accepted, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure)):
+    if isinstance(
+        accepted, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure, PublishedArtifactRejected)
+    ):
         return accepted
-    reference = _reference_view(accepted)
-    changed_surfaces = (
-        *((ChangedSurface.IMMUTABLE_ARTIFACT,) if accepted.artifact_created else ()),
-        *((ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE, ChangedSurface.LEDGER) if accepted.ledger_changed else ()),
-    )
-    return PublishedAgentPrompt(
-        prompt,
-        reference,
-        changed_surfaces,
-    )
+    return PublishedAgentPrompt(prompt, _reference_view(accepted), accepted_publication_surfaces(accepted))

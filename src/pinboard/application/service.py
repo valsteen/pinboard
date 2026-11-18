@@ -37,13 +37,18 @@ from pinboard.application.mutations import (
     project_review_submission_mutation,
     project_transition_mutation,
 )
-from pinboard.application.ports import WorkStore, WorkTransaction
+from pinboard.application.ports import StaleCommitCode, WorkStore, WorkTransaction
 from pinboard.domain import authority_models, decision_models, work_models
 from pinboard.domain.authority_decisions import (
     decide_attempt_authority,
     decide_preparation_authority,
 )
-from pinboard.domain.decisions import decide, validate_checkpoint_candidate, validate_supplied_action
+from pinboard.domain.decisions import (
+    TransitionDecisionCode,
+    decide,
+    validate_checkpoint_candidate,
+    validate_supplied_action,
+)
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -65,7 +70,7 @@ from pinboard.domain.identifiers import (
     WorkItemId,
 )
 from pinboard.domain.ledger import LedgerSnapshot
-from pinboard.domain.ordering import OrderRequest, decide_order
+from pinboard.domain.ordering import OrderDecisionCode, OrderRequest, decide_order
 from pinboard.domain.proposal_decisions import ProposalCreationDecisionCode, decide_proposal_creation
 from pinboard.domain.proposal_models import (
     CreateProposalOperation,
@@ -76,6 +81,53 @@ PROPOSAL_INTAKE_RECEIPT_MEANING = (
 )
 LIVE_ORDER_RECEIPT_ACTION_ID: ActionId = ActionId("inspect:live-order")
 LIVE_ORDER_RECEIPT_MEANING = "A live-order change committed a receipt under the inspect action family."
+
+
+# Supplied-action validation adds lease and route refusals to the transition decision itself.
+type TransitionFailureCode = (
+    TransitionDecisionCode
+    | Literal[DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED]
+)
+type CoveredCompletionFailureCode = Literal[
+    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+    DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+    DecisionFailureCode.ATTEMPT_NOT_FOUND,
+    DecisionFailureCode.HISTORY_RECORD_EXISTS,
+    DecisionFailureCode.ITEM_DEFINITION_INVALID,
+    DecisionFailureCode.ITEM_DEFINITION_STALE,
+    DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
+    DecisionFailureCode.REPLACEMENT_STALE,
+    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+]
+type CheckpointAcceptanceFailureCode = Literal[
+    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+    DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+    DecisionFailureCode.ATTEMPT_NOT_FOUND,
+    DecisionFailureCode.ITEM_DEFINITION_INVALID,
+    DecisionFailureCode.ITEM_DEFINITION_STALE,
+    DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
+    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+]
+type AttemptAuthorityChangeCode = Literal[
+    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+    DecisionFailureCode.ATTEMPT_LEASE_EXPIRED,
+    DecisionFailureCode.ITEM_DEFINITION_INVALID,
+    DecisionFailureCode.ITEM_DEFINITION_STALE,
+    DecisionFailureCode.LEASE_FENCED,
+    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+]
+type AttemptAuthorityAcquireCode = AttemptAuthorityChangeCode | Literal[DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED]
+type PreparationAuthorityChangeCode = Literal[
+    DecisionFailureCode.ACTION_NOT_AVAILABLE,
+    DecisionFailureCode.ITEM_DEFINITION_INVALID,
+    DecisionFailureCode.ITEM_DEFINITION_STALE,
+    DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
+    DecisionFailureCode.LEASE_FENCED,
+    DecisionFailureCode.TRANSITION_INPUT_INVALID,
+]
 
 
 def _project_retained_attempt_authority(
@@ -103,7 +155,7 @@ def _project_retained_attempt_authority(
 def decide_and_commit_attempt_authority_change(
     store: WorkStore,
     requested_change: authority_models.AttemptAuthorityOperation,
-) -> DecisionResult[AttemptAuthorityMutationResult]:
+) -> DecisionResult[AttemptAuthorityMutationResult, AttemptAuthorityChangeCode]:
     """Reread locked state, decide, and commit one attempt-authority change."""
 
     with store.write() as transaction:
@@ -119,7 +171,7 @@ def acquire_attempt_authority(
     lease_id: LeaseId,
     acquired_at: datetime,
     expires_at: datetime,
-) -> DecisionResult[AttemptAuthorityMutationResult]:
+) -> DecisionResult[AttemptAuthorityMutationResult, AttemptAuthorityAcquireCode]:
     """Select initial acquisition or inactive transfer under one write lock."""
 
     with store.write() as transaction:
@@ -195,7 +247,7 @@ def acquire_attempt_authority(
 def _commit_attempt_authority_change(
     transaction: WorkTransaction,
     requested_change: authority_models.AttemptAuthorityOperation,
-) -> DecisionResult[AttemptAuthorityMutationResult]:
+) -> DecisionResult[AttemptAuthorityMutationResult, AttemptAuthorityChangeCode]:
     """Decide and persist inside the caller's existing transaction."""
 
     match requested_change:
@@ -311,7 +363,7 @@ def _project_retained_preparation_authority(
 def decide_and_commit_preparation_authority_change(
     store: WorkStore,
     requested_change: authority_models.PreparationAuthorityOperation,
-) -> DecisionResult[PreparationAuthorityMutationResult]:
+) -> DecisionResult[PreparationAuthorityMutationResult, PreparationAuthorityChangeCode]:
     """Reread locked state, decide, and commit one exact preparation change."""
 
     with store.write() as transaction:
@@ -327,7 +379,7 @@ def start_preparation(
     lease_id: LeaseId,
     acquired_at: datetime,
     expires_at: datetime,
-) -> DecisionResult[PreparationStart]:
+) -> DecisionResult[PreparationStart, PreparationAuthorityChangeCode]:
     """Select current initial acquisition or inactive transfer under one write lock."""
 
     with store.write() as transaction:
@@ -391,7 +443,7 @@ def start_preparation(
 def _commit_preparation_authority_change(
     transaction: WorkTransaction,
     requested_change: authority_models.PreparationAuthorityOperation,
-) -> DecisionResult[PreparationAuthorityMutationResult]:
+) -> DecisionResult[PreparationAuthorityMutationResult, PreparationAuthorityChangeCode]:
     """Decide and persist inside the caller's existing transaction."""
 
     match requested_change:
@@ -589,7 +641,10 @@ def _resolve_actor_authority(
     snapshot: LedgerSnapshot,
     action: decision_models.TransitionAction,
     now: datetime,
-) -> DecisionResult[decision_models.ActorAuthority]:
+) -> DecisionResult[
+    decision_models.ActorAuthority,
+    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED],
+]:
     capability = action.capability
     match capability.authorization:
         case decision_models.AuthorizationKind.PROJECT:
@@ -717,7 +772,7 @@ def _read_authorize_and_decide(
     actor_host_id: HostId | None,
     read_authorization_time: Callable[[], datetime],
     dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
-) -> DecisionResult[decision_models.CheckpointAcceptanceDecision]: ...
+) -> DecisionResult[decision_models.CheckpointAcceptanceDecision, CheckpointAcceptanceFailureCode]: ...
 
 
 @overload
@@ -730,7 +785,7 @@ def _read_authorize_and_decide(
     actor_host_id: HostId | None,
     read_authorization_time: Callable[[], datetime],
     dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
-) -> DecisionResult[decision_models.TransitionDecision]: ...
+) -> DecisionResult[decision_models.TransitionDecision, TransitionFailureCode]: ...
 
 
 @overload
@@ -743,7 +798,7 @@ def _read_authorize_and_decide(
     actor_host_id: HostId | None,
     read_authorization_time: Callable[[], datetime],
     dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
-) -> DecisionResult[decision_models.CompletionAcceptanceDecision]: ...
+) -> DecisionResult[decision_models.CompletionAcceptanceDecision, CoveredCompletionFailureCode]: ...
 
 
 def _read_authorize_and_decide(
@@ -755,7 +810,7 @@ def _read_authorize_and_decide(
     actor_host_id: HostId | None,
     read_authorization_time: Callable[[], datetime],
     dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
-) -> DecisionResult[decision_models.Decision]:
+) -> DecisionResult[decision_models.Decision, TransitionFailureCode]:
     """Read exact facts, sample fresh authority validity, and decide without committing."""
 
     facts = reader.read_decision_facts(_transition_decision_scope(command), read_authorization_time())
@@ -807,7 +862,7 @@ def decide_and_commit_transition(
     actor_host_id: HostId | None,
     dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
     transition_brief_identity: WorkBriefIdentity | None = None,
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[CommittedEffect, TransitionFailureCode]:
     """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
@@ -837,7 +892,7 @@ def decide_and_commit_review_submission(
     candidate_snapshot_schema: str,
     *,
     read_authorization_time: Callable[[], datetime],
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[CommittedEffect, TransitionFailureCode]:
     """Authorize with the supplied clock under lock; retain snapshot-time receipt provenance."""
 
     with store.write() as transaction:
@@ -858,7 +913,19 @@ def preflight_checkpoint_candidate(
     command: decision_models.AcceptCheckpointCommand,
     now: datetime,
     transition_brief_identity: CurrentAttemptWorkBriefIdentity,
-) -> DecisionFailure | None:
+) -> (
+    DecisionFailure[
+        Literal[
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            DecisionFailureCode.ATTEMPT_AUTHORITY_REQUIRED,
+            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+            DecisionFailureCode.ITEM_DEFINITION_INVALID,
+            DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+        ]
+    ]
+    | None
+):
     """Revalidate action currentness, then reject only candidate mismatch."""
 
     facts = store.read_decision_facts(_transition_decision_scope(command), now)
@@ -880,7 +947,7 @@ def preflight_covered_completion(
     actor_task_id: TaskId,
     actor_host_id: HostId,
     transition_brief_identity: CurrentAttemptWorkBriefIdentity,
-) -> DecisionFailure | None:
+) -> DecisionFailure[CoveredCompletionFailureCode] | None:
     """Reject stale authority, wrong lifecycle, candidate, or checkpoint coverage before publication."""
 
     result = _read_authorize_and_decide(
@@ -901,7 +968,7 @@ def decide_and_commit_checkpoint_acceptance(
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     transition_brief_identity: CurrentAttemptWorkBriefIdentity,
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[CommittedEffect, CheckpointAcceptanceFailureCode]:
     """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
@@ -942,7 +1009,7 @@ def decide_and_commit_covered_completion(
     actor_task_id: TaskId,
     actor_host_id: HostId,
     transition_brief_identity: CurrentAttemptWorkBriefIdentity,
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[CommittedEffect, CoveredCompletionFailureCode]:
     """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
 
     with store.write() as transaction:
@@ -979,7 +1046,7 @@ def reorder(
     actor_task_id: TaskId,
     actor_host_id: HostId,
     now: datetime,
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[CommittedEffect, OrderDecisionCode | StaleCommitCode]:
     """Compare the complete live sequence under the write lock, then commit its permutation."""
     with store.write() as transaction:
         change = decide_order(transaction.read_live_order(), expected, requested)
@@ -1001,4 +1068,4 @@ def reorder(
                 msgspec.json.encode(OrderRequest("pinboard-live-order/v1", expected, requested), order="sorted")
             ),
         )
-        return transaction.commit(OrderMutation(receipt, change))
+        return transaction.commit_order(OrderMutation(receipt, change))

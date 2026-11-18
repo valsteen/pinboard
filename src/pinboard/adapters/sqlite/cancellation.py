@@ -1,6 +1,7 @@
 """Select only the named cancellation item, its current authority and direct relationships."""
 
 import sqlite3
+from typing import Literal
 
 from pinboard.adapters.sqlite.authority import (
     fence_attempt_authority,
@@ -126,7 +127,7 @@ def persist(
     item: stored_state.StoredWorkItem,
     attempt: stored_state.StoredAttempt | None,
     mutation: CancellationMutation,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
     now = mutation.receipt.transition.decided_at
     revision = mutation.receipt.project_revision
     before = stored_state.live_work_state(item.state)

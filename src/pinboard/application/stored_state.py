@@ -7,7 +7,7 @@ import msgspec
 
 from pinboard.application import artifact_identity, definition_compatibility, released_receipt_compatibility
 from pinboard.domain import authority_models, decision_models, initiatives, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionResult
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.history import (
     decode_work_item_definition,
     work_item_definition_bytes,
@@ -42,7 +42,9 @@ def decode_stored_definition(payload: bytes) -> StoredDefinition:
     return definition
 
 
-def stored_definition_bytes(definition: StoredDefinition) -> DecisionResult[bytes]:
+def stored_definition_bytes(
+    definition: StoredDefinition,
+) -> DecisionResult[bytes, Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID]]:
     match definition:
         case work_models.WorkItemDefinition():
             return work_item_definition_bytes(definition)

@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
-from typing import Annotated, NoReturn, assert_never
+from typing import Annotated, Literal, NoReturn, assert_never
 
 import msgspec
 
@@ -1232,7 +1232,7 @@ def read_lifecycle(
 def compact_queue(
     connection: sqlite3.Connection,
     removed_position: int,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
     rows = connection.execute(
         "SELECT item_id, queue_position FROM work_items WHERE queue_position > ? ORDER BY queue_position",
         (removed_position,),
@@ -1541,7 +1541,7 @@ def set_item_state(
     outcome_evidence: str | None = None,
     *,
     unblocker: work_models.Unblocker | None,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
     """Move one item between states, writing exactly the unblocker its held after-state requires."""
 
     item_id = current.item_id
@@ -1602,7 +1602,7 @@ def set_attempt_state(
     result_artifact_ref_id: ArtifactRefId | None = None,
     candidate_revision: str | None = None,
     candidate_recorded_at: datetime | None = None,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
     attempt_id = current.attempt_id
     match after_state:
         case work_models.AttemptState.REVIEW:
@@ -1653,7 +1653,7 @@ def rebind_attempt(
     change: decision_models.RebindAttemptChange,
     revision: int,
     now: datetime,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
     return require_one_changed_row(
         connection.execute(
             """
@@ -1706,7 +1706,9 @@ def insert_definition_revision(
     current_item: stored_state.StoredWorkItem,
     current: stored_state.ItemDefinitionRevision,
     revision: stored_state.ItemDefinitionRevision,
-) -> DecisionFailure | None:
+) -> (
+    DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ITEM_DEFINITION_STALE]] | None
+):
     if revision.revision != current.revision + 1 or revision.before_digest != current.digest:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_STALE,
@@ -1755,7 +1757,10 @@ def insert_attempt(
     change: decision_models.ActivationChange,
     revision: int,
     now: datetime,
-) -> DecisionFailure | None:
+) -> (
+    DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ITEM_DEFINITION_INVALID]]
+    | None
+):
     if current_item.item_id != change.work_item_id or definition.item_id != change.work_item_id:
         return DecisionFailure(
             DecisionFailureCode.ITEM_DEFINITION_INVALID,

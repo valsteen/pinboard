@@ -2,11 +2,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, override
 
-from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode, FileIOError, FileIOErrorCode
+from pinboard.adapters.files.errors import (
+    ArtifactError,
+    ArtifactErrorCode,
+    FileIOError,
+    FileIOErrorCode,
+    ViewRefreshErrorCode,
+)
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError
 from pinboard.application import work_brief_models
-from pinboard.application.work_brief_models import WorkBriefFailure  # noqa: ICN003
+from pinboard.application.work_brief_models import ReviewEvidenceFailure, WorkBriefFailure  # noqa: ICN003
 from pinboard.cli import cli_commands
 from pinboard.domain.errors import (
     ChangedSurface,
@@ -103,7 +109,7 @@ type CommandResult[T] = T | CommandFailure
 
 
 @dataclass(frozen=True, slots=True)
-class CliEffectFailure[Code: ArtifactErrorCode | FileIOErrorCode]:
+class CliEffectFailure[Code: ArtifactErrorCode | FileIOErrorCode | ViewRefreshErrorCode]:
     code: Code
     message: str
 
@@ -113,9 +119,14 @@ class CliEffectFailure[Code: ArtifactErrorCode | FileIOErrorCode]:
 
 
 type ExportMediaFailure = CliEffectFailure[Literal[ArtifactErrorCode.STORAGE_INVARIANT_VIOLATION]]
-type ViewRefreshFailure = CliEffectFailure[Literal[FileIOErrorCode.VIEW_REFRESH_FAILED]]
+type ViewRefreshFailure = CliEffectFailure[ViewRefreshErrorCode]
 type InitializationCause = (
-    StorageError | ArtifactError | FileIOError | work_brief_models.WorkBriefFailure | ViewRefreshFailure
+    StorageError
+    | ArtifactError
+    | FileIOError
+    | work_brief_models.WorkBriefFailure
+    | work_brief_models.ReviewEvidenceFailure
+    | ViewRefreshFailure
 )
 
 
@@ -178,6 +189,11 @@ def initialization_failure_details(
 
 
 type CliFailure = (
-    CommandFailure | WorkBriefFailure | InitializationAfterCommittedEffects | ExportMediaFailure | ViewRefreshFailure
+    CommandFailure
+    | WorkBriefFailure
+    | ReviewEvidenceFailure
+    | InitializationAfterCommittedEffects
+    | ExportMediaFailure
+    | ViewRefreshFailure
 )
 type CliResult[T] = T | CliFailure

@@ -32,7 +32,11 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import artifact_identity, stored_state, work_brief_models
-from pinboard.application.artifact_publication import ArtifactAcceptanceFailure, ArtifactWriteFailure
+from pinboard.application.artifact_publication import (
+    ArtifactAcceptanceFailure,
+    ArtifactWriteFailure,
+    PublishedFailureDetails,
+)
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, BriefArtifactRef, NewArtifact
 from pinboard.application.dispatch_models import (
     FRESH_CONTEXT_REQUIRED,
@@ -47,7 +51,7 @@ from pinboard.application.work_briefs import (
     decode_work_brief_review,
 )
 from pinboard.domain import decision_models, history, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult, FailureDetails
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, HistoryId, HostId, ReviewId
 from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
@@ -618,7 +622,7 @@ class DispatchTest(unittest.TestCase):
                     prepare_dispatch_from_artifact(**arguments, supplied_prompt=None), code
                 )
                 if code == DispatchErrorCode.DISPATCH_BASE_REVISION_MISMATCH:
-                    assert failure.details is not None
+                    assert isinstance(failure.details, FailureDetails)
                     self.assertEqual("correct-input", failure.details.retry.value)
                     self.assertEqual("unchanged", failure.details.effect.value)
                     self.assertTrue(failure.details.mismatches)
@@ -686,7 +690,7 @@ class DispatchTest(unittest.TestCase):
             ),
             DispatchErrorCode.DISPATCH_BASE_REVISION_MISMATCH,
         )
-        assert failure.details is not None
+        assert isinstance(failure.details, FailureDetails)
         self.assertEqual("correct-input", failure.details.retry.value)
         self.assertEqual("unchanged", failure.details.effect.value)
         self.assertEqual(
@@ -891,7 +895,7 @@ class DispatchTest(unittest.TestCase):
             identical_retry,
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_COLLISION,
         )
-        assert repeated_collision.details is not None
+        assert isinstance(repeated_collision.details, FailureDetails)
         self.assertEqual("unchanged", repeated_collision.details.effect.value)
         self.assertEqual((), repeated_collision.details.changed_surfaces)
         self.assertEqual(before_identical_retry, store.validated_snapshot())
@@ -920,7 +924,7 @@ class DispatchTest(unittest.TestCase):
             published: ArtifactRef,
             accepted_at: datetime,
             ownership: artifact_identity.Ownership | None,
-        ) -> DecisionResult[ArtifactReferenceAcceptance]:
+        ) -> DecisionResult[ArtifactReferenceAcceptance, DecisionFailureCode]:
             nonlocal acceptance_calls
             acceptance_calls += 1
             if acceptance_calls == 2:
@@ -1094,7 +1098,7 @@ class DispatchTest(unittest.TestCase):
             published: ArtifactRef,
             accepted_at: datetime,
             ownership: artifact_identity.Ownership | None,
-        ) -> DecisionResult[ArtifactReferenceAcceptance]:
+        ) -> DecisionResult[ArtifactReferenceAcceptance, DecisionFailureCode]:
             expect_success(
                 accept_reference(
                     work_root,
@@ -1330,7 +1334,7 @@ class DispatchTest(unittest.TestCase):
             published: ArtifactRef,
             accepted_at: datetime,
             ownership: artifact_identity.Ownership | None,
-        ) -> DecisionResult[ArtifactReferenceAcceptance]:
+        ) -> DecisionResult[ArtifactReferenceAcceptance, DecisionFailureCode]:
             nonlocal acceptance_calls
             acceptance_calls += 1
             if acceptance_calls == 2:
@@ -1354,10 +1358,8 @@ class DispatchTest(unittest.TestCase):
             )
 
         failure = expect_dispatch_failure(failed, DispatchErrorCode.STALE_ACTION)
-        self.assertIsNotNone(failure.details)
-        assert failure.details is not None
-        self.assertEqual("committed", failure.details.effect.value)
-        self.assertEqual("do-not-retry", failure.details.retry.value)
+        self.assertIsInstance(failure.details, PublishedFailureDetails)
+        assert isinstance(failure.details, PublishedFailureDetails)
         self.assertEqual(
             ["immutable-artifact", "accepted-artifact-reference", "ledger"],
             [surface.value for surface in failure.details.changed_surfaces],
@@ -1421,7 +1423,7 @@ class DispatchTest(unittest.TestCase):
             published: ArtifactRef,
             accepted_at: datetime,
             ownership: artifact_identity.Ownership | None,
-        ) -> DecisionResult[ArtifactReferenceAcceptance]:
+        ) -> DecisionResult[ArtifactReferenceAcceptance, DecisionFailureCode]:
             nonlocal acceptance_calls
             acceptance_calls += 1
             if acceptance_calls == 2:

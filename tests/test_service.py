@@ -67,7 +67,7 @@ from tests.support import (
 
 
 def non_checkpoint_command(
-    result: DecisionFailure | decision_models.TransitionCommand,
+    result: DecisionFailure[DecisionFailureCode] | decision_models.TransitionCommand,
 ) -> decision_models.NonCheckpointTransitionCommand:
     if isinstance(
         result,
@@ -78,7 +78,7 @@ def non_checkpoint_command(
 
 
 def checkpoint_command(
-    result: DecisionFailure | decision_models.TransitionCommand,
+    result: DecisionFailure[DecisionFailureCode] | decision_models.TransitionCommand,
 ) -> decision_models.AcceptCheckpointCommand:
     if not isinstance(result, decision_models.AcceptCheckpointCommand):
         raise AssertionError(f"Expected checkpoint acceptance, received {result!r}")
@@ -128,7 +128,7 @@ class ServiceTest(unittest.TestCase):
         now: datetime,
         *,
         transition_brief_identity: WorkBriefIdentity | None = None,
-    ) -> DecisionFailure | CommittedEffect:
+    ) -> DecisionFailure[DecisionFailureCode] | CommittedEffect:
         is_project = command.action.capability.authorization == decision_models.AuthorizationKind.PROJECT
         return decide_and_commit_transition(
             store,
@@ -143,7 +143,7 @@ class ServiceTest(unittest.TestCase):
 
     def _create_proposal(
         self, store: SQLiteWorkStore, operation: CreateProposalOperation, now: datetime
-    ) -> DecisionFailure | ProposalCreationResult:
+    ) -> DecisionFailure[DecisionFailureCode] | ProposalCreationResult:
         return create_proposal(
             store,
             operation,

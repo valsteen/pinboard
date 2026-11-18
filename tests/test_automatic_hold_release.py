@@ -353,14 +353,14 @@ class AutomaticHoldReleaseDomainTest(unittest.TestCase):
         refused_prepare = routing.validate_action_route(
             unclassified_unstarted, action(decision_models.PrepareAction, WorkItemId("legacy-ready"))
         )
-        assert isinstance(refused_prepare, DecisionFailure)
-        self.assertEqual(DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED, refused_prepare.code)
+        assert isinstance(refused_prepare, routing.RouteClassificationRequired)
+        self.assertEqual(DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED, refused_prepare.failure().code)
 
         refused_started_resume = routing.validate_action_route(
             unclassified_unstarted, action(decision_models.ResumeAction, WorkItemId("legacy-started"))
         )
-        assert isinstance(refused_started_resume, DecisionFailure)
-        self.assertEqual(DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED, refused_started_resume.code)
+        assert isinstance(refused_started_resume, routing.RouteClassificationRequired)
+        self.assertEqual(DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED, refused_started_resume.failure().code)
 
 
 class _HoldReleaseSupport(CheckpointPackageSupport):

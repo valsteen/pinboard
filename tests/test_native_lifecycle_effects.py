@@ -25,7 +25,7 @@ from pinboard.application.dependency_authoring import DependencyCheckpointPin
 from pinboard.application.mutation_models import CommittedEffect, StoredStateMutation
 from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionResult
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import AttemptId, HostId, TaskId, WorkItemId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import server as mcp_server
@@ -456,7 +456,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             actor_host_id: HostId | None,
             dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
             transition_brief_identity: WorkBriefIdentity | None = None,
-        ) -> DecisionResult[CommittedEffect]:
+        ) -> DecisionResult[CommittedEffect, DecisionFailureCode]:
             nonlocal interleaved
             if not interleaved:
                 interleaved = True
@@ -894,7 +894,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
 
         def recording(
             transaction: persistence.SQLiteWorkTransaction, mutation: StoredStateMutation
-        ) -> DecisionResult[CommittedEffect]:
+        ) -> DecisionResult[CommittedEffect, DecisionFailureCode]:
             committed = commit(transaction, mutation)
             if isinstance(committed, CommittedEffect):
                 effects.append(committed)
@@ -1113,7 +1113,7 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             actor_host_id: HostId | None,
             dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
             transition_brief_identity: WorkBriefIdentity | None = None,
-        ) -> DecisionResult[CommittedEffect]:
+        ) -> DecisionResult[CommittedEffect, DecisionFailureCode]:
             nonlocal interleaved
             owns_competitor = not interleaved
             interleaved = True

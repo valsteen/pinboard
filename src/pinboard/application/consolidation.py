@@ -14,6 +14,7 @@ from pinboard.application.dependency_authoring import DependencyCheckpointPin, v
 from pinboard.application.mutation_models import CommittedEffect, ConsolidationMutation, MutationReceipt
 from pinboard.application.ports import WorkStore
 from pinboard.domain import consolidation, decision_models, history, initiatives, work_models
+from pinboard.domain.consolidation import ConsolidationDecisionCode
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ActionId, HistorySubjectId, HostId, TaskId, WorkItemId
@@ -141,7 +142,7 @@ def _decide_change(
     actor: TaskId,
     now: datetime,
     dependency_pins: tuple[DependencyCheckpointPin, ...],
-) -> DecisionResult[consolidation.Change]:
+) -> DecisionResult[consolidation.Change, ConsolidationDecisionCode]:
     if (
         failure := validate_dependency_brief_pins(facts.snapshot, None, requested_dependencies(plan), dependency_pins)
     ) is not None:
@@ -186,7 +187,7 @@ def preview(
     actor: TaskId,
     now: datetime,
     dependency_pins: tuple[DependencyCheckpointPin, ...],
-) -> DecisionResult[models.Preview]:
+) -> DecisionResult[models.Preview, ConsolidationDecisionCode]:
     plan = models.plan(selection)
     facts = store.read_consolidation_facts(plan, now)
     change = _decide_change(facts, plan, actor, now, dependency_pins)
@@ -207,7 +208,7 @@ def confirm(
     now: datetime,
     work_root: Path,
     dependency_pins: tuple[DependencyCheckpointPin, ...],
-) -> DecisionResult[CommittedEffect]:
+) -> DecisionResult[CommittedEffect, ConsolidationDecisionCode]:
     plan = models.plan(selection)
     with store.write() as transaction:
         facts = transaction.read_consolidation_facts(plan, now)

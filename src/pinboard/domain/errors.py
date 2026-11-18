@@ -167,7 +167,7 @@ class DecisionFailureCode(DescribedCode):
 
 @final
 @dataclass(frozen=True, slots=True)
-class DecisionFailure[Code: DecisionFailureCode = DecisionFailureCode]:
+class DecisionFailure[Code: DecisionFailureCode]:
     """An expected rejection whose code is one of the codes its producer declares.
 
     A producer declares its range as a ``Literal`` subset of ``DecisionFailureCode``, so its consumer matches only
@@ -181,4 +181,4 @@ class DecisionFailure[Code: DecisionFailureCode = DecisionFailureCode]:
     details: Final[FailureDetails | None]
 
 
-type DecisionResult[T, Code: DecisionFailureCode = DecisionFailureCode] = T | DecisionFailure[Code]
+type DecisionResult[T, Code: DecisionFailureCode] = T | DecisionFailure[Code]

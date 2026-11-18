@@ -368,7 +368,9 @@ def work_item_definition_digest(
     return hashlib.sha256(payload).hexdigest()
 
 
-def decode_work_item_definition(payload: bytes) -> DecisionResult[work_models.WorkItemDefinition]:
+def decode_work_item_definition(
+    payload: bytes,
+) -> DecisionResult[work_models.WorkItemDefinition, Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID]]:
     try:
         record = msgspec.json.decode(payload, type=DefinitionPayload, strict=True)
     except msgspec.DecodeError as error:

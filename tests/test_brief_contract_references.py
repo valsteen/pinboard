@@ -230,8 +230,8 @@ class RetainedInvariantTextFormTest(unittest.TestCase):
             checkpoint_sha256=review.checkpoint_sha256,
         )
         failure = work_briefs.validate_work_brief_review(echoed, brief)
-        assert isinstance(failure, work_brief_models.WorkBriefFailure)
-        self.assertEqual(work_brief_models.WorkBriefErrorCode.REVIEW_NOT_READY, failure.code)
+        assert isinstance(failure, work_brief_models.ReviewEvidenceFailure)
+        self.assertEqual(work_brief_models.ReviewEvidenceErrorCode.REVIEW_NOT_READY, failure.code)
         self.assertEqual(
             hashlib.sha256(work_briefs.canonical_work_brief_bytes(brief)).hexdigest(), review.accepted_brief_sha256
         )

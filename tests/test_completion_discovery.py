@@ -21,7 +21,7 @@ from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import contracts
 from pinboard.mcp import server as mcp_server
 from pinboard.mcp.contracts import JsonValue
-from tests.checkpoint_support import CheckpointPackageSupport
+from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import call_advertised_tool, native_tools
 from tests.support import JsonObject
 
@@ -295,6 +295,88 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
         )
         self.assertFalse(result["state_changed"])
         self.assertEqual("unchanged", result["effect"])
+
+    def focused_completion(self, fixture: CheckpointFixture) -> JsonObject:
+        return fixture.call_advertised_tool(
+            mcp_server.ACTIONS_TOOL,
+            {
+                "request": {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "role": "project",
+                    "action_id": {"kind": "complete", "subject": "work-a-1"},
+                }
+            },
+        )
+
+    def test_damaged_accepted_brief_rejects_focused_completion_without_retry(self) -> None:
+        fixture = self.terminalize_brief(self.checkpoint_fixture())
+        context = fixture.store.read_attempt_context(AttemptId("work-a-1"))
+        assert isinstance(context, query_models.NonterminalAttemptContextFacts)
+        reference = fixture.store.read_artifact_reference_by_id(context.brief_artifact_ref_id)
+        assert reference is not None
+        # The accepted bytes change while their recorded digest stays, which no unchanged retry repairs.
+        (fixture.work / reference.selector).write_bytes(b"{}\n")
+        before = fixture.store.validated_snapshot()
+
+        result = self.focused_completion(fixture)
+
+        message = result.pop("message")
+        assert isinstance(message, str)
+        self.assertTrue(message.startswith("Accepted attempt brief could not be verified: "), message)
+        self.assertTrue(
+            message.endswith(
+                "Report the exact accepted brief and defect to the human; do not retry unchanged, reconstruct or "
+                "overwrite accepted bytes."
+            ),
+            message,
+        )
+        self.assertEqual(
+            {
+                "schema": "pinboard-mcp-actions-result/v1",
+                "status": "rejected",
+                "code": "ACTION_NOT_AVAILABLE",
+                "state_changed": False,
+                "effect": "unchanged",
+                "retry": "do-not-retry",
+                "changed_surfaces": [],
+                "observed": [{"field": "attempt_id", "value": "work-a-1"}],
+                "mismatches": [
+                    {
+                        "field": "accepted_brief_bytes",
+                        "expected": "match the accepted selector, size, and SHA-256",
+                        "observed": "unreadable or mismatched",
+                    }
+                ],
+            },
+            result,
+        )
+        self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def test_completion_context_that_vanishes_after_selection_asks_for_a_fresh_read(self) -> None:
+        fixture = self.terminalize_brief(self.checkpoint_fixture())
+        before = fixture.store.validated_snapshot()
+
+        # Selection reads its decision facts first; the completion context read that follows finds no attempt.
+        with patch.object(SQLiteWorkStore, "read_completion_context", return_value=None):
+            result = self.focused_completion(fixture)
+
+        self.assertEqual(
+            {
+                "schema": "pinboard-mcp-actions-result/v1",
+                "status": "rejected",
+                "code": "ACTION_NOT_AVAILABLE",
+                "message": "Completion attempt disappeared; reinspect the focused action.",
+                "state_changed": False,
+                "effect": "unchanged",
+                "retry": "refresh-action",
+                "changed_surfaces": [],
+                "observed": [{"field": "attempt_id", "value": "work-a-1"}],
+                "mismatches": [],
+            },
+            result,
+        )
+        self.assertEqual(before, fixture.store.validated_snapshot())
 
     def test_continuing_completion_reports_exact_remaining_work_without_relaunch(self) -> None:
         for active in (False, True):

@@ -9,6 +9,11 @@ from datetime import datetime
 
 from pinboard.application import ports, query_models, service
 from pinboard.application.mutation_models import AttemptAuthorityMutationResult, PreparationAuthorityMutationResult
+from pinboard.application.service import (
+    AttemptAuthorityAcquireCode,
+    AttemptAuthorityChangeCode,
+    PreparationAuthorityChangeCode,
+)
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.errors import (
     DecisionFailure,
@@ -53,7 +58,7 @@ def acquire_attempt_authority(
     lease_id: LeaseId,
     acquired_at: datetime,
     expires_at: datetime,
-) -> DecisionResult[AttemptAuthorityMutationResult]:
+) -> DecisionResult[AttemptAuthorityMutationResult, AttemptAuthorityAcquireCode]:
     return service.acquire_attempt_authority(
         store,
         attempt_id=attempt_id,
@@ -87,7 +92,7 @@ def renew_attempt_authority(
     generation: int,
     renewed_at: datetime,
     expires_at: datetime,
-) -> DecisionResult[AttemptAuthorityMutationResult]:
+) -> DecisionResult[AttemptAuthorityMutationResult, AttemptAuthorityChangeCode]:
     supplied = _supplied_attempt_authority(store, attempt_id, lease_id, generation, renewed_at)
     if supplied is None:
         return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority is not active.", None)
@@ -103,7 +108,7 @@ def release_attempt_authority(
     lease_id: LeaseId,
     generation: int,
     released_at: datetime,
-) -> DecisionResult[AttemptAuthorityMutationResult]:
+) -> DecisionResult[AttemptAuthorityMutationResult, AttemptAuthorityChangeCode]:
     supplied = _supplied_attempt_authority(store, attempt_id, lease_id, generation, released_at)
     if supplied is None:
         return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority is not active.", None)
@@ -121,7 +126,7 @@ def revoke_attempt_authority(
     actor_task_id: TaskId,
     actor_host_id: HostId,
     revoked_at: datetime,
-) -> DecisionResult[AttemptAuthorityMutationResult]:
+) -> DecisionResult[AttemptAuthorityMutationResult, AttemptAuthorityChangeCode]:
     requested = authority_models.RevokeAttemptAuthority(
         attempt_id,
         lease_id,
@@ -142,7 +147,7 @@ def start_preparation_authority(
     lease_id: LeaseId,
     acquired_at: datetime,
     expires_at: datetime,
-) -> DecisionResult[PreparationAuthorityMutationResult]:
+) -> DecisionResult[PreparationAuthorityMutationResult, PreparationAuthorityChangeCode]:
     result = service.start_preparation(
         store,
         work_item_id=work_item_id,
@@ -194,7 +199,7 @@ def renew_preparation_authority(
     generation: int,
     renewed_at: datetime,
     expires_at: datetime,
-) -> DecisionResult[PreparationAuthorityMutationResult]:
+) -> DecisionResult[PreparationAuthorityMutationResult, PreparationAuthorityChangeCode]:
     supplied = _supplied_preparation_authority(store, work_item_id, lease_id, generation, renewed_at)
     if supplied is None:
         return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority is not active.", None)
@@ -210,7 +215,7 @@ def release_preparation_authority(
     lease_id: LeaseId,
     generation: int,
     released_at: datetime,
-) -> DecisionResult[PreparationAuthorityMutationResult]:
+) -> DecisionResult[PreparationAuthorityMutationResult, PreparationAuthorityChangeCode]:
     supplied = _supplied_preparation_authority(store, work_item_id, lease_id, generation, released_at)
     if supplied is None:
         return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority is not active.", None)
@@ -228,7 +233,7 @@ def revoke_preparation_authority(
     actor_task_id: TaskId,
     actor_host_id: HostId,
     revoked_at: datetime,
-) -> DecisionResult[PreparationAuthorityMutationResult]:
+) -> DecisionResult[PreparationAuthorityMutationResult, PreparationAuthorityChangeCode]:
     requested = authority_models.RevokePreparationAuthority(
         work_item_id,
         lease_id,

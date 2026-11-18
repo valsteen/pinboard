@@ -58,6 +58,7 @@ from pinboard.application.candidate_identity import (
     working_tree_submission,
 )
 from pinboard.application.mutation_models import CommittedEffect
+from pinboard.application.service import TransitionFailureCode
 from pinboard.application.work_briefs import (
     accepted_brief_disposition,
     canonical_checkpoint_bytes,
@@ -84,6 +85,9 @@ from pinboard.domain.errors import (
 )
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CheckpointId
 
+# Candidate-sensitive transitions also refuse a missing commissioned candidate review.
+type ArtifactTransitionFailureCode = TransitionFailureCode | Literal[DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED]
+
 
 @dataclass(frozen=True, slots=True)
 class PublishedTransitionFailure:
@@ -101,7 +105,7 @@ class LocalCleanupPlan:
 
 @dataclass(frozen=True, slots=True)
 class LandingRejection:
-    failure: DecisionFailure
+    failure: DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]
     continuation: str
 
 
@@ -113,11 +117,15 @@ class ArtifactTransitionSuccess:
 
 
 type ArtifactTransitionResult = (
-    DecisionResult[ArtifactTransitionSuccess] | PublishedTransitionFailure | LandingRejection
+    DecisionResult[ArtifactTransitionSuccess, ArtifactTransitionFailureCode]
+    | PublishedTransitionFailure
+    | LandingRejection
 )
 
 
-def _unchanged(message: str, *, candidate: str | None) -> DecisionFailure:
+def _unchanged(
+    message: str, *, candidate: str | None
+) -> DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     return DecisionFailure(
         DecisionFailureCode.TRANSITION_INPUT_INVALID,
         message,
@@ -155,9 +163,9 @@ def _published_failure(
 
 
 def _committed_decision_failure(
-    failure: DecisionFailure,
+    failure: DecisionFailure[TransitionFailureCode],
     selectors: tuple[str, ...],
-) -> DecisionFailure:
+) -> DecisionFailure[TransitionFailureCode]:
     details = failure.details
     return DecisionFailure(
         failure.code,
@@ -209,7 +217,7 @@ def _publish_artifact(
 
 
 def _publication_terminal_result(
-    result: DecisionResult[CommittedEffect] | StorageError,
+    result: DecisionResult[CommittedEffect, TransitionFailureCode] | StorageError,
     created: tuple[str, ...],
     local_cleanup: LocalCleanupPlan | None,
 ) -> ArtifactTransitionResult:
@@ -227,7 +235,7 @@ def _publication_terminal_result(
 def _verify_review_exclusions(
     source_checkout: Path,
     value: work_models.SubmitReviewInput | work_models.DeclaredSubmitReviewInput,
-) -> DecisionResult[tuple[str, ...]]:
+) -> DecisionResult[tuple[str, ...], Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     match value:
         case work_models.SubmitReviewInput():
             return ()
@@ -296,7 +304,7 @@ def _observe_working_tree_review_candidate(
     value: work_models.SubmitReviewInput | work_models.DeclaredSubmitReviewInput,
     branch: str,
     recorded_at: datetime,
-) -> DecisionResult[candidate_snapshots.CandidateSnapshot]:
+) -> DecisionResult[candidate_snapshots.CandidateSnapshot, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     """Accept a current working-tree identity only on the accepted base, naming the commit to submit otherwise."""
 
     candidate = str(value.candidate)
@@ -351,7 +359,7 @@ def _observe_review_candidate(
     store: ports.WorkStore,
     command: decision_models.SubmitReviewCommand,
     recorded_at: datetime,
-) -> DecisionResult[candidate_snapshots.CandidateSnapshot]:
+) -> DecisionResult[candidate_snapshots.CandidateSnapshot, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     context = store.read_attempt_context(command.action.capability.subject)
     candidate = str(command.value.candidate)
     if not isinstance(context, query_models.NonterminalAttemptContextFacts):
@@ -471,7 +479,7 @@ class _CheckpointContext:
 def _read_current_attempt_brief(
     artifacts: ArtifactRepository,
     context: query_models.NonterminalAttemptContextFacts,
-) -> DecisionResult[work_brief_models.AcceptedBrief]:
+) -> DecisionResult[work_brief_models.AcceptedBrief, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     """Read verified accepted bytes and compare the brief with current attempt facts."""
 
     brief = decode_canonical_accepted_brief(artifacts.read(context.brief_reference))
@@ -499,7 +507,7 @@ def _read_current_attempt_brief(
 def _read_checkpoint_brief(
     artifacts: ArtifactRepository,
     context: query_models.NonterminalAttemptContextFacts,
-) -> DecisionResult[work_brief_models.WorkBrief]:
+) -> DecisionResult[work_brief_models.WorkBrief, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     """Read the current brief of a checkpoint acceptance, which a small brief never has."""
 
     brief = _read_current_attempt_brief(artifacts, context)
@@ -515,7 +523,10 @@ def _read_checkpoint_brief(
 def _small_work_review_basis(
     current: stored_state.ItemDefinitionRevision | None,
     scope: work_brief_models.AcceptedScope,
-) -> DecisionResult[work_brief_models.SmallWorkReviewBasis]:
+) -> DecisionResult[
+    work_brief_models.SmallWorkReviewBasis,
+    Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID, DecisionFailureCode.TRANSITION_INPUT_INVALID],
+]:
     if (
         current is None
         or current.revision != scope.revision
@@ -537,7 +548,10 @@ def _checkpoint_context(
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
     command: decision_models.AcceptCheckpointCommand,
-) -> DecisionResult[_CheckpointContext]:
+) -> DecisionResult[
+    _CheckpointContext,
+    Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID, DecisionFailureCode.TRANSITION_INPUT_INVALID],
+]:
     context = store.read_attempt_context(command.action.capability.subject)
     if not isinstance(context, query_models.NonterminalAttemptContextFacts):
         return _unchanged("Checkpoint acceptance requires a current accepted brief.", candidate=None)
@@ -602,7 +616,11 @@ def _publish_checkpoint(
     artifacts: ArtifactRepository,
     command: decision_models.AcceptCheckpointCommand,
     context: _CheckpointContext,
-) -> tuple[CheckpointArtifacts, tuple[str, ...]] | DecisionFailure | PublishedTransitionFailure:
+) -> (
+    tuple[CheckpointArtifacts, tuple[str, ...]]
+    | DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]
+    | PublishedTransitionFailure
+):
     attempt_id = str(command.action.capability.subject)
     checkpoint_id = str(command.value.checkpoint)
     selected = candidate_evidence.read_candidate_evidence(
@@ -776,7 +794,10 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
     command: decision_models.CoveredCompleteCommand,
-) -> DecisionResult[_CompletionContext]:
+) -> DecisionResult[
+    _CompletionContext,
+    Literal[DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED, DecisionFailureCode.TRANSITION_INPUT_INVALID],
+]:
     selected = store.read_completion_context(command.action.capability.subject)
     if selected is None or not isinstance(selected.attempt, query_models.NonterminalAttemptContextFacts):
         return _unchanged("Covered completion requires one current nonterminal attempt.", candidate=None)
@@ -806,7 +827,7 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
             attempt_id=str(attempt.attempt_id),
             item_id=str(attempt.work_item_id),
         )
-        if isinstance(package, work_brief_models.WorkBriefFailure):
+        if isinstance(package, work_brief_models.ReviewEvidenceFailure):
             return _unchanged(package.message, candidate=None)
         identities = [package.accepted_brief, package.result, package.implementation_review]
         identities.append(package.candidate_snapshot)
@@ -874,7 +895,11 @@ def _publish_completion(
     artifacts: ArtifactRepository,
     command: decision_models.CoveredCompleteCommand,
     context: _CompletionContext,
-) -> tuple[CompletionArtifacts, tuple[str, ...]] | DecisionFailure | PublishedTransitionFailure:
+) -> (
+    tuple[CompletionArtifacts, tuple[str, ...]]
+    | DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]
+    | PublishedTransitionFailure
+):
     attempt_id = str(command.action.capability.subject)
     attempt_root = work_root / "attempts" / attempt_id
     try:

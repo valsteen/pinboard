@@ -85,7 +85,7 @@ def refresh(
                 ),
             )
         archives = archive_attempt_views(facts, ArtifactRepository(durable), attempt_briefs)
-        if isinstance(archives, work_brief_models.WorkBriefFailure):
+        if isinstance(archives, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
             return ViewRefreshResult(
                 facts.project_revision,
                 ViewWarning(
@@ -117,7 +117,7 @@ def archive_attempt_views(
     facts: query_models.GeneratedViewFacts,
     artifacts: ArtifactRepository,
     attempt_briefs: Mapping[AttemptId, bytes],
-) -> work_brief_models.WorkBriefResult[Mapping[AttemptId, bytes]]:
+) -> work_brief_models.BriefEvidenceResult[Mapping[AttemptId, bytes]]:
     rendered = dict(attempt_briefs)
     for selected in facts.attempts:
         if selected.archive is None:
@@ -125,7 +125,7 @@ def archive_attempt_views(
         reference, original = selected.archive
         source_bytes = {value.artifact_ref_id: artifacts.read(value) for value in original.artifact_references}
         archive = history_archives.verify_archive(reference, artifacts.read(reference), original, source_bytes)
-        if isinstance(archive, work_brief_models.WorkBriefFailure):
+        if isinstance(archive, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
             return archive
         rendered[selected.attempt.attempt_id] = history_archives.render_archive(archive)
     return rendered
@@ -144,7 +144,7 @@ def rebuild(durable: DurableRoots, store: ports.GeneratedViewSetReader, now: dat
             ),
         )
     archives = archive_attempt_views(facts, ArtifactRepository(durable), attempt_briefs)
-    if isinstance(archives, work_brief_models.WorkBriefFailure):
+    if isinstance(archives, (work_brief_models.WorkBriefFailure, work_brief_models.ReviewEvidenceFailure)):
         return ViewRefreshResult(
             facts.project_revision,
             ViewWarning(archives.message, "Resolve the historical archive mismatch and run 'pinboard views rebuild'."),

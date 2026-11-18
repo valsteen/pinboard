@@ -29,9 +29,16 @@ from tests.work_brief_support import work_a_brief
 
 
 def expect_work_brief_success[T](
-    result: work_brief_models.WorkBriefResult[T | InitializationAfterCommittedEffects],
+    result: work_brief_models.BriefEvidenceResult[T | InitializationAfterCommittedEffects],
 ) -> T:
-    if isinstance(result, (work_brief_models.WorkBriefFailure, InitializationAfterCommittedEffects)):
+    if isinstance(
+        result,
+        (
+            work_brief_models.WorkBriefFailure,
+            work_brief_models.ReviewEvidenceFailure,
+            InitializationAfterCommittedEffects,
+        ),
+    ):
         raise AssertionError(str(result))
     return result
 
@@ -47,7 +54,7 @@ def _mismatched_brief(project: Path) -> bytes:
 class SQLiteValidationTest(unittest.TestCase):
     def initialize_work_state(
         self, project: Path, work_root: Path | None = None
-    ) -> work_brief_models.WorkBriefResult[InitReceipt | InitializationAfterCommittedEffects]:
+    ) -> work_brief_models.BriefEvidenceResult[InitReceipt | InitializationAfterCommittedEffects]:
         roots = resolve_durable_roots(project, work_root)
         result = initialize_work_state(
             project,

@@ -81,25 +81,44 @@ class CoverageReport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     obligations: tuple[CoverageRow, ...]
 
 
-def report(facts: CoverageFacts) -> DecisionResult[CoverageReport]:
+type PairCoverageFailureCode = Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID, DecisionFailureCode.ITEM_NOT_FOUND]
+
+
+def _missing_source(facts: CoverageFacts) -> DecisionFailure[Literal[DecisionFailureCode.ITEM_NOT_FOUND]]:
+    return DecisionFailure(
+        DecisionFailureCode.ITEM_NOT_FOUND,
+        f"Coverage source '{facts.source_item}' has no retained definition. Check that item ID with pinboard_item_definition before retrying; nothing was changed.",
+        None,
+    )
+
+
+def report(
+    facts: CoverageFacts,
+) -> DecisionResult[CoverageReport, PairCoverageFailureCode | Literal[DecisionFailureCode.REPLACEMENT_INVALID]]:
+    replacement_item = facts.replacement_item
+    if replacement_item is not None:
+        return report_pair(facts, replacement_item)
+    if facts.source is None:
+        return _missing_source(facts)
+    return DecisionFailure(
+        DecisionFailureCode.REPLACEMENT_INVALID,
+        f"Item '{facts.source_item}' has no current planned replacement. Read pinboard_item_definition for a named item, or request pair coverage with an explicit replacement_item.",
+        None,
+    )
+
+
+def report_pair(
+    facts: CoverageFacts, replacement_item: WorkItemId
+) -> DecisionResult[CoverageReport, PairCoverageFailureCode]:
+    """Report coverage between the source and its present replacement, whose identity the caller selected."""
     source = facts.source
     if source is None:
-        return DecisionFailure(
-            DecisionFailureCode.ITEM_NOT_FOUND,
-            f"Coverage source '{facts.source_item}' has no retained definition. Check that item ID with pinboard_item_definition before retrying; nothing was changed.",
-            None,
-        )
-    if facts.replacement_item is None:
-        return DecisionFailure(
-            DecisionFailureCode.REPLACEMENT_INVALID,
-            f"Item '{facts.source_item}' has no current planned replacement. Read pinboard_item_definition for a named item, or request pair coverage with an explicit replacement_item.",
-            None,
-        )
+        return _missing_source(facts)
     replacement = facts.replacement
     if replacement is None:
         return DecisionFailure(
             DecisionFailureCode.ITEM_NOT_FOUND,
-            f"Coverage replacement '{facts.replacement_item}' has no retained definition. Check that item ID with pinboard_item_definition before retrying; nothing was changed.",
+            f"Coverage replacement '{replacement_item}' has no retained definition. Check that item ID with pinboard_item_definition before retrying; nothing was changed.",
             None,
         )
     if not isinstance(source.definition, work_models.WorkItemDefinition):

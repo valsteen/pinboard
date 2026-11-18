@@ -1,6 +1,6 @@
 from dataclasses import replace
 from datetime import datetime
-from typing import assert_never
+from typing import Literal, assert_never
 
 from pinboard.domain import authority_models, routing, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
@@ -56,7 +56,15 @@ def decide_attempt_authority(  # noqa: C901, PLR0912
     live_attempt: tuple[AttemptId, WorkItemId] | None = None,
     transferable_attempt: tuple[AttemptId, WorkItemId] | None = None,
     project_host_epoch: int | None = None,
-) -> DecisionResult[authority_models.AttemptAuthorityDecision]:
+) -> DecisionResult[
+    authority_models.AttemptAuthorityDecision,
+    Literal[
+        DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+        DecisionFailureCode.ATTEMPT_LEASE_EXPIRED,
+        DecisionFailureCode.LEASE_FENCED,
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+    ],
+]:
     match operation:
         case authority_models.AcquireInitialAttemptAuthority(
             host_epoch=host_epoch,
@@ -213,7 +221,16 @@ def _validate_attempt_change(
     retained: authority_models.AttemptLeaseAuthority | None,
     current: work_models.CommandAttemptAuthority,
     now: datetime,
-) -> DecisionFailure | None:
+) -> (
+    DecisionFailure[
+        Literal[
+            DecisionFailureCode.ATTEMPT_LEASE_REQUIRED,
+            DecisionFailureCode.ATTEMPT_LEASE_EXPIRED,
+            DecisionFailureCode.LEASE_FENCED,
+        ]
+    ]
+    | None
+):
     if retained is None:
         return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority does not exist.", None)
     if retained.state != authority_models.AttemptLeaseStatus.ACTIVE or not _same_attempt_token(retained, current):
@@ -227,7 +244,7 @@ def _validate_attempt_transfer(
     retained: authority_models.AttemptLeaseAuthority | None,
     current: authority_models.InactiveAttemptAuthority,
     now: datetime,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, DecisionFailureCode.LEASE_FENCED]] | None:
     if retained is None:
         return DecisionFailure(DecisionFailureCode.ATTEMPT_LEASE_REQUIRED, "Attempt authority does not exist.", None)
     if retained.state == authority_models.AttemptLeaseStatus.ACTIVE and retained.expires_at > now:
@@ -277,7 +294,7 @@ def _validate_preparation_change(
     retained: authority_models.PreparationLeaseAuthority | None,
     current: work_models.PreparationCommandAuthority,
     now: datetime,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.LEASE_FENCED]] | None:
     if retained is None:
         return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority does not exist.", None)
     if retained.state != authority_models.PreparationLeaseStatus.ACTIVE or _preparation_token(retained) != current:
@@ -291,7 +308,7 @@ def _validate_preparation_transfer(
     retained: authority_models.PreparationLeaseAuthority | None,
     current: authority_models.InactivePreparationAuthority,
     now: datetime,
-) -> DecisionFailure | None:
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.LEASE_FENCED]] | None:
     if retained is None:
         return DecisionFailure(DecisionFailureCode.ACTION_NOT_AVAILABLE, "Preparation authority does not exist.", None)
     if retained.state == authority_models.PreparationLeaseStatus.ACTIVE and retained.expires_at > now:
@@ -332,7 +349,15 @@ def decide_preparation_authority(  # noqa: C901, PLR0912
     operation: authority_models.PreparationAuthorityOperation,
     snapshot: LedgerSnapshot | None,
     now: datetime,
-) -> DecisionResult[authority_models.PreparationAuthorityDecision]:
+) -> DecisionResult[
+    authority_models.PreparationAuthorityDecision,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.ROUTE_CLASSIFICATION_REQUIRED,
+        DecisionFailureCode.LEASE_FENCED,
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+    ],
+]:
     match operation:
         case authority_models.AcquireInitialPreparationAuthority(
             host_epoch=host_epoch,

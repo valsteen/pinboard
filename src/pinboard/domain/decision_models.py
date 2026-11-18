@@ -735,6 +735,25 @@ type Action = (
     | ConsolidateAction
     | ReportBlockerAction
 )
+# The actions a live attempt's projection can offer: each targets that attempt or its item, never the ledger.
+type LiveAttemptAction = (
+    AcceptCheckpointAction
+    | AcceptReviewAndContinueAction
+    | BlockAttemptAction
+    | CompleteAction
+    | ContinueAction
+    | DispatchAction
+    | PauseAction
+    | RebindAttemptAction
+    | RecordAmendmentAction
+    | ReturnForCorrectionAction
+    | ReviewCandidateAction
+    | CloseAction
+    | RecordReplacementAction
+    | ResumeAction
+    | RetainTemporarilyAction
+    | ReviseWorkItemAction
+)
 
 
 def action_id(action: Action) -> ActionId:

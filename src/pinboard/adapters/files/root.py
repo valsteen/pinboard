@@ -95,6 +95,11 @@ type TargetContentObservation = ReviewedDiffPresent | ReviewedDiffAbsent | Targe
 
 
 def _verify_checkout_directory_links(cwd: Path, code: RootErrorCode) -> None:
+    """Raise `RootError` for the first unusable checkout directory link at this filesystem effect boundary.
+
+    A dangling, looping or non-directory link is a real filesystem outcome that stops verification under
+    ARCHITECTURE.md's trusted-local link rule, so each link-problem arm raises with its one repair step.
+    """
     match first_directory_link_problem(cwd):
         case None:
             return
@@ -364,6 +369,9 @@ def observe_reviewed_diff_at_target(cwd: Path, target: str, diff: bytes) -> Targ
     reverse-applies the diff against that index only. The repository's working tree,
     real index, refs, objects and other Git metadata stay unchanged and may be read-only.
     The check ignores user whitespace and split-index configuration.
+
+    At this Git effect boundary, exit status 0 means the diff is present and 1 means it is absent; any other status
+    means Git could not check the diff, which raises `RootError` rather than answering present or absent.
     """
 
     resolved = resolve_target_commit(cwd, target)

@@ -195,6 +195,11 @@ def _authority(
     "sqlite-v14",
     "sqlite-v15",
 ]:
+    """Name the migration authority of one stored schema version at the stored-schema decoding boundary.
+
+    The version is read from the ledger, so a value outside the supported predecessors names no authority and
+    raises rather than being guessed.
+    """
     match version:
         case 6:
             return "sqlite-v6"

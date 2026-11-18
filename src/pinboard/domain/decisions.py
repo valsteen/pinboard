@@ -235,8 +235,8 @@ def _preparer_actions(snapshot: LedgerSnapshot, factory: ActionCapabilityFactory
 
 @dataclass(frozen=True, slots=True)
 class ProjectAttemptActionGroups:
-    attempt_actions: tuple[decision_models.Action, ...]
-    item_actions: tuple[decision_models.Action, ...]
+    attempt_actions: tuple[decision_models.LiveAttemptAction, ...]
+    item_actions: tuple[decision_models.LiveAttemptAction, ...]
 
 
 def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-attempt action projection
@@ -245,7 +245,7 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
 ) -> ProjectAttemptActionGroups:
     """Decide the ordered project actions associated with one live attempt."""
 
-    attempt_actions: list[decision_models.Action] = []
+    attempt_actions: list[decision_models.LiveAttemptAction] = []
     stale = _context_definition_stale(context)
     match context.item_state:
         case work_models.WorkState.ACTIVE:
@@ -370,7 +370,7 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
             decision_models.CompleteAction(factory.make(context.attempt, label, context.attempt_subject_revision))
         )
 
-    item_actions: list[decision_models.Action] = [
+    item_actions: list[decision_models.LiveAttemptAction] = [
         decision_models.RecordReplacementAction(
             factory.make(
                 context.work_item_id,
@@ -535,7 +535,7 @@ def _project_role_actions(
         context = _project_attempt_context(snapshot, item, revision_available=revision_available)
         if context is not None:
             attempt_groups[item.work_item_id] = project_attempt_action_groups(context, factory)
-    result = [
+    result: list[decision_models.Action] = [
         action
         for item in snapshot.items
         if (group := attempt_groups.get(item.work_item_id)) is not None

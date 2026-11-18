@@ -206,8 +206,9 @@ def _portable(
 ) -> work_brief_models.PortableArtifactIdentity:
     """Name a candidate review's artifact by its role.
 
-    The candidate is accepted evidence, which candidate snapshot verification already required, and the accepted
-    brief reference is a brief by type, so the role selects the portable kind.
+    The accepted brief reference is a brief by type. The candidate reference's type admits any kind; it relies on
+    `candidate_snapshots.verify_candidate_snapshot_context`, its only producer, having rejected a reference that is
+    not accepted evidence. So the role selects the portable kind.
     """
     kind: Literal["brief", "evidence"]
     match role:

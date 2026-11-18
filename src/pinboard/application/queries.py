@@ -325,7 +325,7 @@ def project_attempt_continuation(
                 False,
                 False,
                 selected,
-                tuple(decision_models.action_id(value) for value in actions),
+                tuple(query_models.continuation_action_identity(value) for value in actions),
                 ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
                 context.decision_batch,
             )
@@ -386,7 +386,7 @@ def _select_repository_disposition(
     for action in actions:
         if isinstance(action, decision_models.ReturnForCorrectionAction):
             return query_models.ActionContinuation(
-                decision_models.action_id(action), action.kind, _lineage_correction_condition(brief)
+                query_models.continuation_action_identity(action), _lineage_correction_condition(brief)
             )
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
@@ -440,8 +440,7 @@ def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-
         for action in actions:
             if isinstance(action, decision_models.ReturnForCorrectionAction):
                 return query_models.ActionContinuation(
-                    decision_models.action_id(action),
-                    action.kind,
+                    query_models.continuation_action_identity(action),
                     "Return the reviewed candidate for correction against the current integration target.",
                 )
         return DecisionFailure(
@@ -471,8 +470,7 @@ def select_resumed_review_operation(  # noqa: C901, PLR0912 - distinct reviewed-
             for action in actions:
                 if isinstance(action, decision_models.CompleteAction):
                     return query_models.ActionContinuation(
-                        decision_models.action_id(action),
-                        action.kind,
+                        query_models.continuation_action_identity(action),
                         "Complete after the integrated candidate and required repository effects are verified.",
                     )
             return DecisionFailure(
@@ -527,8 +525,7 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                         "runtime-subagent",
                     )
                 return query_models.ActionContinuation(
-                    decision_models.action_id(action),
-                    action.kind,
+                    query_models.continuation_action_identity(action),
                     "Completion lacks a protected current candidate. Inspect the accepted work and evidence before deciding what remains.",
                 )
     for action in actions:
@@ -550,18 +547,16 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 else f"Follow the accepted brief and its {len(current)} current amendment"
                 f"{'' if len(current) == 1 else 's'}, read from attempt inspection before submitting."
             )
-            return query_models.ActionContinuation(decision_models.action_id(action), action.kind, condition)
+            return query_models.ActionContinuation(query_models.continuation_action_identity(action), condition)
     for action in actions:
         if isinstance(action, decision_models.CloseAction):
             return query_models.ActionContinuation(
-                decision_models.action_id(action),
-                action.kind,
+                query_models.continuation_action_identity(action),
                 "Move live dependents to the replacement or its checkpoints, then close the absorbed item as superseded.",
             )
         if context.state == work_models.AttemptState.ACTIVE and isinstance(action, decision_models.RebindAttemptAction):
             return query_models.ActionContinuation(
-                decision_models.action_id(action),
-                action.kind,
+                query_models.continuation_action_identity(action),
                 "Bind a current accepted pinboard-small-work-brief/v1 brief that matches the current definition; "
                 "its owning coordinator delivers it inline."
                 if work_briefs.takes_small_brief(context.work_item.route_facts)
@@ -569,20 +564,17 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
             )
         if isinstance(action, decision_models.ReturnForCorrectionAction):
             return query_models.ActionContinuation(
-                decision_models.action_id(action),
-                action.kind,
+                query_models.continuation_action_identity(action),
                 "Clear the stale protected candidate, then bind the revised accepted brief.",
             )
         if isinstance(action, decision_models.PauseAction):
             return query_models.ActionContinuation(
-                decision_models.action_id(action),
-                action.kind,
+                query_models.continuation_action_identity(action),
                 "Preserve the attempt before binding a revised accepted brief.",
             )
         if isinstance(action, decision_models.ResumeAction):
             return query_models.ActionContinuation(
-                decision_models.action_id(action),
-                action.kind,
+                query_models.continuation_action_identity(action),
                 "Resolve the recorded pause or dependency condition and provide the matching current accepted brief.",
             )
     if context.work_item.unsatisfied_dependencies:

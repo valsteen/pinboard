@@ -3349,8 +3349,14 @@ class McpTransportTest(unittest.TestCase):
             "owner-task",
             False,
             False,
-            query_models.ActionContinuation("continue:attempt-1", decision_models.ActionKind.CONTINUE, "Continue."),
-            ("continue:attempt-1", "pause:attempt-1", "revise-item:item-1"),
+            query_models.ActionContinuation(
+                query_models.ContinuationActionIdentity("attempt", decision_models.ActionKind.CONTINUE), "Continue."
+            ),
+            (
+                query_models.ContinuationActionIdentity("attempt", decision_models.ActionKind.CONTINUE),
+                query_models.ContinuationActionIdentity("attempt", decision_models.ActionKind.PAUSE),
+                query_models.ContinuationActionIdentity("item", decision_models.ActionKind.REVISE_ITEM),
+            ),
             ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
             decision_batch=None,
         )
@@ -3397,7 +3403,12 @@ class McpTransportTest(unittest.TestCase):
                         query_models.RuntimeEffect.GIT_METADATA,
                         query_models.RuntimeEffectStatus.DENIED,
                     ),
-                    ("complete:attempt-1", "return-for-correction:attempt-1"),
+                    (
+                        query_models.ContinuationActionIdentity("attempt", decision_models.ActionKind.COMPLETE),
+                        query_models.ContinuationActionIdentity(
+                            "attempt", decision_models.ActionKind.RETURN_FOR_CORRECTION
+                        ),
+                    ),
                     ("create-user-task", "wake-user-task", "return-ownership-to-parent"),
                     decision_batch=None,
                 )
@@ -3760,22 +3771,34 @@ class McpTransportTest(unittest.TestCase):
         continuations: tuple[query_models.AttemptContinuation, ...] = (
             query_models.ActiveAttemptContinuation(
                 *common,
-                query_models.ActionContinuation("continue:attempt-1", decision_models.ActionKind.CONTINUE, "Continue."),
-                ("continue:attempt-1", "revise-item:item-1"),
+                query_models.ActionContinuation(
+                    query_models.ContinuationActionIdentity("attempt", decision_models.ActionKind.CONTINUE), "Continue."
+                ),
+                (
+                    query_models.ContinuationActionIdentity("attempt", decision_models.ActionKind.CONTINUE),
+                    query_models.ContinuationActionIdentity("item", decision_models.ActionKind.REVISE_ITEM),
+                ),
                 forbidden,
                 decision_batch=None,
             ),
             query_models.ReviewAttemptContinuation(
                 *common,
                 query_models.ReviewContinuation("attempt-1", "candidate-1", "runtime-subagent"),
-                ("accept-checkpoint:attempt-1", "return-for-correction:attempt-1"),
+                (
+                    query_models.ContinuationActionIdentity("attempt", decision_models.ActionKind.ACCEPT_CHECKPOINT),
+                    query_models.ContinuationActionIdentity(
+                        "attempt", decision_models.ActionKind.RETURN_FOR_CORRECTION
+                    ),
+                ),
                 forbidden,
                 decision_batch=None,
             ),
             query_models.PausedAttemptContinuation(
                 *common,
-                query_models.ActionContinuation("resume:item-1", decision_models.ActionKind.RESUME, "Resume."),
-                ("resume:item-1",),
+                query_models.ActionContinuation(
+                    query_models.ContinuationActionIdentity("item", decision_models.ActionKind.RESUME), "Resume."
+                ),
+                (query_models.ContinuationActionIdentity("item", decision_models.ActionKind.RESUME),),
                 forbidden,
                 None,
                 "Waiting for the maintainer's choice.",
@@ -3784,7 +3807,7 @@ class McpTransportTest(unittest.TestCase):
             query_models.BlockedAttemptContinuation(
                 *common,
                 query_models.DependencyContinuation(("dependency-1",)),
-                ("resume:item-1",),
+                (query_models.ContinuationActionIdentity("item", decision_models.ActionKind.RESUME),),
                 forbidden,
                 decision_batch=None,
                 unblocker=unblockers.ItemsToFinishPayload(("dependency-1",)),

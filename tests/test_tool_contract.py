@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import io
 import json
@@ -25,6 +26,32 @@ class ToolContractTest(unittest.TestCase):
                 with contextlib.redirect_stdout(stdout):
                     self.assertEqual(0, main(arguments))
                 self.assertIn(expected, stdout.getvalue())
+
+    def test_each_installed_operation_id_is_its_parser_path(self) -> None:
+        parser_paths: dict[type[cli_commands.CliCommand], str] = {}
+
+        def visit(parser: argparse.ArgumentParser) -> None:
+            command_type = parser.get_default("command_selection")
+            if command_type is not None:
+                parser_paths[command_type] = parser.prog.removeprefix("pinboard ").replace(" ", "/")
+            for action in parser._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    for child in action.choices.values():
+                        if isinstance(child, argparse.ArgumentParser):
+                            visit(child)
+
+        visit(cli_parser.build_parser())
+        schema_migration_path = parser_paths[cli_commands.MigrateSchemaPreviewCommand]
+        installed = cli_parser.installed_commands()
+        for command in installed:
+            with self.subTest(command=command.command_type.__name__):
+                path = parser_paths.get(command.command_type)
+                if path is None:
+                    # Flags on the schema-migration leaf select its other variants, so their ids extend its path.
+                    self.assertTrue(command.operation_id.startswith(f"{schema_migration_path}/"))
+                else:
+                    self.assertEqual(path, command.operation_id)
+        self.assertEqual(len(installed), len({command.operation_id for command in installed}))
 
     def test_cli_only_index_and_every_returned_selector_are_static_and_exact(self) -> None:
         with patch("pinboard.cli.entrypoint.work_state_commands.resolve_roots") as roots:

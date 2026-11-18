@@ -106,6 +106,11 @@ def first_directory_link_problem(path: Path) -> DirectoryLinkProblem | None:
 
 
 def _verify_directory_links(path: Path, *, label: str) -> None:
+    """Raise `FileIOError` for the first unusable directory link at this filesystem effect boundary.
+
+    A dangling, looping or non-directory link is a real filesystem outcome that stops verification under
+    ARCHITECTURE.md's trusted-local link rule, so each link-problem arm raises with its one repair step.
+    """
     match first_directory_link_problem(path):
         case None:
             return

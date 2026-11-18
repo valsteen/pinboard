@@ -1176,7 +1176,8 @@ def _brief_review_status(
             ),
         )
     assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
-    # read_accepted_work_brief rejects a reference that is not a brief with a typed failure before this projection.
+    # The reference type admits any kind; this relies on read_accepted_work_brief, the only producer of
+    # AcceptedWorkBrief, having returned a typed BRIEF_INVALID failure for a reference that is not a brief.
     reference = selected.accepted_brief.reference
     brief_reference = contracts.ArtifactReferenceResult(
         int(reference.artifact_ref_id),
@@ -2274,29 +2275,16 @@ def _current_candidate_review(
     )
 
 
-def _relative_action(action_id: str, attempt_id: str, item_id: str) -> contracts.RelativeActionIdentity:
-    """Present one legal action the query continuation already validated as targeting its attempt or item."""
-    kind_value, separator, subject = action_id.partition(":")
-    if not separator:
-        raise RuntimeError("Attempt continuation contains a noncanonical action identity.")
-    kind = decision_models.ActionKind(kind_value)
-    target = query_models.continuation_action_target(kind)
-    if target is None or subject != (attempt_id if target == "attempt" else item_id):
-        raise RuntimeError("Attempt continuation action does not target its attempt or item.")
-    return contracts.RelativeActionIdentity(target, kind)
+def _relative_action(action: query_models.ContinuationActionIdentity) -> contracts.RelativeActionIdentity:
+    return contracts.RelativeActionIdentity(action.target, action.action_kind)
 
 
 def _continuation_operation(
     operation: query_models.NonterminalContinuationOperation,
-    attempt_id: str,
-    item_id: str,
 ) -> contracts.ContinuationOperation:
     match operation:
-        case query_models.ActionContinuation(action_id=action_id, action_kind=action_kind, condition=condition):
-            action = _relative_action(action_id, attempt_id, item_id)
-            if action.action_kind != action_kind:
-                raise RuntimeError("Attempt continuation action kind differs from its identity.")
-            return contracts.ContinuationAction(action, condition)
+        case query_models.ActionContinuation(action=action, condition=condition):
+            return contracts.ContinuationAction(_relative_action(action), condition)
         case query_models.ReviewContinuation(candidate_revision=candidate, required_capability=capability):
             return contracts.ContinuationReview(candidate, capability)
         case query_models.ReconcileRepositoryContinuation(candidate_revision=candidate, condition=condition):
@@ -2351,15 +2339,8 @@ def _mcp_attempt_continuation(
             | query_models.PausedAttemptContinuation()
             | query_models.BlockedAttemptContinuation()
         ):
-            operation = _continuation_operation(
-                continuation.next_operation,
-                continuation.attempt_id,
-                continuation.item_id,
-            )
-            legal_actions = tuple(
-                _relative_action(action_id, continuation.attempt_id, continuation.item_id)
-                for action_id in continuation.legal_actions
-            )
+            operation = _continuation_operation(continuation.next_operation)
+            legal_actions = tuple(_relative_action(action) for action in continuation.legal_actions)
             arguments = (
                 *common,
                 continuation.owner_task_id,

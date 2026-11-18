@@ -184,7 +184,11 @@ def _dependency_proposal(connection: sqlite3.Connection, item_id: WorkItemId) ->
 def classify_holds(
     connection: sqlite3.Connection,
 ) -> tuple[dict[WorkItemId, work_models.Unblocker], tuple[LabelSubject, ...]]:
-    """Split live held subjects into those the ledger labels itself and those that need a label."""
+    """Split live held subjects into those the ledger labels itself and those that need a label.
+
+    This is predecessor-schema decoding: the query selects only paused, blocked and deferred v12 rows, so any other
+    stored held state, or a paused item without its attempt, is invalid stored state and raises `StorageError`.
+    """
 
     automatic: dict[WorkItemId, work_models.Unblocker] = {}
     needed: list[LabelSubject] = []

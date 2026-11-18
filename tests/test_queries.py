@@ -610,8 +610,13 @@ class SQLiteQueriesTest(unittest.TestCase):
             "owner-task",
             False,
             False,
-            query_models.ActionContinuation("continue:attempt-1", decision_models.ActionKind.CONTINUE, "Continue."),
-            ("continue:attempt-1", "revise-item:item-1"),
+            query_models.ActionContinuation(
+                query_models.ContinuationActionIdentity("attempt", decision_models.ActionKind.CONTINUE), "Continue."
+            ),
+            (
+                query_models.ContinuationActionIdentity("attempt", decision_models.ActionKind.CONTINUE),
+                query_models.ContinuationActionIdentity("item", decision_models.ActionKind.REVISE_ITEM),
+            ),
             forbidden,
             decision_batch=None,
         )
@@ -624,7 +629,10 @@ class SQLiteQueriesTest(unittest.TestCase):
             False,
             False,
             query_models.ReviewContinuation("attempt-1", "candidate-1", "runtime-subagent"),
-            ("accept-checkpoint:attempt-1", "return-for-correction:attempt-1"),
+            (
+                query_models.ContinuationActionIdentity("attempt", decision_models.ActionKind.ACCEPT_CHECKPOINT),
+                query_models.ContinuationActionIdentity("attempt", decision_models.ActionKind.RETURN_FOR_CORRECTION),
+            ),
             forbidden,
             decision_batch=None,
         )
@@ -636,8 +644,10 @@ class SQLiteQueriesTest(unittest.TestCase):
             "owner-task",
             False,
             False,
-            query_models.ActionContinuation("resume:item-1", decision_models.ActionKind.RESUME, "Resume."),
-            ("resume:item-1",),
+            query_models.ActionContinuation(
+                query_models.ContinuationActionIdentity("item", decision_models.ActionKind.RESUME), "Resume."
+            ),
+            (query_models.ContinuationActionIdentity("item", decision_models.ActionKind.RESUME),),
             forbidden,
             None,
             None,
@@ -652,7 +662,7 @@ class SQLiteQueriesTest(unittest.TestCase):
             False,
             False,
             query_models.DependencyContinuation(("dependency-1",)),
-            ("resume:item-1",),
+            (query_models.ContinuationActionIdentity("item", decision_models.ActionKind.RESUME),),
             forbidden,
             decision_batch=None,
             unblocker=unblockers.ItemsToFinishPayload(("dependency-1",)),
@@ -681,13 +691,12 @@ class SQLiteQueriesTest(unittest.TestCase):
         assert isinstance(invalid_active, dict)
         invalid_active["next_operation"] = {
             "kind": "action",
-            "action_id": "continue:attempt-2",
-            "action_kind": "continue",
+            "action": {"target": "attempt", "action_kind": "pause"},
             "condition": "Continue.",
         }
         invalid_legal = msgspec.to_builtins(active)
         assert isinstance(invalid_legal, dict)
-        invalid_legal["legal_actions"] = ["continue:attempt-2"]
+        invalid_legal["legal_actions"] = [{"target": "item", "action_kind": "continue"}]
         invalid_review = msgspec.to_builtins(review)
         assert isinstance(invalid_review, dict)
         review_operation = invalid_review["next_operation"]
@@ -729,11 +738,10 @@ class SQLiteQueriesTest(unittest.TestCase):
         v4, small = selected["v4"], selected["small"]
         assert isinstance(v4, query_models.ActionContinuation)
         assert isinstance(small, query_models.ActionContinuation)
-        self.assertEqual(
-            (decision_models.ActionKind.RETURN_FOR_CORRECTION, decision_models.ActionKind.RETURN_FOR_CORRECTION),
-            (v4.action_kind, small.action_kind),
+        correction = query_models.ContinuationActionIdentity(
+            "attempt", decision_models.ActionKind.RETURN_FOR_CORRECTION
         )
-        self.assertEqual(v4.action_id, small.action_id)
+        self.assertEqual((correction, correction), (v4.action, small.action))
         # The brief shape alone selects a distinct correction route for the same action.
         self.assertNotEqual(v4.condition, small.condition)
 

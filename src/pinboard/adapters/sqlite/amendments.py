@@ -47,6 +47,11 @@ class _ActionKindRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 def _stored(row: sqlite3.Row) -> stored_state.StoredAttemptAmendment:
+    """Decode one stored amendment row at the SQLite decoding boundary.
+
+    The review base columns are all set or all null; a partial review base is invalid stored state and raises
+    `StorageError`.
+    """
     value = decode_row(row, _AmendmentRow)
     match value.base_candidate_revision, value.base_snapshot_ref_id, value.base_review_ref_id:
         case str() as candidate, int() as snapshot, int() as review:

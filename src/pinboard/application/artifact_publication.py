@@ -11,7 +11,7 @@ from pinboard.application.artifacts import (
     NewArtifact,
     WorkBriefIdentity,
 )
-from pinboard.application.ports import WorkStore, WorkStoreError
+from pinboard.application.ports import StaleWriteCode, WorkStore, WorkStoreError
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import (
     ChangedSurface,
@@ -107,12 +107,13 @@ def publish_accepted_artifact(
     ownership: artifact_identity.Ownership | None,
 ) -> DecisionResult[
     AcceptedArtifactPublication | ArtifactAcceptanceFailure | ArtifactWriteFailure | PublishedArtifactRejected,
-    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE],
+    StaleWriteCode,
 ]:
     """Publish immutable bytes, then accept their verified reference in SQLite.
 
     A newly published immutable artifact cannot be rolled back if SQLite acceptance fails, so a failure after it
     carries published failure details; a refused acceptance without a new artifact remains an unchanged rejection.
+    A SQLite invariant violation during acceptance is corrupt storage and propagates from the store's effect boundary.
     """
 
     publication = publisher.publish(artifact)

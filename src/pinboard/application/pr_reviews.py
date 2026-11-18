@@ -1,10 +1,10 @@
 """Canonical records and decisions for human-owned pull request reviews."""
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, assert_never
 
 import msgspec
 
-from pinboard.application import stored_state
+from pinboard.application import released_receipt_compatibility, stored_state
 from pinboard.domain import decision_models
 from pinboard.domain.identifiers import WorkItemId
 
@@ -122,21 +122,39 @@ class ReviewClose(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
             raise ValueError("Final finding dispositions must be unique.")
 
 
+type ReviewHistoryKind = Literal[
+    decision_models.ActionKind.START_PR_REVIEW,
+    decision_models.ActionKind.REVIEW_PR_BRIEF,
+    decision_models.ActionKind.OBSERVE_PR_HEAD,
+    decision_models.ActionKind.RECORD_PR_ROUND,
+    decision_models.ActionKind.CLOSE_PR_REVIEW,
+]
+
+
+def _review_history_kind(
+    kind: decision_models.ActionKind | released_receipt_compatibility.HistoricalActionKind,
+) -> ReviewHistoryKind | None:
+    """Return the kind of a receipt the PR review history renders, or None for every other recorded action."""
+    match kind:
+        case (
+            decision_models.ActionKind.START_PR_REVIEW
+            | decision_models.ActionKind.REVIEW_PR_BRIEF
+            | decision_models.ActionKind.OBSERVE_PR_HEAD
+            | decision_models.ActionKind.RECORD_PR_ROUND
+            | decision_models.ActionKind.CLOSE_PR_REVIEW
+        ):
+            return kind
+        case _:
+            return None
+
+
 def render_review_history(item_id: WorkItemId, receipts: tuple[stored_state.StoredTransitionReceipt, ...]) -> str:
     """Render recorded review facts without turning observation into remote certification."""
 
     selected = tuple(
-        value
+        (kind, value)
         for value in receipts
-        if value.subject_id == item_id
-        and value.action_kind
-        in {
-            decision_models.ActionKind.START_PR_REVIEW,
-            decision_models.ActionKind.REVIEW_PR_BRIEF,
-            decision_models.ActionKind.OBSERVE_PR_HEAD,
-            decision_models.ActionKind.RECORD_PR_ROUND,
-            decision_models.ActionKind.CLOSE_PR_REVIEW,
-        }
+        if value.subject_id == item_id and (kind := _review_history_kind(value.action_kind)) is not None
     )
     if not selected:
         return ""
@@ -146,9 +164,9 @@ def render_review_history(item_id: WorkItemId, receipts: tuple[stored_state.Stor
         "Pinboard records harness observations. Remote head freshness and hosted checks are unverified.",
         "",
     ]
-    for receipt in selected:
+    for kind, receipt in selected:
         raw = bytes(receipt.input_payload)
-        match receipt.action_kind:
+        match kind:
             case decision_models.ActionKind.START_PR_REVIEW:
                 brief = msgspec.json.decode(raw, type=ReviewBrief, strict=True)
                 lines.extend(
@@ -231,6 +249,6 @@ def render_review_history(item_id: WorkItemId, receipts: tuple[stored_state.Stor
                     for value in close.final_dispositions
                 )
                 lines.append("")
-            case _:
-                raise ValueError("Unexpected action kind in PR review history.")
+            case _ as unreachable:
+                assert_never(unreachable)
     return "\n".join(lines) + "\n"

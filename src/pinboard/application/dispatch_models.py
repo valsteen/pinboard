@@ -20,7 +20,7 @@ from pinboard.application.artifact_publication import (
     publish_accepted_artifact,
 )
 from pinboard.application.artifacts import NewArtifact
-from pinboard.application.ports import WorkStore
+from pinboard.application.ports import StaleWriteCode, WorkStore
 from pinboard.domain import work_models
 from pinboard.domain.errors import (
     DecisionFailure,
@@ -265,7 +265,7 @@ def publish_agent_prompt(
     accepted_at: datetime,
 ) -> DecisionResult[
     PublishedAgentPrompt | ArtifactAcceptanceFailure | ArtifactWriteFailure | PublishedArtifactRejected,
-    Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE],
+    StaleWriteCode,
 ]:
     content = prompt.encode()
     digest = hashlib.sha256(content).hexdigest()

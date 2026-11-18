@@ -114,6 +114,9 @@ def verify_reference(
 
 
 def _publish_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactPublication | ArtifactWriteFailure:
+    """Publish one immutable revision; a revision that already exists at its exact path is a storage invariant
+    violation.
+    """
     selector = _build_selector(artifact.kind, artifact.key, artifact.revision, artifact.suffix)
     digest = sha256(artifact.content).hexdigest()
     reference = ArtifactRef(artifact.kind, artifact.key, artifact.revision, selector, digest, len(artifact.content))

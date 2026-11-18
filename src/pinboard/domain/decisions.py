@@ -355,8 +355,6 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
                 )
         case work_models.WorkState.PAUSED | work_models.WorkState.BLOCKED:
             pass
-        case work_models.WorkState.READY:
-            raise ValueError("A live attempt requires an active, review, paused, or blocked work item.")
         case _ as unreachable:
             assert_never(unreachable)
     if (
@@ -450,12 +448,25 @@ def _project_attempt_context(
 ) -> work_models.ProjectAttemptActionContext | None:
     if item.attempt is None:
         return None
+    match item.state:
+        case work_models.WorkState.READY:
+            # Ledger decoding rejects a current attempt on a ready item, so a ready item projects no attempt.
+            return None
+        case (
+            work_models.WorkState.ACTIVE
+            | work_models.WorkState.PAUSED
+            | work_models.WorkState.BLOCKED
+            | work_models.WorkState.REVIEW
+        ) as item_state:
+            pass
+        case _ as unreachable:
+            assert_never(unreachable)
     definition = snapshot.definition(item.work_item_id)
     replacement = snapshot.current_replacement(item.work_item_id)
     return work_models.ProjectAttemptActionContext(
         item.work_item_id,
         _subject_revision(snapshot, item.work_item_id),
-        item.state,
+        item_state,
         item.attempt,
         _subject_revision(snapshot, item.attempt),
         snapshot.attempt(item.attempt),
@@ -1698,6 +1709,17 @@ def _return_for_correction(
     )
 
 
+def _amendable_attempt_state(state: work_models.AttemptState) -> decision_models.AmendableAttemptState | None:
+    """Return the state an amendment can be recorded in, or None for a held or finished attempt."""
+    match state:
+        case work_models.AttemptState.ACTIVE | work_models.AttemptState.REVIEW:
+            return state
+        case work_models.AttemptState.PAUSED | work_models.AttemptState.BLOCKED | work_models.AttemptState.DONE:
+            return None
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _record_amendment(
     snapshot: LedgerSnapshot,
     command: decision_models.RecordAmendmentCommand,
@@ -1710,10 +1732,11 @@ def _record_amendment(
     if isinstance(item, DecisionFailure):
         return item
     attempt = snapshot.attempt(attempt_id)
+    amended_state = None if attempt is None else _amendable_attempt_state(attempt.state)
     if (
         item.state not in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}
         or attempt is None
-        or attempt.state not in {work_models.AttemptState.ACTIVE, work_models.AttemptState.REVIEW}
+        or amended_state is None
     ):
         return DecisionFailure(
             DecisionFailureCode.ACTION_NOT_AVAILABLE,
@@ -1746,7 +1769,7 @@ def _record_amendment(
         )
     authority_change: decision_models.AttemptAuthorityChange | None = None
     cleared = value.cleared_submission
-    if attempt.state == work_models.AttemptState.REVIEW:
+    if amended_state == work_models.AttemptState.REVIEW:
         if cleared is None or cleared.candidate != attempt.protected_candidate_revision:
             return DecisionFailure(
                 DecisionFailureCode.ACTION_NOT_AVAILABLE,
@@ -1792,7 +1815,7 @@ def _record_amendment(
         snapshot,
         action,
         now,
-        decision_models.AmendmentChange(item.work_item_id, attempt_id, attempt.state, amendment, authority_change),
+        decision_models.AmendmentChange(item.work_item_id, attempt_id, amended_state, amendment, authority_change),
         work_item_id=item.work_item_id,
         outcome=None,
         evidence=None,

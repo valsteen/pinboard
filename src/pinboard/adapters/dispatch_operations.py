@@ -2,6 +2,10 @@
 
 Reads only selected checkout and artifact authorities; publication preserves
 terminal effects without changing lifecycle, authority or launching an agent.
+
+Its declared exceptions sit at the artifact and SQLite effect boundaries: an artifact or SQLite invariant violation
+is corrupt storage and propagates, and an infrastructure error before any publication changed nothing and
+propagates; after a publication the error becomes a typed failure that names it.
 """
 
 import hashlib

@@ -434,18 +434,18 @@ class AttemptContinuationIdentity(msgspec.Struct, frozen=True, forbid_unknown_fi
     revision: int
 
 
-def _continuation_action_subject(
-    kind: decision_models.ActionKind,
-    attempt_id: str,
-    item_id: str,
-) -> str:
+type ContinuationActionTarget = Literal["attempt", "item"]
+
+
+def continuation_action_target(kind: decision_models.ActionKind) -> ContinuationActionTarget | None:
+    """Return the parent an attempt continuation's action targets, or None for a ledger or proposal action."""
     match decision_models.action_semantics(kind).subject_kind:
         case decision_models.ActionSubjectKind.ATTEMPT:
-            return attempt_id
+            return "attempt"
         case decision_models.ActionSubjectKind.ITEM:
-            return item_id
+            return "item"
         case decision_models.ActionSubjectKind.LEDGER | decision_models.ActionSubjectKind.PROPOSAL:
-            raise ValueError("attempt continuations may contain only attempt and item actions")
+            return None
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -458,7 +458,10 @@ def _validate_continuation_action(action_id: str, attempt_id: str, item_id: str)
         kind = decision_models.ActionKind(kind_value)
     except ValueError as error:
         raise ValueError("continuation legal action kind must be known") from error
-    if subject != _continuation_action_subject(kind, attempt_id, item_id):
+    target = continuation_action_target(kind)
+    if target is None:
+        raise ValueError("attempt continuations may contain only attempt and item actions")
+    if subject != (attempt_id if target == "attempt" else item_id):
         raise ValueError("continuation legal action must target its parent attempt or item")
 
 

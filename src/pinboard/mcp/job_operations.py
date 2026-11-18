@@ -1,4 +1,8 @@
-"""Native dispatch, review, observation, and restoration MCP composition."""
+"""Native dispatch, review, observation, and restoration MCP composition.
+
+A review prompt publication infrastructure error re-raises its artifact or SQLite cause, as dispatch does for an
+error before any publication: it is an effect-boundary exception, not a typed result.
+"""
 
 from __future__ import annotations
 

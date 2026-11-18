@@ -35,6 +35,9 @@ The original output error propagates.
 This module adds no process: the target runs in this interpreter. It deliberately does not recover a
 record when the target dies hard or the process fails before `CaptureSession.arm` runs, and it does
 not clean stale stage files left by such a death.
+
+A storage invariant violation while selecting an automatic trace is corrupt storage and propagates unchanged from
+the SQLite effect boundary.
 """
 
 import hashlib

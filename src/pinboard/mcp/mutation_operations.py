@@ -376,7 +376,7 @@ def _brief_published_file(
 
 
 def _brief_publication_rejected(
-    failure: DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | PublishedArtifactRejected,
+    failure: DecisionFailure[ports.StaleWriteCode] | PublishedArtifactRejected,
 ) -> execution.TypedOperationResult[contracts.BriefPublicationResult]:
     match failure:
         case PublishedArtifactRejected(details=details):
@@ -984,8 +984,9 @@ def _apply_transition(
         )
     token.checkpoint()
     ended_amendments = _amendments_ended_by_rebind(store, selected.command)
+    command = selected.command
     if isinstance(
-        selected.command,
+        command,
         (
             decision_models.AcceptCheckpointCommand,
             decision_models.CoveredCompleteCommand,
@@ -998,6 +999,7 @@ def _apply_transition(
             store,
             artifacts,
             selected,
+            command,
             operation_time,
             lambda: datetime.now(UTC),
         )

@@ -2,7 +2,7 @@ from collections.abc import Collection, Set
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import NewType, assert_never
+from typing import Literal, NewType, assert_never
 
 from pinboard.domain.identifiers import (
     ArtifactRefId,
@@ -129,6 +129,10 @@ class WorkState(Enum):
     PAUSED = "paused"
     BLOCKED = "blocked"
     REVIEW = "review"
+
+
+type LiveAttemptItemState = Literal[WorkState.ACTIVE, WorkState.PAUSED, WorkState.BLOCKED, WorkState.REVIEW]
+"""A work item state that can own a live attempt; a ready item owns none."""
 
 
 class AttemptState(Enum):
@@ -770,7 +774,7 @@ class AttemptRecord:
 class ProjectAttemptActionContext:
     work_item_id: WorkItemId
     item_subject_revision: str
-    item_state: WorkState
+    item_state: LiveAttemptItemState
     attempt: AttemptId
     attempt_subject_revision: str
     attempt_record: AttemptRecord | None

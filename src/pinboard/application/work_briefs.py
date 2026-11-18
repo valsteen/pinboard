@@ -30,7 +30,7 @@ from pinboard.application.artifacts import (
 )
 from pinboard.application.brief_source_models import BriefSourceFailure, authority_selector
 from pinboard.application.brief_sources import BriefSourceSelector
-from pinboard.application.ports import WorkStore
+from pinboard.application.ports import StaleWriteCode, WorkStore
 from pinboard.domain import work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CheckpointId, WorkItemId
@@ -62,7 +62,7 @@ def publish_work_brief(
     | ArtifactAcceptanceFailure
     | ArtifactWriteFailure
     | PublishedArtifactRejected
-    | DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]
+    | DecisionFailure[StaleWriteCode]
     | work_brief_models.WorkBriefFailure
 ):
     if (failure := _validate_current_definition(store, brief)) is not None:
@@ -714,7 +714,7 @@ def publish_brief_review_needs_correction(
     | ArtifactAcceptanceFailure
     | ArtifactWriteFailure
     | PublishedArtifactRejected
-    | DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]
+    | DecisionFailure[StaleWriteCode]
     | work_brief_models.WorkBriefFailure
 ):
     """Validate an independent negative review, publish bytes, then accept their reference.

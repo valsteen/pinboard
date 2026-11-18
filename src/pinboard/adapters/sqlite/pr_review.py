@@ -40,8 +40,12 @@ class _ItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class _HistoryRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """One PR review history row; decoding admits exactly the receipt kinds the history query selects."""
+
     history_id: int
-    action_kind: decision_models.ActionKind
+    action_kind: Literal[
+        "start-pr-review", "review-pr-brief", "observe-pr-head", "record-pr-round", "close-pr-review", "cancel"
+    ]
     input_json: str
 
 
@@ -66,18 +70,21 @@ class _AttemptRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     has_attempt: int
 
 
+type EvidencePayload = (
+    pr_reviews.ReviewBrief
+    | pr_reviews.BriefReview
+    | pr_reviews.HeadObservation
+    | pr_reviews.ReviewRound
+    | pr_reviews.ReviewClose
+    | cancellation_models.CancellationRecord
+)
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceRow:
     history_id: int
     action_kind: decision_models.ActionKind
-    payload: (
-        pr_reviews.ReviewBrief
-        | pr_reviews.BriefReview
-        | pr_reviews.HeadObservation
-        | pr_reviews.ReviewRound
-        | pr_reviews.ReviewClose
-        | cancellation_models.CancellationRecord
-    )
+    payload: EvidencePayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,23 +165,29 @@ def _load(connection: sqlite3.Connection, item_id: WorkItemId) -> ReviewState | 
         (item_id,),
     ).fetchall():
         history = decode_row(raw_history, _HistoryRow)
-        kind = history.action_kind
         raw = history.input_json.encode("utf-8")
-        match kind:
-            case decision_models.ActionKind.START_PR_REVIEW:
+        payload: EvidencePayload
+        match history.action_kind:
+            case "start-pr-review":
+                kind = decision_models.ActionKind.START_PR_REVIEW
                 payload = msgspec.json.decode(raw, type=pr_reviews.ReviewBrief, strict=True)
-            case decision_models.ActionKind.REVIEW_PR_BRIEF:
+            case "review-pr-brief":
+                kind = decision_models.ActionKind.REVIEW_PR_BRIEF
                 payload = msgspec.json.decode(raw, type=pr_reviews.BriefReview, strict=True)
-            case decision_models.ActionKind.OBSERVE_PR_HEAD:
+            case "observe-pr-head":
+                kind = decision_models.ActionKind.OBSERVE_PR_HEAD
                 payload = msgspec.json.decode(raw, type=pr_reviews.HeadObservation, strict=True)
-            case decision_models.ActionKind.RECORD_PR_ROUND:
+            case "record-pr-round":
+                kind = decision_models.ActionKind.RECORD_PR_ROUND
                 payload = msgspec.json.decode(raw, type=pr_reviews.ReviewRound, strict=True)
-            case decision_models.ActionKind.CLOSE_PR_REVIEW:
+            case "close-pr-review":
+                kind = decision_models.ActionKind.CLOSE_PR_REVIEW
                 payload = msgspec.json.decode(raw, type=pr_reviews.ReviewClose, strict=True)
-            case decision_models.ActionKind.CANCEL:
+            case "cancel":
+                kind = decision_models.ActionKind.CANCEL
                 payload = msgspec.json.decode(raw, type=cancellation_models.CancellationRecord, strict=True)
             case _ as unreachable:
-                raise ValueError(f"Unsupported PR review history action: {unreachable.value}")
+                assert_never(unreachable)
         evidence.append(EvidenceRow(history.history_id, kind, payload))
     return ReviewState(
         item_id,

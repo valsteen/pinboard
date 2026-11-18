@@ -1,4 +1,8 @@
-"""Installed work-root resolution, initialization, validation, and repair commands."""
+"""Installed work-root resolution, initialization, validation, and repair commands.
+
+Root resolution falls back to an explicit project root only when Git reports no repository there; every other Git
+root error is a Git effect-boundary exception and propagates.
+"""
 
 import os
 import tomllib

@@ -87,7 +87,7 @@ def _encoded_schema(command_type: type[cli_commands.CliCommand]) -> msgspec.Raw:
 
 
 def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContract:  # noqa: C901, PLR0912, PLR0915 - exact installed semantic owner
-    match command.operation_id:
+    match command.command_type.operation_id:
         case "root":
             purpose = "Resolve the source checkout, shared repository, and Pinboard work root."
             mutation: MutationClass = "read-only"
@@ -248,8 +248,8 @@ def _operation_contract(command: cli_parser.InstalledCommand) -> OperationContra
                 "Make declared generated views match current authoritative state without changing that authority."
             )
             retry = "safe-to-repeat"
-        case _:
-            raise ValueError(f"missing installed CLI semantic classification: {command.operation_id}")
+        case _ as unreachable:
+            assert_never(unreachable)
     return OperationContract(
         "pinboard-cli-tool-operation/v1",
         command.operation_id,

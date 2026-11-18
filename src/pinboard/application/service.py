@@ -524,7 +524,7 @@ type ProposalCreationFailureCode = (
     DependencyPinFailureCode  # resolved and locked checkpoint targets
     | Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID]  # obligation origins
     | ProposalCreationDecisionCode
-    | Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]  # stale proposal write
+    | StaleWriteCode  # stale proposal write
 )
 
 

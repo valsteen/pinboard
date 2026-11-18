@@ -9,7 +9,6 @@ connection, calls callbacks, or obtains time. Expected stale CAS writes return a
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 
 import msgspec
 
@@ -24,9 +23,9 @@ from pinboard.application.artifacts import (
     EvidenceArtifactRef,
     ResultArtifactRef,
 )
-from pinboard.application.ports import ArtifactReferenceAcceptance
+from pinboard.application.ports import ArtifactReferenceAcceptance, StaleWriteCode
 from pinboard.domain import work_models
-from pinboard.domain.errors import DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import DecisionResult
 from pinboard.domain.identifiers import ArtifactRefId
 
 
@@ -268,7 +267,7 @@ def accept_artifact_reference(
     published: ArtifactRef,
     accepted_at: datetime,
     ownership: artifact_identity.Ownership | None,
-) -> DecisionResult[ArtifactReferenceAcceptance, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
+) -> DecisionResult[ArtifactReferenceAcceptance, StaleWriteCode]:
     """Accept one verified reference; the caller owns transaction and readback."""
 
     verify_reference(work_root, published)

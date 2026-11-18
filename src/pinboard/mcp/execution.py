@@ -1,4 +1,8 @@
-"""Bounded MCP execution and request completion; no Pinboard use-case policy."""
+"""Bounded MCP execution and request completion; no Pinboard use-case policy.
+
+A storage invariant violation during automatic capture setup is corrupt storage and propagates from the SQLite
+effect boundary, and a result projection failure re-raises its captured error after recording the callback outcome.
+"""
 
 from __future__ import annotations
 

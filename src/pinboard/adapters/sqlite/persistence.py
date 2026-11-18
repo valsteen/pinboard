@@ -1,4 +1,8 @@
-"""Persist one accepted application mutation inside one SQLite write transaction."""
+"""Persist one accepted application mutation inside one SQLite write transaction.
+
+A SQLite error while closing the transaction is a SQLite effect-boundary exception and propagates as a translated
+storage error with its database path.
+"""
 
 import sqlite3
 from collections.abc import Callable, Mapping
@@ -412,7 +416,7 @@ def _persist_closure(
     change: decision_models.WorkItemClosureChange,
     revision: int,
     now: datetime,
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     if (
         failure := set_item_state(
             connection,
@@ -453,7 +457,7 @@ def _persist_amendment_lifecycle(
     change: decision_models.AmendmentChange,
     revision: int,
     now: datetime,
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     """Advance the amended attempt's revision; an attempt in review returns to active with its candidate cleared."""
 
     attempt = facts.attempt(change.attempt)
@@ -496,12 +500,6 @@ def _persist_amendment_lifecycle(
             return set_attempt_state(
                 connection, attempt, work_models.AttemptState.REVIEW, work_models.AttemptState.ACTIVE, revision, now
             )
-        case (
-            work_models.AttemptState.PAUSED | work_models.AttemptState.BLOCKED | work_models.AttemptState.DONE
-        ) as unavailable:
-            raise StorageError(
-                StorageErrorCode.INVARIANT_VIOLATION, f"An amendment was decided for a {unavailable.value} attempt."
-            )
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -517,7 +515,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
 
     def advance_item_revision(
         item: WorkItemId,
-    ) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+    ) -> DecisionFailure[StaleWriteCode] | None:
         current = facts.work_item(item)
         return require_one_changed_row(
             connection.execute(
@@ -880,7 +878,7 @@ def _persist_checkpoint_acceptance(
     connection: sqlite3.Connection,
     facts: _PersistenceFacts,
     mutation: CheckpointAcceptanceMutation,
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     change = mutation.decision.change
     artifacts = mutation.checkpoint_artifacts
     revision = mutation.receipt.project_revision
@@ -958,7 +956,7 @@ def _persist_completion_acceptance(
     connection: sqlite3.Connection,
     facts: _PersistenceFacts,
     mutation: CompletionAcceptanceMutation,
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     change = mutation.decision.change
     artifacts = mutation.completion_artifacts
     revision = mutation.receipt.project_revision
@@ -1466,7 +1464,7 @@ def accept_artifact_reference(
     published: ArtifactRef,
     accepted_at: datetime,
     ownership: artifact_identity.Ownership | None,
-) -> DecisionResult[ArtifactReferenceAcceptance, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
+) -> DecisionResult[ArtifactReferenceAcceptance, StaleWriteCode]:
     """Accept and exactly reload one immutable artifact inside one write transaction."""
     with SQLiteWorkTransaction(database_path) as transaction:
         try:

@@ -1,7 +1,6 @@
 """Select only the named cancellation item, its current authority and direct relationships."""
 
 import sqlite3
-from typing import Literal
 
 from pinboard.adapters.sqlite.authority import (
     fence_attempt_authority,
@@ -15,6 +14,7 @@ from pinboard.adapters.sqlite.obligation_coverage import planned_report
 from pinboard.application import cancellation_models as models
 from pinboard.application import stored_state
 from pinboard.application.mutation_models import CancellationMutation
+from pinboard.application.ports import StaleWriteCode
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import WorkItemId
@@ -127,7 +127,7 @@ def persist(
     item: stored_state.StoredWorkItem,
     attempt: stored_state.StoredAttempt | None,
     mutation: CancellationMutation,
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     now = mutation.receipt.transition.decided_at
     revision = mutation.receipt.project_revision
     before = stored_state.live_work_state(item.state)

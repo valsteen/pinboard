@@ -3,6 +3,10 @@
 Initialization may publish SQLite state and rebuild generated views from exact
 projection facts. Validation reads one complete SQLite snapshot, verifies accepted
 artifacts, and only classifies replaceable view drift; it never repairs state.
+
+Initialization propagates a storage invariant violation as corrupt storage, and an infrastructure error before any
+initialization effect changed nothing and propagates; after an effect it returns
+`InitializationAfterCommittedEffects`.
 """
 
 from collections.abc import Mapping

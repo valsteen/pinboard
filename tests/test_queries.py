@@ -696,7 +696,10 @@ class SQLiteQueriesTest(unittest.TestCase):
         }
         invalid_legal = msgspec.to_builtins(active)
         assert isinstance(invalid_legal, dict)
-        invalid_legal["legal_actions"] = [{"target": "item", "action_kind": "continue"}]
+        invalid_legal["legal_actions"] = [
+            {"target": "attempt", "action_kind": "continue"},
+            {"target": "item", "action_kind": "continue"},
+        ]
         invalid_review = msgspec.to_builtins(review)
         assert isinstance(invalid_review, dict)
         review_operation = invalid_review["next_operation"]

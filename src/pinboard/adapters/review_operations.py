@@ -202,19 +202,14 @@ def _read_required_evidence(
 
 def _portable(
     role: Literal["candidate", "accepted-brief"],
-    reference: stored_state.ArtifactReference | BriefArtifactRef,
+    reference: stored_state.EvidenceArtifactReference | BriefArtifactRef,
 ) -> work_brief_models.PortableArtifactIdentity:
-    """Name a candidate review's artifact by its role.
-
-    The accepted brief reference is a brief by type. The candidate reference's type admits any kind; it relies on
-    `candidate_snapshots.verify_candidate_snapshot_context`, its only producer, having rejected a reference that is
-    not accepted evidence. So the role selects the portable kind.
-    """
+    """Name a candidate review's artifact by its role and the kind its reference type fixes."""
     kind: Literal["brief", "evidence"]
-    match role:
-        case "candidate":
+    match reference.kind:
+        case work_models.ArtifactKind.EVIDENCE:
             kind = "evidence"
-        case "accepted-brief":
+        case work_models.ArtifactKind.BRIEF:
             kind = "brief"
         case _ as unreachable:
             assert_never(unreachable)

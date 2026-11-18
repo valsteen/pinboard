@@ -30,7 +30,7 @@ from pinboard.adapters.files.root import (
 from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import query_models
+from pinboard.application import query_models, stored_state
 from pinboard.application.artifact_publication import ArtifactWriteFailure, PublishedFailureDetails
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef
 from pinboard.application.candidate_identity import working_tree_identity
@@ -58,6 +58,22 @@ from pinboard.domain.identifiers import ActionId, AttemptId, CandidateId
 from tests.candidate_diff_support import historical_candidate_diffs
 from tests.domain_support import action
 from tests.support import SQLITE_NOW, complete_sqlite_state, initialize_store
+
+
+def _evidence_reference(reference: stored_state.ArtifactReference) -> stored_state.EvidenceArtifactReference:
+    """Name a fixture's accepted snapshot reference as evidence, as the snapshot producer does after its kind check."""
+    return stored_state.EvidenceArtifactReference(
+        reference.artifact_ref_id,
+        reference.key,
+        reference.revision,
+        work_models.ArtifactKind.EVIDENCE,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+        reference.accepted_revision,
+        reference.created_at,
+        reference.owners,
+    )
 
 
 class CandidateSnapshotTest(unittest.TestCase):
@@ -127,7 +143,7 @@ class CandidateSnapshotTest(unittest.TestCase):
         )
         snapshot = decode_candidate_snapshot(canonical_candidate_snapshot_bytes(snapshot))
         _unused, context, _encoded = self.snapshot_context()
-        evidence = CandidateSnapshotEvidence(snapshot, context.reference, context.receipt)
+        evidence = CandidateSnapshotEvidence(snapshot, _evidence_reference(context.reference), context.receipt)
         self.assertEqual(
             query_models.CandidateLineage.WORKING_TREE_CURRENT,
             candidate_evidence.observe_candidate_lineage(source, evidence),
@@ -330,7 +346,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             SQLITE_NOW.isoformat(),
             observed.diff,
         )
-        evidence = CandidateSnapshotEvidence(snapshot, context.reference, context.receipt)
+        evidence = CandidateSnapshotEvidence(snapshot, _evidence_reference(context.reference), context.receipt)
 
         self.assertEqual(
             query_models.CandidateLineage.WORKING_TREE_CURRENT,
@@ -392,7 +408,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             SQLITE_NOW.isoformat(),
             observed.diff,
         )
-        evidence = CandidateSnapshotEvidence(snapshot, context.reference, context.receipt)
+        evidence = CandidateSnapshotEvidence(snapshot, _evidence_reference(context.reference), context.receipt)
         self.git(source, "add", "tracked.txt")
         self.git(source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "reviewed change")
         self.assertEqual(
@@ -783,7 +799,7 @@ class CandidateSnapshotTest(unittest.TestCase):
         )
         self.assertEqual(snapshot, decode_candidate_snapshot(canonical_candidate_snapshot_bytes(snapshot)))
         _working_snapshot, context, _encoded = self.snapshot_context()
-        evidence = CandidateSnapshotEvidence(snapshot, context.reference, context.receipt)
+        evidence = CandidateSnapshotEvidence(snapshot, _evidence_reference(context.reference), context.receipt)
         self.assertEqual(
             query_models.CandidateLineage.COMMIT_CURRENT,
             candidate_evidence.observe_candidate_lineage(source, evidence),
@@ -1014,7 +1030,7 @@ class CandidateSnapshotTest(unittest.TestCase):
         checkout = Path(tempfile.mkdtemp()).resolve()
         work_root = checkout
         snapshot, context, _encoded = self.snapshot_context()
-        evidence = CandidateSnapshotEvidence(snapshot, context.reference, context.receipt)
+        evidence = CandidateSnapshotEvidence(snapshot, _evidence_reference(context.reference), context.receipt)
 
         self.assertIsInstance(
             candidate_evidence.restore_candidate(checkout, work_root, store, AttemptId("work-a-1"), snapshot.candidate),
@@ -1065,7 +1081,7 @@ class CandidateSnapshotTest(unittest.TestCase):
             snapshot.recorded_at,
             b"diff",
         )
-        commit_evidence = CandidateSnapshotEvidence(commit, context.reference, context.receipt)
+        commit_evidence = CandidateSnapshotEvidence(commit, _evidence_reference(context.reference), context.receipt)
         with (
             patch.object(candidate_evidence, "read_candidate_evidence", return_value=commit_evidence),
             patch.object(

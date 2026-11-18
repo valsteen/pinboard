@@ -1176,12 +1176,16 @@ def _brief_review_status(
             ),
         )
     assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
-    # The reference type admits any kind; this relies on read_accepted_work_brief, the only producer of
-    # AcceptedWorkBrief, having returned a typed BRIEF_INVALID failure for a reference that is not a brief.
     reference = selected.accepted_brief.reference
+    result_kind: Literal["brief"]
+    match reference.kind:
+        case work_models.ArtifactKind.BRIEF:
+            result_kind = "brief"
+        case _ as unreachable:
+            assert_never(unreachable)
     brief_reference = contracts.ArtifactReferenceResult(
         int(reference.artifact_ref_id),
-        "brief",
+        result_kind,
         reference.key,
         reference.revision,
         reference.selector,

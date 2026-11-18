@@ -86,24 +86,10 @@ class InitiativeMigrationTest(CheckpointPackageSupport):
         self.assertIsInstance(failed, schema_procedure.SchemaProcedureFailure)
         self.assertEqual(before, path.read_bytes())
         self.assertIsInstance(schema_procedure.apply_schema(path, plan.plan_id), schema_procedure.AppliedSchema)
-        ownership = schema_procedure.preview_schema(path)
-        assert isinstance(ownership, schema_procedure.PlannedSchema)
-        self.assertIsInstance(schema_procedure.apply_schema(path, ownership.plan_id), schema_procedure.AppliedSchema)
-        dependencies = schema_procedure.preview_schema(path)
-        assert isinstance(dependencies, schema_procedure.PlannedSchema)
-        self.assertIsInstance(schema_procedure.apply_schema(path, dependencies.plan_id), schema_procedure.AppliedSchema)
-        decisions = schema_procedure.preview_schema(path)
-        assert isinstance(decisions, schema_procedure.PlannedSchema), decisions
-        self.assertIsInstance(schema_procedure.apply_schema(path, decisions.plan_id), schema_procedure.AppliedSchema)
-        membership = schema_procedure.preview_schema(path)
-        assert isinstance(membership, schema_procedure.PlannedSchema), membership
-        self.assertIsInstance(schema_procedure.apply_schema(path, membership.plan_id), schema_procedure.AppliedSchema)
-        unblockers = schema_procedure.preview_schema(path)
-        assert isinstance(unblockers, schema_procedure.PlannedSchema), unblockers
-        self.assertIsInstance(schema_procedure.apply_schema(path, unblockers.plan_id), schema_procedure.AppliedSchema)
-        amendments = schema_procedure.preview_schema(path)
-        assert isinstance(amendments, schema_procedure.PlannedSchema), amendments
-        self.assertIsInstance(schema_procedure.apply_schema(path, amendments.plan_id), schema_procedure.AppliedSchema)
+        for _step in range(7):
+            step = schema_procedure.preview_schema(path)
+            assert isinstance(step, schema_procedure.PlannedSchema), step
+            self.assertIsInstance(schema_procedure.apply_schema(path, step.plan_id), schema_procedure.AppliedSchema)
         operations = test_initiatives.InitiativeTest()
         operations.create(fixture)
         operations.mutate(fixture, "member-add", {"expected_revision": 1, "item_id": "work-a"})

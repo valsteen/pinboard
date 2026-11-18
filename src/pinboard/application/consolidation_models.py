@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 import msgspec
 
-from pinboard.application import proposal_models, proposals
+from pinboard.application import proposal_models, proposals, unblockers
 from pinboard.domain import consolidation, history, initiatives, work_models
 from pinboard.domain.identifiers import AttemptId, CheckpointId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
@@ -102,9 +102,27 @@ class SourceDisposition(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     active_off_roadmap_episode: int | None
 
 
-class Preview(
-    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-consolidation-preview/v2", tag_field="schema"
-):
+class ReleasedHold(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: WorkItemId
+    previous_state: Literal["blocked"]
+    previous_subject_revision: Annotated[int, msgspec.Meta(ge=0)]
+    unblocker: unblockers.ItemsToFinishPayload
+
+
+PRESERVED_LIFECYCLE_EFFECT = (
+    "Sources end as superseded; paused/blocked attempts retain evidence and lose write authority. "
+    "Campaign and surviving consumer lifecycles, candidates and authority are preserved; their accepted scopes "
+    "may become stale. No process, launch or repository effect."
+)
+RELEASED_LIFECYCLE_EFFECT = (
+    "Sources end as superseded; paused/blocked attempts retain evidence and lose write authority. "
+    "Releasable unstarted items holds return to ready; other campaign and surviving consumer lifecycles, "
+    "candidates and authority are preserved, and their accepted scopes may become stale. No process, launch or "
+    "repository effect."
+)
+
+
+class _SharedPreviewFields(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     selection: Selection
     selected_items: tuple[SelectedItem, ...]
     campaign: DefinitionChange
@@ -116,18 +134,54 @@ class Preview(
     live_attempt_authorities: tuple[work_models.CommandAttemptAuthority, ...]
     live_preparation_authorities: tuple[work_models.PreparationCommandAuthority, ...]
     queue_changes: tuple[QueueChange, ...]
+
+
+class Preview(
+    _SharedPreviewFields,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="pinboard-consolidation-preview/v3",
+    tag_field="schema",
+):
+    released_holds: tuple[ReleasedHold, ...]
+    lifecycle_effect: Literal[
+        "Sources end as superseded; paused/blocked attempts retain evidence and lose write authority. Campaign and surviving consumer lifecycles, candidates and authority are preserved; their accepted scopes may become stale. No process, launch or repository effect.",
+        "Sources end as superseded; paused/blocked attempts retain evidence and lose write authority. Releasable unstarted items holds return to ready; other campaign and surviving consumer lifecycles, candidates and authority are preserved, and their accepted scopes may become stale. No process, launch or repository effect.",
+    ]
+    checkpoint_effect: Literal[
+        "Declared checkpoints do not enforce execution ordering. Outside consumers wait for the whole campaign unless the separately approved checkpoint mapping covers all their carried prerequisite work."
+    ]
+
+    def __post_init__(self) -> None:
+        if (self.lifecycle_effect == RELEASED_LIFECYCLE_EFFECT) != bool(self.released_holds):
+            raise ValueError("consolidation lifecycle_effect must match whether unstarted holds are released")
+
+
+class Binding(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    work_root: Annotated[str, msgspec.Meta(min_length=1)]
+    schema: Literal["pinboard-consolidation-binding/v3"]
+    preview_sha256: Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
+
+
+class CompatibilityBindingV2(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    work_root: Annotated[str, msgspec.Meta(min_length=1)]
+    schema: Literal["pinboard-consolidation-binding/v2"]
+    preview_sha256: Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
+
+
+class CompatibilityPreviewV2(
+    _SharedPreviewFields,
+    frozen=True,
+    forbid_unknown_fields=True,
+    tag="pinboard-consolidation-preview/v2",
+    tag_field="schema",
+):
     lifecycle_effect: Literal[
         "Sources end as superseded; paused/blocked attempts retain evidence and lose write authority. Campaign and surviving consumer lifecycles, candidates and authority are preserved; their accepted scopes may become stale. No process, launch or repository effect."
     ]
     checkpoint_effect: Literal[
         "Declared checkpoints do not enforce execution ordering. Outside consumers wait for the whole campaign unless the separately approved checkpoint mapping covers all their carried prerequisite work."
     ]
-
-
-class Binding(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    work_root: Annotated[str, msgspec.Meta(min_length=1)]
-    schema: Literal["pinboard-consolidation-binding/v2"]
-    preview_sha256: Annotated[str, msgspec.Meta(pattern=r"\A[0-9a-f]{64}\z")]
 
 
 class CompatibilityBindingV1(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -163,7 +217,7 @@ class CompatibilityPreviewV1(
 def _validate_record(
     human_confirmation: str,
     preview_sha256: str,
-    preview: Preview | CompatibilityPreviewV1,
+    preview: Preview | CompatibilityPreviewV2 | CompatibilityPreviewV1,
 ) -> None:
     if not human_confirmation.strip():
         raise ValueError("consolidation requires the human's separate confirmation")
@@ -172,10 +226,21 @@ def _validate_record(
 
 
 class Record(
-    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-consolidation/v2", tag_field="schema"
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-consolidation/v3", tag_field="schema"
 ):
     binding: Binding
     preview: Preview
+    human_confirmation: history.RecordText
+
+    def __post_init__(self) -> None:
+        _validate_record(self.human_confirmation, self.binding.preview_sha256, self.preview)
+
+
+class CompatibilityRecordV2(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="pinboard-consolidation/v2", tag_field="schema"
+):
+    binding: CompatibilityBindingV2
+    preview: CompatibilityPreviewV2
     human_confirmation: history.RecordText
 
     def __post_init__(self) -> None:

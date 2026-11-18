@@ -14,6 +14,7 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import _definition_revision_values
 from pinboard.adapters.sqlite.migration import database as migration_database
 from pinboard.adapters.sqlite.migration.schema_amendments_v13 import upgrade_v13_connection
+from pinboard.adapters.sqlite.migration.schema_holds_v14 import upgrade_v14_connection
 from pinboard.adapters.sqlite.proposals import _encode_proposal_disposition_columns
 from pinboard.adapters.sqlite.state import _validate_current_state, append_history
 from pinboard.application import stored_state, unblockers
@@ -21,9 +22,42 @@ from pinboard.domain import work_models
 from tests.domain_support import TEST_HOLD
 
 
-def downgrade_to_v13(path: Path) -> None:
-    """Rewrite a current ledger without amendments into the exact v13 predecessor schema for migration journeys."""
+def downgrade_to_v14(path: Path) -> None:
+    """Rewrite a current v15 ledger without released-hold rows into the exact v14 predecessor schema."""
 
+    statements = {name: sql for _, name, _, sql in sqlite_database._build_v14_schema_signature()}
+    with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT count(*) FROM released_item_holds").fetchone()[0]:
+            raise AssertionError("Only a ledger without released-hold rows can be rewritten as a v14 fixture.")
+        connection.execute("DROP INDEX released_item_holds_by_item")
+        connection.execute("DROP TABLE released_item_holds")
+        connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v15")
+        connection.execute(str(statements["project_meta"]))
+        connection.execute(
+            "INSERT INTO project_meta SELECT singleton, application, 14, revision, host_epoch, created_at, updated_at FROM project_meta_v15"
+        )
+        connection.execute("DROP TABLE project_meta_v15")
+        sqlite_database._verify_v14_schema(connection)
+        connection.execute("COMMIT")
+        connection.execute("PRAGMA foreign_keys = ON")
+
+
+def advanced_v14_copy(path: Path) -> Path:
+    """Copy a v14 ledger beside itself and advance only the copy, so current readers can check v14 facts."""
+
+    copy = path.with_name("state-v15-check.sqlite3")
+    copy.write_bytes(path.read_bytes())
+    with migration_database.migration_connection(copy) as connection:
+        upgrade_v14_connection(connection, None)
+    return copy
+
+
+def downgrade_to_v13(path: Path) -> None:
+    """Rewrite a current ledger without amendments or released holds into the exact v13 predecessor schema."""
+
+    downgrade_to_v14(path)
     statements = {name: sql for _, name, _, sql in sqlite_database._build_v13_schema_signature()}
     with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as connection:
         connection.execute("PRAGMA foreign_keys = OFF")
@@ -45,10 +79,11 @@ def downgrade_to_v13(path: Path) -> None:
 def advanced_v13_copy(path: Path) -> Path:
     """Copy a v13 ledger beside itself and advance only the copy, so current readers can check v13 facts."""
 
-    copy = path.with_name("state-v14-check.sqlite3")
+    copy = path.with_name("state-v15-from-v13-check.sqlite3")
     copy.write_bytes(path.read_bytes())
     with migration_database.migration_connection(copy) as connection:
         upgrade_v13_connection(connection, None)
+        upgrade_v14_connection(connection, None)
     return copy
 
 
@@ -361,6 +396,8 @@ def insert_initial_state(connection: sqlite3.Connection, state: stored_state.Sto
             "preparation_lease_generations",
             "preparation_leases",
             "transition_history",
+            "attempt_amendments",
+            "released_item_holds",
         )
         for row in connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchall()
     )
@@ -426,6 +463,23 @@ def insert_initial_state(connection: sqlite3.Connection, state: stored_state.Sto
     )
     _insert_authority(connection, state.authority)
     append_history(connection, state.transition_receipts)
+    connection.executemany(
+        """
+        INSERT INTO released_item_holds (
+            history_id, item_id, previous_state, previous_subject_revision, unblocker_json
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        tuple(
+            (
+                value.history_id,
+                value.item_id,
+                value.previous_state.value,
+                value.previous_subject_revision,
+                unblockers.encode_unblocker(value.unblocker).decode("utf-8"),
+            )
+            for value in state.lifecycle.released_holds
+        ),
+    )
     connection.execute(
         """
         UPDATE project_meta

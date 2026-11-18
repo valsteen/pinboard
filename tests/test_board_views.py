@@ -414,6 +414,7 @@ class BoardProjectionTest(unittest.TestCase):
         self.assertEqual(
             {
                 "Paused or in review": [("review-work", "review"), ("paused-work", "paused")],
+                "Ready to resume": [],
                 "In progress": [("work-a", "active")],
                 "Ready": [
                     ("intake-work", "ready"),
@@ -1253,7 +1254,7 @@ class BoardPagePathTest(unittest.TestCase):
                     "pinboard_item_status", {"request": selected | {"operation": "item", "item_id": "work-c"}}
                 )
 
-                self.assertEqual("pinboard-overview/v9", overview["schema"])
+                self.assertEqual("pinboard-overview/v10", overview["schema"])
                 self.assertEqual(expected, overview["board"])
                 self.assertEqual("pinboard-item-status/v7", status["schema"])
                 self.assertEqual(expected, status["board"])

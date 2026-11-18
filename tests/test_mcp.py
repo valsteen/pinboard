@@ -3937,8 +3937,8 @@ class McpTransportTest(unittest.TestCase):
             self.assertIsInstance(successful.structured_content, dict)
         overview_content = overview.structured_content
         assert isinstance(overview_content, dict)
-        self.assertEqual("pinboard-overview/v9", overview_content["schema"])
-        self.assertEqual("sqlite-v14", overview_content["authority"])
+        self.assertEqual("pinboard-overview/v10", overview_content["schema"])
+        self.assertEqual("sqlite-v15", overview_content["authority"])
         self.assertEqual(
             ["work-a-1"], [row["attempt_id"] for row in overview_content["items"] if row["state"] == "active"]
         )

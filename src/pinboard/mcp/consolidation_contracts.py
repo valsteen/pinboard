@@ -36,7 +36,7 @@ class Envelope(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class PreviewResult(contracts._UnchangedResult, msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-consolidation-preview-result/v2"]
+    schema: Literal["pinboard-consolidation-preview-result/v3"]
     status: Literal["ok"]
     preview: models.Preview
     binding: models.Binding

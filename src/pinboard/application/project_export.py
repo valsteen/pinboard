@@ -29,7 +29,7 @@ class ContentEncoding(Enum):
 
 class ProjectExportProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[14]
+    schema_version: Literal[15]
     created_at: str
     updated_at: str
 
@@ -53,6 +53,16 @@ class ProjectExportUnblocker(msgspec.Struct, frozen=True, forbid_unknown_fields=
 
     item_id: str
     unblocker: unblockers.UnblockerPayload
+
+
+class ProjectExportReleasedHold(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """One unstarted items hold released automatically at the named transition receipt."""
+
+    history_id: int
+    item_id: str
+    previous_state: stored_state.StoredWorkItemState
+    previous_subject_revision: int
+    unblocker: unblockers.ItemsToFinishPayload
 
 
 class ProjectExportReviewBase(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -431,12 +441,13 @@ class ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_u
 
 
 class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-project-export/v6"]
-    authority: Literal["sqlite-v14"]
+    schema: Literal["pinboard-project-export/v7"]
+    authority: Literal["sqlite-v15"]
     revision: int
     project: ProjectExportProject
     work_items: tuple[ProjectExportWorkItem, ...]
     unblockers: tuple[ProjectExportUnblocker, ...]
+    released_holds: tuple[ProjectExportReleasedHold, ...]
     definition_revisions: tuple[ProjectExportDefinitionRevision, ...]
     dependencies: tuple[ProjectExportDependency, ...]
     attempts: tuple[ProjectExportAttempt, ...]
@@ -487,9 +498,11 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
     dependencies = list(lifecycle.dependencies)
     attempts = list(lifecycle.attempts)
     definition_revisions = list(lifecycle.definition_revisions)
+    checkpoint_acceptances = list(lifecycle.checkpoint_acceptances)
     batch_references = list(lifecycle.decision_batch_references)
     held = list(lifecycle.unblockers)
     recorded_amendments = list(lifecycle.amendments)
+    released_holds = list(lifecycle.released_holds)
     proposal_values = list(proposals.proposals)
     evidence = list(proposals.evidence)
     freshness = list(proposals.freshness)
@@ -502,9 +515,11 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
         dependencies.extend(batch.lifecycle.dependencies)
         attempts.extend(batch.lifecycle.attempts)
         definition_revisions.extend(batch.lifecycle.definition_revisions)
+        checkpoint_acceptances.extend(batch.lifecycle.checkpoint_acceptances)
         batch_references.extend(batch.lifecycle.decision_batch_references)
         held.extend(batch.lifecycle.unblockers)
         recorded_amendments.extend(batch.lifecycle.amendments)
+        released_holds.extend(batch.lifecycle.released_holds)
         proposal_values.extend(batch.proposals.proposals)
         evidence.extend(batch.proposals.evidence)
         freshness.extend(batch.proposals.freshness)
@@ -521,10 +536,11 @@ def merge_project_export_batches(batches: Iterable[ProjectExportState]) -> Proje
             tuple(dependencies),
             tuple(attempts),
             tuple(definition_revisions),
-            checkpoint_acceptances=(),
+            checkpoint_acceptances=tuple(checkpoint_acceptances),
             decision_batch_references=tuple(batch_references),
             unblockers=tuple(held),
             amendments=tuple(recorded_amendments),
+            released_holds=tuple(released_holds),
         ),
         stored_state.ProposalRecords(tuple(proposal_values), tuple(evidence), tuple(freshness)),
         stored_state.ReplacementRecords(tuple(planned_replacements), tuple(replacement_dispositions)),
@@ -653,8 +669,8 @@ def project_export_from_state(
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
     return ProjectExport(
-        "pinboard-project-export/v6",
-        "sqlite-v14",
+        "pinboard-project-export/v7",
+        "sqlite-v15",
         state.lifecycle.project.revision,
         ProjectExportProject(
             state.lifecycle.project.application,
@@ -681,6 +697,16 @@ def project_export_from_state(
         tuple(
             ProjectExportUnblocker(str(value.item_id), unblockers.unblocker_payload(value.unblocker))
             for value in state.lifecycle.unblockers
+        ),
+        tuple(
+            ProjectExportReleasedHold(
+                int(value.history_id),
+                str(value.item_id),
+                value.previous_state,
+                value.previous_subject_revision,
+                unblockers.ItemsToFinishPayload(value.unblocker.items),
+            )
+            for value in state.lifecycle.released_holds
         ),
         tuple(
             ProjectExportDefinitionRevision(

@@ -438,6 +438,7 @@ def complete_sqlite_state() -> stored_state.StoredWorkState:
         decision_batch_references=(),
         unblockers=(),
         amendments=(),
+        released_holds=(),
     )
     proposal_id = ProposalId(proposal_item)
     proposals = stored_state.ProposalRecords(

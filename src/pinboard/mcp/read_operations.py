@@ -1398,8 +1398,8 @@ def _read_overview(
     while True:
         last = after if not items else items[-1].position
         page = query_models.DiscoveryPage(
-            "pinboard-overview/v9",
-            "sqlite-v14",
+            "pinboard-overview/v10",
+            "sqlite-v15",
             facts.revision,
             items,
             facts.total_items,

@@ -43,7 +43,9 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     insert_attempt,
     insert_definition_revision,
+    persist_released_holds,
     read_current_definitions,
+    read_held_attempt_ids,
     rebind_attempt,
     replace_dependencies,
     set_attempt_state,
@@ -175,10 +177,15 @@ def _mutation_subjects(
             campaign_id = mutation.receipt.transition.work_item_id
             assert campaign_id is not None
             return (
-                (
-                    *(() if isinstance(change.campaign, ProposalCreationDecision) else (campaign_id,)),
-                    *(value.work_item_id for value in change.dependent_revisions),
-                    *(value.work_item_id for value in change.source_closures),
+                tuple(
+                    dict.fromkeys(
+                        (
+                            *(() if isinstance(change.campaign, ProposalCreationDecision) else (campaign_id,)),
+                            *(value.work_item_id for value in change.dependent_revisions),
+                            *(value.work_item_id for value in change.source_closures),
+                            *(value.work_item_id for value in change.released_holds),
+                        )
+                    )
                 ),
                 tuple(
                     value.attempt_closure.attempt
@@ -189,9 +196,17 @@ def _mutation_subjects(
         case CancellationMutation(preview=preview):
             return (preview.item_id,), (() if preview.attempt is None else (preview.attempt.attempt_id,))
         case TransitionMutation(decision=decision) | ReviewSubmissionMutation(decision=decision):
-            return _transition_subjects(decision.change)
+            items, attempts = _transition_subjects(decision.change)
+            return tuple(dict.fromkeys((*items, *(value.work_item_id for value in decision.released_holds)))), attempts
         case CheckpointAcceptanceMutation(decision=decision) | CompletionAcceptanceMutation(decision=decision):
-            return (decision.change.work_item_id,), (decision.change.attempt,)
+            return (
+                tuple(
+                    dict.fromkeys(
+                        (decision.change.work_item_id, *(value.work_item_id for value in decision.released_holds))
+                    )
+                ),
+                (decision.change.attempt,),
+            )
         case ProposalCreationMutation() | AttemptAuthorityMutation() | PreparationAuthorityMutation() | OrderMutation():
             return (), ()
         case _ as unreachable:
@@ -357,17 +372,7 @@ def _held_attempt_ids(
     The effect's own attempt ids keep their order, so its continuation attempt is unchanged.
     """
 
-    held = tuple(
-        decode_row(row, AttemptIdRow).attempt_id
-        for row in select_by_ids(
-            connection,
-            """SELECT attempt_id FROM attempts INDEXED BY one_live_attempt_per_item
-               WHERE item_id IN ({ids}) AND state != 'done' AND state IN ('paused', 'blocked')
-               ORDER BY attempt_id""",
-            item_ids,
-        )
-    )
-    return tuple(dict.fromkeys((*attempt_ids, *held)))
+    return tuple(dict.fromkeys((*attempt_ids, *read_held_attempt_ids(connection, item_ids))))
 
 
 def _persist_definition_revision(
@@ -1129,6 +1134,29 @@ def _persist_state_change(  # noqa: C901, PLR0912 - exhaustive closed mutation p
             assert_never(unreachable)
 
 
+def _mutation_released_holds(mutation: StoredStateMutation) -> tuple[decision_models.ReleasedItemHold, ...]:
+    match mutation:
+        case ConsolidationMutation(change=change):
+            return change.released_holds
+        case (
+            TransitionMutation(decision=decision)
+            | ReviewSubmissionMutation(decision=decision)
+            | CheckpointAcceptanceMutation(decision=decision)
+            | CompletionAcceptanceMutation(decision=decision)
+        ):
+            return decision.released_holds
+        case (
+            CancellationMutation()
+            | ProposalCreationMutation()
+            | AttemptAuthorityMutation()
+            | PreparationAuthorityMutation()
+            | OrderMutation()
+        ):
+            return ()
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _persist(
     connection: sqlite3.Connection,
     mutation: StoredStateMutation,
@@ -1178,7 +1206,14 @@ def _persist(
     ) is not None:
         return failure
     sqlite_state.append_history(connection, (receipt,))
-    return None
+    return persist_released_holds(
+        connection,
+        facts.items,
+        _mutation_released_holds(mutation),
+        receipt.history_id,
+        receipt.project_revision,
+        receipt.committed_at,
+    )
 
 
 class SQLiteWorkTransaction:

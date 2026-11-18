@@ -16,7 +16,16 @@ from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import dependencies as sqlite_dependencies
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
-from pinboard.application import proposal_models, proposals, queries, query_models, roadmap, service, stored_state
+from pinboard.application import (
+    proposal_models,
+    proposals,
+    queries,
+    query_models,
+    roadmap,
+    service,
+    stored_state,
+    work_brief_models,
+)
 from pinboard.application.dependency_authoring import (
     DependencyAcceptancePin,
     DependencyDefinitionPin,
@@ -32,6 +41,7 @@ from tests.domain_support import expect_success
 from tests.support import JsonObject, JsonValue
 from tests.test_proposals import proposal
 from tests.test_work_item_definitions import definition
+from tests.work_brief_support import work_c_brief
 
 
 class CheckpointDependencyContractTest(unittest.TestCase):
@@ -459,15 +469,132 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         )
         return str(self.json_object(status["hold"])["sentence"])
 
+    def _activate_independent_child(self, fixture: CheckpointFixture, item_id: str) -> None:
+        independent = proposal()
+        independent.update(proposal_id=item_id)
+        created = fixture.call_advertised_tool(
+            mcp_server.PROPOSAL_CREATE_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "proposal": independent,
+                "actor_task_id": "coordinator",
+                "actor_host_id": "local",
+            },
+        )
+        self.assertEqual("committed", created["status"], created)
+        prepared = fixture.call_advertised_tool(
+            mcp_server.PREPARATION_AUTHORITY_TOOL,
+            {
+                "request": {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "operation": "start",
+                    "item_id": item_id,
+                    "task_id": "coordinator",
+                    "host_id": "local",
+                    "ttl_seconds": 600,
+                }
+            },
+        )
+        self.assertEqual("committed", prepared["status"], prepared)
+        template = work_c_brief()
+        local = template.checkpoint
+        assert isinstance(local, work_brief_models.LocalCheckpoint)
+        brief = replace_struct(
+            template,
+            attempt_id=f"{item_id}-1",
+            item_id=item_id,
+            artifact_revision=1,
+            branch=fixture.brief.branch,
+            base_revision=fixture.brief.base_revision,
+            owner_task_id="coordinator",
+            checkout_selection=fixture.brief.checkout_selection,
+            accepted_scope=work_brief_models.AcceptedScope(1, str(prepared["definition_digest"])),
+            checkpoint=replace_struct(
+                local,
+                architecture_impact=work_brief_models.NoArchitectureImpact("No architecture impact."),
+                disposition=work_brief_models.TerminalCheckpointDisposition(),
+                verification=(
+                    replace_struct(
+                        local.verification[0],
+                        authorization_basis=work_brief_models.AcceptedScopeAuthorization(item_id, 1),
+                    ),
+                ),
+            ),
+            obligation_correspondence=(
+                work_brief_models.ObligationCorrespondence(
+                    "sqlite-persistence", work_brief_models.CriterionObligationTarget(1)
+                ),
+            ),
+        )
+        published = fixture.call_advertised_tool(
+            mcp_server.BRIEF_PUBLISH_TOOL,
+            {
+                "project_root": str(fixture.project),
+                "work_root": str(fixture.work),
+                "brief": self.json_object(msgspec.json.decode(msgspec.json.encode(brief))),
+            },
+        )
+        self.assertEqual("committed", published["status"], published)
+        activate = self.native_actions(fixture, "activate", item_id, role="preparer", lease=prepared)
+        activated = fixture.call_native_tool(
+            mcp_server.TRANSITION_TOOL,
+            {
+                "request": {
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "role": "preparer",
+                    "receipt": {
+                        "action_id": activate["action_id"],
+                        "subject_revision": activate["subject_revision"],
+                    },
+                    "payload": {"brief_artifact_ref_id": self.json_object(published["reference"])["artifact_ref_id"]},
+                    "lease_id": activate["lease_id"],
+                    "generation": activate["generation"],
+                }
+            },
+        )
+        self.assertEqual("committed", activated["status"], activated)
+
     def test_held_work_says_its_checkpoint_was_accepted_and_then_that_it_no_longer_depends_on_the_item(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
         checkpoint = fixture.brief.checkpoint.checkpoint_id
         self.assertEqual(
-            "committed", self.create(fixture, "held-child", {"item": "work-a", "checkpoint": checkpoint})["status"]
+            "committed", self.create(fixture, "unstarted-child", {"item": "work-a", "checkpoint": checkpoint})["status"]
         )
+        unstarted_held = self.transition_result(
+            fixture,
+            self.project_action(fixture, "block-item:unstarted-child"),
+            {"unblocker": {"kind": "items", "items": ["work-a"]}},
+        )
+        self.assertEqual("committed", unstarted_held["status"], unstarted_held)
+        self._activate_independent_child(fixture, "held-child")
+        initial = next(
+            value
+            for value in reversed(fixture.store.validated_snapshot().lifecycle.definition_revisions)
+            if value.item_id == WorkItemId("held-child")
+        )
+        initial_bytes = stored_state.stored_definition_bytes(initial.definition)
+        assert isinstance(initial_bytes, bytes)
+        with_dependency = self.json_object(json.loads(initial_bytes))
+        with_dependency["dependencies"] = [{"item": "work-a", "checkpoint": checkpoint}]
+        added_dependency = self.transition_result(
+            fixture,
+            self.project_action(fixture, "revise-item:held-child"),
+            {
+                "schema": "pinboard-item-revision/v1",
+                "expected_revision": initial.revision,
+                "expected_digest": initial.digest,
+                "source_task": "coordinator",
+                "reason": "Depend on the local checkpoint of work-a.",
+                "definition": with_dependency,
+            },
+        )
+        self.assertEqual("committed", added_dependency["status"], added_dependency)
         held = self.transition_result(
             fixture,
-            self.project_action(fixture, "block-item:held-child"),
+            self.project_action(fixture, "block:held-child-1"),
             {"unblocker": {"kind": "items", "items": ["work-a"]}},
         )
         self.assertEqual("committed", held["status"], held)
@@ -476,6 +603,18 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         action = self.project_action(fixture, "accept-checkpoint:work-a-1")
         accepted = self.transition_result(fixture, action, self.json_object(json.loads(fixture.payload.read_bytes())))
         self.assertEqual("committed", accepted["status"], accepted)
+        unstarted_status = fixture.call_advertised_tool(
+            mcp_server.ITEM_STATUS_TOOL,
+            {
+                "request": {
+                    "operation": "item",
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "item_id": "unstarted-child",
+                }
+            },
+        )
+        self.assertEqual(("ready", None), (unstarted_status["state"], unstarted_status["hold"]))
         sentence = self.hold_sentence(fixture, "held-child")
         item_view = (fixture.work / "views/items/held-child.md").read_text()
         roadmap_view = (fixture.work / "views/roadmap.md").read_text()

@@ -21,7 +21,7 @@ from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import server
 from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
 from tests.native_support import native_tools
-from tests.sqlite_support import downgrade_to_v12, downgrade_to_v13
+from tests.sqlite_support import downgrade_to_v12, downgrade_to_v14
 from tests.support import HOLD_UNBLOCKER, JsonObject
 
 
@@ -229,13 +229,13 @@ class PauseDecisionsTest(CheckpointPackageSupport):
         rebuilt, stdout, stderr = self.run_cli(*fixture.common, "views", "rebuild")
         self.assertEqual(0, rebuilt, f"{stdout}\n{stderr}")
         markdown_views = tuple(
-            view for view in (fixture.work / "views").rglob("*.md") if "authority: sqlite-v14" in view.read_text()
+            view for view in (fixture.work / "views").rglob("*.md") if "authority: sqlite-v15" in view.read_text()
         )
         self.assertTrue(markdown_views)
         for view in markdown_views:
             current = view.read_text()
-            self.assertIn("authority: sqlite-v14", current)
-            stale = current.replace("authority: sqlite-v14", "authority: sqlite-v12")
+            self.assertIn("authority: sqlite-v15", current)
+            stale = current.replace("authority: sqlite-v15", "authority: sqlite-v12")
             view.write_text(stale)
             self.assertEqual(stale, view.read_text())
         downgrade_to_v12(path)
@@ -267,15 +267,22 @@ class PauseDecisionsTest(CheckpointPackageSupport):
         amendments = self.run_json_cli(*fixture.common, "migrate-schema")
         self.assertEqual("amendments-advance", self.json_object(amendments["plan"])["kind"])
         amendment_plan = str(amendments["plan_id"])
-        current = self.run_json_cli(*fixture.common, "migrate-schema", "--apply", amendment_plan)
-        self.assertEqual("sqlite-v14", current["authority"])
+        migrated_v14 = self.run_json_cli(*fixture.common, "migrate-schema", "--apply", amendment_plan)
+        self.assertEqual("sqlite-v14", migrated_v14["authority"])
+        self.assertIsNone(migrated_v14["warning"])
+        intermediate_v14 = path.read_bytes()
+        holds = self.run_json_cli(*fixture.common, "migrate-schema")
+        self.assertEqual("hold-releases-advance", self.json_object(holds["plan"])["kind"])
+        holds_plan = str(holds["plan_id"])
+        current = self.run_json_cli(*fixture.common, "migrate-schema", "--apply", holds_plan)
+        self.assertEqual("sqlite-v15", current["authority"])
         self.assertIsNone(current["warning"])
         for view in markdown_views:
-            self.assertIn("authority: sqlite-v14", view.read_text())
+            self.assertIn("authority: sqlite-v15", view.read_text())
             self.assertNotIn("authority: sqlite-v12", view.read_text())
         self.assertEqual(expected, SQLiteWorkStore(path).validated_snapshot())
         exported = self.run_json_cli(*fixture.common, "export")
-        self.assertEqual(14, self.json_object(exported["project"])["schema_version"])
+        self.assertEqual(15, self.json_object(exported["project"])["schema_version"])
         validated = self.run_json_cli(*fixture.common, "validate")
         self.assertTrue(validated["valid"])
         self.assertNotIn(
@@ -283,6 +290,7 @@ class PauseDecisionsTest(CheckpointPackageSupport):
             [self.json_object(value)["code"] for value in self.json_array(validated["diagnostics"])],
         )
         for forward, authority, restored in (
+            (holds_plan, "sqlite-v14", intermediate_v14),
             (amendment_plan, "sqlite-v13", intermediate),
             (plan_id, "sqlite-v12", original),
         ):
@@ -293,6 +301,7 @@ class PauseDecisionsTest(CheckpointPackageSupport):
             self.assertEqual(restored, path.read_bytes())
         self.run_json_cli(*fixture.common, "migrate-schema", "--apply", plan_id)
         self.run_json_cli(*fixture.common, "migrate-schema", "--apply", amendment_plan)
+        self.run_json_cli(*fixture.common, "migrate-schema", "--apply", holds_plan)
         changed = self.transition_result(
             fixture,
             self.project_action(fixture, "return-for-correction:work-a-1"),
@@ -300,6 +309,9 @@ class PauseDecisionsTest(CheckpointPackageSupport):
         )
         self.assertEqual("committed", changed["status"], changed)
         later = path.read_bytes()
+        self.assertIsInstance(
+            schema_procedure.preview_schema(path, holds_plan), schema_procedure.SchemaProcedureFailure
+        )
         self.assertIsInstance(
             schema_procedure.preview_schema(path, amendment_plan), schema_procedure.SchemaProcedureFailure
         )
@@ -314,12 +326,12 @@ class PauseDecisionsTest(CheckpointPackageSupport):
                 fixture = self.checkpoint_fixture()
                 path = fixture.work / "state.sqlite3"
                 expected = fixture.store.validated_snapshot()
-                downgrade_to_v13(path)
+                downgrade_to_v14(path)
                 plan_id = str(self.run_json_cli(*fixture.common, "migrate-schema")["plan_id"])
                 with patch("pinboard.cli.migration.schema_migration.work_views.rebuild", side_effect=failure):
                     migrated = self.run_json_cli(*fixture.common, "migrate-schema", "--apply", plan_id)
                 self.assertEqual(
-                    ("migrated", "committed", "do-not-retry", True, "sqlite-v14"),
+                    ("migrated", "committed", "do-not-retry", True, "sqlite-v15"),
                     (
                         migrated["status"],
                         migrated["effect"],

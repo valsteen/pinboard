@@ -12,14 +12,26 @@ from typing import assert_never
 
 import msgspec
 
-from pinboard.adapters.sqlite.database import decode_row, open_database, read_operation, write_transaction
+from pinboard.adapters.sqlite.database import (
+    decode_row,
+    open_database,
+    read_operation,
+    select_by_ids,
+    write_transaction,
+)
+from pinboard.adapters.sqlite.decision_reads import read_selected_decision_facts
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
-from pinboard.adapters.sqlite.lifecycle import move_item_state_count, read_current_definition
-from pinboard.adapters.sqlite.models import OpenMode
-from pinboard.application import cancellation_models, pr_reviews, stored_state
-from pinboard.domain import decision_models, work_models
+from pinboard.adapters.sqlite.lifecycle import (
+    move_item_state_count,
+    persist_released_holds,
+    read_current_definition,
+    read_held_attempt_ids,
+)
+from pinboard.adapters.sqlite.models import ItemIdRow, OpenMode
+from pinboard.application import cancellation_models, pr_reviews, query_models, stored_state
+from pinboard.domain import decision_models, decisions, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
-from pinboard.domain.identifiers import WorkItemId
+from pinboard.domain.identifiers import AttemptId, HistoryId, WorkItemId
 
 
 class _ItemRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -505,6 +517,13 @@ def _check(state: ReviewState, payload: Payload) -> DecisionFailure | None:  # n
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class WriteResult:
+    state: ReviewState
+    affected_item_ids: tuple[WorkItemId, ...]
+    affected_attempt_ids: tuple[AttemptId, ...]
+
+
 def write(  # noqa: C901, PLR0912, PLR0915
     path: Path,
     item_id: WorkItemId,
@@ -513,7 +532,7 @@ def write(  # noqa: C901, PLR0912, PLR0915
     actor_task_id: str,
     actor_host_id: str,
     now: datetime,
-) -> DecisionResult[ReviewState]:
+) -> DecisionResult[WriteResult]:
     connection = open_database(path, OpenMode.READ_WRITE)
     try:
         with write_transaction(connection):
@@ -531,6 +550,9 @@ def write(  # noqa: C901, PLR0912, PLR0915
             if raw_history is None:
                 raise ValueError("History identity could not be allocated.")
             history_id = decode_row(raw_history, _NextHistoryRow).next_history_id
+            released_holds: tuple[decision_models.ReleasedItemHold, ...] = ()
+            pre_release_items: dict[WorkItemId, stored_state.StoredWorkItem] = {}
+            affected_items: list[WorkItemId] = [item_id]
             match payload:
                 case pr_reviews.ReviewBrief():
                     kind = decision_models.ActionKind.START_PR_REVIEW
@@ -561,6 +583,52 @@ def write(  # noqa: C901, PLR0912, PLR0915
                 case pr_reviews.ReviewClose():
                     kind = decision_models.ActionKind.CLOSE_PR_REVIEW
                     after = "done" if payload.outcome == "accepted" else "dropped"
+                    affected_items.extend(
+                        decode_row(row, ItemIdRow).item_id
+                        for row in connection.execute(
+                            """
+                            SELECT DISTINCT owner.item_id
+                            FROM work_items AS owner
+                            LEFT JOIN item_dependencies AS dependency
+                                ON dependency.item_id = owner.item_id
+                               AND dependency.dependency_id = ?
+                            LEFT JOIN work_item_unblockers AS unblocker
+                                ON unblocker.item_id = owner.item_id
+                            WHERE owner.queue_position IS NOT NULL
+                              AND (
+                                  dependency.item_id IS NOT NULL
+                                  OR (
+                                      json_extract(unblocker.unblocker_json, '$.kind') = 'items'
+                                      AND EXISTS (
+                                          SELECT 1 FROM json_each(unblocker.unblocker_json, '$.items') AS named
+                                          WHERE named.value = ?
+                                      )
+                                  )
+                              )
+                            ORDER BY owner.queue_position, owner.item_id
+                            """,
+                            (item_id, item_id),
+                        ).fetchall()
+                    )
+                    if payload.outcome == "accepted":
+                        snapshot = read_selected_decision_facts(
+                            connection,
+                            query_models.DecisionScope((item_id,), (), (), (item_id,), (), (), (), (), (), ()),
+                            now,
+                        ).snapshot
+                        released_holds = decisions._release_holds_after_item_finishes(snapshot, item_id)
+                        pre_release_items = {
+                            decoded.item_id: decoded
+                            for row in select_by_ids(
+                                connection,
+                                """SELECT item_id, state, timing, source, outcome_evidence, next_action, notes,
+                                          subject_revision, recorded_at, updated_at, queue_position
+                                   FROM work_items WHERE item_id IN ({ids})""",
+                                (hold.work_item_id for hold in released_holds),
+                            )
+                            for decoded in (decode_row(row, stored_state.StoredWorkItem),)
+                        }
+                        affected_items.extend(hold.work_item_id for hold in released_holds)
                     raw_position = connection.execute(
                         "SELECT queue_position FROM work_items WHERE item_id = ?", (item_id,)
                     ).fetchone()
@@ -580,6 +648,7 @@ def write(  # noqa: C901, PLR0912, PLR0915
                         (position,),
                     ).fetchall():
                         value = decode_row(raw_shift, _ShiftRow)
+                        affected_items.append(value.item_id)
                         connection.execute(
                             "UPDATE work_items SET queue_position = ? WHERE item_id = ?",
                             (value.queue_position - 1, value.item_id),
@@ -610,6 +679,12 @@ def write(  # noqa: C901, PLR0912, PLR0915
                     now.isoformat(),
                 ),
             )
+            if (
+                failure := persist_released_holds(
+                    connection, pre_release_items, released_holds, HistoryId(history_id), revision, now
+                )
+            ) is not None:
+                return failure
             connection.execute(
                 "UPDATE project_meta SET revision = ?, updated_at = ? WHERE singleton = 1",
                 (revision, now.isoformat()),
@@ -617,6 +692,7 @@ def write(  # noqa: C901, PLR0912, PLR0915
             updated = _load(connection, item_id)
             if updated is None:
                 raise ValueError("Committed review item disappeared.")
-            return updated
+            deduped_items = tuple(dict.fromkeys(affected_items))
+            return WriteResult(updated, deduped_items, read_held_attempt_ids(connection, deduped_items))
     finally:
         connection.close()

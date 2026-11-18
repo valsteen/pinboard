@@ -31,8 +31,8 @@ from pinboard.application import stored_state
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 
 APPLICATION: Final = "pinboard"
-SCHEMA_VERSION: Final = 14
-SCHEMA_ID = "sqlite-v14"
+SCHEMA_VERSION: Final = 15
+SCHEMA_ID = "sqlite-v15"
 BUSY_TIMEOUT_MS = 2_000
 _PREDECESSOR_SCHEMA_DIRECTORY = Path(__file__).with_name("migration")
 
@@ -308,30 +308,53 @@ def _verify_v13_schema(connection: sqlite3.Connection) -> None:
         raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v13 schema.")
 
 
-def _verify_current_schema(connection: sqlite3.Connection) -> None:  # noqa: C901 - exact supported predecessor checks
+@cache
+def _build_v14_schema_signature() -> tuple[tuple[str, str, str, str | None], ...]:
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.executescript(
+            (_PREDECESSOR_SCHEMA_DIRECTORY / "schema_compatibility_v14.sql").read_text(encoding="utf-8")
+        )
+        return _read_schema_signature(connection)
+
+
+def _verify_v14_schema(connection: sqlite3.Connection) -> None:
+    if (
+        _read_pinboard_schema_version(connection) != 14
+        or _read_schema_signature(connection) != _build_v14_schema_signature()
+    ):
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v14 schema.")
+
+
+def _verify_predecessor_schema(connection: sqlite3.Connection, version: int, database_file: str) -> None:
+    if version == 14:
+        _verify_v14_schema(connection)
+    elif version == 13:
+        _verify_v13_schema(connection)
+    elif version == 12:
+        _verify_v12_schema(connection)
+    elif version == 11:
+        _verify_v11_schema(connection)
+    elif version == 10:
+        _verify_v10_schema(connection)
+    elif version == 9:
+        _verify_v9_schema(connection)
+    elif version == 8:
+        _verify_v8_schema(connection)
+    elif version == 7:
+        _verify_v7_schema(connection)
+    elif version != 6:
+        raise SQLiteSchemaError(Path(database_file), version, SCHEMA_VERSION, False)
+    elif _read_schema_signature(connection) != _build_v6_schema_signature():
+        raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v6 schema.")
+
+
+def _verify_current_schema(connection: sqlite3.Connection) -> None:
     version = _read_pinboard_schema_version(connection)
     if version != SCHEMA_VERSION:
         _, _, database_file = msgspec.convert(
             tuple(connection.execute("PRAGMA database_list").fetchone()), type=tuple[int, str, str], strict=True
         )
-        if version == 13:
-            _verify_v13_schema(connection)
-        elif version == 12:
-            _verify_v12_schema(connection)
-        elif version == 11:
-            _verify_v11_schema(connection)
-        elif version == 10:
-            _verify_v10_schema(connection)
-        elif version == 9:
-            _verify_v9_schema(connection)
-        elif version == 8:
-            _verify_v8_schema(connection)
-        elif version == 7:
-            _verify_v7_schema(connection)
-        elif version != 6:
-            raise SQLiteSchemaError(Path(database_file), version, SCHEMA_VERSION, False)
-        elif _read_schema_signature(connection) != _build_v6_schema_signature():
-            raise StorageError(StorageErrorCode.INVALID_STATE, "The database does not have the exact v6 schema.")
+        _verify_predecessor_schema(connection, version, database_file)
         raise SQLiteSchemaError(Path(database_file), version, SCHEMA_VERSION, True)
     try:
         if _read_schema_signature(connection) != _build_expected_schema_signature():

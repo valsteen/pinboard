@@ -320,6 +320,10 @@ An agent prepares the file with the human, and the label file is the only artifa
 
 Any helper the agent writes for this walk stays in its own scratch space, runs only through `uv run --locked` against the private copy, and is discarded once the ledger is labelled; Pinboard ships no labelling command.
 
+### Advance v14 ledgers to v15 automatic hold release
+
+From v15, an unstarted item held only until named prerequisites finish returns to `ready` automatically when every awaited item is done or superseded and no other prerequisite or planned replacement withholds resume. Upgrading a `sqlite-v14` ledger uses the ordinary label-free `migrate-schema` preview and `--apply` commands above: preview emits a `pinboard-schema-plan/v9` plan listing any already-satisfied unstarted items holds in `released_holds`, and `--apply` retains the exact `.v14` backup and releases those unstarted holds to `ready` without fabricating synthetic history rows or advancing `project_revision`. Started attempts, human-decision holds, outside-condition holds, and holds with remaining prerequisites or cancelled awaited items stay held unchanged.
+
 ## Direct CLI use from a source checkout
 
 Humans who want to run Pinboard directly use a known `<pinboard-source>` checkout as `<launcher-root>` rather than locating an application's installed plugin cache or creating a global alias. Prepare `<pinboard-source>/.venv` once, then invoke the same launcher boundary and name `<managed-project>` explicitly:

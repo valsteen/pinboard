@@ -388,7 +388,7 @@ class ConsolidationTest(CheckpointPackageSupport):
         )
         self.assertEqual(0, self.run_cli(*fixture.common, "validate")[0])
         exported = self.run_json_cli(*fixture.common, "export")
-        self.assertIn("pinboard-consolidation/v2", str(exported))
+        self.assertIn("pinboard-consolidation/v3", str(exported))
 
     def test_authored_exact_origin_is_retained_once_while_unauthored_sources_still_carry(self) -> None:
         fixture = self.checkpoint_fixture(local=True)

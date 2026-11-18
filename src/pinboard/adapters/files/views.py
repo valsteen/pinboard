@@ -42,7 +42,7 @@ from pinboard.application.queries import (
     project_board_portfolio,
 )
 from pinboard.domain import decision_models, history, work_models
-from pinboard.domain.identifiers import AttemptId, WorkItemId
+from pinboard.domain.identifiers import AttemptId, HistoryId, WorkItemId
 
 NOTICE = "Generated projection; SQLite is authoritative."
 
@@ -52,7 +52,7 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
 
 
 def _render_header(kind: str) -> str:
-    return f"---\nkind: {kind}\nauthority: sqlite-v14\n---\n\n> {NOTICE}\n\n"
+    return f"---\nkind: {kind}\nauthority: sqlite-v15\n---\n\n> {NOTICE}\n\n"
 
 
 def _render_decision_questions(decisions: tuple[decision_batches.PauseDecision, ...]) -> str:
@@ -150,6 +150,7 @@ def _render_item(
     review_history: tuple[stored_state.StoredTransitionReceipt, ...],
     pause_reason: str | None,
     decision_batch: decision_batches.DecisionBatchView | None,
+    released_holds: tuple[query_models.ItemReleasedHoldView, ...],
 ) -> bytes:
     dependency_reasons = (
         tuple(f"{value.item_id}: {value.reason}" for value in overview_item.dependency_reasons)
@@ -212,6 +213,7 @@ def _render_item(
         + ("" if pause_reason is None else f"- Pause reason: {history.nest_record_text(pause_reason, '  ')}\n")
         + f"- Dependency eligibility: {'yes' if overview_item is not None and overview_item.eligible else 'no'}\n\n"
         + next_step
+        + _render_item_released_holds(released_holds)
         + _render_decision_batch(decision_batch)
         + "## Original intake context\n\n"
         + "Recorded when this work was saved; original context, not the current plan.\n\n"
@@ -343,11 +345,11 @@ def _render_history_row(receipt: stored_state.StoredTransitionReceipt) -> str:
     )
 
 
-def _render_unblocker(unblocker: work_models.Unblocker) -> str:
+def _render_unblocker(unblocker: work_models.Unblocker, link_prefix: str) -> str:
     match unblocker:
         case work_models.WaitingForItemsToFinish(items=items):
             return "Waiting for these items to finish: " + ", ".join(
-                f"[{_markdown_link_text(item)}](../items/{item}.md)" for item in items
+                f"[{_markdown_link_text(item)}]({link_prefix}{item}.md)" for item in items
             )
         case work_models.WaitingForHumanDecision(question=question):
             return f"Waiting for a human decision: {question}"
@@ -355,6 +357,30 @@ def _render_unblocker(unblocker: work_models.Unblocker) -> str:
             return f"Waiting for an outside condition: {condition}"
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _render_item_released_holds(released_holds: tuple[query_models.ItemReleasedHoldView, ...]) -> str:
+    if not released_holds:
+        return ""
+    entries = "".join(
+        f"- Receipt [{hold.history_id}](../history/{hold.history_id}.md) at revision {hold.project_revision} "
+        f"(`{hold.action_id}`, {_utc_label(hold.committed_at)}): released from {hold.previous_state.value} "
+        f"(subject revision {hold.previous_subject_revision}); {_render_unblocker(hold.unblocker, '')}\n"
+        for hold in released_holds
+    )
+    return f"## Released holds\n\n{entries}\n"
+
+
+def _render_history_released_holds(released_holds: tuple[stored_state.StoredReleasedHold, ...]) -> str:
+    if not released_holds:
+        return ""
+    entries = "".join(
+        f"- [{_markdown_link_text(hold.item_id)}](../items/{hold.item_id}.md): released from "
+        f"{hold.previous_state.value} (subject revision {hold.previous_subject_revision}); "
+        f"{_render_unblocker(hold.unblocker, '../items/')}\n"
+        for hold in released_holds
+    )
+    return f"\n## Released holds\n\n{entries}"
 
 
 _RELEASED_HOLD_ACTIONS: frozenset[decision_models.ActionKind | released_receipt_compatibility.HistoricalActionKind] = (
@@ -374,14 +400,10 @@ def _render_hold_receipt(receipt: stored_state.StoredTransitionReceipt) -> str:
     match receipt.input_schema:
         case unblockers.HOLD_RECEIPT_SCHEMA:
             hold = msgspec.json.decode(bytes(receipt.input_payload), type=unblockers.HoldReceiptInput)
-            return (
-                f"\n## What it waited for\n\n{_render_unblocker(unblockers.unblocker_from_payload(hold.unblocker))}\n"
-            )
+            return f"\n## What it waited for\n\n{_render_unblocker(unblockers.unblocker_from_payload(hold.unblocker), '../items/')}\n"
         case unblockers.PLAIN_PAUSE_RECEIPT_SCHEMA:
             pause = msgspec.json.decode(bytes(receipt.input_payload), type=unblockers.PlainPauseReceiptInput)
-            return (
-                f"\n## What it waited for\n\n{_render_unblocker(unblockers.unblocker_from_payload(pause.unblocker))}\n"
-            )
+            return f"\n## What it waited for\n\n{_render_unblocker(unblockers.unblocker_from_payload(pause.unblocker), '../items/')}\n"
         case _ if receipt.action_kind in _RELEASED_HOLD_ACTIONS:
             return (
                 "\n## What it waited for\n\nThis hold was recorded before Pinboard required a reason, "
@@ -392,7 +414,9 @@ def _render_hold_receipt(receipt: stored_state.StoredTransitionReceipt) -> str:
 
 
 def _render_history(
-    receipt: stored_state.StoredTransitionReceipt, amendment: stored_state.StoredAttemptAmendment | None
+    receipt: stored_state.StoredTransitionReceipt,
+    amendment: stored_state.StoredAttemptAmendment | None,
+    released_holds: tuple[stored_state.StoredReleasedHold, ...],
 ) -> bytes:
     decisions = "" if amendment is None else "\n## Amendment\n\n" + _render_amendment(amendment)
     if receipt.input_schema == "pinboard-pause-decisions/v1":
@@ -415,6 +439,7 @@ def _render_history(
         + "| --- | --- | --- | --- | --- | --- |\n"
         + _render_history_row(receipt)
         + _render_hold_receipt(receipt)
+        + _render_history_released_holds(released_holds)
         + decisions
     ).encode()
 
@@ -437,12 +462,22 @@ def board_pages(work_root: Path) -> query_models.BoardPages:
 
 class _BoardGroup(Enum):
     WAITING_ON_HUMAN = "Paused or in review"
+    READY_TO_RESUME = "Ready to resume"
     IN_PROGRESS = "In progress"
     READY = "Ready"
     BLOCKED = "Blocked"
 
 
-def _board_group(state: work_models.WorkState) -> _BoardGroup:
+_BOARD_FILTER_STATES: tuple[str, ...] = ("paused", "review", "active", "ready", "blocked")
+
+
+def _board_group(state: work_models.WorkState, hold: unblockers.HoldDescription | None) -> _BoardGroup:
+    if (
+        state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}
+        and hold is not None
+        and hold.resume_needed
+    ):
+        return _BoardGroup.READY_TO_RESUME
     match state:
         case work_models.WorkState.PAUSED | work_models.WorkState.REVIEW:
             return _BoardGroup.WAITING_ON_HUMAN
@@ -456,7 +491,13 @@ def _board_group(state: work_models.WorkState) -> _BoardGroup:
             assert_never(unreachable)
 
 
-def _board_next_step(state: work_models.WorkState) -> str:
+def _board_next_step(state: work_models.WorkState, hold: unblockers.HoldDescription | None) -> str:
+    if (
+        state in {work_models.WorkState.PAUSED, work_models.WorkState.BLOCKED}
+        and hold is not None
+        and hold.resume_needed
+    ):
+        return "What it waited for is ready to resume: resume it when its recorded hold is resolved."
     match state:
         case work_models.WorkState.READY:
             return (
@@ -480,7 +521,8 @@ def _board_groups(
     """Partition live items into display groups while keeping saved order within each."""
 
     return tuple(
-        (group, tuple(item for item in items if _board_group(item.overview.state) is group)) for group in _BoardGroup
+        (group, tuple(item for item in items if _board_group(item.overview.state, item.overview.hold) is group))
+        for group in _BoardGroup
     )
 
 
@@ -885,7 +927,7 @@ def _page_checkpoint(
 def _standing(item: query_models.BoardItem) -> _BoardPageNextStep | _BoardPageStanding:
     attempt = item.attempt
     if attempt is None:
-        return _BoardPageNextStep(_board_next_step(item.overview.state))
+        return _BoardPageNextStep(_board_next_step(item.overview.state, item.overview.hold))
     return _BoardPageStanding(
         _page_checkpoint(attempt.checkpoint),
         _condition(attempt.condition),
@@ -1020,7 +1062,7 @@ def _board_page_item(value: query_models.BoardItem, live_item_ids: frozenset[str
         item.item_id,
         item.label,
         item.state.value,
-        _board_group(item.state).value,
+        _board_group(item.state, item.hold).value,
         _utc_instant(value.updated_at),
         item.effect,
         item.unlock,
@@ -1053,7 +1095,7 @@ def _board_page_data(board: query_models.BoardPortfolio) -> bytes:
         NOTICE,
         None if board.updated_at is None else _utc_instant(board.updated_at),
         tuple(group.value for group in _BoardGroup),
-        tuple(state.value for group in _BoardGroup for state in work_models.WorkState if _board_group(state) is group),
+        _BOARD_FILTER_STATES,
         tuple(_board_page_item(value, live_item_ids) for value in board.items),
     )
     return (
@@ -1747,6 +1789,7 @@ def _write_facts(
                     selected.review_history,
                     selected.pause_reason,
                     selected.decision_batch,
+                    selected.released_holds,
                 ),
             )
     if facts.attempts:
@@ -1760,9 +1803,11 @@ def _write_facts(
     if facts.receipts:
         history_root = ensure_child_directory(view_root, "history")
         recorded = {value.history_id: value for value in facts.amendments}
-        for receipt in facts.receipts:
+        for selected_history in facts.receipts:
+            receipt = selected_history.receipt
             atomic_replace(
-                history_root / f"{receipt.history_id}.md", _render_history(receipt, recorded.get(receipt.history_id))
+                history_root / f"{receipt.history_id}.md",
+                _render_history(receipt, recorded.get(receipt.history_id), selected_history.released_holds),
             )
     return tuple(damaged)
 
@@ -1817,7 +1862,24 @@ def derive_expected_view_bytes(
     """Return every generated selector and its canonical bytes for one SQLite snapshot and its decoded board facts."""
 
     view_inputs = _project_view_inputs(state, board_history, now)
+    receipts_by_id = {receipt.history_id: receipt for receipt in state.transition_receipts}
     receipts_by_revision = {receipt.project_revision: receipt for receipt in state.transition_receipts}
+    released_by_item: dict[WorkItemId, list[query_models.ItemReleasedHoldView]] = {}
+    released_by_history: dict[HistoryId, list[stored_state.StoredReleasedHold]] = {}
+    for released in state.lifecycle.released_holds:
+        released_by_history.setdefault(released.history_id, []).append(released)
+        trigger = receipts_by_id[released.history_id]
+        released_by_item.setdefault(released.item_id, []).append(
+            query_models.ItemReleasedHoldView(
+                released.history_id,
+                trigger.project_revision,
+                trigger.action_id,
+                trigger.committed_at,
+                released.previous_state,
+                released.previous_subject_revision,
+                released.unblocker,
+            )
+        )
     batches = decision_batches.batches_from_state(state)
     batches_by_item = {
         attempt.item_id: batches.get(attempt.attempt_id)
@@ -1856,6 +1918,7 @@ def derive_expected_view_bytes(
             tuple(receipt for receipt in state.transition_receipts if receipt.subject_id == item.item_id),
             pause_reason,
             batches_by_item.get(item.item_id),
+            tuple(released_by_item.get(item.item_id, ())),
         )
     expected_views.update(
         (
@@ -1875,7 +1938,12 @@ def derive_expected_view_bytes(
     )
     recorded = {value.history_id: value for value in state.lifecycle.amendments}
     expected_views.update(
-        (f"history/{receipt.history_id}.md", _render_history(receipt, recorded.get(receipt.history_id)))
+        (
+            f"history/{receipt.history_id}.md",
+            _render_history(
+                receipt, recorded.get(receipt.history_id), tuple(released_by_history.get(receipt.history_id, ()))
+            ),
+        )
         for receipt in state.transition_receipts
     )
     roadmap_markdown, roadmap_html = roadmap_files.render(roadmap.from_state(state))

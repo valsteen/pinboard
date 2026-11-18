@@ -1,9 +1,10 @@
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import assert_never, overload
 
 from pinboard.domain import decision_models, routing, work_models
-from pinboard.domain.definition_decisions import decide_definition_revision
+from pinboard.domain.definition_decisions import DefinitionRevisionDecision, decide_definition_revision
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -699,23 +700,145 @@ def _build_transition_receipt(
     return decision_models.TransitionReceipt(decision_models.action_id(action), work_item_id, outcome, evidence, now)
 
 
+def release_unstarted_holds(
+    post_snapshot: LedgerSnapshot,
+    candidate_ids: Iterable[WorkItemId],
+) -> tuple[decision_models.ReleasedItemHold, ...]:
+    """Return deterministic release records for candidate items whose unstarted items holds are now releasable."""
+
+    candidates = frozenset(candidate_ids)
+    released: list[decision_models.ReleasedItemHold] = []
+    for item in sorted(post_snapshot.items, key=lambda value: value.work_item_id):
+        if item.work_item_id not in candidates:
+            continue
+        unblocker = post_snapshot.releasable_unstarted_hold(item)
+        if unblocker is not None:
+            released.append(
+                decision_models.ReleasedItemHold(
+                    item.work_item_id,
+                    item.state,
+                    post_snapshot.subject_revision(item.work_item_id),
+                    unblocker,
+                )
+            )
+    return tuple(released)
+
+
+def _release_holds_after_item_finishes(
+    snapshot: LedgerSnapshot,
+    finished_id: WorkItemId,
+) -> tuple[decision_models.ReleasedItemHold, ...]:
+    post_snapshot = replace(
+        snapshot,
+        items=tuple(item for item in snapshot.items if item.work_item_id != finished_id),
+        history_items=tuple(dict.fromkeys((*snapshot.history_items, finished_id))),
+    )
+    candidates = (
+        item.work_item_id
+        for item in post_snapshot.items
+        if any(work_models.dependency_item(target) == finished_id for target in item.depends_on)
+    )
+    return release_unstarted_holds(post_snapshot, candidates)
+
+
+def released_holds_for_change(
+    snapshot: LedgerSnapshot,
+    change: (
+        decision_models.NonCheckpointDecisionChange
+        | decision_models.CheckpointAcceptanceChange
+        | decision_models.CoveredCompletionChange
+    ),
+) -> tuple[decision_models.ReleasedItemHold, ...]:
+    """Evaluate commit-time release of unstarted items holds on the post-mutation snapshot."""
+
+    match change:
+        case (
+            decision_models.CompletionChange(work_item_id=finished_id)
+            | decision_models.CoveredCompletionChange(work_item_id=finished_id)
+        ):
+            return _release_holds_after_item_finishes(snapshot, finished_id)
+        case decision_models.WorkItemClosureChange(work_item_id=finished_id, terminal_state=terminal_state):
+            match terminal_state:
+                case work_models.CloseOutcome.DONE:
+                    return _release_holds_after_item_finishes(snapshot, finished_id)
+                case work_models.CloseOutcome.SUPERSEDED | work_models.CloseOutcome.DROPPED:
+                    return ()
+                case _ as unreachable:
+                    assert_never(unreachable)
+        case decision_models.MergedProposalChange(proposal=proposal_id):
+            return _release_holds_after_item_finishes(snapshot, WorkItemId(proposal_id))
+        case decision_models.CheckpointAcceptanceChange(work_item_id=item_id, checkpoint=checkpoint):
+            accepted = work_models.CheckpointDependency(item_id, checkpoint)
+            post_snapshot = replace(
+                snapshot,
+                accepted_checkpoints=snapshot.accepted_checkpoints | frozenset((accepted,)),
+            )
+            candidates = (
+                item.work_item_id
+                for item in post_snapshot.items
+                if item.work_item_id != item_id and accepted in item.depends_on
+            )
+            return release_unstarted_holds(post_snapshot, candidates)
+        case DefinitionRevisionDecision(work_item_id=item_id, definition=definition):
+            post_snapshot = replace(
+                snapshot,
+                items=tuple(
+                    replace(item, depends_on=definition.dependencies) if item.work_item_id == item_id else item
+                    for item in snapshot.items
+                ),
+            )
+            return release_unstarted_holds(post_snapshot, (item_id,))
+        case decision_models.PlannedReplacementChange(relation=relation):
+            post_snapshot = replace(
+                snapshot,
+                planned_replacements=(*snapshot.planned_replacements, relation),
+            )
+            return release_unstarted_holds(post_snapshot, (relation.affected_item,))
+        case decision_models.ReplacementDispositionChange(disposition=disposition):
+            post_snapshot = replace(
+                snapshot,
+                replacement_dispositions=(*snapshot.replacement_dispositions, disposition),
+            )
+            return release_unstarted_holds(post_snapshot, (disposition.affected_item,))
+        case (
+            decision_models.WorkItemStateChange()
+            | decision_models.ActivationChange()
+            | decision_models.AttemptStateChange()
+            | decision_models.BlockAttemptChange()
+            | decision_models.BlockWorkItemChange()
+            | decision_models.RebindAttemptChange()
+            | decision_models.ResumeAttemptChange()
+            | decision_models.ReviewSubmissionChange()
+            | decision_models.ReviewReturnChange()
+            | decision_models.ReviewAcceptanceChange()
+            | decision_models.AmendmentChange()
+            | decision_models.RejectedProposalChange()
+        ):
+            return ()
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _accepted_transition_decision(
+    snapshot: LedgerSnapshot,
     action: decision_models.NonCheckpointTransitionAction,
     now: datetime,
     change: decision_models.NonCheckpointDecisionChange,
     *,
-    work_item_id: WorkItemId | None = None,
-    outcome: str | None = None,
-    evidence: str | None = None,
+    work_item_id: WorkItemId | None,
+    outcome: str | None,
+    evidence: str | None,
 ) -> decision_models.TransitionDecision:
     return decision_models.TransitionDecision(
         action,
         change,
         _build_transition_receipt(action, work_item_id, outcome or action.kind.value, evidence, now),
+        released_holds_for_change(snapshot, change),
     )
 
 
 def _accepted_checkpoint_decision(
+    snapshot: LedgerSnapshot,
     action: decision_models.AcceptCheckpointAction,
     now: datetime,
     change: decision_models.CheckpointAcceptanceChange,
@@ -727,10 +850,12 @@ def _accepted_checkpoint_decision(
         action,
         change,
         _build_transition_receipt(action, work_item_id, action.kind.value, evidence, now),
+        released_holds_for_change(snapshot, change),
     )
 
 
 def _accepted_completion_decision(
+    snapshot: LedgerSnapshot,
     action: decision_models.CompleteAction,
     now: datetime,
     change: decision_models.CoveredCompletionChange,
@@ -742,6 +867,7 @@ def _accepted_completion_decision(
         action,
         change,
         _build_transition_receipt(action, work_item_id, action.kind.value, evidence, now),
+        released_holds_for_change(snapshot, change),
     )
 
 
@@ -797,6 +923,7 @@ def _activate(
             ),
         )
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         decision_models.ActivationChange(
@@ -809,6 +936,8 @@ def _activate(
             value.owner,
         ),
         work_item_id=item.work_item_id,
+        outcome=None,
+        evidence=None,
     )
 
 
@@ -934,10 +1063,12 @@ def _pause_or_block(
         case _ as unreachable:
             assert_never(unreachable)
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         change,
         work_item_id=item.work_item_id,
+        outcome=None,
         evidence=evidence,
     )
 
@@ -1015,6 +1146,7 @@ def _complete(
                 item.work_item_id, attempt_id, value.candidate, value.evidence, authority_change
             )
             return _accepted_completion_decision(
+                snapshot,
                 action,
                 now,
                 covered_change,
@@ -1137,6 +1269,7 @@ def _close(
         case _ as unreachable:
             assert_never(unreachable)
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         decision_models.WorkItemClosureChange(
@@ -1259,10 +1392,13 @@ def _resume(
     else:
         change = decision_models.WorkItemStateChange(item.work_item_id, item.state, target)
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         change,
         work_item_id=item.work_item_id,
+        outcome=None,
+        evidence=None,
     )
 
 
@@ -1334,6 +1470,7 @@ def _rebind_attempt(
             None,
         )
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         decision_models.RebindAttemptChange(
@@ -1352,6 +1489,7 @@ def _rebind_attempt(
             carried_unblocker,
         ),
         work_item_id=item.work_item_id,
+        outcome=None,
         evidence=carried_pause_reason,
     )
 
@@ -1379,6 +1517,7 @@ def _submit_review(
     if attempt is None:
         return DecisionFailure(DecisionFailureCode.ATTEMPT_NOT_FOUND, f"Attempt '{attempt_id}' does not exist.", None)
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         decision_models.ReviewSubmissionChange(
@@ -1388,6 +1527,8 @@ def _submit_review(
             now,
         ),
         work_item_id=item.work_item_id,
+        outcome=None,
+        evidence=None,
     )
 
 
@@ -1422,6 +1563,7 @@ def _return_for_correction(
         replace(authority, lease_id=None, generation=authority.generation + 1),
     )
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         decision_models.ReviewReturnChange(
@@ -1431,6 +1573,7 @@ def _return_for_correction(
             authority_change,
         ),
         work_item_id=item.work_item_id,
+        outcome=None,
         evidence=value.reason,
     )
 
@@ -1526,10 +1669,13 @@ def _record_amendment(
         review_base,
     )
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         decision_models.AmendmentChange(item.work_item_id, attempt_id, attempt.state, amendment, authority_change),
         work_item_id=item.work_item_id,
+        outcome=None,
+        evidence=None,
     )
 
 
@@ -1581,6 +1727,7 @@ def _accept_checkpoint(
         replace(authority, lease_id=None, generation=authority.generation + 1),
     )
     return _accepted_checkpoint_decision(
+        snapshot,
         action,
         now,
         decision_models.CheckpointAcceptanceChange(
@@ -1641,10 +1788,12 @@ def _accept_review_and_continue(
         replace(authority, lease_id=None, generation=authority.generation + 1),
     )
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         decision_models.ReviewAcceptanceChange(item.work_item_id, attempt_id, value.candidate, authority_change),
         work_item_id=item.work_item_id,
+        outcome=None,
         evidence=value.evidence,
     )
 
@@ -1666,11 +1815,34 @@ def _block_item(
     unblocker = _hold_unblocker(snapshot, item, command.value.unblocker)
     if isinstance(unblocker, DecisionFailure):
         return unblocker
+    if isinstance(unblocker, work_models.WaitingForItemsToFinish) and snapshot.resume_available(item):
+        waited = ", ".join(str(value) for value in unblocker.items)
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            f"Item '{item.work_item_id}' has no unsatisfied dependency or unresolved planned replacement to wait for "
+            f"(named: {waited}); it is already ready to start. Prepare '{item.work_item_id}' directly or name a human "
+            "decision or outside condition instead. The ledger is unchanged.",
+            FailureDetails(
+                observed=(
+                    FailureFact("work_item_id", str(item.work_item_id)),
+                    FailureFact("waited_items", waited),
+                    FailureFact("resume_available", True),
+                ),
+                mismatches=(),
+                retry=RetryDisposition.CORRECT_INPUT,
+                effect=EffectDisposition.UNCHANGED,
+                changed_surfaces=(),
+                alternatives=(),
+            ),
+        )
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         decision_models.BlockWorkItemChange(item.work_item_id, item.state, unblocker),
         work_item_id=item.work_item_id,
+        outcome=None,
+        evidence=None,
     )
 
 
@@ -1723,9 +1895,13 @@ def _merge_proposal(
     if snapshot.work_item(value.target) is None and value.target not in snapshot.history_items:
         return DecisionFailure(DecisionFailureCode.ITEM_NOT_FOUND, f"Item '{value.target}' does not exist.", None)
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         decision_models.MergedProposalChange(proposal.proposal, value.target, now, item.state),
+        work_item_id=None,
+        outcome=None,
+        evidence=None,
     )
 
 
@@ -1745,9 +1921,12 @@ def _dispose_proposal(
         return current_proposal
     proposal, item = current_proposal
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         decision_models.RejectedProposalChange(proposal.proposal, command.value.reason, now, item.state),
+        work_item_id=None,
+        outcome=None,
         evidence=command.value.reason,
     )
 
@@ -1761,10 +1940,12 @@ def _revise_item(
     if isinstance(revision, DecisionFailure):
         return revision
     return _accepted_transition_decision(
+        snapshot,
         command.action,
         now,
         revision,
         work_item_id=revision.work_item_id,
+        outcome=None,
         evidence=revision.reason,
     )
 
@@ -1836,10 +2017,12 @@ def _record_replacement(
         now,
     )
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         decision_models.PlannedReplacementChange(relation),
         work_item_id=item.work_item_id,
+        outcome=None,
         evidence=value.replacement_cost,
     )
 
@@ -1876,10 +2059,12 @@ def _retain_temporarily(
         now,
     )
     return _accepted_transition_decision(
+        snapshot,
         action,
         now,
         decision_models.ReplacementDispositionChange(disposition),
         work_item_id=item.work_item_id,
+        outcome=None,
         evidence=value.rationale,
     )
 

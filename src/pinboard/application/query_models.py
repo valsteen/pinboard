@@ -70,6 +70,7 @@ class DecisionScope:
     related_work_item_ids: tuple[WorkItemId, ...]
     dependency_closure_roots: tuple[WorkItemId, ...]
     live_dependent_roots: tuple[WorkItemId, ...]
+    live_dependent_attempt_ids: tuple[AttemptId, ...]
     attempt_ids: tuple[AttemptId, ...]
     proposal_ids: tuple[ProposalId, ...]
     artifact_ref_ids: tuple[ArtifactRefId, ...]
@@ -93,6 +94,19 @@ class DecisionFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class ItemReleasedHoldView:
+    """One automatically released unstarted items hold and its triggering receipt."""
+
+    history_id: HistoryId
+    project_revision: int
+    action_id: ActionId
+    committed_at: datetime
+    previous_state: stored_state.StoredWorkItemState
+    previous_subject_revision: int
+    unblocker: work_models.WaitingForItemsToFinish
+
+
+@dataclass(frozen=True, slots=True)
 class ItemProjectionFacts:
     work_item: stored_state.StoredWorkItem
     dependencies: tuple[work_models.Dependency, ...]
@@ -101,6 +115,7 @@ class ItemProjectionFacts:
     review_history: tuple[stored_state.StoredTransitionReceipt, ...]
     pause_reason: RecordedPauseReason
     decision_batch: decision_batches.DecisionBatchView | None
+    released_holds: tuple[ItemReleasedHoldView, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,11 +143,17 @@ class AttemptProjectionFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class HistoryProjectionFacts:
+    receipt: stored_state.StoredTransitionReceipt
+    released_holds: tuple[stored_state.StoredReleasedHold, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class GeneratedViewFacts:
     project_revision: int
     items: tuple[ItemProjectionFacts, ...]
     attempts: tuple[AttemptProjectionFacts, ...]
-    receipts: tuple[stored_state.StoredTransitionReceipt, ...]
+    receipts: tuple[HistoryProjectionFacts, ...]
     amendments: tuple[stored_state.StoredAttemptAmendment, ...]
     """The amendments the selected receipts recorded."""
 
@@ -787,7 +808,7 @@ class CompletionRecoveryRequired:
 
 
 type ItemStatusSchema = Literal["pinboard-item-status/v7"]
-type ItemStatusAuthority = Literal["sqlite-v14"]
+type ItemStatusAuthority = Literal["sqlite-v15"]
 
 
 type DamagedReceiptActionKind = Literal[
@@ -1802,6 +1823,7 @@ class DiscoveryItem(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     attempt_id: str | None
     dependency_count: Annotated[int, msgspec.Meta(ge=0)]
     unsatisfied_dependency_count: Annotated[int, msgspec.Meta(ge=0)]
+    resume_needed: bool
 
 
 class DiscoveryNextUnstarted(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1826,8 +1848,8 @@ class OverviewCursor(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class DiscoveryPage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-overview/v9"]
-    authority: Literal["sqlite-v14"]
+    schema: Literal["pinboard-overview/v10"]
+    authority: Literal["sqlite-v15"]
     revision: str
     items: Annotated[tuple[DiscoveryItem, ...], msgspec.Meta(max_length=25)]
     total_items: Annotated[int, msgspec.Meta(ge=0)]
@@ -1920,7 +1942,7 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition/v1"]
-    authority: Literal["sqlite-v14"]
+    authority: Literal["sqlite-v15"]
     project_revision: int
     item_id: str
     item_subject_revision: int
@@ -1943,7 +1965,7 @@ class ItemDefinitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class ItemDefinitionHistory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition-history/v1"]
-    authority: Literal["sqlite-v14"]
+    authority: Literal["sqlite-v15"]
     project_revision: int
     item_id: str
     revisions: tuple[ItemDefinitionHistoryRow, ...]

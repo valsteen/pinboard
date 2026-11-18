@@ -20,7 +20,7 @@ from pinboard.adapters.sqlite.lifecycle import (
 )
 from pinboard.adapters.sqlite.proposals import decode_proposal_relation
 from pinboard.adapters.sqlite.replacements import read_current_replacements
-from pinboard.application import decision_batches, query_models, stored_state
+from pinboard.application import decision_batches, query_models, stored_state, unblockers
 from pinboard.domain import authority_models, work_models
 from pinboard.domain.identifiers import (
     ArtifactRefId,
@@ -528,6 +528,7 @@ def read_current_snapshot(
     planned_replacements, replacement_dispositions = read_current_replacements(
         connection, (item.item_id for item in item_rows)
     )
+    held = read_item_unblockers(connection, (item.item_id for item in item_rows))
     related_item_ids = tuple(
         dict.fromkeys(
             item_id
@@ -535,6 +536,7 @@ def read_current_snapshot(
                 *(row.dependency_id for row in dependency_rows),
                 *(proposal.relation_item_id for proposal in proposal_rows if proposal.relation_item_id is not None),
                 *(relation.replacement_item for relation in planned_replacements),
+                *(awaited for unblocker in held.values() for awaited in unblockers.waited_items(unblocker)),
             )
         )
     )
@@ -548,7 +550,6 @@ def read_current_snapshot(
             related_item_ids,
         )
     )
-    held = read_item_unblockers(connection, (item.item_id for item in item_rows))
     return LedgerSnapshot(
         revision=str(project.revision),
         items=tuple(
@@ -647,8 +648,26 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             scope.dependency_closure_roots,
         )
     )
+    dependent_attempt_item_ids = [
+        attempt.item_id
+        for attempt_id in scope.live_dependent_attempt_ids
+        if (attempt := attempts.get(attempt_id)) is not None
+    ]
+    missing_dependent_attempts = tuple(
+        attempt_id for attempt_id in scope.live_dependent_attempt_ids if attempt_id not in attempts
+    )
+    if missing_dependent_attempts:
+        dependent_attempt_item_ids.extend(
+            decode_row(row, _ItemIdRow).item_id
+            for row in select_by_ids(
+                connection,
+                "SELECT item_id FROM attempts WHERE attempt_id IN ({ids})",
+                missing_dependent_attempts,
+            )
+        )
+    dependent_roots = tuple(dict.fromkeys((*scope.live_dependent_roots, *dependent_attempt_item_ids)))
     definition_ids = tuple(dict.fromkeys((*primary_item_ids, *closure_ids)))
-    dependency_ids = tuple(dict.fromkeys((*definition_ids, *scope.live_dependent_roots)))
+    dependency_ids = tuple(dict.fromkeys((*definition_ids, *dependent_roots)))
     dependent_ids = tuple(
         decode_row(row, _ItemIdRow).item_id
         for row in select_by_ids(
@@ -658,7 +677,7 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
                JOIN work_items AS item ON item.item_id = dependency.item_id
                WHERE dependency.dependency_id IN ({ids}) AND item.queue_position IS NOT NULL
                ORDER BY dependency.item_id""",
-            scope.live_dependent_roots,
+            dependent_roots,
         )
     )
     dependency_ids = tuple(dict.fromkeys((*dependency_ids, *dependent_ids)))
@@ -684,15 +703,27 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             )
         )
     }
-    planned_replacements, replacement_dispositions = read_current_replacements(connection, primary_item_ids)
+    held = read_item_unblockers(
+        connection,
+        tuple(
+            item_id
+            for item_id in dict.fromkeys((*definition_ids, *dependent_ids))
+            if (item := selected_items.get(item_id)) is not None
+            and stored_state.live_work_state(item.state) is not None
+        ),
+    )
+    planned_replacements, replacement_dispositions = read_current_replacements(
+        connection, tuple(dict.fromkeys((*primary_item_ids, *dependent_ids)))
+    )
     related_ids = tuple(
         dict.fromkeys(
             (
                 *scope.related_work_item_ids,
                 *(relation.replacement_item for relation in planned_replacements),
+                *(awaited for unblocker in held.values() for awaited in unblockers.waited_items(unblocker)),
                 *(
                     work_models.dependency_item(dependency)
-                    for item_id in primary_item_ids
+                    for item_id in (*primary_item_ids, *dependent_ids)
                     if (item := selected_items.get(item_id)) is not None
                     and stored_state.live_work_state(item.state) is not None
                     for dependency in selected_dependencies[item_id]
@@ -775,12 +806,11 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         if selected is not None:
             pending_closure.extend(work_models.dependency_item(target) for target in dependencies[item_id])
 
-    related_item_ids = list(scope.related_work_item_ids)
-    related_item_ids.extend(relation.replacement_item for relation in planned_replacements)
+    related_item_ids = list(related_ids)
+    for dependent_id in dependent_ids:
+        read_item(dependent_id, include_dependencies=True, include_definition=False, context=True)
     for item_id in contextual_item_ids:
         related_item_ids.extend(work_models.dependency_item(target) for target in dependencies[item_id])
-    for dependent_id in dependent_ids:
-        read_item(dependent_id, include_dependencies=True, include_definition=False, context=False)
     for item_id in dict.fromkeys(related_item_ids):
         read_item(item_id, include_dependencies=False, include_definition=False, context=False)
 
@@ -879,7 +909,6 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
         )
         for proposal in proposals.values()
     )
-    held = read_item_unblockers(connection, item_rows)
     snapshot = LedgerSnapshot(
         revision=str(project.revision),
         items=tuple(

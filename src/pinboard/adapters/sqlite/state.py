@@ -22,13 +22,20 @@ from pinboard.adapters.sqlite.database import decode_row, select_by_ids
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import (
     TransitionHistoryRow,
-    decode_history_action_kind,
     read_lifecycle,
+    stored_receipt_from_row,
     validate_current_attempt_relation,
 )
 from pinboard.adapters.sqlite.pr_review import validate_review_history
 from pinboard.adapters.sqlite.proposals import read_pending_proposals, read_proposals
-from pinboard.application import consolidation, decision_batches, project_export, stored_state, unblockers
+from pinboard.application import (
+    consolidation,
+    consolidation_models,
+    decision_batches,
+    project_export,
+    stored_state,
+    unblockers,
+)
 from pinboard.domain import authority_models, decision_models, history, work_models
 from pinboard.domain.identifiers import (
     AttemptId,
@@ -36,34 +43,7 @@ from pinboard.domain.identifiers import (
     HistoryId,
     WorkItemId,
 )
-
-
-def _stored_json(column: str, value: str) -> work_models.CanonicalJson:
-    encoded = value.encode("utf-8")
-    try:
-        msgspec.json.decode(encoded, type=msgspec.Raw)
-    except msgspec.DecodeError as error:
-        raise StorageError(StorageErrorCode.INVALID_STATE, f"Column {column!r} has invalid JSON.") from error
-    return work_models.CanonicalJson(encoded)
-
-
-def _stored_receipt(value: TransitionHistoryRow) -> stored_state.StoredTransitionReceipt:
-    return stored_state.StoredTransitionReceipt(
-        value.history_id,
-        value.project_revision,
-        value.action_id,
-        decode_history_action_kind(value.action_kind),
-        value.subject_id,
-        value.artifact_ref_id,
-        value.authorization,
-        value.actor_task_id,
-        value.actor_host_id,
-        value.input_schema,
-        _stored_json("input_json", value.input_json),
-        value.outcome_schema,
-        _stored_json("outcome_json", value.outcome_json),
-        value.committed_at,
-    )
+from pinboard.domain.ledger import LedgerSnapshot
 
 
 class _StateCountRow(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -114,7 +94,7 @@ def _read_project(connection: sqlite3.Connection) -> stored_state.ProjectRecord:
 
 def _read_history(connection: sqlite3.Connection) -> tuple[stored_state.StoredTransitionReceipt, ...]:
     return tuple(
-        _stored_receipt(decode_row(row, TransitionHistoryRow))
+        stored_receipt_from_row(decode_row(row, TransitionHistoryRow))
         for row in connection.execute(
             """
             SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
@@ -139,26 +119,7 @@ def read_history_receipt(
         """,
         (history_id,),
     ).fetchone()
-    return None if row is None else _stored_receipt(decode_row(row, TransitionHistoryRow))
-
-
-def read_history_receipts_by_ids(
-    connection: sqlite3.Connection, history_ids: tuple[HistoryId, ...]
-) -> dict[HistoryId, stored_state.StoredTransitionReceipt]:
-    return {
-        receipt.history_id: receipt
-        for receipt in (
-            _stored_receipt(decode_row(row, TransitionHistoryRow))
-            for row in select_by_ids(
-                connection,
-                """SELECT history_id, project_revision, action_id, action_kind, subject_id, artifact_ref_id,
-                          authorization_kind AS authorization, actor_task_id, actor_host_id, input_schema,
-                          input_json, outcome_schema, outcome_json, committed_at
-                   FROM transition_history WHERE history_id IN ({ids})""",
-                history_ids,
-            )
-        )
-    }
+    return None if row is None else stored_receipt_from_row(decode_row(row, TransitionHistoryRow))
 
 
 def read_checkpoint_receipts(
@@ -180,7 +141,7 @@ def read_checkpoint_receipts(
            ORDER BY subject_id, history_id""",
         attempt_ids,
     ):
-        receipt = _stored_receipt(decode_row(row, TransitionHistoryRow))
+        receipt = stored_receipt_from_row(decode_row(row, TransitionHistoryRow))
         grouped.setdefault(AttemptId(str(receipt.subject_id)), []).append(receipt)
     return {attempt_id: tuple(receipts) for attempt_id, receipts in grouped.items()}
 
@@ -199,7 +160,7 @@ def read_review_history_for_items(
            ORDER BY history_id""",
         item_ids,
     ):
-        receipt = _stored_receipt(decode_row(row, TransitionHistoryRow))
+        receipt = stored_receipt_from_row(decode_row(row, TransitionHistoryRow))
         grouped.setdefault(WorkItemId(str(receipt.subject_id)), []).append(receipt)
     return {item_id: tuple(receipts) for item_id, receipts in grouped.items()}
 
@@ -427,6 +388,170 @@ def _validate_amendments(
             raise StorageError(error_code, f"Amendment receipt {receipt.history_id} has no amendment row.")
 
 
+_HOLD_RELEASING_ACTIONS = frozenset(
+    {
+        decision_models.ActionKind.COMPLETE,
+        decision_models.ActionKind.CLOSE,
+        decision_models.ActionKind.CLOSE_PR_REVIEW,
+        decision_models.ActionKind.ACCEPT_CHECKPOINT,
+        decision_models.ActionKind.MERGE_PROPOSAL,
+        decision_models.ActionKind.CONSOLIDATE,
+        decision_models.ActionKind.REVISE_ITEM,
+        decision_models.ActionKind.RECORD_REPLACEMENT,
+        decision_models.ActionKind.RETAIN_TEMPORARILY,
+    }
+)
+
+
+def _validate_released_holds_and_unstarted_holds(  # noqa: C901, PLR0912
+    lifecycle: stored_state.LifecycleRecords,
+    replacements: stored_state.ReplacementRecords,
+    receipts: tuple[stored_state.StoredTransitionReceipt, ...],
+    error_code: StorageErrorCode,
+) -> None:
+    """Reject stuck releasable unstarted holds and verify normalized release provenance rows."""
+
+    items_by_id = {item.item_id: item for item in lifecycle.work_items}
+    dependencies_by_item: dict[WorkItemId, list[work_models.Dependency]] = {item_id: [] for item_id in items_by_id}
+    for dependency in sorted(lifecycle.dependencies, key=_dependency_identity_position):
+        if dependency.item_id in dependencies_by_item:
+            dependencies_by_item[dependency.item_id].append(dependency.target)
+    open_attempts = {
+        attempt.item_id: attempt.attempt_id
+        for attempt in lifecycle.attempts
+        if attempt.state != work_models.AttemptState.DONE
+    }
+    unblockers_by_item = {value.item_id: value.unblocker for value in lifecycle.unblockers}
+    snapshot = LedgerSnapshot(
+        revision=str(lifecycle.project.revision),
+        items=tuple(
+            work_models.WorkItem(
+                item.item_id,
+                live_state,
+                None if item.timing is None else item.timing.value,
+                tuple(dependencies_by_item[item.item_id]),
+                open_attempts.get(item.item_id),
+                item.source,
+                item.next_action,
+                item.notes,
+                item.queue_position,
+                item.outcome_evidence,
+                unblocker=unblockers_by_item.get(item.item_id),
+            )
+            for item in lifecycle.work_items
+            if (live_state := stored_state.live_work_state(item.state)) is not None
+        ),
+        dropped_item_ids=frozenset(
+            item.item_id for item in lifecycle.work_items if item.state == stored_state.StoredWorkItemState.DROPPED
+        ),
+        dependency_facts=(),
+        accepted_checkpoints=frozenset(
+            work_models.CheckpointDependency(value.item_id, value.checkpoint_id)
+            for value in lifecycle.checkpoint_acceptances
+        ),
+        planned_replacements=tuple(
+            work_models.PlannedReplacement(
+                value.affected_item_id,
+                value.relation_revision,
+                value.replacement_item_id,
+                value.replacement_cost,
+                value.status,
+                value.recorded_by,
+                value.recorded_at,
+            )
+            for value in replacements.planned_replacements
+        ),
+        replacement_dispositions=tuple(
+            work_models.ReplacementDisposition(
+                value.affected_item_id,
+                value.relation_revision,
+                value.rationale,
+                value.accepted_cost,
+                value.recorded_by,
+                value.recorded_at,
+            )
+            for value in replacements.dispositions
+        ),
+    )
+    for item in snapshot.items:
+        if snapshot.releasable_unstarted_hold(item) is not None:
+            raise StorageError(
+                error_code,
+                f"Unstarted held item '{item.work_item_id}' has no remaining unsatisfied dependency or unresolved "
+                "planned replacement and must be released to ready.",
+            )
+
+    receipts_by_id = {receipt.history_id: receipt for receipt in receipts}
+    seen_keys: set[tuple[HistoryId, WorkItemId]] = set()
+    releases_by_history: dict[HistoryId, list[stored_state.StoredReleasedHold]] = {}
+    for hold in lifecycle.released_holds:
+        key = (hold.history_id, hold.item_id)
+        if key in seen_keys:
+            raise StorageError(error_code, f"Duplicate released-hold record at receipt {hold.history_id}.")
+        seen_keys.add(key)
+        receipt = receipts_by_id.get(hold.history_id)
+        if receipt is None or receipt.action_kind not in _HOLD_RELEASING_ACTIONS:
+            raise StorageError(
+                error_code,
+                f"Released hold for '{hold.item_id}' at receipt {hold.history_id} names no releasing transition receipt.",
+            )
+        stored_item = items_by_id.get(hold.item_id)
+        if stored_item is None:
+            raise StorageError(error_code, f"Released hold for '{hold.item_id}' names no stored work item.")
+        if hold.previous_state != stored_state.StoredWorkItemState.BLOCKED:
+            raise StorageError(
+                error_code,
+                f"Released hold for '{hold.item_id}' at receipt {hold.history_id} has unsupported previous state "
+                f"'{hold.previous_state.value}'.",
+            )
+        if (
+            hold.previous_subject_revision < 0
+            or hold.previous_subject_revision >= receipt.project_revision
+            or stored_item.subject_revision < receipt.project_revision
+        ):
+            raise StorageError(
+                error_code,
+                f"Released hold for '{hold.item_id}' at receipt {hold.history_id} has inconsistent subject revision.",
+            )
+        waited = hold.unblocker.items
+        if not waited or len(set(waited)) != len(waited) or any(target not in items_by_id for target in waited):
+            raise StorageError(
+                error_code,
+                f"Released hold for '{hold.item_id}' at receipt {hold.history_id} names invalid waited items.",
+            )
+        releases_by_history.setdefault(hold.history_id, []).append(hold)
+
+    for receipt in receipts:
+        if (
+            receipt.action_kind == decision_models.ActionKind.CONSOLIDATE
+            and receipt.input_schema == "pinboard-consolidation/v3"
+        ):
+            record = msgspec.json.decode(bytes(receipt.input_payload), type=consolidation_models.Record)
+            expected_consolidation_releases = tuple(
+                (
+                    value.item_id,
+                    stored_state.StoredWorkItemState(value.previous_state),
+                    value.previous_subject_revision,
+                    work_models.WaitingForItemsToFinish(tuple(WorkItemId(item) for item in value.unblocker.items)),
+                )
+                for value in record.preview.released_holds
+            )
+            actual_consolidation_releases = tuple(
+                (
+                    hold.item_id,
+                    hold.previous_state,
+                    hold.previous_subject_revision,
+                    hold.unblocker,
+                )
+                for hold in sorted(releases_by_history.get(receipt.history_id, ()), key=lambda value: value.item_id)
+            )
+            if actual_consolidation_releases != expected_consolidation_releases:
+                raise StorageError(
+                    error_code,
+                    f"Consolidation receipt {receipt.history_id} released holds do not match its confirmed preview.",
+                )
+
+
 def _validate_current_state(state: stored_state.StoredWorkState, error_code: StorageErrorCode) -> None:
     _validate_consolidation_history(state.transition_receipts, error_code)
     _validate_held_unblockers(state.lifecycle, error_code)
@@ -474,6 +599,9 @@ def _validate_current_state(state: stored_state.StoredWorkState, error_code: Sto
             raise StorageError(error_code, "An active preparation lease must pin the current item definition.")
     _validate_dependencies(state, item_ids, current_definitions, error_code)
     _validate_checkpoint_acceptances(state, error_code)
+    _validate_released_holds_and_unstarted_holds(
+        state.lifecycle, state.replacements, state.transition_receipts, error_code
+    )
     try:
         decision_batches.validate_batch_history(state.lifecycle, state.transition_receipts)
     except (ValueError, KeyError) as error:
@@ -551,6 +679,7 @@ def read_project_export_state(connection: sqlite3.Connection) -> project_export.
     _validate_held_unblockers(lifecycle, StorageErrorCode.INVALID_STATE)
     _validate_hold_receipts(receipts, StorageErrorCode.INVALID_STATE)
     _validate_amendments(lifecycle, receipts, StorageErrorCode.INVALID_STATE)
+    _validate_released_holds_and_unstarted_holds(lifecycle, replacements, receipts, StorageErrorCode.INVALID_STATE)
     try:
         decision_batches.validate_batch_history(lifecycle, receipts)
     except (ValueError, KeyError) as error:

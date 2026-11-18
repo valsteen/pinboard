@@ -186,11 +186,7 @@ def _current_definitions(
             raise StorageError(error_code, "Definition history names an unknown work item.")
         definitions_by_item[value.item_id].append(value)
         payload = stored_state.stored_definition_bytes(value.definition)
-        if (
-            not isinstance(payload, bytes)
-            or hashlib.sha256(payload).hexdigest() != value.digest
-            or value.after_digest != value.digest
-        ):
+        if hashlib.sha256(payload).hexdigest() != value.digest or value.after_digest != value.digest:
             raise StorageError(error_code, "Definition history digest does not match its canonical definition.")
     current_definitions: dict[WorkItemId, stored_state.ItemDefinitionRevision] = {}
     retained_origins = {

@@ -86,11 +86,35 @@ def _revise_item_input(payload: transition_models.ReviseItemInputPayload) -> wor
     )
 
 
-type ParsedTransitionInput = (
-    decision_models.TransitionCommand
-    | transition_models.ActivateInputPayload
-    | transition_models.RecordAmendmentInputPayload
-)
+@dataclass(frozen=True, slots=True)
+class PendingActivation:
+    """An activate action and its decoded input, which the transition adapter resolves against the selected brief."""
+
+    action: decision_models.ActivateAction
+    payload: transition_models.ActivateInputPayload
+
+
+@dataclass(frozen=True, slots=True)
+class PendingAmendment:
+    """A record-amendment action and its decoded input, which the transition adapter completes with review facts."""
+
+    action: decision_models.RecordAmendmentAction
+    payload: transition_models.RecordAmendmentInputPayload
+
+
+type ParsedTransitionInput = decision_models.TransitionCommand | PendingActivation | PendingAmendment
+
+
+def parse_close_input(
+    action: decision_models.CloseAction,
+    data: bytes | str | transition_models.InputPayload,
+) -> TransitionInputResult[decision_models.CloseCommand]:
+    """Decode close input for its selected close action; the direct human close decodes through it as well."""
+    if isinstance(payload := _decode(data, transition_models.CloseInputPayload), TransitionInputFailure):
+        return payload
+    return decision_models.CloseCommand(
+        action, work_models.CloseInput(payload.outcome, payload.reason, payload.human_decision)
+    )
 
 
 def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaustive action-to-input boundary
@@ -120,7 +144,7 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
         case decision_models.ActivateAction():
             if isinstance(payload := _decode(data, transition_models.ActivateInputPayload), TransitionInputFailure):
                 return payload
-            return payload
+            return PendingActivation(action, payload)
         case decision_models.BlockAttemptAction() | decision_models.BlockWorkItemAction():
             if isinstance(payload := _decode(data, transition_models.BlockInputPayload), TransitionInputFailure):
                 return payload
@@ -133,11 +157,7 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                 case _ as unreachable:
                     assert_never(unreachable)
         case decision_models.CloseAction():
-            if isinstance(payload := _decode(data, transition_models.CloseInputPayload), TransitionInputFailure):
-                return payload
-            return decision_models.CloseCommand(
-                action, work_models.CloseInput(payload.outcome, payload.reason, payload.human_decision)
-            )
+            return parse_close_input(action, data)
         case decision_models.CompleteAction():
             if isinstance(data, msgspec.Struct):
                 schema = data.schema if isinstance(data, transition_models.ReviewedCompleteInputPayload) else None
@@ -226,7 +246,11 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             return decision_models.PauseCommand(action, decision_batches.decisions_from_payload(payload))
         case decision_models.RecordAmendmentAction():
             # The transition adapter adds the review facts it observes for the attempt before deciding.
-            return _decode(data, transition_models.RecordAmendmentInputPayload)
+            if isinstance(
+                payload := _decode(data, transition_models.RecordAmendmentInputPayload), TransitionInputFailure
+            ):
+                return payload
+            return PendingAmendment(action, payload)
         case decision_models.ReturnForCorrectionAction():
             if isinstance(payload := _decode(data, transition_models.ReasonInputPayload), TransitionInputFailure):
                 return payload

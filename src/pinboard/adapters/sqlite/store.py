@@ -30,7 +30,9 @@ from pinboard.adapters.sqlite.artifacts import (
     read_artifact_reference_by_id,
     read_artifact_references_by_ids,
     read_brief_artifact_reference,
+    read_evidence_reference,
     read_latest_artifact_reference,
+    read_latest_evidence_reference,
     read_owned_reference,
 )
 from pinboard.adapters.sqlite.authority import (
@@ -964,6 +966,22 @@ class SQLiteWorkStore:
         try:
             with read_operation(connection):
                 return read_latest_artifact_reference(connection, kind, key)
+        finally:
+            connection.close()
+
+    def read_evidence_reference(self, key: str, revision: int) -> stored_state.EvidenceArtifactReference | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_evidence_reference(connection, key, revision)
+        finally:
+            connection.close()
+
+    def read_latest_evidence_reference(self, key: str) -> stored_state.EvidenceArtifactReference | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_latest_evidence_reference(connection, key)
         finally:
             connection.close()
 

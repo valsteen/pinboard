@@ -17,7 +17,7 @@ from pinboard.application import (
     work_brief_models,
 )
 from pinboard.domain import authority_models, decision_models, history, work_models
-from pinboard.domain.errors import DecisionFailure, DescribedCode
+from pinboard.domain.errors import DescribedCode
 from pinboard.domain.identifiers import (
     ActionId,
     ArtifactRefId,
@@ -1939,18 +1939,12 @@ type DefinitionView = history.DefinitionPayload | definition_compatibility.Histo
 
 
 def project_definition(definition: stored_state.StoredDefinition) -> DefinitionView:
-    """Project validated stored facts through their canonical boundary shape.
-
-    Invalid internal definition facts violate the persistence invariant and retain their diagnosis.
-    """
+    """Project a stored definition, validated where it entered, through its canonical boundary shape."""
     match definition:
         case definition_compatibility.HistoricalDefinitionV1():
             return definition
         case work_models.WorkItemDefinition():
-            projected = history.work_item_definition_payload(definition)
-            if isinstance(projected, DecisionFailure):
-                raise ValueError(projected.message)
-            return projected
+            return history.accepted_definition_payload(definition)
         case _ as unreachable:
             assert_never(unreachable)
 

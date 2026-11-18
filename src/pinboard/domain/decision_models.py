@@ -1034,6 +1034,7 @@ class ReviewReturnChange:
     attempt: AttemptId
     candidate: CandidateId
     authority_change: AttemptAuthorityChange
+    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -1135,6 +1136,7 @@ class CheckpointAcceptanceChange:
     authority_change: AttemptAuthorityChange
     unblocker: work_models.WaitingForHumanDecision
     """The derived question the retained pause waits on: whether to continue with the recorded remaining work."""
+    evidence: str
 
 
 @dataclass(frozen=True, slots=True)

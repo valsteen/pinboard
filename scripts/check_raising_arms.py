@@ -1,12 +1,15 @@
-"""Reject match arms in Pinboard production code whose body only raises.
+"""Reject match arms and isinstance guards in Pinboard production code that only raise over a closed family.
 
-An arm that raises claims that its members cannot arrive. Production code expresses that claim by narrowing the
-type its producer declares, returns a typed result when the producer can return the case, or keeps the raise as a
-declared exception at a named decoding or effect boundary. The check cannot see a subject's type, so it is
-syntactic: it reports every arm, over any subject, whose last statement raises and whose body cannot return, break
-or continue. The arms kept at a decoding or effect boundary are listed in `EXEMPTIONS` with their reason, and an
-exemption that matches no reported arm fails the check so the list cannot go stale. This module is outside the
-installed application and runs in process from the `verify-repo` group of `scripts/verify.py`.
+An arm or guard that raises claims that the members it selects cannot arrive. Production code expresses that claim
+by narrowing the type its producer declares, returns a typed result when the producer can return the case, or keeps
+the raise as a declared exception at a named decoding or effect boundary. The check cannot see a subject's type, so
+it is syntactic and reports two shapes: every match arm, over any subject, whose last statement raises and whose
+body cannot return, break or continue; and every `if` statement whose test calls `isinstance`, negated or not, and
+whose body cannot complete except by raising `AssertionError`. A guard raising any other exception type, and an
+`assert` statement, is left to review. The arms and guards kept at a decoding or effect boundary are listed in
+`EXEMPTIONS` with their reason, and an exemption that matches nothing the check reports fails the check so the list
+cannot go stale. This module is outside the installed application and runs in process from the `verify-repo` group
+of `scripts/verify.py`.
 """
 
 import ast
@@ -23,6 +26,14 @@ class RaisingArm:
     module: str
     function: str
     pattern: str
+    line: int
+
+
+@dataclass(frozen=True, slots=True)
+class RaisingGuard:
+    module: str
+    function: str
+    test: str
     line: int
 
 
@@ -128,6 +139,36 @@ def _always_raises(statements: Sequence[ast.stmt]) -> bool:
             return False
 
 
+def _raises_assertion(exception: ast.expr | None) -> bool:
+    match exception:
+        case ast.Name(id="AssertionError") | ast.Call(func=ast.Name(id="AssertionError")):
+            return True
+        case _:
+            return False
+
+
+def _always_raises_assertion(statements: Sequence[ast.stmt]) -> bool:
+    if not statements:
+        return False
+    last = statements[-1]
+    match last:
+        case ast.Raise(exc=exception):
+            return _raises_assertion(exception)
+        case ast.With() | ast.AsyncWith():
+            return _always_raises_assertion(last.body)
+        case ast.If():
+            return _always_raises_assertion(last.body) and _always_raises_assertion(last.orelse)
+        case _:
+            return False
+
+
+def _calls_isinstance(test: ast.expr) -> bool:
+    return any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "isinstance"
+        for node in ast.walk(test)
+    )
+
+
 def _is_nested_scope(node: ast.AST) -> bool:
     return isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda)
 
@@ -141,10 +182,12 @@ def _local_nodes(statements: Sequence[ast.stmt]) -> Iterator[ast.AST]:
         pending.extend(child for child in ast.iter_child_nodes(node) if not _is_nested_scope(child))
 
 
+def _cannot_leave(statements: Sequence[ast.stmt]) -> bool:
+    return not any(isinstance(node, ast.Return | ast.Break | ast.Continue) for node in _local_nodes(statements))
+
+
 def _only_raises(case: ast.match_case) -> bool:
-    return _always_raises(case.body) and not any(
-        isinstance(node, ast.Return | ast.Break | ast.Continue) for node in _local_nodes(case.body)
-    )
+    return _always_raises(case.body) and _cannot_leave(case.body)
 
 
 class _ArmCollector(ast.NodeVisitor):
@@ -152,6 +195,7 @@ class _ArmCollector(ast.NodeVisitor):
         self.module = module
         self.scope: list[str] = []
         self.arms: list[RaisingArm] = []
+        self.guards: list[RaisingGuard] = []
 
     def _visit_scope(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
         self.scope.append(node.name)
@@ -180,40 +224,69 @@ class _ArmCollector(ast.NodeVisitor):
                 self.arms.append(RaisingArm(self.module, ".".join(self.scope), pattern, case.pattern.lineno))
         self.generic_visit(node)
 
+    @override
+    def visit_If(self, node: ast.If) -> None:
+        if _calls_isinstance(node.test) and _always_raises_assertion(node.body) and _cannot_leave(node.body):
+            self.guards.append(RaisingGuard(self.module, ".".join(self.scope), ast.unparse(node.test), node.lineno))
+        self.generic_visit(node)
+
+
+def _collect(module: str, source: str) -> _ArmCollector:
+    collector = _ArmCollector(module)
+    collector.visit(ast.parse(source, filename=module))
+    return collector
+
 
 def raising_arms(module: str, source: str) -> tuple[RaisingArm, ...]:
     """Return every match arm in one module whose body only raises."""
-    collector = _ArmCollector(module)
-    collector.visit(ast.parse(source, filename=module))
-    return tuple(collector.arms)
+    return tuple(_collect(module, source).arms)
 
 
-def violations(arms: Sequence[RaisingArm], exemptions: Sequence[Exemption]) -> tuple[str, ...]:
-    """Describe each unexempted raising arm and each exemption that matches no reported arm."""
+def raising_guards(module: str, source: str) -> tuple[RaisingGuard, ...]:
+    """Return every isinstance `if` guard in one module whose body can only raise AssertionError."""
+    return tuple(_collect(module, source).guards)
+
+
+def violations(
+    arms: Sequence[RaisingArm], guards: Sequence[RaisingGuard], exemptions: Sequence[Exemption]
+) -> tuple[str, ...]:
+    """Describe each unexempted raising arm or guard and each exemption that matches nothing reported."""
     exempted = {(value.module, value.function, value.pattern) for value in exemptions}
-    reported = {(value.module, value.function, value.pattern) for value in arms}
-    unexempted = tuple(
-        f"src/pinboard/{arm.module}:{arm.line}: {arm.function}: match arm `case {arm.pattern}` only raises. "
+    reported = {
+        *((value.module, value.function, value.pattern) for value in arms),
+        *((value.module, value.function, value.test) for value in guards),
+    }
+    repair = (
         "Narrow what its producer declares, return a typed result, or stop and report; exempt it in "
         "scripts/check_raising_arms.py only when it is a declared exception at a decoding or effect boundary."
+    )
+    unexempted_arms = tuple(
+        f"src/pinboard/{arm.module}:{arm.line}: {arm.function}: match arm `case {arm.pattern}` only raises. {repair}"
         for arm in arms
         if (arm.module, arm.function, arm.pattern) not in exempted
     )
+    unexempted_guards = tuple(
+        f"src/pinboard/{guard.module}:{guard.line}: {guard.function}: isinstance guard `if {guard.test}` only "
+        f"raises AssertionError. {repair}"
+        for guard in guards
+        if (guard.module, guard.function, guard.test) not in exempted
+    )
     stale = tuple(
         f"scripts/check_raising_arms.py: exemption for src/pinboard/{value.module}: {value.function}: "
-        f"`case {value.pattern}` matches no raising arm; remove it."
+        f"`{value.pattern}` matches no raising arm or isinstance guard; remove it."
         for value in exemptions
         if (value.module, value.function, value.pattern) not in reported
     )
-    return (*unexempted, *stale)
+    return (*unexempted_arms, *unexempted_guards, *stale)
 
 
 def check_production_tree(root: Path) -> tuple[str, ...]:
     """Check every module under the repository's production package against the declared exemptions."""
     production = root / PRODUCTION_ROOT
-    arms = tuple(
-        arm
+    collected = tuple(
+        _collect(path.relative_to(production).as_posix(), path.read_text(encoding="utf-8"))
         for path in sorted(production.rglob("*.py"))
-        for arm in raising_arms(path.relative_to(production).as_posix(), path.read_text(encoding="utf-8"))
     )
-    return violations(arms, EXEMPTIONS)
+    arms = tuple(arm for collector in collected for arm in collector.arms)
+    guards = tuple(guard for collector in collected for guard in collector.guards)
+    return violations(arms, guards, EXEMPTIONS)

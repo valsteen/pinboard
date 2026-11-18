@@ -903,7 +903,7 @@ def decide_and_commit_review_submission(
             return decision_result
         allocation = transaction.read_checkpoint_mutation_allocation((candidate_snapshot,))
         mutation = project_review_submission_mutation(
-            allocation, decision_result, candidate_snapshot, candidate_snapshot_schema
+            allocation, decision_result, command.value.candidate, candidate_snapshot, candidate_snapshot_schema
         )
         return transaction.commit(mutation)
 

@@ -42,7 +42,7 @@ from pinboard.application.work_briefs import (
     decode_canonical_completion_review_package,
     decode_canonical_work_brief_review,
 )
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.history import CheckpointAcceptanceOutcome
 from pinboard.domain.identifiers import AttemptId, CheckpointId
@@ -728,6 +728,39 @@ class CheckpointPackageTest(CheckpointPackageSupport):
                 self.assertEqual(
                     before, {path: path.read_bytes() for path in fixture.work.rglob("*") if path.is_file()}
                 )
+
+    def test_checkpoint_acceptance_and_return_reload_their_history_bytes_from_a_fresh_store(self) -> None:
+        fixture = self.accepted_package_fixture()
+        returned_candidate = "b" * 40
+        self.record_review_candidate(fixture, returned_candidate)
+        reason = "Fix candidate B.\nKeep the sibling unchanged."
+        history_id = self.return_for_correction(fixture, reason, "fresh-store")
+        reloaded = SQLiteWorkStore(resolve_durable_roots(fixture.project, fixture.work).database_path)
+        receipts = {int(value.history_id): value for value in reloaded.validated_snapshot().transition_receipts}
+        returned = receipts[history_id]
+        self.assertEqual(
+            (
+                "return-for-correction/v1",
+                msgspec.json.encode({"reason": reason}, order="sorted"),
+                history.encode_transition_receipt_outcome(
+                    evidence=reason,
+                    outcome=decision_models.ActionKind.RETURN_FOR_CORRECTION.value,
+                    candidate=returned_candidate,
+                ),
+            ),
+            (returned.input_schema, bytes(returned.input_payload), bytes(returned.outcome_payload)),
+        )
+        accepted_input = json.loads(fixture.payload.read_text(encoding="utf-8"))
+        accepted = next(value for value in receipts.values() if value.outcome_schema == "checkpoint-acceptance/v2")
+        self.assertEqual(
+            history.encode_checkpoint_acceptance_outcome(
+                candidate=accepted_input["candidate"],
+                checkpoint=accepted_input["checkpoint"],
+                evidence=accepted_input["evidence"],
+                outcome=decision_models.ActionKind.ACCEPT_CHECKPOINT.value,
+            ),
+            bytes(accepted.outcome_payload),
+        )
 
     def test_review_job_selects_older_real_return_with_newer_review_and_third_candidate(self) -> None:
         fixture = self.accepted_package_fixture()

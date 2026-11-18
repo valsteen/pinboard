@@ -31,7 +31,7 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import query_models, stored_state
-from pinboard.application.artifact_publication import ArtifactWriteFailure, PublishedFailureDetails
+from pinboard.application.artifact_publication import ArtifactWriteCause, ArtifactWriteFailure, PublishedFailureDetails
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef
 from pinboard.application.candidate_identity import working_tree_identity
 from pinboard.application.candidate_snapshots import (
@@ -1132,7 +1132,7 @@ class CandidateSnapshotTest(unittest.TestCase):
 
         publication_error = ArtifactWriteFailure(
             reference.selector,
-            file_error,
+            ArtifactWriteCause(file_error.code, str(file_error)),
             PublishedFailureDetails(
                 (FailureFact("published_artifact_selector", reference.selector),),
                 (),

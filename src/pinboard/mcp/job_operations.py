@@ -662,21 +662,13 @@ def _dispatch_job(  # noqa: C901, PLR0912, PLR0915 - exact file decoding and dis
                 assert_never(unreachable)
     store = common.compose_store(durable)
     token.checkpoint()
-    selected = actions.select_current_actions(
-        store,
-        decision_models.Role.PROJECT,
-        observed_at=datetime.now(UTC),
-        lease_id=None,
-        generation=None,
-        action_id=ActionId(f"dispatch:{attempt_id}"),
+    action = actions.select_exact_project_action(
+        store, decision_models.DispatchAction, ActionId(f"dispatch:{attempt_id}"), datetime.now(UTC)
     )
-    if isinstance(selected, routing.RouteClassificationRequired):
-        selected = selected.failure()
-    if isinstance(selected, DecisionFailure):
-        return _job_failure(request.project_root, str(durable.work_root), schema, attempt_id, selected, None)
-    action = selected.actions[0]
-    if not isinstance(action, decision_models.DispatchAction):
-        raise AssertionError("Exact dispatch discovery returned a different action.")
+    if isinstance(action, routing.RouteClassificationRequired):
+        action = action.failure()
+    if isinstance(action, DecisionFailure):
+        return _job_failure(request.project_root, str(durable.work_root), schema, attempt_id, action, None)
     supplied_action = replace(
         action, capability=replace(action.capability, subject_revision=choice.receipt.subject_revision)
     )

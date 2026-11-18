@@ -3,11 +3,15 @@ import unittest
 from pathlib import Path
 
 from scripts import check_raising_arms
-from scripts.check_raising_arms import Exemption, raising_arms, violations
+from scripts.check_raising_arms import Exemption, raising_arms, raising_guards, violations
 
 
 def _arms(body: str) -> tuple[check_raising_arms.RaisingArm, ...]:
     return raising_arms("module.py", textwrap.dedent(body))
+
+
+def _guards(body: str) -> tuple[check_raising_arms.RaisingGuard, ...]:
+    return raising_guards("module.py", textwrap.dedent(body))
 
 
 class RaisingArmCheckTest(unittest.TestCase):
@@ -145,13 +149,96 @@ class RaisingArmCheckTest(unittest.TestCase):
             """
         )
         exempted = Exemption("module.py", "decode", "_", "Stored-schema decoding.")
-        self.assertEqual((), violations(arms, (exempted,)))
-        unexempted = violations(arms, ())
+        self.assertEqual((), violations(arms, (), (exempted,)))
+        unexempted = violations(arms, (), ())
         self.assertEqual(1, len(unexempted))
         self.assertIn("src/pinboard/module.py:6: decode: match arm `case _` only raises", unexempted[0])
-        stale = violations((), (exempted,))
+        stale = violations((), (), (exempted,))
         self.assertEqual(1, len(stale))
-        self.assertIn("matches no raising arm", stale[0])
+        self.assertIn("matches no raising arm or isinstance guard", stale[0])
+
+    def test_isinstance_guards_that_only_raise_assertion_error_are_reported(self) -> None:
+        source = """
+            def negated(value: int | str) -> int:
+                if not isinstance(value, int):
+                    raise AssertionError("an int")
+                return value
+
+            def plain(value: int | str) -> str:
+                if isinstance(value, int):
+                    raise AssertionError
+                return value
+
+            def both(value: int | str, flag: bool) -> int | str:
+                if isinstance(value, int) and flag:
+                    if value:
+                        raise AssertionError("nonzero")
+                    else:
+                        raise AssertionError("zero")
+                return value
+
+            class Owner:
+                def method(self, value: int | str) -> int | str:
+                    if isinstance(value, str):
+                        message = "a string"
+                        raise AssertionError(message)
+                    return value
+        """
+        self.assertEqual(
+            [
+                ("negated", "not isinstance(value, int)", 3),
+                ("plain", "isinstance(value, int)", 8),
+                ("both", "isinstance(value, int) and flag", 13),
+                ("Owner.method", "isinstance(value, str)", 22),
+            ],
+            [(guard.function, guard.test, guard.line) for guard in _guards(source)],
+        )
+
+    def test_guards_raising_other_exceptions_or_able_to_complete_are_not_reported(self) -> None:
+        source = """
+            def other(value: int | str) -> int:
+                if not isinstance(value, int):
+                    raise ValueError(value)
+                if isinstance(value, bool):
+                    raise TypeError(value)
+                return value
+
+            def partial(value: int | str, flag: bool) -> int | str:
+                if isinstance(value, int):
+                    if flag:
+                        raise AssertionError("flagged")
+                if isinstance(value, str):
+                    if flag:
+                        return value
+                    raise AssertionError("unflagged")
+                if value == 0:
+                    raise AssertionError("zero")
+                assert isinstance(value, int)
+                return value
+        """
+        self.assertEqual((), _guards(source))
+        self.assertEqual((), _arms(source))
+
+    def test_guard_exemptions_hide_their_guard_and_a_stale_guard_exemption_fails(self) -> None:
+        guards = _guards(
+            """
+            def publish(cause: Exception) -> None:
+                if not isinstance(cause, OSError):
+                    raise AssertionError(cause)
+            """
+        )
+        exempted = Exemption("module.py", "publish", "not isinstance(cause, OSError)", "Filesystem effect boundary.")
+        self.assertEqual((), violations((), guards, (exempted,)))
+        unexempted = violations((), guards, ())
+        self.assertEqual(1, len(unexempted))
+        self.assertIn(
+            "src/pinboard/module.py:3: publish: isinstance guard `if not isinstance(cause, OSError)` only raises "
+            "AssertionError",
+            unexempted[0],
+        )
+        stale = violations((), (), (exempted,))
+        self.assertEqual(1, len(stale))
+        self.assertIn("`not isinstance(cause, OSError)` matches no raising arm or isinstance guard", stale[0])
 
     def test_production_tree_has_no_unexempted_raising_arm_or_stale_exemption(self) -> None:
         self.assertEqual((), check_raising_arms.check_production_tree(Path(__file__).resolve().parent.parent))

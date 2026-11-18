@@ -96,6 +96,48 @@ class WorkItemDefinitionContractTest(unittest.TestCase):
             expect_success(work_item_definition_digest(definition())),
         )
 
+    def test_accepted_definitions_encode_to_their_validated_bytes_for_every_schema(self) -> None:
+        carried = work_models.CarriedWorkObligation(
+            work_models.ObligationId("carried-area"),
+            "The carried area is reachable.",
+            work_models.ObligationDeferralPolicy.ALLOWED,
+            work_models.ObligationOrigin(WorkItemId("survey-west"), 2, work_models.ObligationId("reachable-area")),
+        )
+        route = work_models.RouteFacts(
+            work_models.SizeClass.STANDARD,
+            work_models.ArchitectureImpact.NONE,
+            work_models.ExternalEffects.NONE,
+            declares_checkpoints=True,
+        )
+        cases = {
+            "pinboard-work-item-definition/v2": replace(
+                definition(),
+                dependencies=(
+                    WorkItemId("survey-west"),
+                    work_models.CheckpointDependency(WorkItemId("survey-east"), CheckpointId("east-mapped")),
+                ),
+            ),
+            "pinboard-work-item-definition/v3": replace(definition(), obligations=(*definition().obligations, carried)),
+            "pinboard-work-item-definition/v4": replace(
+                definition(), checkpoints=(CheckpointId("survey-routes"),), route_facts=route
+            ),
+            "pinboard-work-item-definition/v5": replace(
+                definition(),
+                obligations=(carried,),
+                checkpoints=(CheckpointId("survey-routes"),),
+                route_facts=route,
+            ),
+        }
+        for schema, value in cases.items():
+            with self.subTest(schema=schema):
+                validated = expect_success(work_item_definition_bytes(value))
+                self.assertIn(f'"schema":"{schema}"'.encode(), validated)
+                self.assertEqual(validated, history.accepted_definition_bytes(value))
+                self.assertEqual(
+                    expect_success(history.work_item_definition_payload(value)),
+                    history.accepted_definition_payload(value),
+                )
+
     def test_outbound_conversion_failure_maps_to_definition_invalid(self) -> None:
         with patch("pinboard.domain.history.msgspec.convert", side_effect=msgspec.ValidationError("invalid")):
             result = work_item_definition_bytes(definition())

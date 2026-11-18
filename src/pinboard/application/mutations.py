@@ -38,6 +38,7 @@ from pinboard.domain.history import (
 )
 from pinboard.domain.identifiers import (
     ArtifactRefId,
+    CandidateId,
     HistorySubjectId,
     HostId,
     SubjectId,
@@ -55,15 +56,12 @@ def _history_outcome(mutation: StoredStateMutation) -> HistoryOutcome:
                 ),
             )
         case CheckpointAcceptanceMutation(decision=decision):
-            evidence = decision.receipt.evidence
-            if evidence is None:
-                raise AssertionError("Checkpoint acceptance requires evidence.")
             return HistoryOutcome(
                 "checkpoint-acceptance/v2",
                 encode_checkpoint_acceptance_outcome(
                     candidate=str(decision.change.candidate),
                     checkpoint=str(decision.change.checkpoint),
-                    evidence=evidence,
+                    evidence=decision.change.evidence,
                     outcome=decision.receipt.outcome,
                 ),
             )
@@ -272,12 +270,10 @@ def project_transition_mutation(
         input_payload = work_models.CanonicalJson(
             msgspec.json.encode(decision_batches.resolution_payload(decision.change.resolved_decisions), order="sorted")
         )
-    elif decision.action.kind == decision_models.ActionKind.RETURN_FOR_CORRECTION:
-        if decision.receipt.evidence is None:
-            raise AssertionError("Returning for correction requires a reason.")
+    elif isinstance(decision.change, decision_models.ReviewReturnChange):
         input_schema = "return-for-correction/v1"
         input_payload = work_models.CanonicalJson(
-            msgspec.json.encode({"reason": decision.receipt.evidence}, order="sorted")
+            msgspec.json.encode({"reason": decision.change.reason}, order="sorted")
         )
     elif isinstance(decision.change, decision_models.WorkItemClosureChange):
         closure = decision.change
@@ -344,13 +340,15 @@ def project_transition_mutation(
 def project_review_submission_mutation(
     allocation: CheckpointMutationAllocation,
     decision: decision_models.TransitionDecision,
+    candidate: CandidateId,
     candidate_snapshot: EvidenceArtifactRef,
     candidate_snapshot_schema: str,
 ) -> ReviewSubmissionMutation:
-    """Project one review submission and its exact snapshot acceptance."""
+    """Project one review submission and its exact snapshot acceptance.
 
-    if not isinstance(decision.change, decision_models.ReviewSubmissionChange):
-        raise TypeError("review submission mutation requires a review-submission decision")
+    `candidate` is the submitted candidate, which the submit-review decision protects unchanged.
+    """
+
     (snapshot_id,) = _artifact_ids(allocation, (candidate_snapshot,))
     return ReviewSubmissionMutation(
         decision,
@@ -366,7 +364,7 @@ def project_review_submission_mutation(
             work_models.CanonicalJson(
                 msgspec.json.encode(
                     {
-                        "candidate": str(decision.change.protected_candidate_after),
+                        "candidate": str(candidate),
                         "snapshot_artifact_ref_id": int(snapshot_id),
                     },
                     order="sorted",

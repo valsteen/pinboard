@@ -8,7 +8,7 @@ import msgspec
 from pinboard.adapters import lifecycle_operations
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.file_io import DurableRoots
-from pinboard.adapters.transition_input import TransitionInputFailure, parse_transition_input
+from pinboard.adapters.transition_input import TransitionInputFailure, parse_close_input
 from pinboard.application import actions, ports, query_models
 from pinboard.cli import cli_commands, work_views
 from pinboard.cli.cli_output import write_json
@@ -82,27 +82,19 @@ def close(
     store: ports.WorkStore,
     command: cli_commands.CloseCommand,
 ) -> CommandResult[int]:
-    selected = actions.select_current_actions(
-        store,
-        decision_models.Role.PROJECT,
-        observed_at=datetime.now(UTC),
-        lease_id=None,
-        generation=None,
-        action_id=ActionId(f"close:{command.item_id}"),
+    selected_action = actions.select_exact_project_action(
+        store, decision_models.CloseAction, ActionId(f"close:{command.item_id}"), datetime.now(UTC)
     )
-    if isinstance(selected, routing.RouteClassificationRequired):
-        selected = selected.failure()
-    if isinstance(selected, DecisionFailure):
+    if isinstance(selected_action, routing.RouteClassificationRequired):
+        selected_action = selected_action.failure()
+    if isinstance(selected_action, DecisionFailure):
         return _with_close_alternatives(
             store,
             WorkItemId(command.item_id),
-            CommandFailure(selected.code, selected.message, selected.details),
+            CommandFailure(selected_action.code, selected_action.message, selected_action.details),
         )
-    selected_action = selected.actions[0]
-    if not isinstance(selected_action, decision_models.CloseAction):
-        raise AssertionError("The exact close identity must select a close action.")
     # The human types this command directly, so their --reason text is also their recorded close decision.
-    decoded = parse_transition_input(
+    decoded = parse_close_input(
         selected_action,
         msgspec.json.encode(
             {"human_decision": command.reason, "outcome": command.outcome.value, "reason": command.reason},
@@ -111,7 +103,6 @@ def close(
     )
     if isinstance(decoded, TransitionInputFailure):
         return CommandFailure(decoded.code, decoded.message, decoded.details)
-    assert isinstance(decoded, decision_models.CloseCommand)
     committed = lifecycle_operations.commit_direct_transition(
         store,
         ArtifactRepository(durable),

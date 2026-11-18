@@ -7,10 +7,10 @@ import msgspec
 
 from pinboard.application import artifact_identity, definition_compatibility, released_receipt_compatibility
 from pinboard.domain import authority_models, decision_models, initiatives, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.history import (
+    accepted_definition_bytes,
     decode_work_item_definition,
-    work_item_definition_bytes,
 )
 from pinboard.domain.identifiers import (
     ActionId,
@@ -42,12 +42,11 @@ def decode_stored_definition(payload: bytes) -> StoredDefinition:
     return definition
 
 
-def stored_definition_bytes(
-    definition: StoredDefinition,
-) -> DecisionResult[bytes, Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID]]:
+def stored_definition_bytes(definition: StoredDefinition) -> bytes:
+    """Encode a stored definition, validated where it entered, to its canonical bytes."""
     match definition:
         case work_models.WorkItemDefinition():
-            return work_item_definition_bytes(definition)
+            return accepted_definition_bytes(definition)
         case definition_compatibility.HistoricalDefinitionV1():
             return msgspec.json.encode(definition, order="sorted") + b"\n"
         case _ as unreachable:
@@ -196,7 +195,7 @@ class BriefArtifactReference:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceArtifactReference:
-    """An accepted reference whose kind is fixed to evidence; `verify_candidate_snapshot_context` converts it."""
+    """An accepted reference whose kind is fixed to evidence; `evidence_reference` converts a stored one."""
 
     artifact_ref_id: ArtifactRefId
     key: str
@@ -208,6 +207,24 @@ class EvidenceArtifactReference:
     accepted_revision: int
     created_at: datetime
     owners: tuple[artifact_identity.Ownership, ...]
+
+
+def evidence_reference(
+    reference: ArtifactReference, kind: Literal[work_models.ArtifactKind.EVIDENCE]
+) -> EvidenceArtifactReference:
+    """Fix the evidence kind that the reference's producer established, by checking it or by selecting under it."""
+    return EvidenceArtifactReference(
+        reference.artifact_ref_id,
+        reference.key,
+        reference.revision,
+        kind,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+        reference.accepted_revision,
+        reference.created_at,
+        reference.owners,
+    )
 
 
 @dataclass(frozen=True, slots=True)

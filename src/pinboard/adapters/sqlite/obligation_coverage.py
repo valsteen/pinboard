@@ -64,11 +64,16 @@ def read_facts(
 
 
 def planned_report(connection: sqlite3.Connection, item_id: WorkItemId) -> coverage.CoverageReport | None:
+    """Report coverage for the item's current planned replacement, as the cancellation preview stores it.
+
+    Stored-relation decoding boundary: the preview has no coverage-failure shape, so a recorded relation whose
+    source or replacement definition the store cannot return, or whose source holds a historical definition without
+    obligations, stops the preview as invalid stored state.
+    """
     facts = read_facts(connection, item_id, None)
     if facts.replacement_item is None:
         return None
     result = coverage.report(facts)
     if isinstance(result, DecisionFailure):
-        # A recorded relation must retain its definitions; corruption is an invariant defect.
         raise StorageError(StorageErrorCode.INVALID_STATE, result.message)
     return result

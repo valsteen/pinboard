@@ -221,6 +221,46 @@ class ActionSelection:
     snapshot: LedgerSnapshot
 
 
+def select_exact_project_action[ActionT: decision_models.Action](
+    reader: ports.WorkStore,
+    kind: type[ActionT],
+    action_id: ActionId,
+    observed_at: datetime,
+) -> (
+    DecisionResult[
+        ActionT,
+        Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.ATTEMPT_LEASE_REQUIRED],
+    ]
+    | routing.RouteClassificationRequired
+):
+    """Select the current legal project action of the caller's exact kind that the action identity names.
+
+    The identity names its kind, so no current legal action of that kind with that identity is the same
+    unavailable outcome as no current legal action with that identity.
+    """
+
+    selected = select_current_actions(
+        reader,
+        decision_models.Role.PROJECT,
+        observed_at=observed_at,
+        lease_id=None,
+        generation=None,
+        action_id=action_id,
+    )
+    if isinstance(selected, routing.RouteClassificationRequired):
+        return selected
+    if isinstance(selected, DecisionFailure):
+        return selected
+    for action in selected.actions:
+        if isinstance(action, kind):
+            return action
+    return DecisionFailure(
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        f"Action '{action_id}' is not currently legal for this role and lease.",
+        None,
+    )
+
+
 def completion_candidate_recovery(
     selected: query_models.CompletionContextFacts,
 ) -> query_models.CompletionCandidateRequired | None:

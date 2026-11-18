@@ -16,7 +16,7 @@ import msgspec
 
 from pinboard.adapters import candidate_evidence, review_operations
 from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode, FileIOError
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
     DifferentHeadCandidate,
@@ -213,8 +213,6 @@ def _publish_artifact(
 ) -> ArtifactPublication | PublishedTransitionFailure:
     publication = artifacts.publish(artifact)
     if isinstance(publication, ArtifactWriteFailure):
-        if not isinstance(publication.cause, FileIOError):
-            raise AssertionError("The filesystem publisher returned a non-file failure.")
         return _published_failure(
             publication.cause.code.value,
             str(publication.cause),
@@ -533,10 +531,7 @@ def _read_checkpoint_brief(
 def _small_work_review_basis(
     current: stored_state.ItemDefinitionRevision | None,
     scope: work_brief_models.AcceptedScope,
-) -> DecisionResult[
-    work_brief_models.SmallWorkReviewBasis,
-    Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID, DecisionFailureCode.TRANSITION_INPUT_INVALID],
-]:
+) -> DecisionResult[work_brief_models.SmallWorkReviewBasis, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
     if (
         current is None
         or current.revision != scope.revision
@@ -544,9 +539,7 @@ def _small_work_review_basis(
         or not isinstance(current.definition, work_models.WorkItemDefinition)
     ):
         return _unchanged("Small checkpoint acceptance requires its exact accepted definition.", candidate=None)
-    definition = history.work_item_definition_payload(current.definition)
-    if isinstance(definition, DecisionFailure):
-        return definition
+    definition = history.accepted_definition_payload(current.definition)
     if not isinstance(
         definition, (history.ClassifiedWorkItemDefinitionPayload, history.ClassifiedOriginWorkItemDefinitionPayload)
     ):

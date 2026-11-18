@@ -24,7 +24,6 @@ from pinboard.application import (
 )
 from pinboard.application.artifact_publication import PublishedFailureDetails, UnpublishedFailureDetails
 from pinboard.application.ports import GeneratedViewReader
-from pinboard.domain import work_models
 from pinboard.domain.errors import (
     ChangedSurface,
     FailureDetails,
@@ -196,9 +195,7 @@ def _refresh_published_ledger(
             assert_never(unreachable)
 
 
-def _review_evidence_reference(reference: stored_state.ArtifactReference) -> contracts.ReviewEvidenceReference:
-    if reference.kind != work_models.ArtifactKind.EVIDENCE:
-        raise ValueError(f"Expected an accepted evidence reference, got {reference.kind.value}.")
+def _review_evidence_reference(reference: stored_state.EvidenceArtifactReference) -> contracts.ReviewEvidenceReference:
     return contracts.ReviewEvidenceReference(
         int(reference.artifact_ref_id),
         "evidence",

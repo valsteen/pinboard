@@ -15,12 +15,14 @@ from pinboard.application import (
 )
 from pinboard.application.artifact_publication import (
     AcceptedArtifactPublication,
+    AcceptedEvidencePublication,
     ArtifactAcceptanceFailure,
     ArtifactPublisher,
     ArtifactReader,
     ArtifactWriteFailure,
     PublishedArtifactRejected,
     publish_accepted_artifact,
+    publish_accepted_evidence,
 )
 from pinboard.application.artifacts import (
     BriefArtifactRef,
@@ -722,7 +724,7 @@ def publish_brief_review_needs_correction(
     review: work_brief_models.WorkBriefReviewNeedsCorrection,
     accepted_at: datetime,
 ) -> (
-    AcceptedArtifactPublication
+    AcceptedEvidencePublication
     | ArtifactAcceptanceFailure
     | ArtifactWriteFailure
     | PublishedArtifactRejected
@@ -739,16 +741,13 @@ def publish_brief_review_needs_correction(
         return selected
     if (failure := validate_work_brief_review_needs_correction(review, selected.brief)) is not None:
         return failure
-    return publish_accepted_artifact(
+    return publish_accepted_evidence(
         store,
         publisher,
-        NewArtifact(
-            work_models.ArtifactKind.EVIDENCE,
-            needs_correction_review_key(selected.brief),
-            review.artifact_revision,
-            ".json",
-            canonical_work_brief_review_needs_correction_bytes(review),
-        ),
+        needs_correction_review_key(selected.brief),
+        review.artifact_revision,
+        ".json",
+        canonical_work_brief_review_needs_correction_bytes(review),
         accepted_at,
         artifact_identity.AttemptMembership(AttemptId(selected.brief.attempt_id), artifact_identity.AttemptRole.SOURCE),
     )
@@ -766,9 +765,7 @@ def read_brief_review_status(
     checkpoint = _review_checkpoint(selected.brief)
     if isinstance(checkpoint, work_brief_models.WorkBriefFailure):
         return checkpoint
-    reference = store.read_latest_artifact_reference(
-        work_models.ArtifactKind.EVIDENCE, needs_correction_review_key(selected.brief)
-    )
+    reference = store.read_latest_evidence_reference(needs_correction_review_key(selected.brief))
     if reference is None:
         return work_brief_models.NoNeedsCorrectionEvidence(selected)
     review = decode_canonical_work_brief_review_needs_correction(reader.read(reference))

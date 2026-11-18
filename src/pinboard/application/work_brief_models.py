@@ -916,7 +916,7 @@ class NoNeedsCorrectionEvidence:
 @dataclass(frozen=True, slots=True)
 class NeedsCorrectionEvidence:
     accepted_brief: AcceptedWorkBrief
-    reference: stored_state.ArtifactReference
+    reference: stored_state.EvidenceArtifactReference
     review: WorkBriefReviewNeedsCorrection
 
 

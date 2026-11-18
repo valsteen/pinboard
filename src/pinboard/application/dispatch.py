@@ -10,9 +10,9 @@ from pinboard.application.artifact_publication import (
     PublishedArtifactRejected,
     PublishedFailureDetails,
     accepted_publication_surfaces,
-    publish_accepted_artifact,
+    publish_accepted_evidence,
 )
-from pinboard.application.artifacts import BriefArtifactRef, NewArtifact
+from pinboard.application.artifacts import BriefArtifactRef
 from pinboard.application.dispatch_models import (
     DispatchArtifactPort,
     DispatchFailure,
@@ -40,7 +40,7 @@ class SelectedDispatch:
 
 @dataclass(frozen=True, slots=True)
 class AcceptedDispatchReview:
-    reference: stored_state.ArtifactReference
+    reference: stored_state.EvidenceArtifactReference
     changed_surfaces: tuple[PublicationSurface, ...]
 
 
@@ -144,16 +144,16 @@ def _find_ready_review_reference(
     store: WorkStore,
     attempt_id: AttemptId,
     review_key_sha256: str,
-) -> stored_state.ArtifactReference | None:
+) -> stored_state.EvidenceArtifactReference | None:
     key = f"{attempt_id}-brief-review-{review_key_sha256}"
-    return store.read_artifact_reference(work_models.ArtifactKind.EVIDENCE, key, 1)
+    return store.read_evidence_reference(key, 1)
 
 
 def find_dispatch_review(
     store: WorkStore,
     attempt_id: AttemptId,
     review_key_sha256: str,
-) -> DispatchResult[stored_state.ArtifactReference]:
+) -> DispatchResult[stored_state.EvidenceArtifactReference]:
     existing = _find_ready_review_reference(store, attempt_id, review_key_sha256)
     if existing is None:
         return DispatchFailure(DispatchRejectionCode.REVIEW_MISSING, "The exact ready brief review is absent.", None)
@@ -174,10 +174,13 @@ def publish_dispatch_review(
     if existing is not None:
         if artifacts.read(existing) == candidate:
             return AcceptedDispatchReview(existing, ())
-        rejected_acceptance = publish_accepted_artifact(
+        rejected_acceptance = publish_accepted_evidence(
             store,
             artifacts,
-            NewArtifact(work_models.ArtifactKind.EVIDENCE, f"{key}-rejected-{review_id}", 1, ".json", candidate),
+            f"{key}-rejected-{review_id}",
+            1,
+            ".json",
+            candidate,
             accepted_at,
             artifact_identity.AttemptMembership(attempt_id, artifact_identity.AttemptRole.SOURCE),
         )
@@ -209,10 +212,13 @@ def publish_dispatch_review(
                 alternatives=(),
             ),
         )
-    accepted_publication = publish_accepted_artifact(
+    accepted_publication = publish_accepted_evidence(
         store,
         artifacts,
-        NewArtifact(work_models.ArtifactKind.EVIDENCE, key, 1, ".json", candidate),
+        key,
+        1,
+        ".json",
+        candidate,
         accepted_at,
         artifact_identity.AttemptMembership(attempt_id, artifact_identity.AttemptRole.SOURCE),
     )

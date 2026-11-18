@@ -84,7 +84,7 @@ EXEMPTIONS = (
         "adapters/sqlite/migration/schema_unblockers_v12.py",
         "classify_holds",
         "_",
-        "Predecessor-schema decoding: a v12 held row must record a paused or blocked item state.",
+        "Predecessor-schema decoding: a v12 held row must record a paused, blocked or deferred item state.",
     ),
     Exemption(
         "cli/migration/schema_migration.py",

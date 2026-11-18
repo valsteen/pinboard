@@ -561,7 +561,7 @@ def validate_candidate_review(
     *,
     brief: work_brief_models.AcceptedBrief,
     candidate: str,
-    candidate_snapshot: stored_state.ArtifactReference,
+    candidate_snapshot: stored_state.ArtifactReference | stored_state.EvidenceArtifactReference,
     accepted_brief: stored_state.ArtifactReference | BriefArtifactRef,
     result_sha256: str,
     review_sha256: str,
@@ -699,7 +699,19 @@ def read_accepted_work_brief(
             "Small briefs take no brief review: a small item's one independent review is the commissioned candidate "
             "review after its coordinator submits the inline candidate.",
         )
-    return work_brief_models.AcceptedWorkBrief(reference, brief)
+    brief_reference = stored_state.BriefArtifactReference(
+        reference.artifact_ref_id,
+        reference.key,
+        reference.revision,
+        reference.kind,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+        reference.accepted_revision,
+        reference.created_at,
+        reference.owners,
+    )
+    return work_brief_models.AcceptedWorkBrief(brief_reference, brief)
 
 
 def publish_brief_review_needs_correction(

@@ -904,7 +904,7 @@ class WorkBriefReviewNeedsCorrection(msgspec.Struct, frozen=True, forbid_unknown
 class AcceptedWorkBrief:
     """An accepted v4 brief and its reference; only brief review reads it, so small briefs never appear."""
 
-    reference: stored_state.ArtifactReference
+    reference: stored_state.BriefArtifactReference
     brief: WorkBrief
 
 

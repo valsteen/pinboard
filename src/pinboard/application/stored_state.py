@@ -179,6 +179,38 @@ class ArtifactReference:
 
 
 @dataclass(frozen=True, slots=True)
+class BriefArtifactReference:
+    """An accepted reference whose kind is fixed to a brief; `read_accepted_work_brief` converts the stored one."""
+
+    artifact_ref_id: ArtifactRefId
+    key: str
+    revision: int
+    kind: Literal[work_models.ArtifactKind.BRIEF]
+    selector: str
+    content_sha256: str
+    size_bytes: int
+    accepted_revision: int
+    created_at: datetime
+    owners: tuple[artifact_identity.Ownership, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceArtifactReference:
+    """An accepted reference whose kind is fixed to evidence; `verify_candidate_snapshot_context` converts it."""
+
+    artifact_ref_id: ArtifactRefId
+    key: str
+    revision: int
+    kind: Literal[work_models.ArtifactKind.EVIDENCE]
+    selector: str
+    content_sha256: str
+    size_bytes: int
+    accepted_revision: int
+    created_at: datetime
+    owners: tuple[artifact_identity.Ownership, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class StoredWorkItem:
     item_id: WorkItemId
     state: StoredWorkItemState

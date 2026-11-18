@@ -125,7 +125,7 @@ class CandidateSnapshotReceiptInput(msgspec.Struct, frozen=True, forbid_unknown_
 @dataclass(frozen=True, slots=True)
 class CandidateSnapshotEvidence:
     snapshot: CandidateSnapshot
-    reference: stored_state.ArtifactReference
+    reference: stored_state.EvidenceArtifactReference
     receipt: stored_state.StoredTransitionReceipt
 
 
@@ -253,7 +253,19 @@ def verify_candidate_snapshot_context(
         )
     ):
         raise ValueError("The live review attempt does not match its immutable candidate snapshot.")
-    return CandidateSnapshotEvidence(snapshot, reference, receipt)
+    evidence_reference = stored_state.EvidenceArtifactReference(
+        reference.artifact_ref_id,
+        reference.key,
+        reference.revision,
+        reference.kind,
+        reference.selector,
+        reference.content_sha256,
+        reference.size_bytes,
+        reference.accepted_revision,
+        reference.created_at,
+        reference.owners,
+    )
+    return CandidateSnapshotEvidence(snapshot, evidence_reference, receipt)
 
 
 def validate_candidate_snapshot_history(

@@ -12,6 +12,8 @@ from pinboard.adapters.sqlite.database import initialize_database
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.adapters.transition_input import (
     ParsedTransitionInput,
+    PendingActivation,
+    PendingAmendment,
     TransitionInputFailure,
     parse_transition_input,
 )
@@ -31,9 +33,9 @@ def expect_transition_command(
 ) -> decision_models.TransitionCommand:
     if isinstance(value, TransitionInputFailure):
         raise AssertionError(str(value))
-    if isinstance(value, action_models.ActivateInputPayload):
+    if isinstance(value, PendingActivation):
         raise AssertionError("Expected a domain command, received an unresolved activation request.")
-    if isinstance(value, action_models.RecordAmendmentInputPayload):
+    if isinstance(value, PendingAmendment):
         raise AssertionError("Expected a domain command, received an unobserved amendment request.")
     return value
 
@@ -193,7 +195,7 @@ class TransitionInputTest(unittest.TestCase):
         activation_action = action(decision_models.ActivateAction, WorkItemId("item-1"))
         activation = parse_transition_input(activation_action, '{"brief_artifact_ref_id":7}')
         self.assertEqual(
-            action_models.ActivateInputPayload(ArtifactRefId(7)),
+            PendingActivation(activation_action, action_models.ActivateInputPayload(ArtifactRefId(7))),
             activation,
         )
         resume_action = action(decision_models.ResumeAction, WorkItemId("item-1"))
@@ -406,7 +408,7 @@ class TransitionInputTest(unittest.TestCase):
                 ):
                     self.assertEqual(decoded, parse_transition_input(selected_action, typed_payload))
                 if isinstance(selected_action, decision_models.ActivateAction):
-                    self.assertIsInstance(decoded, action_models.ActivateInputPayload)
+                    self.assertIsInstance(decoded, PendingActivation)
                 else:
                     expect_transition_command(decoded)
                 schema = encoded_action_input_schema(selected_action.kind)

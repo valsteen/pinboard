@@ -123,6 +123,22 @@ def read_latest_artifact_reference(
     return None if row is None else decode_reference_rows(connection, [row])[0]
 
 
+def read_evidence_reference(
+    connection: sqlite3.Connection, key: str, revision: int
+) -> stored_state.EvidenceArtifactReference | None:
+    kind = work_models.ArtifactKind.EVIDENCE
+    reference = read_artifact_reference(connection, kind, key, revision)
+    return None if reference is None else stored_state.evidence_reference(reference, kind)
+
+
+def read_latest_evidence_reference(
+    connection: sqlite3.Connection, key: str
+) -> stored_state.EvidenceArtifactReference | None:
+    kind = work_models.ArtifactKind.EVIDENCE
+    reference = read_latest_artifact_reference(connection, kind, key)
+    return None if reference is None else stored_state.evidence_reference(reference, kind)
+
+
 def read_artifact_reference_by_id(
     connection: sqlite3.Connection, artifact_ref_id: ArtifactRefId
 ) -> stored_state.ArtifactReference | None:

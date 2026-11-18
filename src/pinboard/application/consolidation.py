@@ -32,9 +32,7 @@ def binding(preview: models.Preview, work_root: Path) -> models.Binding:
 def _definition_change(
     item_id: WorkItemId, revision: int, digest: str, definition: work_models.WorkItemDefinition
 ) -> models.DefinitionChange:
-    payload = history.work_item_definition_payload(definition)
-    assert not isinstance(payload, DecisionFailure)
-    return models.DefinitionChange(item_id, revision, digest, payload)
+    return models.DefinitionChange(item_id, revision, digest, history.accepted_definition_payload(definition))
 
 
 def _selected_items(facts: models.Facts) -> tuple[models.SelectedItem, ...]:
@@ -57,8 +55,7 @@ def _selected_items(facts: models.Facts) -> tuple[models.SelectedItem, ...]:
                 attempt.protected_candidate_revision,
                 attempt.brief_artifact_ref_id,
             )
-        payload = history.work_item_definition_payload(anchor.definition)
-        assert not isinstance(payload, DecisionFailure)
+        payload = history.accepted_definition_payload(anchor.definition)
         revision = snapshot.subject_revision(item.work_item_id)
         assert revision is not None
         values.append(

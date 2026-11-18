@@ -19,7 +19,7 @@ from pinboard.adapters.files.file_io import (
     ensure_directory_chain,
 )
 from pinboard.application import stored_state
-from pinboard.application.artifact_publication import ArtifactWriteFailure, PublishedFailureDetails
+from pinboard.application.artifact_publication import ArtifactWriteCause, ArtifactWriteFailure, PublishedFailureDetails
 from pinboard.application.artifacts import ArtifactPublication, ArtifactRef, BriefArtifactRef, NewArtifact
 from pinboard.domain import work_models
 from pinboard.domain.errors import ChangedSurface, FailureFact
@@ -61,7 +61,7 @@ def _build_selector(kind: work_models.ArtifactKind, key: str, revision: int, suf
 
 
 def _validate_and_resolve_reference_path(
-    reference: ArtifactRef | BriefArtifactRef | stored_state.ArtifactReference,
+    reference: ArtifactRef | BriefArtifactRef | stored_state.ArtifactReference | stored_state.EvidenceArtifactReference,
 ) -> Path:
     pure = PurePosixPath(reference.selector)
     parts = pure.parts
@@ -88,7 +88,7 @@ def _validate_and_resolve_reference_path(
 
 def read_reference(
     work_root: Path,
-    reference: ArtifactRef | BriefArtifactRef | stored_state.ArtifactReference,
+    reference: ArtifactRef | BriefArtifactRef | stored_state.ArtifactReference | stored_state.EvidenceArtifactReference,
 ) -> bytes:
     relative = _validate_and_resolve_reference_path(reference)
     try:
@@ -108,7 +108,7 @@ def read_reference(
 
 def verify_reference(
     work_root: Path,
-    reference: ArtifactRef | BriefArtifactRef | stored_state.ArtifactReference,
+    reference: ArtifactRef | BriefArtifactRef | stored_state.ArtifactReference | stored_state.EvidenceArtifactReference,
 ) -> None:
     read_reference(work_root, reference)
 
@@ -130,7 +130,7 @@ def _publish_revision(roots: DurableRoots, artifact: NewArtifact) -> ArtifactPub
         except ImmutableFilePublishedError as error:
             return ArtifactWriteFailure(
                 reference.selector,
-                error,
+                ArtifactWriteCause(error.code, str(error)),
                 PublishedFailureDetails(
                     (FailureFact("published_artifact_selector", reference.selector),),
                     (),
@@ -160,7 +160,9 @@ class ArtifactRepository:
     def work_root(self) -> Path:
         return self.roots.work_root
 
-    def read(self, reference: stored_state.ArtifactReference | BriefArtifactRef) -> bytes:
+    def read(
+        self, reference: stored_state.ArtifactReference | stored_state.EvidenceArtifactReference | BriefArtifactRef
+    ) -> bytes:
         return read_reference(self.work_root, reference)
 
     def publish(self, artifact: NewArtifact) -> ArtifactPublication | ArtifactWriteFailure:

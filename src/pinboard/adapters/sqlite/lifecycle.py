@@ -31,7 +31,7 @@ from pinboard.application.ports import StaleWriteCode
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.history import (
-    work_item_definition_bytes,
+    accepted_definition_bytes,
 )
 from pinboard.domain.identifiers import (
     ActionId,
@@ -1139,14 +1139,11 @@ def read_item_definition_history(
 
 
 def _definition_revision_values(value: stored_state.ItemDefinitionRevision) -> tuple[str | int | bytes | None, ...]:
-    payload = work_item_definition_bytes(current_definition_anchor(value).definition)
-    if isinstance(payload, DecisionFailure):
-        raise StorageError(StorageErrorCode.INVARIANT_VIOLATION, payload.message)
     return (
         value.item_id,
         value.revision,
         value.digest,
-        payload,
+        accepted_definition_bytes(current_definition_anchor(value).definition),
         value.reason,
         value.source_task_id,
         value.before_digest,

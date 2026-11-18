@@ -350,6 +350,70 @@ def work_item_definition_payload(
         return DecisionFailure(DecisionFailureCode.ITEM_DEFINITION_INVALID, f"Definition is invalid: {error}", None)
 
 
+def accepted_definition_payload(definition: work_models.WorkItemDefinition) -> DefinitionPayload:
+    """Build the canonical record of a definition that was validated where it entered.
+
+    A definition enters through `work_item_definition_digest`, which validates this record's field constraints, or
+    decodes from stored canonical bytes. Direct construction therefore yields the record and bytes that validation
+    produced, without validating Pinboard's own value again.
+    """
+    fields = (
+        definition.title,
+        definition.objective,
+        definition.hypothesis,
+        definition.evidence,
+        definition.scope,
+        definition.non_scope,
+        definition.acceptance_criteria,
+        tuple(
+            CheckpointDependencyPayload(value.item_id, value.checkpoint_id)
+            if isinstance(value, work_models.CheckpointDependency)
+            else value
+            for value in definition.dependencies
+        ),
+        definition.effect,
+        definition.unlock,
+        definition.checkout_policy,
+    )
+    route = definition.route_facts
+    route_facts = (
+        None
+        if route is None
+        else RouteFactsPayload(
+            route.size_class, route.architecture_impact, route.external_effects, route.declares_checkpoints
+        )
+    )
+    if any(isinstance(value, work_models.CarriedWorkObligation) for value in definition.obligations):
+        obligations = tuple(
+            OriginObligationPayload(
+                value.obligation_id,
+                value.statement,
+                value.deferral_policy,
+                ObligationOriginPayload(
+                    value.origin.item_id, value.origin.definition_revision, value.origin.obligation_id
+                )
+                if isinstance(value, work_models.CarriedWorkObligation)
+                else None,
+            )
+            for value in definition.obligations
+        )
+        if route_facts is None:
+            return OriginWorkItemDefinitionPayload(*fields, obligations, definition.checkpoints)
+        return ClassifiedOriginWorkItemDefinitionPayload(*fields, obligations, definition.checkpoints, route_facts)
+    plain = tuple(
+        WorkObligationPayload(value.obligation_id, value.statement, value.deferral_policy)
+        for value in definition.obligations
+    )
+    if route_facts is None:
+        return WorkItemDefinitionPayload(*fields, plain, definition.checkpoints)
+    return ClassifiedWorkItemDefinitionPayload(*fields, plain, definition.checkpoints, route_facts)
+
+
+def accepted_definition_bytes(definition: work_models.WorkItemDefinition) -> bytes:
+    """Encode a definition validated where it entered; its digest is the SHA-256 of these bytes."""
+    return _encoded_record(accepted_definition_payload(definition))
+
+
 def work_item_definition_bytes(
     definition: work_models.WorkItemDefinition,
 ) -> DecisionResult[bytes, DefinitionInvalidCode]:

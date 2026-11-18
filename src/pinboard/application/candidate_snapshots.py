@@ -253,19 +253,7 @@ def verify_candidate_snapshot_context(
         )
     ):
         raise ValueError("The live review attempt does not match its immutable candidate snapshot.")
-    evidence_reference = stored_state.EvidenceArtifactReference(
-        reference.artifact_ref_id,
-        reference.key,
-        reference.revision,
-        reference.kind,
-        reference.selector,
-        reference.content_sha256,
-        reference.size_bytes,
-        reference.accepted_revision,
-        reference.created_at,
-        reference.owners,
-    )
-    return CandidateSnapshotEvidence(snapshot, evidence_reference, receipt)
+    return CandidateSnapshotEvidence(snapshot, stored_state.evidence_reference(reference, reference.kind), receipt)
 
 
 def validate_candidate_snapshot_history(

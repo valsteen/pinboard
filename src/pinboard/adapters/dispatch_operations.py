@@ -276,7 +276,7 @@ class ReviewedCurrentCorrectionStart:
 class ReturnedEvidence:
     receipt: stored_state.StoredTransitionReceipt
     identity: work_brief_models.PortableArtifactIdentity
-    reference: stored_state.ArtifactReference
+    reference: stored_state.EvidenceArtifactReference
     snapshot: candidate_snapshots.CandidateSnapshot
     reason: str
 
@@ -307,7 +307,7 @@ type CorrectionPreparation = CorrectionDispatch | CurrentCandidateCorrectionDisp
 class CorrectionContext:
     effective_brief: work_brief_models.WorkBrief
     starting_candidate: work_brief_models.PortableArtifactIdentity
-    starting_candidate_reference: stored_state.ArtifactReference
+    starting_candidate_reference: stored_state.EvidenceArtifactReference
     starting_snapshot: candidate_snapshots.CandidateSnapshot
     correction_reason: str
     correction_history_id: HistoryId
@@ -332,8 +332,8 @@ class CorrectionSources:
 @dataclass(frozen=True, slots=True)
 class ReplacementReadiness:
     candidate: str
-    proof: stored_state.ArtifactReference
-    ready_review: stored_state.ArtifactReference
+    proof: stored_state.EvidenceArtifactReference
+    ready_review: stored_state.EvidenceArtifactReference
     changed_surfaces: tuple[PublicationSurface, ...]
 
 
@@ -969,11 +969,12 @@ def _replacement_readiness_context(
         return _review_validation_failure(
             failure, review.contract_review, brief, _ReviewBindingSource.BRIEF_REVIEW_STATUS
         )
-    snapshot = _read_returned_snapshot(
+    returned = _read_matching_returned_evidence(
         store, artifacts, brief, history_id, review.starting_candidate, review.correction_input.reason
     )
-    if isinstance(snapshot, CorrectionReadFailure):
-        return snapshot.dispatch_failure()
+    if isinstance(returned, CorrectionReadFailure):
+        return returned.dispatch_failure()
+    snapshot = returned.snapshot
     if (
         failure := _validate_replacement_candidate(source_checkout_root, brief, snapshot, current_candidate)
     ) is not None:
@@ -1014,7 +1015,7 @@ def prepare_replacement_readiness(
     )
     surfaces: tuple[PublicationSurface, ...] = ()
     selectors: tuple[FailureFact, ...] = ()
-    publications: list[stored_state.ArtifactReference] = []
+    publications: list[stored_state.EvidenceArtifactReference] = []
     try:
         for key, content in (
             (proof_key, proof_bytes),
@@ -1120,7 +1121,7 @@ def _validate_correction_history(
 
 
 def _starting_candidate_identity(
-    reference: stored_state.ArtifactReference,
+    reference: stored_state.ArtifactReference | stored_state.EvidenceArtifactReference,
 ) -> work_brief_models.PortableArtifactIdentity:
     return work_brief_models.PortableArtifactIdentity(
         "candidate",
@@ -1159,9 +1160,9 @@ def read_returned_evidence(
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID, "Canonical return reason is unavailable.", None
         )
     try:
-        snapshot = candidate_snapshots.verify_candidate_snapshot_context(
+        verified = candidate_snapshots.verify_candidate_snapshot_context(
             context, outcome.candidate, artifacts.read(context.reference)
-        ).snapshot
+        )
     except (ArtifactError, msgspec.DecodeError, ValueError) as error:
         return CorrectionReadFailure(
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_INVALID,
@@ -1169,19 +1170,19 @@ def read_returned_evidence(
             "Report this selected evidence defect; do not reconstruct or overwrite historical bytes.",
             _correction_read_details((), ()),
         )
-    reference = context.reference
+    reference = verified.reference
     identity = _starting_candidate_identity(reference)
-    return ReturnedEvidence(receipt, identity, reference, snapshot, outcome.evidence)
+    return ReturnedEvidence(receipt, identity, reference, verified.snapshot, outcome.evidence)
 
 
-def _read_returned_snapshot(
+def _read_matching_returned_evidence(
     store: WorkStore,
     artifacts: DispatchArtifactPort,
     brief: work_brief_models.WorkBrief,
     correction_history_id: HistoryId,
     identity: work_brief_models.PortableArtifactIdentity,
     reason: str,
-) -> candidate_snapshots.CandidateSnapshot | CorrectionReadFailure:
+) -> ReturnedEvidence | CorrectionReadFailure:
     evidence = read_returned_evidence(store, artifacts, AttemptId(brief.attempt_id), correction_history_id)
     if isinstance(evidence, CorrectionReadFailure):
         return evidence
@@ -1215,7 +1216,7 @@ def _read_returned_snapshot(
             "Source review does not identify the canonical return reason.",
             _correction_read_details((), (FailureMismatch("correction_reason", evidence.reason, reason),)),
         )
-    return evidence.snapshot
+    return evidence
 
 
 def _validate_replacement_candidate(
@@ -1295,9 +1296,10 @@ def _read_correction_snapshot(
     reason: str,
 ) -> DispatchResult[candidate_snapshots.CandidateSnapshot]:
     """Verify selected historical bytes and require the exact current correction starting checkout; no effects."""
-    snapshot = _read_returned_snapshot(store, artifacts, brief, correction_history_id, identity, reason)
-    if isinstance(snapshot, CorrectionReadFailure):
-        return snapshot.dispatch_failure()
+    returned = _read_matching_returned_evidence(store, artifacts, brief, correction_history_id, identity, reason)
+    if isinstance(returned, CorrectionReadFailure):
+        return returned.dispatch_failure()
+    snapshot = returned.snapshot
     if mismatches := _returned_checkout_mismatches(source_checkout_root, brief, snapshot):
         return DispatchFailure(
             DispatchErrorCode.DISPATCH_BRIEF_REVIEW_STALE,
@@ -1317,9 +1319,9 @@ def _returned_checkout(
     reason: str,
 ) -> CorrectionCheckout:
     """Classify the checkout against the returned snapshot without failing; the caller's own checks still report."""
-    snapshot = _read_returned_snapshot(store, artifacts, brief, correction_history_id, identity, reason)
-    if isinstance(snapshot, CorrectionReadFailure) or _returned_checkout_mismatches(
-        source_checkout_root, brief, snapshot
+    returned = _read_matching_returned_evidence(store, artifacts, brief, correction_history_id, identity, reason)
+    if isinstance(returned, CorrectionReadFailure) or _returned_checkout_mismatches(
+        source_checkout_root, brief, returned.snapshot
     ):
         return CorrectionCheckout.UNVERIFIED
     return CorrectionCheckout.RETURNED_CANDIDATE
@@ -1414,7 +1416,7 @@ def _read_correction_start(
                 choice.review.correction_input.reason,
             )
         case CurrentCandidateCorrectionDispatch(binding=binding):
-            snapshot = _read_returned_snapshot(
+            returned = _read_matching_returned_evidence(
                 store,
                 artifacts,
                 brief,
@@ -1422,8 +1424,9 @@ def _read_correction_start(
                 choice.review.starting_candidate,
                 choice.review.correction_input.reason,
             )
-            if isinstance(snapshot, CorrectionReadFailure):
-                return snapshot.dispatch_failure()
+            if isinstance(returned, CorrectionReadFailure):
+                return returned.dispatch_failure()
+            snapshot = returned.snapshot
             if (
                 failure := _validate_current_correction_candidate(source_checkout_root, brief, snapshot, binding)
             ) is not None:
@@ -1581,11 +1584,14 @@ def read_correction_context(  # noqa: C901, PLR0912 - one read binds current ret
         failure := validate_executable_work_brief(store, brief, root.classify_checkout(source_checkout_root))
     ) is not None:
         return CorrectionReadFailure(DispatchErrorCode.DISPATCH_BRIEF_INVALID, failure.message, None)
-    reference = facts.returned_candidate_snapshot.reference
-    identity = _starting_candidate_identity(reference)
-    snapshot = _read_returned_snapshot(store, artifacts, brief, correction_history_id, identity, outcome.evidence)
-    if isinstance(snapshot, CorrectionReadFailure):
-        return snapshot
+    identity = _starting_candidate_identity(facts.returned_candidate_snapshot.reference)
+    returned = _read_matching_returned_evidence(
+        store, artifacts, brief, correction_history_id, identity, outcome.evidence
+    )
+    if isinstance(returned, CorrectionReadFailure):
+        return returned
+    reference = returned.reference
+    snapshot = returned.snapshot
     # Source refresh and snapshot checks read only identity, branch and base, which refresh never changes.
     match start:
         case ReturnedCorrectionStart():

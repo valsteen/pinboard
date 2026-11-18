@@ -49,7 +49,7 @@ from pinboard.application import (
     work_briefs,
 )
 from pinboard.application.artifact_publication import (
-    AcceptedArtifactPublication,
+    AcceptedEvidencePublication,
     ArtifactAcceptanceFailure,
     ArtifactWriteFailure,
     PublishedArtifactRejected,
@@ -502,7 +502,7 @@ def _correction_snapshot_metadata(
 
 
 def _correction_snapshot_verification(
-    reference: stored_state.ArtifactReference, project_root: str, work_root: str
+    reference: stored_state.EvidenceArtifactReference, project_root: str, work_root: str
 ) -> contracts.ArtifactVerifyRequest:
     return contracts.ArtifactVerifyRequest(
         project_root,
@@ -1241,7 +1241,7 @@ def _brief_review_status(
 
 
 def _brief_review_publication_result(
-    publication: AcceptedArtifactPublication,
+    publication: AcceptedEvidencePublication,
     correction: contracts.BriefReviewCorrection,
     durable: DurableRoots,
     store: WorkStore,

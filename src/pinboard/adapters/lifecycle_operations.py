@@ -12,7 +12,13 @@ from pinboard.adapters.dependency_operations import resolve_dependency_brief_pin
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.root import classify_checkout, observe_checkout_identity
-from pinboard.adapters.transition_input import ParsedTransitionInput, TransitionInputFailure, parse_transition_input
+from pinboard.adapters.transition_input import (
+    ParsedTransitionInput,
+    PendingActivation,
+    PendingAmendment,
+    TransitionInputFailure,
+    parse_transition_input,
+)
 from pinboard.application import action_models, actions, ports, service, work_brief_models
 from pinboard.application.artifacts import WorkBriefIdentity
 from pinboard.application.mutation_models import CommittedEffect
@@ -76,11 +82,10 @@ def resolve_activation(
     source_checkout: Path,
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
-    action: decision_models.Action,
-    decoded: action_models.ActivateInputPayload,
+    pending: PendingActivation,
 ) -> DecisionResult[decision_models.ActivateCommand, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
-    if not isinstance(action, decision_models.ActivateAction):
-        raise AssertionError("Activate input requires an activate action.")
+    action = pending.action
+    decoded = pending.payload
     artifact_ref_id = ArtifactRefId(decoded.brief_artifact_ref_id)
     reference = store.read_artifact_reference_by_id(artifact_ref_id)
     if reference is None or reference.kind != work_models.ArtifactKind.BRIEF:
@@ -151,11 +156,10 @@ def resolve_activation(
 def resolve_amendment(
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
-    action: decision_models.Action,
-    decoded: action_models.RecordAmendmentInputPayload,
+    pending: PendingAmendment,
 ) -> DecisionResult[decision_models.RecordAmendmentCommand, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
-    if not isinstance(action, decision_models.RecordAmendmentAction):
-        raise AssertionError("Amendment input requires a record-amendment action.")
+    action = pending.action
+    decoded = pending.payload
     observed = review_operations.observe_amendment_review(store, artifacts, action.capability.subject)
     if isinstance(observed, DecisionFailure):
         return observed
@@ -257,10 +261,10 @@ def select_transition(
             Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE, DecisionFailureCode.TRANSITION_INPUT_INVALID]
         ]
     )
-    if isinstance(decoded, action_models.ActivateInputPayload):
-        command = resolve_activation(source_checkout, store, artifacts, action, decoded)
-    elif isinstance(decoded, action_models.RecordAmendmentInputPayload):
-        command = resolve_amendment(store, artifacts, action, decoded)
+    if isinstance(decoded, PendingActivation):
+        command = resolve_activation(source_checkout, store, artifacts, decoded)
+    elif isinstance(decoded, PendingAmendment):
+        command = resolve_amendment(store, artifacts, decoded)
     else:
         command = decoded
     if isinstance(command, DecisionFailure):

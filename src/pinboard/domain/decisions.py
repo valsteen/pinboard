@@ -916,12 +916,11 @@ def _accepted_checkpoint_decision(
     change: decision_models.CheckpointAcceptanceChange,
     *,
     work_item_id: WorkItemId,
-    evidence: str,
 ) -> decision_models.CheckpointAcceptanceDecision:
     return decision_models.CheckpointAcceptanceDecision(
         action,
         change,
-        _build_transition_receipt(action, work_item_id, action.kind.value, evidence, now),
+        _build_transition_receipt(action, work_item_id, action.kind.value, change.evidence, now),
         released_holds_for_change(snapshot, change),
     )
 
@@ -1702,6 +1701,7 @@ def _return_for_correction(
             attempt_id,
             attempt.protected_candidate_revision,
             authority_change,
+            value.reason,
         ),
         work_item_id=item.work_item_id,
         outcome=None,
@@ -1880,9 +1880,9 @@ def _accept_checkpoint(
             value.candidate,
             authority_change,
             checkpoint_unblocker(item.work_item_id, value.checkpoint),
+            value.evidence,
         ),
         work_item_id=item.work_item_id,
-        evidence=value.evidence,
     )
 
 

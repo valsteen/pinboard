@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, override
 
 from pinboard.application import artifact_identity, query_models, stored_state
 from pinboard.application.artifacts import (
@@ -18,6 +18,7 @@ from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
     DecisionResult,
+    DescribedCode,
     EffectDisposition,
     FailureAction,
     FailureDetails,
@@ -35,12 +36,21 @@ class ArtifactPublisher(Protocol):
 
 
 class ArtifactReader(Protocol):
-    def read(self, reference: stored_state.ArtifactReference | BriefArtifactRef) -> bytes: ...
+    def read(
+        self, reference: stored_state.ArtifactReference | stored_state.EvidenceArtifactReference | BriefArtifactRef
+    ) -> bytes: ...
 
 
 @dataclass(frozen=True, slots=True)
 class AcceptedArtifactPublication:
     reference: stored_state.ArtifactReference
+    artifact_created: bool
+    ledger_changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedEvidencePublication:
+    reference: stored_state.EvidenceArtifactReference
     artifact_created: bool
     ledger_changed: bool
 
@@ -78,9 +88,21 @@ class ArtifactAcceptanceFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactWriteCause:
+    """The publisher's write failure: its stable code and the diagnostic it reported, which `str` presents."""
+
+    code: DescribedCode
+    diagnostic: str
+
+    @override
+    def __str__(self) -> str:
+        return self.diagnostic
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactWriteFailure:
     selector: str
-    cause: Exception
+    cause: ArtifactWriteCause
     details: PublishedFailureDetails
 
 
@@ -92,7 +114,9 @@ class PublishedArtifactRejected:
     details: PublishedFailureDetails
 
 
-def accepted_publication_surfaces(publication: AcceptedArtifactPublication) -> tuple[PublicationSurface, ...]:
+def accepted_publication_surfaces(
+    publication: AcceptedArtifactPublication | AcceptedEvidencePublication,
+) -> tuple[PublicationSurface, ...]:
     return (
         *((ChangedSurface.IMMUTABLE_ARTIFACT,) if publication.artifact_created else ()),
         *((ChangedSurface.ACCEPTED_ARTIFACT_REFERENCE, ChangedSurface.LEDGER) if publication.ledger_changed else ()),
@@ -152,6 +176,34 @@ def publish_accepted_artifact(
             )
         return accepted
     return AcceptedArtifactPublication(accepted.reference, artifact_created, accepted.ledger_changed)
+
+
+def publish_accepted_evidence(
+    store: WorkStore,
+    publisher: ArtifactPublisher,
+    key: str,
+    revision: int,
+    suffix: str,
+    content: bytes,
+    accepted_at: datetime,
+    ownership: artifact_identity.Ownership | None,
+) -> DecisionResult[
+    AcceptedEvidencePublication | ArtifactAcceptanceFailure | ArtifactWriteFailure | PublishedArtifactRejected,
+    StaleWriteCode,
+]:
+    """Publish and accept one evidence artifact, keeping the evidence kind its acceptance stored."""
+    kind = work_models.ArtifactKind.EVIDENCE
+    accepted = publish_accepted_artifact(
+        store, publisher, NewArtifact(kind, key, revision, suffix, content), accepted_at, ownership
+    )
+    if not isinstance(accepted, AcceptedArtifactPublication):
+        return accepted
+    # Acceptance stores the published kind, or returns the row already accepted under that kind.
+    return AcceptedEvidencePublication(
+        stored_state.evidence_reference(accepted.reference, kind),
+        accepted.artifact_created,
+        accepted.ledger_changed,
+    )
 
 
 def validate_transition_work_brief(  # noqa: C901, PLR0912

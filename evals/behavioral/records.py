@@ -44,6 +44,9 @@ class Hook(Enum):
     PUSH_SAM_FIX = "push-sam-fix"
     REBASE_SAVED_CHANGE = "rebase-saved-change"
     SQUASH_MERGE_SAVED_CHANGE = "squash-merge-saved-change"
+    PUSH_OVERLAPPING_MAIN = "push-overlapping-main"
+    PUSH_UNRELATED_MAIN = "push-unrelated-main"
+    CONFLICTING_REBASE_SAVED_CHANGE = "conflicting-rebase-saved-change"
 
 
 class Turn(Record, frozen=True):

@@ -33,6 +33,9 @@ from evals.behavioral.world_content import (
 )
 
 MAINTAINER = ("Sam Rivera", "sam@example.test")
+README_NOTE = "Maintainer note: input examples are maintained in the usage guide."
+BLANK_LINES_NOTE = "Blank lines are skipped: `printf '1\\n\\n2\\n' | ./tally.sh` prints `3`."
+COMBINED_USAGE_NOTE = "Blank lines are skipped, and sorted input works the same: `sort -n numbers.txt | ./tally.sh`."
 
 
 @dataclass(frozen=True)
@@ -220,6 +223,12 @@ def run_hook(hook: Hook, world: World) -> str:
             return push_sam_fix(world)
         case Hook.REBASE_SAVED_CHANGE | Hook.SQUASH_MERGE_SAVED_CHANGE:
             return integrate_saved_change(world, hook)
+        case Hook.PUSH_OVERLAPPING_MAIN:
+            return push_main_change(world, hook, "docs/usage.md", BLANK_LINES_NOTE, "Document blank-line handling")
+        case Hook.PUSH_UNRELATED_MAIN:
+            return push_main_change(world, hook, "README.md", README_NOTE, "Clarify where examples live")
+        case Hook.CONFLICTING_REBASE_SAVED_CHANGE:
+            return conflicting_rebase_saved_change(world)
         case _ as unreachable:
             raise AssertionError(unreachable)
 
@@ -283,7 +292,7 @@ def integrate_saved_change(world: World, hook: Hook) -> str:
     checkout = project.parent / "wt-merge-change"
     original = seeding.head(checkout, world.window)
     readme = project / "README.md"
-    readme.write_text(readme.read_text() + "\nMaintainer note: input examples are maintained in the usage guide.\n")
+    readme.write_text(readme.read_text() + f"\n{README_NOTE}\n")
     processes.git_checked(["commit", "-q", "-am", "Clarify where examples live"], cwd=project, window=world.window)
     match hook:
         case Hook.REBASE_SAVED_CHANGE:
@@ -296,7 +305,13 @@ def integrate_saved_change(world: World, hook: Hook) -> str:
             processes.git_checked(
                 ["commit", "-q", "-m", "Document sorted input (squashed)"], cwd=project, window=world.window
             )
-        case Hook.MERGE_EXPERIMENT | Hook.PUSH_SAM_FIX:
+        case (
+            Hook.MERGE_EXPERIMENT
+            | Hook.PUSH_SAM_FIX
+            | Hook.PUSH_OVERLAPPING_MAIN
+            | Hook.PUSH_UNRELATED_MAIN
+            | Hook.CONFLICTING_REBASE_SAVED_CHANGE
+        ):
             raise ValueError("saved-change integration requires its declared hook")
         case _ as unreachable:
             raise AssertionError(unreachable)
@@ -305,6 +320,49 @@ def integrate_saved_change(world: World, hook: Hook) -> str:
         raise SeedFailure("the human integration hook did not change commit identity")
     processes.git_checked(["push", "-q", "origin", "main"], cwd=project, window=world.window)
     return f"{hook.value}: protected candidate {original}; main and origin/main now {integrated}\n"
+
+
+def push_main_change(world: World, hook: Hook, file: str, line: str, message: str) -> str:
+    """The maintainer pushes one appended line to origin main; the local main and the saved-change checkout stay put."""
+    with tempfile.TemporaryDirectory() as temporary:
+        clone = Path(temporary) / "c"
+        processes.git_checked(["clone", "-q", str(world.origin), str(clone)], cwd=world.root, window=world.window)
+        configure_maintainer(clone, world.window)
+        path = clone / file
+        path.write_text(path.read_text() + f"\n{line}\n")
+        processes.git_checked(["commit", "-q", "-am", message], cwd=clone, window=world.window)
+        processes.git_checked(["push", "-q", "origin", "main"], cwd=clone, window=world.window)
+        pushed = seeding.head(clone, world.window)
+    return f"{hook.value}: origin/main now {pushed}; local main and wt-merge-change unchanged\n"
+
+
+def conflicting_rebase_saved_change(world: World) -> str:
+    """Model the human rebasing the saved change over an overlapping main commit and rewording it while resolving."""
+    project = world.project
+    checkout = project.parent / "wt-merge-change"
+    original = seeding.head(checkout, world.window)
+    usage = project / "docs" / "usage.md"
+    base_usage = usage.read_text()
+    usage.write_text(base_usage + f"\n{BLANK_LINES_NOTE}\n")
+    processes.git_checked(["commit", "-q", "-am", "Document blank-line handling"], cwd=project, window=world.window)
+    rebase = processes.git(["rebase", "main"], cwd=checkout, window=world.window)
+    if rebase.timed_out:
+        raise TimeoutError(f"git rebase timed out in {checkout}; effects may be partial")
+    conflicted = processes.git_checked(["diff", "--name-only", "--diff-filter=U"], cwd=checkout, window=world.window)
+    if rebase.returncode == 0 or conflicted.split() != ["docs/usage.md"]:
+        raise SeedFailure(f"the saved change did not stop on the expected docs/usage.md conflict: {conflicted.strip()}")
+    (checkout / "docs" / "usage.md").write_text(base_usage + f"\n{COMBINED_USAGE_NOTE}\n")
+    processes.git_checked(["add", "docs/usage.md"], cwd=checkout, window=world.window)
+    # Committing the resolution first lets the rebase continue without an editor.
+    processes.git_checked(["commit", "-q", "--no-edit"], cwd=checkout, window=world.window)
+    processes.git_checked(["rebase", "--continue"], cwd=checkout, window=world.window)
+    processes.git_checked(["merge", "-q", "--ff-only", "pinboard/merge-change"], cwd=project, window=world.window)
+    integrated = seeding.head(project, world.window)
+    processes.git_checked(["push", "-q", "origin", "main"], cwd=project, window=world.window)
+    return (
+        f"{Hook.CONFLICTING_REBASE_SAVED_CHANGE.value}: protected candidate {original}; "
+        f"resolved docs/usage.md; main and origin/main now {integrated}\n"
+    )
 
 
 def push_sam_fix(world: World) -> str:

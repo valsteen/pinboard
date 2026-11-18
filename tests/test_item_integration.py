@@ -650,7 +650,7 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         target = self.target_worktree(fixture, fixture.brief.base_revision)
         before = fixture.store.validated_snapshot()
         cases: tuple[tuple[JsonObject, str, str, str], ...] = (
-            ({"landed": {"target": "main"}}, "reviewed diff is absent", "correct-input", "pinboard_item_status"),
+            ({"landed": {"target": "main"}}, "reviewed diff is absent", "correct-input", "return-for-correction"),
             (
                 {"landed": {"target": "missing-target"}},
                 "Cannot resolve local target",

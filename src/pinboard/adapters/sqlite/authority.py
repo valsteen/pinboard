@@ -7,7 +7,6 @@ reads the filesystem, or obtains time. Expected stale CAS writes return a
 
 import sqlite3
 from datetime import datetime
-from typing import Literal
 
 import msgspec
 
@@ -15,8 +14,9 @@ from pinboard.adapters.sqlite.database import decode_row, require_one_changed_ro
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.models import AttemptIdRow, ItemIdRow
 from pinboard.application import query_models, stored_state
+from pinboard.application.ports import StaleWriteCode
 from pinboard.domain import authority_models, decision_models, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
+from pinboard.domain.errors import DecisionFailure
 from pinboard.domain.identifiers import AttemptId, HostId, LeaseId, TaskId, WorkItemId
 
 
@@ -429,7 +429,7 @@ def fence_attempt_authority(
     connection: sqlite3.Connection,
     change: decision_models.AttemptAuthorityChange,
     decided_at: datetime,
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     before = change.before
     after = change.after
     if after.lease_id is not None or after.generation != before.generation + 1:
@@ -487,7 +487,7 @@ def fence_attempt_authority(
 
 def write_attempt_authority(
     connection: sqlite3.Connection, decision: authority_models.AttemptAuthorityDecision
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     proposed_replacement = decision.proposed_replacement
     retained_counter = connection.execute(
         "SELECT generation_high_water FROM attempt_lease_counters WHERE attempt_id = ?",
@@ -597,7 +597,7 @@ def write_attempt_authority(
 
 def write_preparation_authority(
     connection: sqlite3.Connection, decision: authority_models.PreparationAuthorityDecision
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     proposed_replacement = decision.proposed_replacement
     retained_counter = connection.execute(
         "SELECT generation_high_water FROM preparation_lease_counters WHERE item_id = ?",
@@ -717,7 +717,7 @@ def consume_preparation_authority(
     connection: sqlite3.Connection,
     authority: work_models.PreparationCommandAuthority,
     consumed_at: datetime,
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     if (
         failure := require_one_changed_row(
             connection.execute(

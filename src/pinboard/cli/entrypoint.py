@@ -3,6 +3,9 @@
 This module owns the single exhaustive command-family branch and final rendering
 of typed failures. Command grammar and use-case composition live with their
 thematic CLI owners; this root performs no storage or domain work itself.
+
+A storage invariant violation is corrupt storage and propagates as a declared SQLite effect-boundary exception, and
+the parser's successful help or version exit propagates as its `SystemExit`.
 """
 
 import contextlib

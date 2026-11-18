@@ -287,7 +287,7 @@ def project_attempt_continuation(
                 work_models.ProjectAttemptActionContext(
                     item.work_item_id,
                     item.subject_revision,
-                    work_models.WorkState(item.state.value),
+                    _live_attempt_item_state(item.state),
                     context.attempt_id,
                     context.subject_revision,
                     attempt_record,
@@ -350,6 +350,20 @@ def project_attempt_continuation(
                     )
                 case _ as unreachable:
                     assert_never(unreachable)
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _live_attempt_item_state(state: query_models.NonterminalItemState) -> work_models.LiveAttemptItemState:
+    match state:
+        case stored_state.StoredWorkItemState.ACTIVE:
+            return work_models.WorkState.ACTIVE
+        case stored_state.StoredWorkItemState.PAUSED:
+            return work_models.WorkState.PAUSED
+        case stored_state.StoredWorkItemState.BLOCKED:
+            return work_models.WorkState.BLOCKED
+        case stored_state.StoredWorkItemState.REVIEW:
+            return work_models.WorkState.REVIEW
         case _ as unreachable:
             assert_never(unreachable)
 

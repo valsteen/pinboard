@@ -2,6 +2,9 @@
 
 An absent file is created privately, a missing key is written through Git config on an exclusive lock copy
 that Git writers also honor, and the stored value is read back before use.
+
+Filesystem and Git-config failures are effect-boundary exceptions: they propagate as `SettingResolutionError`, which
+names the effects already confirmed, and a settings file that already exists is observed rather than created.
 """
 
 import errno

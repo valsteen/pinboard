@@ -978,15 +978,15 @@ def read_attempt_context(
     if attempt_row is None:
         return None
     attempt = decode_row(attempt_row, _AttemptContextRow)
-    if attempt.state == work_models.AttemptState.DONE:
-        row = connection.execute(
-            "SELECT item_id, state, subject_revision FROM work_items WHERE item_id = ?", (attempt.item_id,)
-        ).fetchone()
-        if row is None:
-            raise StorageError(StorageErrorCode.INVALID_STATE, "Terminal attempt has no parent item.")
-        item = decode_row(row, _AttemptItemRow)
-        return TerminalAttemptContextSelection(project_revision, attempt.attempt_id, attempt.item_id, item.state)
     match attempt.state:
+        case work_models.AttemptState.DONE:
+            row = connection.execute(
+                "SELECT item_id, state, subject_revision FROM work_items WHERE item_id = ?", (attempt.item_id,)
+            ).fetchone()
+            if row is None:
+                raise StorageError(StorageErrorCode.INVALID_STATE, "Terminal attempt has no parent item.")
+            item = decode_row(row, _AttemptItemRow)
+            return TerminalAttemptContextSelection(project_revision, attempt.attempt_id, attempt.item_id, item.state)
         case (
             work_models.AttemptState.ACTIVE
             | work_models.AttemptState.PAUSED
@@ -994,8 +994,8 @@ def read_attempt_context(
             | work_models.AttemptState.REVIEW
         ) as attempt_state:
             pass
-        case _:
-            raise StorageError(StorageErrorCode.INVALID_STATE, "The selected attempt state is unsupported.")
+        case _ as unreachable:
+            assert_never(unreachable)
 
     item_row = connection.execute(
         "SELECT item_id, state, subject_revision FROM work_items WHERE item_id = ?",
@@ -1232,7 +1232,7 @@ def read_lifecycle(
 def compact_queue(
     connection: sqlite3.Connection,
     removed_position: int,
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     rows = connection.execute(
         "SELECT item_id, queue_position FROM work_items WHERE queue_position > ? ORDER BY queue_position",
         (removed_position,),
@@ -1541,7 +1541,7 @@ def set_item_state(
     outcome_evidence: str | None = None,
     *,
     unblocker: work_models.Unblocker | None,
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     """Move one item between states, writing exactly the unblocker its held after-state requires."""
 
     item_id = current.item_id
@@ -1602,7 +1602,7 @@ def set_attempt_state(
     result_artifact_ref_id: ArtifactRefId | None = None,
     candidate_revision: str | None = None,
     candidate_recorded_at: datetime | None = None,
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     attempt_id = current.attempt_id
     match after_state:
         case work_models.AttemptState.REVIEW:
@@ -1653,7 +1653,7 @@ def rebind_attempt(
     change: decision_models.RebindAttemptChange,
     revision: int,
     now: datetime,
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     return require_one_changed_row(
         connection.execute(
             """

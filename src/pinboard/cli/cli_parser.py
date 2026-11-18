@@ -24,9 +24,12 @@ class _RawCliArguments(argparse.Namespace):
 
 @dataclass(frozen=True, slots=True)
 class InstalledCommand:
-    operation_id: str
     command_type: type[cli_commands.CliCommand]
     cli_usage: str
+
+    @property
+    def operation_id(self) -> str:
+        return self.command_type.operation_id
 
 
 def _select_command(parser: argparse.ArgumentParser, command_type: type[cli_commands.CliCommand]) -> None:
@@ -154,41 +157,25 @@ def installed_commands() -> tuple[InstalledCommand, ...]:
     def visit(parser: argparse.ArgumentParser) -> None:
         command_type = parser.get_default("command_selection")
         if command_type is not None:
-            operation_id = parser.prog.removeprefix("pinboard ").replace(" ", "/")
             leaf_usage = " ".join(parser.format_usage().removeprefix("usage: ").split())
             usage = root_usage + leaf_usage.removeprefix("pinboard")
             if command_type is cli_commands.MigrateSchemaPreviewCommand:
                 preview_usage = usage.removesuffix(
                     " [--apply PLAN_ID | --reverse FORWARD_PLAN_ID] [--labels LABEL_FILE]"
                 )
-                variants = (
-                    (operation_id, cli_commands.MigrateSchemaPreviewCommand, preview_usage),
+                variants: tuple[tuple[type[cli_commands.CliCommand], str], ...] = (
+                    (cli_commands.MigrateSchemaPreviewCommand, preview_usage),
+                    (cli_commands.MigrateSchemaApplyCommand, preview_usage + " --apply PLAN_ID"),
+                    (cli_commands.MigrateSchemaReverseCommand, preview_usage + " --reverse FORWARD_PLAN_ID"),
+                    (cli_commands.MigrateSchemaLabelledPreviewCommand, preview_usage + " --labels LABEL_FILE"),
                     (
-                        f"{operation_id}/apply",
-                        cli_commands.MigrateSchemaApplyCommand,
-                        preview_usage + " --apply PLAN_ID",
-                    ),
-                    (
-                        f"{operation_id}/reverse",
-                        cli_commands.MigrateSchemaReverseCommand,
-                        preview_usage + " --reverse FORWARD_PLAN_ID",
-                    ),
-                    (
-                        f"{operation_id}/labelled",
-                        cli_commands.MigrateSchemaLabelledPreviewCommand,
-                        preview_usage + " --labels LABEL_FILE",
-                    ),
-                    (
-                        f"{operation_id}/labelled-apply",
                         cli_commands.MigrateSchemaLabelledApplyCommand,
                         preview_usage + " --apply PLAN_ID --labels LABEL_FILE",
                     ),
                 )
             else:
-                variants = ((operation_id, command_type, usage),)
-            discovered.extend(
-                InstalledCommand(identifier, variant, variant_usage) for identifier, variant, variant_usage in variants
-            )
+                variants = ((command_type, usage),)
+            discovered.extend(InstalledCommand(variant, variant_usage) for variant, variant_usage in variants)
         for action in parser._actions:
             if isinstance(action, argparse._SubParsersAction):
                 for choice in action.choices.items():

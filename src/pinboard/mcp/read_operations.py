@@ -1176,9 +1176,8 @@ def _brief_review_status(
             ),
         )
     assert isinstance(checkpoint, work_brief_models.CrossBoundaryCheckpoint)
+    # read_accepted_work_brief rejects a reference that is not a brief with a typed failure before this projection.
     reference = selected.accepted_brief.reference
-    if reference.kind != work_models.ArtifactKind.BRIEF:
-        raise ValueError(f"Expected an accepted brief reference, got {reference.kind.value}.")
     brief_reference = contracts.ArtifactReferenceResult(
         int(reference.artifact_ref_id),
         "brief",
@@ -1331,7 +1330,7 @@ def _brief_review_failure_code(failure: work_brief_models.WorkBriefFailure) -> B
 
 
 def _brief_review_decision_failure(
-    failure: DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | PublishedArtifactRejected,
+    failure: DecisionFailure[StaleWriteCode] | PublishedArtifactRejected,
 ) -> execution.TypedOperationResult[contracts.BriefReviewResult]:
     match failure:
         case PublishedArtifactRejected(details=details):
@@ -2276,23 +2275,15 @@ def _current_candidate_review(
 
 
 def _relative_action(action_id: str, attempt_id: str, item_id: str) -> contracts.RelativeActionIdentity:
+    """Present one legal action the query continuation already validated as targeting its attempt or item."""
     kind_value, separator, subject = action_id.partition(":")
     if not separator:
         raise RuntimeError("Attempt continuation contains a noncanonical action identity.")
     kind = decision_models.ActionKind(kind_value)
-    match decision_models.action_semantics(kind).subject_kind:
-        case decision_models.ActionSubjectKind.ATTEMPT:
-            if subject != attempt_id:
-                raise RuntimeError("Attempt continuation action targets a different attempt.")
-            return contracts.RelativeActionIdentity("attempt", kind)
-        case decision_models.ActionSubjectKind.ITEM:
-            if subject != item_id:
-                raise RuntimeError("Attempt continuation action targets a different item.")
-            return contracts.RelativeActionIdentity("item", kind)
-        case decision_models.ActionSubjectKind.LEDGER | decision_models.ActionSubjectKind.PROPOSAL:
-            raise RuntimeError("Attempt continuation contains an unrelated action family.")
-        case _ as unreachable:
-            assert_never(unreachable)
+    target = query_models.continuation_action_target(kind)
+    if target is None or subject != (attempt_id if target == "attempt" else item_id):
+        raise RuntimeError("Attempt continuation action does not target its attempt or item.")
+    return contracts.RelativeActionIdentity(target, kind)
 
 
 def _continuation_operation(

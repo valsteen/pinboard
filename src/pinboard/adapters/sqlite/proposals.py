@@ -7,7 +7,7 @@ reads the filesystem, or obtains time. Expected stale CAS writes return a
 
 import sqlite3
 from datetime import datetime
-from typing import Literal, assert_never
+from typing import assert_never
 
 import msgspec
 
@@ -304,7 +304,7 @@ def set_proposal_disposition(
     proposal_id: ProposalId,
     disposition: work_models.ProposalDisposition,
     revision: int,
-) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]] | None:
+) -> DecisionFailure[StaleWriteCode] | None:
     kind, target, reason, disposed_at = _encode_proposal_disposition_columns(disposition)
     return require_one_changed_row(
         connection.execute(

@@ -124,7 +124,7 @@ class WorkStore(Protocol):
         published: ArtifactRef,
         accepted_at: datetime,
         ownership: artifact_identity.Ownership | None,
-    ) -> DecisionResult[ArtifactReferenceAcceptance, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]: ...
+    ) -> DecisionResult[ArtifactReferenceAcceptance, StaleWriteCode]: ...
 
     def read_artifact_reference(
         self, kind: work_models.ArtifactKind, key: str, revision: int
@@ -194,7 +194,7 @@ class WorkStore(Protocol):
     def read_current_action_snapshot(self, now: datetime) -> LedgerSnapshot: ...
 
     def read_leased_action_snapshot(
-        self, role: decision_models.Role, lease_id: LeaseId, generation: int, now: datetime
+        self, role: decision_models.LeasedRole, lease_id: LeaseId, generation: int, now: datetime
     ) -> LedgerSnapshot: ...
 
     def read_current_parallel_snapshot(self, now: datetime) -> LedgerSnapshot: ...

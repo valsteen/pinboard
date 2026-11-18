@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, ClassVar, Literal
 
 import msgspec
 
@@ -31,18 +31,21 @@ class ResolvedRoots:
 
 
 class RootCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    pass
+    operation_id: ClassVar[Literal["root"]] = "root"
 
 
 class ValidateCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation_id: ClassVar[Literal["validate"]] = "validate"
     json: bool = False
 
 
 class StatusCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation_id: ClassVar[Literal["status"]] = "status"
     json: bool = False
 
 
 class DiagnoseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation_id: ClassVar[Literal["diagnose"]] = "diagnose"
     json: bool
 
     def __post_init__(self) -> None:
@@ -51,6 +54,7 @@ class DiagnoseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class CloseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation_id: ClassVar[Literal["close"]] = "close"
     item_id: StableWorkItemId
     outcome: work_models.DirectCloseOutcome
     reason: str
@@ -60,11 +64,13 @@ class CloseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class ToolContractCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation_id: ClassVar[Literal["tool-contract"]] = "tool-contract"
     operation: str | None = None
     json: bool = False
 
 
 class CodeCatalogCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation_id: ClassVar[Literal["code-catalog"]] = "code-catalog"
     json: bool
     code: str | None = None
 
@@ -74,6 +80,7 @@ class CodeCatalogCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True
 
 
 class ExportCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation_id: ClassVar[Literal["export"]] = "export"
     json: bool
 
     def __post_init__(self) -> None:
@@ -82,19 +89,23 @@ class ExportCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 
 class InitializeCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation_id: ClassVar[Literal["init"]] = "init"
     json: bool = False
 
 
 class MigrateSchemaPreviewCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation_id: ClassVar[Literal["migrate-schema"]] = "migrate-schema"
     json: bool = False
 
 
 class MigrateSchemaApplyCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation_id: ClassVar[Literal["migrate-schema/apply"]] = "migrate-schema/apply"
     apply: str
     json: bool = False
 
 
 class MigrateSchemaReverseCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    operation_id: ClassVar[Literal["migrate-schema/reverse"]] = "migrate-schema/reverse"
     reverse: str
     json: bool = False
 
@@ -102,6 +113,7 @@ class MigrateSchemaReverseCommand(msgspec.Struct, frozen=True, forbid_unknown_fi
 class MigrateSchemaLabelledPreviewCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """Preview the v12 step with one hold label file."""
 
+    operation_id: ClassVar[Literal["migrate-schema/labelled"]] = "migrate-schema/labelled"
     labels: str
     json: bool = False
 
@@ -109,13 +121,14 @@ class MigrateSchemaLabelledPreviewCommand(msgspec.Struct, frozen=True, forbid_un
 class MigrateSchemaLabelledApplyCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """Apply or resume the v12 step with the exact hold label file its plan was previewed with."""
 
+    operation_id: ClassVar[Literal["migrate-schema/labelled-apply"]] = "migrate-schema/labelled-apply"
     apply: str
     labels: str
     json: bool = False
 
 
 class RebuildViewsCommand(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    pass
+    operation_id: ClassVar[Literal["views/rebuild"]] = "views/rebuild"
 
 
 type CliCommand = (

@@ -1,4 +1,9 @@
-"""Artifact-sensitive lifecycle execution shared by command boundaries."""
+"""Artifact-sensitive lifecycle execution shared by command boundaries.
+
+Its declared exceptions sit at the artifact and SQLite effect boundaries: an artifact or SQLite invariant violation
+is corrupt storage and propagates, and an infrastructure error before any new publication changed nothing and
+propagates; after a publication the error becomes a typed failure that names it.
+"""
 
 import hashlib
 from collections.abc import Callable
@@ -86,6 +91,11 @@ from pinboard.domain.errors import (
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CheckpointId
 
 # Candidate-sensitive transitions also refuse a missing commissioned candidate review.
+type ArtifactSensitiveCommand = (
+    decision_models.SubmitReviewCommand
+    | decision_models.AcceptCheckpointCommand
+    | decision_models.CoveredCompleteCommand
+)
 type ArtifactTransitionFailureCode = TransitionFailureCode | Literal[DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED]
 
 
@@ -1170,19 +1180,21 @@ def execute_artifact_transition(
     store: ports.WorkStore,
     artifacts: ArtifactRepository,
     selected: SelectedTransition,
+    command: ArtifactSensitiveCommand,
     operation_time: datetime,
     read_authorization_time: Callable[[], datetime],
 ) -> ArtifactTransitionResult:
-    match selected.command:
-        case decision_models.SubmitReviewCommand() as command:
+    """Execute the selected transition's artifact-sensitive command, which the caller passes narrowed."""
+    match command:
+        case decision_models.SubmitReviewCommand():
             return _submit_review(source_checkout, store, artifacts, command, operation_time, read_authorization_time)
-        case decision_models.AcceptCheckpointCommand() as command:
+        case decision_models.AcceptCheckpointCommand():
             return _accept_checkpoint(
                 work_root, store, artifacts, selected, command, operation_time, read_authorization_time
             )
-        case decision_models.CoveredCompleteCommand() as command:
+        case decision_models.CoveredCompleteCommand():
             return _complete(
                 source_checkout, work_root, store, artifacts, selected, command, operation_time, read_authorization_time
             )
-        case _:
-            raise ValueError("The selected transition is not artifact-sensitive.")
+        case _ as unreachable:
+            assert_never(unreachable)

@@ -6,6 +6,10 @@ every board derivation share, and the board-history composition that decodes
 selected board records with the files and keyed references they name.
 Does not validate the whole ledger, repair candidates, change lifecycle/authority,
 or launch a native reviewer; interfaces own verification presentation.
+
+Its declared exceptions sit at the artifact and SQLite effect boundaries: an artifact or SQLite invariant violation
+during reviewer prompt publication is corrupt storage and propagates, and any other publication error returns as
+`ReviewPromptPublicationFailure` for the review job to propagate unchanged.
 """
 
 from collections.abc import Mapping
@@ -200,15 +204,17 @@ def _portable(
     role: Literal["candidate", "accepted-brief"],
     reference: stored_state.ArtifactReference | BriefArtifactRef,
 ) -> work_brief_models.PortableArtifactIdentity:
-    match reference.kind:
-        case work_models.ArtifactKind.BRIEF:
-            kind = "brief"
-        case work_models.ArtifactKind.EVIDENCE:
+    """Name a candidate review's artifact by its role.
+
+    The candidate is accepted evidence, which candidate snapshot verification already required, and the accepted
+    brief reference is a brief by type, so the role selects the portable kind.
+    """
+    kind: Literal["brief", "evidence"]
+    match role:
+        case "candidate":
             kind = "evidence"
-        case work_models.ArtifactKind.RESULT:
-            kind = "result"
-        case work_models.ArtifactKind.REQUIREMENTS:
-            raise ValueError("candidate reviews cannot reference requirements artifacts")
+        case "accepted-brief":
+            kind = "brief"
         case _ as unreachable:
             assert_never(unreachable)
     return work_brief_models.PortableArtifactIdentity(

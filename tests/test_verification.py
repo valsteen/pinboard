@@ -24,6 +24,7 @@ class VerificationTest(unittest.TestCase):
                 patch.object(verify, "__file__", str(root / "scripts/verify.py")),
                 patch.object(verify.tempfile, "mkdtemp", return_value=directory),
                 patch.object(verify, "run_command", return_value=0),
+                patch.object(verify, "check_production_tree", return_value=()),
                 contextlib.redirect_stdout(output),
             ):
                 status = verify.main(["verify-repo"])

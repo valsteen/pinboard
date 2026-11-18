@@ -8,6 +8,9 @@ but never opens or closes the connection and never classifies typed results.
 observes one SQLite snapshot, then rolls it back without permitting writes.
 Runtime store writes instead own their complete connection and transaction
 lifecycle in ``persistence.py``. This module never obtains time or invokes callbacks.
+
+A read-only SQLite failure is re-raised with its database path, and every other storage error propagates unchanged:
+both are SQLite effect-boundary exceptions.
 """
 
 import os

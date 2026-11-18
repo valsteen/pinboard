@@ -35,6 +35,7 @@ class Role(Enum):
 
 
 type MutationRole = Literal[Role.PROJECT, Role.WORKER, Role.PREPARER]
+type LeasedRole = Literal[Role.WORKER, Role.PREPARER]
 
 
 class LifecycleEffect(Enum):
@@ -1024,13 +1025,16 @@ class ReviewAcceptanceChange:
     authority_change: AttemptAuthorityChange
 
 
+type AmendableAttemptState = Literal[work_models.AttemptState.ACTIVE, work_models.AttemptState.REVIEW]
+
+
 @dataclass(frozen=True, slots=True)
 class AmendmentChange:
     """Record one amendment; an attempt in review returns to active and fences its prior worker authority."""
 
     work_item_id: WorkItemId
     attempt: AttemptId
-    attempt_before: work_models.AttemptState
+    attempt_before: AmendableAttemptState
     amendment: work_models.AttemptAmendment
     authority_change: AttemptAuthorityChange | None
 

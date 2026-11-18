@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TextIO, assert_never
 
 from markdown_it import MarkdownIt
+from scripts.check_raising_arms import check_production_tree
 
 GUIDE_PARAGRAPH_WORD_LIMIT = 300
 GUIDE_FILENAMES = ("ARCHITECTURE.md", "CONTRIBUTING.md", "DESIGN_PRINCIPLES.md", "GUIDE.md", "INSTALL.md", "README.md")
@@ -99,6 +100,15 @@ def check_guide_paragraphs(root: Path, log: TextIO, stream: bool) -> int:
     return int(failed)
 
 
+def check_raising_arms(root: Path, log: TextIO, stream: bool) -> int:
+    messages = check_production_tree(root)
+    for message in messages:
+        log.write(f"{message}\n")
+        if stream:
+            print(message, flush=True)
+    return int(bool(messages))
+
+
 def run_tests(selection: str, root: Path, log: TextIO, stream: bool, jobs: int | None) -> int:
     command = ["uv", "run", "--locked", "python", "-m", "tests.runner", selection]
     if jobs is not None:
@@ -110,6 +120,7 @@ def verify_group(group: Group, root: Path, log: TextIO, stream: bool, jobs: int 
     match group:
         case Group.REPO:
             paragraph_status = check_guide_paragraphs(root, log, stream)
+            arm_status = check_raising_arms(root, log, stream)
             status = run_commands(
                 (
                     ("uv", "run", "--locked", "python", "-m", "docs.how_it_works.render", "--check"),
@@ -132,7 +143,7 @@ def verify_group(group: Group, root: Path, log: TextIO, stream: bool, jobs: int 
                 log,
                 stream,
             )
-            return status or paragraph_status
+            return status or paragraph_status or arm_status
         case Group.TYPES:
             return run_command(("scripts/check-types",), root, log, stream)
         case Group.TESTS:

@@ -54,8 +54,8 @@
     },
     "worker-claude-code": {
       "path": "worker-claude-code.md",
-      "sha256": "fd54f8594d9239eecdb470021c92f602de17e844a0e6a0199e3147fff9d4374b",
-      "size_bytes": 34886,
+      "sha256": "f24ea7eff21f7c2f073475626f63816a2c7559b1703bd726f35c4cb1e99927e7",
+      "size_bytes": 34769,
       "owners": [
         "role.worker",
         "role.worker.engineering-health",
@@ -82,8 +82,8 @@
     },
     "reviewer-claude-code": {
       "path": "reviewer-claude-code.md",
-      "sha256": "4415f0a9004fef8485e41680e0098566f202f4560527e086214785977078d7c6",
-      "size_bytes": 17999,
+      "sha256": "6172dccb2e68cf9a8c0f312cc948a82172270da0421f7b61d8d94af199f0b314",
+      "size_bytes": 17882,
       "owners": [
         "procedure.reviewer",
         "shared.protocol",
@@ -153,8 +153,8 @@
     },
     "coordinator-codex": {
       "path": "coordinator-codex.md",
-      "sha256": "dd6d5e143da210fbb5026580a16dfdea3193873daad5970d27edaa2ff1f57c7b",
-      "size_bytes": 15024,
+      "sha256": "8f222053905cddc4af106bf43dc1f975653fd57f21bb4c22d358a6ea078c81d7",
+      "size_bytes": 15030,
       "owners": [
         "core.route",
         "core.authority",
@@ -177,8 +177,8 @@
     },
     "coordinator-claude-code": {
       "path": "coordinator-claude-code.md",
-      "sha256": "dd6d5e143da210fbb5026580a16dfdea3193873daad5970d27edaa2ff1f57c7b",
-      "size_bytes": 15024,
+      "sha256": "8f222053905cddc4af106bf43dc1f975653fd57f21bb4c22d358a6ea078c81d7",
+      "size_bytes": 15030,
       "owners": [
         "core.route",
         "core.authority",
@@ -201,8 +201,8 @@
     },
     "coordinator-antigravity": {
       "path": "coordinator-antigravity.md",
-      "sha256": "dd6d5e143da210fbb5026580a16dfdea3193873daad5970d27edaa2ff1f57c7b",
-      "size_bytes": 15024,
+      "sha256": "8f222053905cddc4af106bf43dc1f975653fd57f21bb4c22d358a6ea078c81d7",
+      "size_bytes": 15030,
       "owners": [
         "core.route",
         "core.authority",
@@ -261,9 +261,9 @@
       ]
     },
     "brief-author-claude-code": {
-      "path": "documents/085b366a66402a30f25cb4b6167fabd925b3286059db0085ed7473723418f975.md",
-      "sha256": "085b366a66402a30f25cb4b6167fabd925b3286059db0085ed7473723418f975",
-      "size_bytes": 16437,
+      "path": "documents/d7c1d63f3cdb4759d3f4fbbfcce82909519776eea62986fb8dcefaab44b96688.md",
+      "sha256": "d7c1d63f3cdb4759d3f4fbbfcce82909519776eea62986fb8dcefaab44b96688",
+      "size_bytes": 16320,
       "owners": [
         "procedure.prepare",
         "procedure.brief",
@@ -279,9 +279,9 @@
       ]
     },
     "integrator-claude-code": {
-      "path": "documents/2b73407faaafd1ba8bcf73436ffab75f3104033404e3b5c6e29e8e2860631758.md",
-      "sha256": "2b73407faaafd1ba8bcf73436ffab75f3104033404e3b5c6e29e8e2860631758",
-      "size_bytes": 15821,
+      "path": "documents/3b2d38020096c1fdb719970898fba71d8576fdc90aa0738c0ba6127180a7720b.md",
+      "sha256": "3b2d38020096c1fdb719970898fba71d8576fdc90aa0738c0ba6127180a7720b",
+      "size_bytes": 15704,
       "owners": [
         "procedure.integrate",
         "procedure.transition",
@@ -371,9 +371,9 @@
       ]
     },
     "brief-author-small-claude-code": {
-      "path": "documents/b300d5ef5954eb11a189ba998e724024d584429c6965e754d08acea65a773cdd.md",
-      "sha256": "b300d5ef5954eb11a189ba998e724024d584429c6965e754d08acea65a773cdd",
-      "size_bytes": 10411,
+      "path": "documents/4d772c3affb2a86de0e28856431e02b2c2509590ba2836a79206c20e8a23bd42.md",
+      "sha256": "4d772c3affb2a86de0e28856431e02b2c2509590ba2836a79206c20e8a23bd42",
+      "size_bytes": 10294,
       "owners": [
         "procedure.prepare",
         "procedure.records",
@@ -388,9 +388,9 @@
       ]
     },
     "brief-author-small-single-claude-code": {
-      "path": "documents/e50748a729dafc46ab18cd5acbbab790f117e419048c28c4157004f06efc74c6.md",
-      "sha256": "e50748a729dafc46ab18cd5acbbab790f117e419048c28c4157004f06efc74c6",
-      "size_bytes": 12016,
+      "path": "documents/9771ba46ef4e408ab05f4ca291c1c87aeabc897b101afa06b1c86d906674314e.md",
+      "sha256": "9771ba46ef4e408ab05f4ca291c1c87aeabc897b101afa06b1c86d906674314e",
+      "size_bytes": 11899,
       "owners": [
         "procedure.prepare",
         "procedure.records",
@@ -2580,9 +2580,9 @@
       ]
     },
     "prepare-claude-code-standard-single": {
-      "path": "documents/085b366a66402a30f25cb4b6167fabd925b3286059db0085ed7473723418f975.md",
-      "sha256": "085b366a66402a30f25cb4b6167fabd925b3286059db0085ed7473723418f975",
-      "size_bytes": 16437,
+      "path": "documents/d7c1d63f3cdb4759d3f4fbbfcce82909519776eea62986fb8dcefaab44b96688.md",
+      "sha256": "d7c1d63f3cdb4759d3f4fbbfcce82909519776eea62986fb8dcefaab44b96688",
+      "size_bytes": 16320,
       "owners": [
         "procedure.prepare",
         "procedure.brief",
@@ -2598,9 +2598,9 @@
       ]
     },
     "prepare-claude-code-standard-checkpoints": {
-      "path": "documents/085b366a66402a30f25cb4b6167fabd925b3286059db0085ed7473723418f975.md",
-      "sha256": "085b366a66402a30f25cb4b6167fabd925b3286059db0085ed7473723418f975",
-      "size_bytes": 16437,
+      "path": "documents/d7c1d63f3cdb4759d3f4fbbfcce82909519776eea62986fb8dcefaab44b96688.md",
+      "sha256": "d7c1d63f3cdb4759d3f4fbbfcce82909519776eea62986fb8dcefaab44b96688",
+      "size_bytes": 16320,
       "owners": [
         "procedure.prepare",
         "procedure.brief",
@@ -2616,9 +2616,9 @@
       ]
     },
     "prepare-claude-code-small-single": {
-      "path": "documents/e50748a729dafc46ab18cd5acbbab790f117e419048c28c4157004f06efc74c6.md",
-      "sha256": "e50748a729dafc46ab18cd5acbbab790f117e419048c28c4157004f06efc74c6",
-      "size_bytes": 12016,
+      "path": "documents/9771ba46ef4e408ab05f4ca291c1c87aeabc897b101afa06b1c86d906674314e.md",
+      "sha256": "9771ba46ef4e408ab05f4ca291c1c87aeabc897b101afa06b1c86d906674314e",
+      "size_bytes": 11899,
       "owners": [
         "procedure.prepare",
         "procedure.records",
@@ -2634,9 +2634,9 @@
       ]
     },
     "prepare-claude-code-small-checkpoints": {
-      "path": "documents/b300d5ef5954eb11a189ba998e724024d584429c6965e754d08acea65a773cdd.md",
-      "sha256": "b300d5ef5954eb11a189ba998e724024d584429c6965e754d08acea65a773cdd",
-      "size_bytes": 10411,
+      "path": "documents/4d772c3affb2a86de0e28856431e02b2c2509590ba2836a79206c20e8a23bd42.md",
+      "sha256": "4d772c3affb2a86de0e28856431e02b2c2509590ba2836a79206c20e8a23bd42",
+      "size_bytes": 10294,
       "owners": [
         "procedure.prepare",
         "procedure.records",
@@ -3276,9 +3276,9 @@
       ]
     },
     "complete-claude-code-standard-single": {
-      "path": "documents/2b73407faaafd1ba8bcf73436ffab75f3104033404e3b5c6e29e8e2860631758.md",
-      "sha256": "2b73407faaafd1ba8bcf73436ffab75f3104033404e3b5c6e29e8e2860631758",
-      "size_bytes": 15821,
+      "path": "documents/3b2d38020096c1fdb719970898fba71d8576fdc90aa0738c0ba6127180a7720b.md",
+      "sha256": "3b2d38020096c1fdb719970898fba71d8576fdc90aa0738c0ba6127180a7720b",
+      "size_bytes": 15704,
       "owners": [
         "procedure.integrate",
         "procedure.transition",
@@ -3289,9 +3289,9 @@
       ]
     },
     "complete-claude-code-standard-checkpoints": {
-      "path": "documents/2b73407faaafd1ba8bcf73436ffab75f3104033404e3b5c6e29e8e2860631758.md",
-      "sha256": "2b73407faaafd1ba8bcf73436ffab75f3104033404e3b5c6e29e8e2860631758",
-      "size_bytes": 15821,
+      "path": "documents/3b2d38020096c1fdb719970898fba71d8576fdc90aa0738c0ba6127180a7720b.md",
+      "sha256": "3b2d38020096c1fdb719970898fba71d8576fdc90aa0738c0ba6127180a7720b",
+      "size_bytes": 15704,
       "owners": [
         "procedure.integrate",
         "procedure.transition",
@@ -3302,9 +3302,9 @@
       ]
     },
     "complete-claude-code-small-single": {
-      "path": "documents/2b73407faaafd1ba8bcf73436ffab75f3104033404e3b5c6e29e8e2860631758.md",
-      "sha256": "2b73407faaafd1ba8bcf73436ffab75f3104033404e3b5c6e29e8e2860631758",
-      "size_bytes": 15821,
+      "path": "documents/3b2d38020096c1fdb719970898fba71d8576fdc90aa0738c0ba6127180a7720b.md",
+      "sha256": "3b2d38020096c1fdb719970898fba71d8576fdc90aa0738c0ba6127180a7720b",
+      "size_bytes": 15704,
       "owners": [
         "procedure.integrate",
         "procedure.transition",
@@ -3315,9 +3315,9 @@
       ]
     },
     "complete-claude-code-small-checkpoints": {
-      "path": "documents/2b73407faaafd1ba8bcf73436ffab75f3104033404e3b5c6e29e8e2860631758.md",
-      "sha256": "2b73407faaafd1ba8bcf73436ffab75f3104033404e3b5c6e29e8e2860631758",
-      "size_bytes": 15821,
+      "path": "documents/3b2d38020096c1fdb719970898fba71d8576fdc90aa0738c0ba6127180a7720b.md",
+      "sha256": "3b2d38020096c1fdb719970898fba71d8576fdc90aa0738c0ba6127180a7720b",
+      "size_bytes": 15704,
       "owners": [
         "procedure.integrate",
         "procedure.transition",

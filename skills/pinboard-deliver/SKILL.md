@@ -1,6 +1,6 @@
 ---
 name: pinboard-deliver
-description: Deliver one prepared active Pinboard attempt from its accepted brief and renewable lease. Route an unprepared named start through the coordinator.
+description: Deliver an assigned Pinboard attempt under its accepted brief and renewable lease. Owning coordinators use pinboard.
 ---
 
-For an unprepared named start, read `../../src/pinboard/instructions/coordinator-{codex|claude-code|antigravity}.md` for this runtime. Active workers read only their verified envelope’s worker document, or their own fresh leased continue instructions inline. Unreadable native instructions stop startup; evidence paging is no fallback.
+For an unprepared named start or an owning continuation, read `../../src/pinboard/instructions/coordinator-{codex|claude-code|antigravity}.md` for this runtime. Active workers read their verified envelope’s worker document or their own fresh leased continue instructions inline. Unreadable native instructions stop startup.

@@ -14,11 +14,6 @@ from pinboard.application.artifacts import (
     EvidenceArtifactRef,
     WorkBriefIdentity,
 )
-from pinboard.application.dependency_authoring import (
-    DependencyCheckpointPin,
-    DependencyPinFailureCode,
-    validate_dependency_brief_pins,
-)
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     AttemptAuthorityMutationResult,
@@ -176,9 +171,7 @@ def acquire_attempt_authority(
 
     with store.write() as transaction:
         snapshot = transaction.read_decision_facts(
-            query_models.DecisionScope(
-                (), (), (), (), (), (attempt_id,), (), (), (), (), read_current_amendments=False
-            ),
+            query_models.DecisionScope((), (), (), (), (), (attempt_id,), (), (), (), read_current_amendments=False),
             acquired_at,
         ).snapshot
         attempt = snapshot.attempt(attempt_id)
@@ -281,7 +274,7 @@ def _commit_attempt_authority_change(
         case _ as unreachable:
             assert_never(unreachable)
     decision_context = transaction.read_decision_facts(
-        query_models.DecisionScope((), (), (), (), (), (attempt_id,), (), (), (), (), read_current_amendments=False),
+        query_models.DecisionScope((), (), (), (), (), (attempt_id,), (), (), (), read_current_amendments=False),
         decided_at,
     ).snapshot
     retained = transaction.read_attempt_authority_status(attempt_id)
@@ -391,9 +384,7 @@ def start_preparation(
 
     with store.write() as transaction:
         snapshot = transaction.read_decision_facts(
-            query_models.DecisionScope(
-                (work_item_id,), (), (), (), (), (), (), (), (), (), read_current_amendments=False
-            ),
+            query_models.DecisionScope((work_item_id,), (), (), (), (), (), (), (), (), read_current_amendments=False),
             acquired_at,
         ).snapshot
         retained = _project_retained_preparation_authority(
@@ -484,7 +475,7 @@ def _commit_preparation_authority_change(
         case _ as unreachable:
             assert_never(unreachable)
     decision_context = transaction.read_decision_facts(
-        query_models.DecisionScope((item_id,), (), (), (), (), (), (), (), (), (), read_current_amendments=False),
+        query_models.DecisionScope((item_id,), (), (), (), (), (), (), (), (), read_current_amendments=False),
         decided_at,
     ).snapshot
     retained = transaction.read_preparation_authority_status(item_id)
@@ -535,8 +526,7 @@ def _commit_preparation_authority_change(
 
 
 type ProposalCreationFailureCode = (
-    DependencyPinFailureCode  # resolved and locked checkpoint targets
-    | Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID]  # obligation origins
+    Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID]  # obligation origins
     | ProposalCreationDecisionCode
     | StaleWriteCode  # stale proposal write
 )
@@ -549,7 +539,6 @@ def create_proposal(
     *,
     actor_task_id: TaskId,
     actor_host_id: HostId,
-    dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[ProposalCreationResult, ProposalCreationFailureCode]:
     """Reread locked state, decide, and commit proposal facts plus their ready item.
 
@@ -578,15 +567,6 @@ def create_proposal(
                 pass
             case _ as unreachable:
                 assert_never(unreachable)
-        requested_dependencies = (
-            (operation.intake.relation.dependency,)
-            if isinstance(operation.intake.relation, work_models.FollowUpProposalRelation)
-            else ()
-        )
-        checkpoint_targets = tuple(
-            value for value in requested_dependencies if isinstance(value, work_models.CheckpointDependency)
-        )
-        primary_items = (*primary_items, *(value.item_id for value in checkpoint_targets))
         decision_context = transaction.read_decision_facts(
             query_models.DecisionScope(
                 work_item_ids=primary_items,
@@ -598,17 +578,10 @@ def create_proposal(
                 proposal_ids=(operation.intake.proposal_id,),
                 artifact_ref_ids=(),
                 completion_history_attempt_ids=(),
-                checkpoint_targets=checkpoint_targets,
                 read_current_amendments=False,
             ),
             now,
         ).snapshot
-        if (
-            failure := validate_dependency_brief_pins(
-                decision_context, None, requested_dependencies, dependency_brief_pins
-            )
-        ) is not None:
-            return failure
         if (failure := obligation_coverage.validate_origins(transaction, operation.intake.obligations)) is not None:
             return failure
         decision_result = decide_proposal_creation(
@@ -721,7 +694,6 @@ def _transition_decision_scope(
     live_dependent_attempt_ids: tuple[AttemptId, ...] = ()
     artifact_ids: tuple[ArtifactRefId, ...] = ()
     completion_history_attempt_ids: tuple[AttemptId, ...] = ()
-    checkpoint_targets: tuple[work_models.CheckpointDependency, ...] = ()
     read_current_amendments = False
     match command:
         case decision_models.ActivateCommand(value=value):
@@ -741,12 +713,6 @@ def _transition_decision_scope(
         case decision_models.ReviseWorkItemCommand(value=value):
             related_item_ids = tuple(work_models.dependency_item(target) for target in value.definition.dependencies)
             dependency_closure_roots = related_item_ids
-            checkpoint_targets = tuple(
-                target
-                for target in value.definition.dependencies
-                if isinstance(target, work_models.CheckpointDependency)
-            )
-            item_ids = (*item_ids, *(target.item_id for target in checkpoint_targets))
         case decision_models.RecordReplacementCommand(value=value):
             related_item_ids = (value.replacement_item,)
         case decision_models.CloseCommand():
@@ -778,7 +744,6 @@ def _transition_decision_scope(
         proposal_ids=tuple(dict.fromkeys(proposal_ids)),
         artifact_ref_ids=artifact_ids,
         completion_history_attempt_ids=completion_history_attempt_ids,
-        checkpoint_targets=checkpoint_targets,
         read_current_amendments=read_current_amendments,
     )
 
@@ -792,7 +757,6 @@ def _read_authorize_and_decide(
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     read_authorization_time: Callable[[], datetime],
-    dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[decision_models.CheckpointAcceptanceDecision, CheckpointAcceptanceFailureCode]: ...
 
 
@@ -805,7 +769,6 @@ def _read_authorize_and_decide(
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     read_authorization_time: Callable[[], datetime],
-    dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[decision_models.TransitionDecision, TransitionFailureCode]: ...
 
 
@@ -818,7 +781,6 @@ def _read_authorize_and_decide(
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     read_authorization_time: Callable[[], datetime],
-    dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[decision_models.CompletionAcceptanceDecision, CoveredCompletionFailureCode]: ...
 
 
@@ -830,7 +792,6 @@ def _read_authorize_and_decide(
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
     read_authorization_time: Callable[[], datetime],
-    dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[decision_models.Decision, TransitionFailureCode]:
     """Read exact facts, sample fresh authority validity, and decide without committing."""
 
@@ -854,19 +815,6 @@ def _read_authorize_and_decide(
         return failure
     if (
         isinstance(command, decision_models.ReviseWorkItemCommand)
-        and (
-            failure := validate_dependency_brief_pins(
-                decision_context,
-                command.action.capability.subject,
-                command.value.definition.dependencies,
-                dependency_brief_pins,
-            )
-        )
-        is not None
-    ):
-        return failure
-    if (
-        isinstance(command, decision_models.ReviseWorkItemCommand)
         and (failure := obligation_coverage.validate_origins(reader, command.value.definition.obligations)) is not None
     ):
         return failure
@@ -881,7 +829,6 @@ def decide_and_commit_transition(
     read_authorization_time: Callable[[], datetime],
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
-    dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
     transition_brief_identity: WorkBriefIdentity | None = None,
 ) -> DecisionResult[CommittedEffect, TransitionFailureCode]:
     """Authorize with the supplied clock under lock; retain request-time receipt provenance."""
@@ -895,7 +842,6 @@ def decide_and_commit_transition(
             actor_task_id,
             actor_host_id,
             read_authorization_time,
-            dependency_brief_pins,
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result
@@ -918,7 +864,7 @@ def decide_and_commit_review_submission(
 
     with store.write() as transaction:
         decision_result = _read_authorize_and_decide(
-            transaction, command, now, None, None, None, read_authorization_time, ()
+            transaction, command, now, None, None, None, read_authorization_time
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result
@@ -972,7 +918,7 @@ def preflight_covered_completion(
     """Reject stale authority, wrong lifecycle, candidate, or checkpoint coverage before publication."""
 
     result = _read_authorize_and_decide(
-        store, command, now, transition_brief_identity, actor_task_id, actor_host_id, lambda: now, ()
+        store, command, now, transition_brief_identity, actor_task_id, actor_host_id, lambda: now
     )
     if isinstance(result, DecisionFailure):
         return result
@@ -1001,7 +947,6 @@ def decide_and_commit_checkpoint_acceptance(
             actor_task_id,
             actor_host_id,
             read_authorization_time,
-            (),
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result
@@ -1042,7 +987,6 @@ def decide_and_commit_covered_completion(
             actor_task_id,
             actor_host_id,
             read_authorization_time,
-            (),
         )
         if isinstance(decision_result, DecisionFailure):
             return decision_result

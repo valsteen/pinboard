@@ -27,7 +27,6 @@ from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.persistence import SQLiteWorkTransaction
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import authority_operations, query_models, service, stored_state
-from pinboard.application.dependency_authoring import DependencyCheckpointPin
 from pinboard.application.mutation_models import ProposalCreationResult
 from pinboard.application.ports import WorkStore
 from pinboard.application.work_briefs import canonical_work_brief_bytes
@@ -71,7 +70,6 @@ class AuthorityStatusReadTest(unittest.TestCase):
             *,
             actor_task_id: TaskId,
             actor_host_id: HostId,
-            dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
         ) -> DecisionResult[ProposalCreationResult, DecisionFailureCode]:
             result = original_create(
                 store,
@@ -79,7 +77,6 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 now,
                 actor_task_id=actor_task_id,
                 actor_host_id=actor_host_id,
-                dependency_brief_pins=dependency_brief_pins,
             )
             assert not isinstance(result, DecisionFailure)
             fresh = SQLiteWorkStore(work / "state.sqlite3")
@@ -107,7 +104,6 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 actor_task_id=TaskId("later-writer"),
                 actor_host_id=HostId("local"),
                 transition_brief_identity=None,
-                dependency_brief_pins=(),
             )
             self.assertNotIsInstance(closed, DecisionFailure)
             return result

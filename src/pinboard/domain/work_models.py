@@ -406,6 +406,10 @@ class WorkItem:
     unblocker: Unblocker | None = field(kw_only=True)
     """What the held item waits for; present exactly while the item is paused or blocked."""
 
+    @property
+    def has_started(self) -> bool:
+        return self.attempt is not None or self.state == WorkState.REVIEW
+
 
 @dataclass(frozen=True, slots=True)
 class AmendmentSupersession:

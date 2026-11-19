@@ -10,7 +10,6 @@ import msgspec
 
 from pinboard.application import consolidation_models as models
 from pinboard.application import obligation_coverage, stored_state, unblockers
-from pinboard.application.dependency_authoring import DependencyCheckpointPin, validate_dependency_brief_pins
 from pinboard.application.mutation_models import CommittedEffect, ConsolidationMutation, MutationReceipt
 from pinboard.application.ports import WorkStore
 from pinboard.domain import consolidation, decision_models, history, initiatives, work_models
@@ -129,7 +128,7 @@ def _project(selection: models.Selection, facts: models.Facts, change: consolida
         changes,
         projected_releases,
         models.RELEASED_LIFECYCLE_EFFECT if projected_releases else models.PRESERVED_LIFECYCLE_EFFECT,
-        "Declared checkpoints do not enforce execution ordering. Outside consumers wait for the whole campaign unless the separately approved checkpoint mapping covers all their carried prerequisite work.",
+        "Declared checkpoints describe progress within the campaign. Retargeted consumers wait for the whole campaign to finish.",
     )
 
 
@@ -138,12 +137,7 @@ def _decide_change(
     plan: consolidation.Plan,
     actor: TaskId,
     now: datetime,
-    dependency_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[consolidation.Change, ConsolidationDecisionCode]:
-    if (
-        failure := validate_dependency_brief_pins(facts.snapshot, None, requested_dependencies(plan), dependency_pins)
-    ) is not None:
-        return failure
     membership = initiatives.decide_membership_intent(
         plan.membership_intent,
         facts.membership_facts.initiative_revisions,
@@ -183,11 +177,10 @@ def preview(
     selection: models.Selection,
     actor: TaskId,
     now: datetime,
-    dependency_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[models.Preview, ConsolidationDecisionCode]:
     plan = models.plan(selection)
     facts = store.read_consolidation_facts(plan, now)
-    change = _decide_change(facts, plan, actor, now, dependency_pins)
+    change = _decide_change(facts, plan, actor, now)
     if isinstance(change, DecisionFailure):
         return change
     if (failure := obligation_coverage.validate_origins(store, plan.definition.obligations)) is not None:
@@ -204,12 +197,11 @@ def confirm(
     host: HostId,
     now: datetime,
     work_root: Path,
-    dependency_pins: tuple[DependencyCheckpointPin, ...],
 ) -> DecisionResult[CommittedEffect, ConsolidationDecisionCode]:
     plan = models.plan(selection)
     with store.write() as transaction:
         facts = transaction.read_consolidation_facts(plan, now)
-        change = _decide_change(facts, plan, actor, now, dependency_pins)
+        change = _decide_change(facts, plan, actor, now)
         if isinstance(change, DecisionFailure):
             return change
         current = _project(selection, facts, change)
@@ -242,11 +234,6 @@ def confirm(
         return transaction.commit(
             ConsolidationMutation(receipt, replace(change, source_closures=closures), current.queue_changes)
         )
-
-
-def requested_dependencies(plan: consolidation.Plan) -> tuple[work_models.Dependency, ...]:
-    cohort = {plan.campaign_id, *(value.item_id for value in plan.sources)}
-    return tuple(value for value in plan.definition.dependencies if work_models.dependency_item(value) not in cohort)
 
 
 def receipt_failure(receipt: stored_state.StoredTransitionReceipt) -> str | None:

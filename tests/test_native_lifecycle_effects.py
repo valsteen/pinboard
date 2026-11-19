@@ -21,7 +21,6 @@ from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import stored_state, work_brief_models, work_briefs
 from pinboard.application.artifacts import NewArtifact, WorkBriefIdentity
-from pinboard.application.dependency_authoring import DependencyCheckpointPin
 from pinboard.application.mutation_models import CommittedEffect, StoredStateMutation
 from pinboard.application.ports import WorkStore
 from pinboard.domain import decision_models, work_models
@@ -454,7 +453,6 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             read_authorization_time: Callable[[], datetime],
             actor_task_id: TaskId | None,
             actor_host_id: HostId | None,
-            dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
             transition_brief_identity: WorkBriefIdentity | None = None,
         ) -> DecisionResult[CommittedEffect, DecisionFailureCode]:
             nonlocal interleaved
@@ -474,7 +472,6 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                 actor_task_id=actor_task_id,
                 actor_host_id=actor_host_id,
                 transition_brief_identity=transition_brief_identity,
-                dependency_brief_pins=dependency_brief_pins,
             )
 
         with patch(
@@ -1111,7 +1108,6 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
             read_authorization_time: Callable[[], datetime],
             actor_task_id: TaskId | None,
             actor_host_id: HostId | None,
-            dependency_brief_pins: tuple[DependencyCheckpointPin, ...],
             transition_brief_identity: WorkBriefIdentity | None = None,
         ) -> DecisionResult[CommittedEffect, DecisionFailureCode]:
             nonlocal interleaved
@@ -1132,7 +1128,6 @@ class NativeLifecycleEffectsTest(CheckpointPackageSupport):
                 actor_task_id=actor_task_id,
                 actor_host_id=actor_host_id,
                 transition_brief_identity=transition_brief_identity,
-                dependency_brief_pins=dependency_brief_pins,
             )
             if owns_competitor and stage == "after":
                 result = self.transition_result(

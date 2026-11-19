@@ -8,8 +8,10 @@ from pinboard.domain import decision_models, decisions, history, initiatives, pr
 from pinboard.domain.definition_decisions import (
     DefinitionRevisionCode,
     DefinitionRevisionDecision,
+    DependencyAdditionCode,
     decide_definition_revision,
     introduces_dependency_cycle,
+    validate_added_dependencies,
 )
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.identifiers import CheckpointId, ProposalId, TaskId, WorkItemId
@@ -39,7 +41,6 @@ class Source:
 class CheckpointTarget:
     consumer: WorkItemId
     checkpoint: CheckpointId
-    covers_carried_work: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,12 +136,24 @@ def _select_sources(
 
 def _carry_definition(
     snapshot: LedgerSnapshot, plan: Plan, selected: tuple[SelectedSource, ...]
-) -> work_models.WorkItemDefinition:
+) -> DecisionResult[work_models.WorkItemDefinition, DependencyAdditionCode]:
+    if plan.checkpoint_targets:
+        mapping = plan.checkpoint_targets[0]
+        return DecisionFailure(
+            DecisionFailureCode.ITEM_DEFINITION_INVALID,
+            f"Consolidation cannot add a prerequisite for '{mapping.consumer}' on '{plan.campaign_id}' checkpoint "
+            f"'{mapping.checkpoint}'. Preview a whole-item campaign prerequisite after resolving any saved checkpoint waits.",
+            None,
+        )
     cohort = {plan.campaign_id, *(value.item_id for value in plan.sources)}
     current_owner = snapshot.definition(plan.campaign_id)
-    original_waits = tuple(wait for _, _, anchor in selected for wait in anchor.definition.dependencies)
-    if current_owner is not None:
-        original_waits = (*current_owner.definition.dependencies, *original_waits)
+    owner_waits = () if current_owner is None else current_owner.definition.dependencies
+    requested_checkpoints = tuple(
+        wait for wait in plan.definition.dependencies if isinstance(wait, work_models.CheckpointDependency)
+    )
+    if (failure := validate_added_dependencies(plan.campaign_id, None, owner_waits, requested_checkpoints)) is not None:
+        return failure
+    original_waits = (*owner_waits, *(wait for _, _, anchor in selected for wait in anchor.definition.dependencies))
     external_waits = _merge_waits(
         tuple(
             wait
@@ -148,6 +161,12 @@ def _carry_definition(
             if work_models.dependency_item(wait) not in cohort
         )
     )
+    for anchor in (*(() if current_owner is None else (current_owner,)), *(anchor for _, _, anchor in selected)):
+        for wait in anchor.definition.dependencies:
+            if isinstance(wait, work_models.CheckpointDependency) and (
+                wait not in owner_waits or wait not in external_waits
+            ):
+                return _changed_checkpoint_wait(anchor.work_item_id, wait)
     obligations = list(plan.definition.obligations)
     used = {value.obligation_id for value in obligations}
     existing_origins = {value.origin for value in obligations if isinstance(value, work_models.CarriedWorkObligation)}
@@ -197,39 +216,36 @@ def _retarget_definitions(
 ]:
     source_ids = {value.item_id for value in plan.sources}
     cohort = source_ids | {plan.campaign_id}
-    targets = {value.consumer: value for value in plan.checkpoint_targets}
     outside = tuple(
         item
         for item in snapshot.items
         if item.work_item_id not in cohort
         and any(work_models.dependency_item(wait) in source_ids for wait in item.depends_on)
     )
-    if any(item_id not in {item.work_item_id for item in outside} for item_id in targets):
-        return DecisionFailure(
-            DecisionFailureCode.ITEM_DEFINITION_INVALID,
-            "Checkpoint mappings must name surviving outside consumers of the selected sources.",
-            None,
-        )
-    if any(value.checkpoint not in campaign_definition.checkpoints for value in targets.values()):
-        return DecisionFailure(
-            DecisionFailureCode.ITEM_DEFINITION_INVALID, "A mapped campaign checkpoint is not declared.", None
-        )
     revised_definitions = {plan.campaign_id: campaign_definition}
     for item in outside:
         anchor = snapshot.definition(item.work_item_id)
         assert anchor is not None
-        mapped = targets.get(item.work_item_id)
-        target = (
-            plan.campaign_id
-            if mapped is None
-            else work_models.CheckpointDependency(plan.campaign_id, mapped.checkpoint)
-        )
+        for wait in item.depends_on:
+            if isinstance(wait, work_models.CheckpointDependency) and wait.item_id in cohort:
+                return _changed_checkpoint_wait(item.work_item_id, wait)
         # All converging source/owner edges form one wait at the first original position.
         waits = _merge_waits(
-            tuple(target if work_models.dependency_item(wait) in cohort else wait for wait in item.depends_on)
+            tuple(plan.campaign_id if work_models.dependency_item(wait) in cohort else wait for wait in item.depends_on)
         )
         revised_definitions[item.work_item_id] = replace(anchor.definition, dependencies=waits)
     return revised_definitions
+
+
+def _changed_checkpoint_wait(
+    dependent: WorkItemId, wait: work_models.CheckpointDependency
+) -> DecisionFailure[Literal[DecisionFailureCode.ITEM_DEFINITION_INVALID]]:
+    return DecisionFailure(
+        DecisionFailureCode.ITEM_DEFINITION_INVALID,
+        f"Consolidation would change '{dependent}' waiting for '{wait.item_id}' checkpoint '{wait.checkpoint_id}'. "
+        "Leave the affected work in place and ask the human how to account for that saved wait before previewing again.",
+        None,
+    )
 
 
 def _revision_changes(
@@ -368,6 +384,8 @@ def decide(
     if isinstance(selected, DecisionFailure):
         return selected
     campaign_definition = _carry_definition(snapshot, plan, selected)
+    if isinstance(campaign_definition, DecisionFailure):
+        return campaign_definition
     digest = history.work_item_definition_digest(campaign_definition)
     if isinstance(digest, DecisionFailure):
         return digest

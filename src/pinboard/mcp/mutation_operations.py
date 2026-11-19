@@ -16,7 +16,6 @@ from pinboard.adapters import (
     lifecycle_operations,
     review_operations,
 )
-from pinboard.adapters.dependency_operations import resolve_dependency_brief_pins
 from pinboard.adapters.files import file_io, views
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import ArtifactError, FileIOError
@@ -46,7 +45,7 @@ from pinboard.application.mutation_models import (
     AttemptAuthorityMutationResult,
     PreparationAuthorityMutationResult,
 )
-from pinboard.domain import decision_models, work_models
+from pinboard.domain import decision_models
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -85,6 +84,7 @@ type _ProposalRejectedFailureCode = Literal[
     DecisionFailureCode.ITEM_NOT_FOUND,
     DecisionFailureCode.ACTION_NOT_AVAILABLE,
     DecisionFailureCode.ITEM_DEFINITION_INVALID,
+    DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID,
 ]
 
 
@@ -100,6 +100,8 @@ def _proposal_rejected_code(code: _ProposalRejectedFailureCode) -> diagnostic_co
             return "ACTION_NOT_AVAILABLE"
         case DecisionFailureCode.ITEM_DEFINITION_INVALID:
             return "ITEM_DEFINITION_INVALID"
+        case DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID:
+            return "ITEM_DEFINITION_LIFECYCLE_INVALID"
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -123,27 +125,13 @@ def _proposal_failure(
                 (),
                 "Read item status for the proposal_id before deciding whether any new proposal is needed.",
             )
-        case DecisionFailureCode.ITEM_DEFINITION_STALE:
-            result = contracts.ProposalStale(
-                schema,
-                "rejected",
-                "ITEM_DEFINITION_STALE",
-                failure.message,
-                False,
-                "unchanged",
-                "refresh-action",
-                (),
-                (),
-                (),
-                "Inspect the named prerequisite's item status and accepted brief, then select one of its current "
-                "declared checkpoints again before retrying the proposal.",
-            )
         case (
             DecisionFailureCode.PROPOSAL_INVALID
             | DecisionFailureCode.ITEM_ALREADY_EXISTS
             | DecisionFailureCode.ITEM_NOT_FOUND
             | DecisionFailureCode.ACTION_NOT_AVAILABLE
             | DecisionFailureCode.ITEM_DEFINITION_INVALID
+            | DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID
         ) as code:
             result = contracts.ProposalRejected(
                 schema,
@@ -154,7 +142,7 @@ def _proposal_failure(
                 "unchanged",
                 "correct-input",
                 (),
-                (),
+                _observations(failure.details),
                 (),
                 None,
             )
@@ -251,21 +239,12 @@ def _proposal_created(
     token.checkpoint()
     now = datetime.now(UTC)
     operation = proposals.convert_proposal(decoded)
-    dependencies = (
-        (operation.intake.relation.dependency,)
-        if isinstance(operation.intake.relation, work_models.FollowUpProposalRelation)
-        else ()
-    )
-    dependency_pins = resolve_dependency_brief_pins(store, ArtifactRepository(durable), None, dependencies, now)
-    if isinstance(dependency_pins, DecisionFailure):
-        return _proposal_failure(dependency_pins)
     committed = service.create_proposal(
         store,
         operation,
         now,
         actor_task_id=TaskId(request.actor_task_id),
         actor_host_id=HostId(request.actor_host_id),
-        dependency_brief_pins=dependency_pins,
     )
     if isinstance(committed, DecisionFailure):
         return _proposal_failure(committed)

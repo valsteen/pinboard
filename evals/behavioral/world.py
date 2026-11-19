@@ -30,6 +30,7 @@ from evals.behavioral.world_content import (
     seed_inherited_attempt,
     seed_merge_change,
     seed_skip_comments_experiment,
+    seed_strict_dependencies,
 )
 
 MAINTAINER = ("Sam Rivera", "sam@example.test")
@@ -139,6 +140,19 @@ def build_world(
                 )
             )
             seeded += verify_seed(world, "project", world.work_root, INHERITED_ATTEMPT_STATES)
+        case (
+            WorldExtra.STRICT_DEPENDENCIES_READY
+            | WorldExtra.STRICT_DEPENDENCIES_ACTIVE
+            | WorldExtra.STRICT_DEPENDENCIES_MERGE
+        ) as case:
+            asyncio.run(_seed_project(world, owner, lambda seeder: seed_strict_dependencies(seeder, case)))
+            state = "ready" if case is WorldExtra.STRICT_DEPENDENCIES_READY else "active"
+            seeded += verify_seed(
+                world,
+                "project",
+                world.work_root,
+                {"input-examples": state, "json-output": "done", "trim-whitespace": "active", "strict-parse": "active"},
+            )
         case _ as unreachable:
             raise AssertionError(unreachable)
     return world, seeded

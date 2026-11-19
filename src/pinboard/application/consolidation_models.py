@@ -149,7 +149,8 @@ class Preview(
         "Sources end as superseded; paused/blocked attempts retain evidence and lose write authority. Releasable unstarted items holds return to ready; other campaign and surviving consumer lifecycles, candidates and authority are preserved, and their accepted scopes may become stale. No process, launch or repository effect.",
     ]
     checkpoint_effect: Literal[
-        "Declared checkpoints do not enforce execution ordering. Outside consumers wait for the whole campaign unless the separately approved checkpoint mapping covers all their carried prerequisite work."
+        "Declared checkpoints describe progress within the campaign. Retargeted consumers wait for the whole campaign to finish.",
+        "Declared checkpoints do not enforce execution ordering. Outside consumers wait for the whole campaign unless the separately approved checkpoint mapping covers all their carried prerequisite work.",
     ]
 
     def __post_init__(self) -> None:
@@ -265,9 +266,7 @@ def plan(selection: Selection) -> consolidation.Plan:
         history.work_item_definition_from_payload(selection.campaign.definition),
         selection.campaign.create,
         tuple(
-            consolidation.CheckpointTarget(
-                WorkItemId(value.consumer), CheckpointId(value.checkpoint), value.covers_carried_work
-            )
+            consolidation.CheckpointTarget(WorkItemId(value.consumer), CheckpointId(value.checkpoint))
             for value in selection.checkpoint_targets
         ),
         proposals.convert_membership_intent(selection.membership_intent),

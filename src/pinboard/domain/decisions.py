@@ -1063,10 +1063,14 @@ def _hold_unblocker(
             accepted = frozenset(work_models.dependency_item(target) for target in definition.definition.dependencies)
             outside = tuple(str(value) for value in items if value not in accepted)
             if outside:
+                next_step = (
+                    "Continue independent work and ask the human how to account for any uncovered obligation."
+                    if item.has_started
+                    else "Record the exact whole-item prerequisites through a human-authorized definition revision before starting."
+                )
                 return _invalid_unblocker(
-                    f"Waited-for items must be accepted dependencies of '{item.work_item_id}' in its current "
-                    f"definition; not accepted: {', '.join(outside)}. Revise the item's dependencies first or name "
-                    "a human decision or outside condition instead."
+                    f"Item '{item.work_item_id}' cannot wait for {', '.join(outside)} without those accepted "
+                    f"prerequisites. {next_step}"
                 )
             return unblocker
         case (

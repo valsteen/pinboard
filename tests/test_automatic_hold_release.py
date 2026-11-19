@@ -36,7 +36,12 @@ from pinboard.domain.identifiers import (
 )
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.mcp import server as mcp_server
-from tests.checkpoint_support import AcceptedPackageFixture, CheckpointFixture, CheckpointPackageSupport
+from tests.checkpoint_support import (
+    AcceptedPackageFixture,
+    CheckpointFixture,
+    CheckpointPackageSupport,
+    predecessor_checkpoint_fixture,
+)
 from tests.domain_support import action, attempt_record, expect_success
 from tests.native_support import native_tools
 from tests.sqlite_support import sync_test_unblocker
@@ -606,7 +611,8 @@ class _HoldReleaseSupport(CheckpointPackageSupport):
         self.create_item(fixture, "started-dep")
         self.activate_item(fixture, "started-dep")
         self.record_amendment(fixture, "started-dep-1")
-        self.revise_dependencies(fixture, "started-dep", [prereq_id])
+        with predecessor_checkpoint_fixture():
+            self.revise_dependencies(fixture, "started-dep", [prereq_id])
         self.assertEqual(
             "committed",
             self.transition_result(
@@ -960,7 +966,8 @@ class AutomaticHoldReleasePersistenceTest(_HoldReleaseSupport):
         with self.subTest(trigger="accept-checkpoint"):
             fixture = self.native_fixture(self.checkpoint_fixture(local=True))
             checkpoint = fixture.brief.checkpoint.checkpoint_id
-            self.create_item(fixture, "cp-unstarted", follow_up={"item": "work-a", "checkpoint": checkpoint})
+            with predecessor_checkpoint_fixture():
+                self.create_item(fixture, "cp-unstarted", follow_up={"item": "work-a", "checkpoint": checkpoint})
             self.create_item(fixture, "whole-unstarted", follow_up="work-a")
             self.assertEqual(
                 "committed",
@@ -990,16 +997,6 @@ class AutomaticHoldReleasePersistenceTest(_HoldReleaseSupport):
         self,
     ) -> None:
         fixture = self.native_fixture(self.checkpoint_fixture(local=True))
-        checkpoint = fixture.brief.checkpoint.checkpoint_id
-        self.assertEqual(
-            "committed",
-            self.transition_result(
-                fixture,
-                self.project_action(fixture, "accept-checkpoint:work-a-1"),
-                self.json_object(json.loads(fixture.payload.read_bytes())),
-            )["status"],
-        )
-
         self.create_item(fixture, "done-target")
         self.close_done(fixture, "done-target")
         refused_block = self.block_unstarted(
@@ -1042,18 +1039,6 @@ class AutomaticHoldReleasePersistenceTest(_HoldReleaseSupport):
         self.assertIn(
             "## Released holds",
             (fixture.work / "views" / "history" / f"{removed['history_id']}.md").read_text(encoding="utf-8"),
-        )
-
-        self.create_item(fixture, "revise-narrow", follow_up="work-a")
-        self.assertEqual(
-            "committed",
-            self.block_unstarted(fixture, "revise-narrow", {"kind": "items", "items": ["work-a"]})["status"],
-        )
-        narrowed = self.revise_dependencies(fixture, "revise-narrow", [{"item": "work-a", "checkpoint": checkpoint}])
-        self.assertEqual("ready", self.item_status(fixture, "revise-narrow")["state"])
-        self.assertIn(
-            "## Released holds",
-            (fixture.work / "views" / "history" / f"{narrowed['history_id']}.md").read_text(encoding="utf-8"),
         )
 
         self.create_item(fixture, "replacer-item")
@@ -1109,7 +1094,8 @@ class AutomaticHoldReleasePersistenceTest(_HoldReleaseSupport):
 
         self.create_item(fixture, "started-self")
         self.activate_item(fixture, "started-self")
-        self.revise_dependencies(fixture, "started-self", ["done-target", "live-dep"])
+        with predecessor_checkpoint_fixture():
+            self.revise_dependencies(fixture, "started-self", ["done-target", "live-dep"])
         self.assertEqual(
             "committed",
             self.transition_result(
@@ -1127,7 +1113,6 @@ class AutomaticHoldReleasePersistenceTest(_HoldReleaseSupport):
             {
                 WorkItemId("waits-on-proposal"),
                 WorkItemId("revise-remove"),
-                WorkItemId("revise-narrow"),
                 WorkItemId("withdraw-target"),
                 WorkItemId("retain-target"),
             },
@@ -1139,16 +1124,6 @@ class AutomaticHoldReleasePersistenceTest(_HoldReleaseSupport):
         self,
     ) -> None:
         fixture = self.native_fixture(self.checkpoint_fixture(local=True))
-        checkpoint = fixture.brief.checkpoint.checkpoint_id
-        self.assertEqual(
-            "committed",
-            self.transition_result(
-                fixture,
-                self.project_action(fixture, "accept-checkpoint:work-a-1"),
-                self.json_object(json.loads(fixture.payload.read_bytes())),
-            )["status"],
-        )
-
         self.create_item(fixture, "source-a")
         self.create_item(fixture, "held-consumer", follow_up="source-a")
         self.assertEqual(
@@ -1157,27 +1132,13 @@ class AutomaticHoldReleasePersistenceTest(_HoldReleaseSupport):
         )
         current_campaign = fixture.call_advertised_tool(
             mcp_server.ITEM_DEFINITION_TOOL,
-            {"request": {**self.roots(fixture), "operation": "current", "item_id": "work-a"}},
+            {"request": {**self.roots(fixture), "operation": "current", "item_id": "held-consumer"}},
         )
-        campaign_def: JsonObject = {
-            **self.json_object(current_campaign["definition"]),
-            "checkpoints": [checkpoint, "later-stage"],
-            "route_facts": {
-                **self.json_object(self.json_object(current_campaign["definition"])["route_facts"]),
-                "size_class": "campaign",
-                "declares_checkpoints": True,
-            },
-        }
+        campaign_def: JsonObject = {**self.json_object(current_campaign["definition"]), "dependencies": []}
         selection: JsonObject = {
-            "sources": [{"item_id": "source-a", "replacement_cost": "Campaign work-a absorbs source-a."}],
-            "campaign": {"item_id": "work-a", "create": False, "definition": campaign_def},
-            "checkpoint_targets": [
-                {
-                    "consumer": "held-consumer",
-                    "checkpoint": checkpoint,
-                    "covers_carried_work": "Accepted checkpoint covers source-a.",
-                }
-            ],
+            "sources": [{"item_id": "source-a", "replacement_cost": "Campaign absorbs source-a."}],
+            "campaign": {"item_id": "held-consumer", "create": False, "definition": campaign_def},
+            "checkpoint_targets": [],
             "membership_intent": {"kind": "no-initiatives"},
         }
         preview_res = fixture.call_advertised_tool(
@@ -1252,6 +1213,10 @@ class AutomaticHoldReleasePersistenceTest(_HoldReleaseSupport):
         assert isinstance(v2_preview, dict)
         v2_preview.pop("released_holds")
         v2_preview["schema"] = "pinboard-consolidation-preview/v2"
+        v2_preview["checkpoint_effect"] = (
+            "Declared checkpoints do not enforce execution ordering. Outside consumers wait for the whole campaign "
+            "unless the separately approved checkpoint mapping covers all their carried prerequisite work."
+        )
         v2_preview["lifecycle_effect"] = consolidation_models.PRESERVED_LIFECYCLE_EFFECT
         v2_preview_bytes = msgspec.json.encode(v2_preview, order="sorted")
         v2_record = {
@@ -1415,9 +1380,8 @@ class BoardAndOverviewResumeReadinessTest(_HoldReleaseSupport):
         self.close_done(fixture, "done-dep")
         self.create_item(fixture, "live-dep")
 
-        self.create_item(fixture, "resumable-blocked")
+        self.create_item(fixture, "resumable-blocked", follow_up="done-dep")
         self.activate_item(fixture, "resumable-blocked")
-        self.revise_dependencies(fixture, "resumable-blocked", ["done-dep"])
         self.assertEqual(
             "committed",
             self.transition_result(
@@ -1427,9 +1391,8 @@ class BoardAndOverviewResumeReadinessTest(_HoldReleaseSupport):
             )["status"],
         )
 
-        self.create_item(fixture, "resumable-paused")
+        self.create_item(fixture, "resumable-paused", follow_up="done-dep")
         self.activate_item(fixture, "resumable-paused")
-        self.revise_dependencies(fixture, "resumable-paused", ["done-dep"])
         self.assertEqual(
             "committed",
             self.transition_result(

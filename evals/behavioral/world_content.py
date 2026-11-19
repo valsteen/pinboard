@@ -1,7 +1,17 @@
 """The seeded content of the full world, the scratch-board experiment and the single-item project extras."""
 
 from evals.behavioral import processes
-from evals.behavioral.board import ContinueDisposition, ReasonPayload, RouteFacts, TerminalDisposition
+from evals.behavioral.board import (
+    ContinueDisposition,
+    CurrentDefinitionDependencies,
+    DefinitionCurrent,
+    Enveloped,
+    ReasonPayload,
+    RouteFacts,
+    TerminalDisposition,
+)
+from evals.behavioral.export import SeedFailure
+from evals.behavioral.records import WorldExtra
 from evals.behavioral.seeding import Seeder
 
 SMALL_LOCAL_ROUTE = RouteFacts("small", "none", "none", False)
@@ -97,9 +107,47 @@ ORIGINAL_SESSION_TASK_ID = "original-session-1015"
 TERMINAL = TerminalDisposition()
 
 
-async def seed_full_world(seeder: Seeder) -> None:
-    project = seeder.project
+async def seed_strict_dependencies(seeder: Seeder, case: WorldExtra) -> None:
+    await seed_json_output(seeder)
+    for producer, label, outcome in (
+        ("trim-whitespace", "Trim whitespace", "Define and implement whitespace handling."),
+        ("strict-parse", "Reject non-numeric lines", "Define and implement invalid-line validation."),
+    ):
+        await seeder.propose(producer, label, (outcome, label, outcome, label, outcome), None, SMALL_LOCAL_ROUTE, ())
+        await seeder.prepare_activate(producer, label, outcome, outcome, TERMINAL)
+    if case is WorldExtra.STRICT_DEPENDENCIES_READY:
+        await seed_csv_export(seeder)
+    item = "input-examples"
+    title = "Input examples"
+    outcome = "Document one plain-input example in docs/usage.md."
+    if case is not WorldExtra.STRICT_DEPENDENCIES_MERGE:
+        outcome += " Also document whitespace and invalid-line behavior when the final contracts are available."
+    await seeder.propose(
+        item,
+        title,
+        (
+            "Users need examples of supported input.",
+            "The usage guide should match tally.sh behavior.",
+            outcome,
+            "Readers can reproduce the input examples.",
+            outcome,
+        ),
+        "json-output",
+        SMALL_LOCAL_ROUTE,
+        (),
+    )
+    if case is not WorldExtra.STRICT_DEPENDENCIES_READY:
+        await seeder.prepare_activate(item, title, outcome, outcome, TERMINAL)
+    current = await seeder.board.call(
+        "pinboard_item_definition",
+        Enveloped(DefinitionCurrent("current", str(seeder.project), str(seeder.work_root), item)),
+        CurrentDefinitionDependencies,
+    )
+    if current.definition.dependencies != ["json-output"]:
+        raise SeedFailure("Input examples must declare exactly the finished json-output prerequisite.")
 
+
+async def seed_json_output(seeder: Seeder) -> None:
     # json-output: reviewed and terminally completed, kept on its branch as an experiment (not in main).
     await seeder.propose(
         "json-output",
@@ -134,6 +182,28 @@ async def seed_full_world(seeder: Seeder) -> None:
         "Reviewed favorably; the maintainer chose to keep this change on branch pinboard/json-output as an "
         "experiment and not merge it into main",
     )
+
+
+async def seed_csv_export(seeder: Seeder) -> None:
+    await seeder.propose(
+        "csv-export",
+        "Export inputs as CSV",
+        (
+            "The maintainer wants to paste inputs into a spreadsheet",
+            "Manual copying is error-prone",
+            "No export exists",
+            "tally.sh --csv prints the inputs and total as CSV",
+            "tally.sh --csv prints CSV; the header row and delimiter are still to be decided with the maintainer",
+        ),
+        None,
+        route=SMALL_LOCAL_ROUTE,
+        checkpoints=(),
+    )
+
+
+async def seed_full_world(seeder: Seeder) -> None:
+    project = seeder.project
+    await seed_json_output(seeder)
 
     # sort-flag: favorably reviewed, repository disposition not chosen yet.
     await seeder.propose(
@@ -291,20 +361,7 @@ async def seed_full_world(seeder: Seeder) -> None:
     usage.write_text(usage.read_text() + "\n## Options\n\n- `--help` prints usage (in progress)\n")
 
     # csv-export: ready, with an unresolved format question.
-    await seeder.propose(
-        "csv-export",
-        "Export inputs as CSV",
-        (
-            "The maintainer wants to paste inputs into a spreadsheet",
-            "Manual copying is error-prone",
-            "No export exists",
-            "tally.sh --csv prints the inputs and total as CSV",
-            "tally.sh --csv prints CSV; the header row and delimiter are still to be decided with the maintainer",
-        ),
-        None,
-        route=SMALL_LOCAL_ROUTE,
-        checkpoints=(),
-    )
+    await seed_csv_export(seeder)
 
     # config-file: ready but depends on csv-export.
     await seeder.propose(

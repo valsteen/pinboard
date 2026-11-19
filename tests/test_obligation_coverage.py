@@ -12,7 +12,7 @@ from pinboard.application import obligation_coverage, project_export, query_mode
 from pinboard.domain import history, work_models
 from pinboard.domain.identifiers import AttemptId, WorkItemId
 from pinboard.mcp import server as mcp_server
-from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
+from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport, predecessor_checkpoint_fixture
 from tests.native_support import native_tools
 from tests.support import HOLD_UNBLOCKER, JsonObject, JsonValue
 from tests.test_proposals import proposal
@@ -237,7 +237,7 @@ class ObligationCoverageTest(CheckpointPackageSupport):
             view = (fixture.work / "views" / "items" / "replacement-work.md").read_text()
             self.assertIn("source-work@1/obligation/first", view)
 
-    def test_superseded_close_waits_until_dependents_target_the_replacement_or_its_checkpoint(self) -> None:
+    def test_superseded_close_allows_a_replacement_wait_including_a_saved_checkpoint(self) -> None:
         for checkpoint in (False, True):
             with self.subTest(checkpoint=checkpoint), native_tools() as native:
                 fixture = replace(
@@ -302,7 +302,12 @@ class ObligationCoverageTest(CheckpointPackageSupport):
                 targets: list[JsonValue] = (
                     [{"item": "replacement-work", "checkpoint": "usable"}] if checkpoint else ["replacement-work"]
                 )
-                self.assertEqual("committed", dependencies(fixture, "dependent-work", targets, [])["status"])
+                if checkpoint:
+                    with predecessor_checkpoint_fixture():
+                        revised = dependencies(fixture, "dependent-work", targets, [])
+                else:
+                    revised = dependencies(fixture, "dependent-work", targets, [])
+                self.assertEqual("committed", revised["status"], revised)
                 closed = self.close(fixture, "source-work", "superseded", "Close source as superseded.")
                 self.assertEqual("committed", closed["status"], closed)
                 fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")

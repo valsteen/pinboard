@@ -78,7 +78,7 @@ def _supplied_attempt_authority(
     operation_time: datetime,
 ) -> work_models.CommandAttemptAuthority | None:
     snapshot = store.read_decision_facts(
-        query_models.DecisionScope((), (), (), (), (), (attempt_id,), (), (), (), (), read_current_amendments=False),
+        query_models.DecisionScope((), (), (), (), (), (attempt_id,), (), (), (), read_current_amendments=False),
         operation_time,
     ).snapshot
     current = snapshot.command_attempt_authority(attempt_id)
@@ -186,7 +186,7 @@ def _supplied_preparation_authority(
     operation_time: datetime,
 ) -> work_models.PreparationCommandAuthority | None:
     snapshot = store.read_decision_facts(
-        query_models.DecisionScope((work_item_id,), (), (), (), (), (), (), (), (), (), read_current_amendments=False),
+        query_models.DecisionScope((work_item_id,), (), (), (), (), (), (), (), (), read_current_amendments=False),
         operation_time,
     ).snapshot
     current = snapshot.command_preparation_authority(work_item_id)

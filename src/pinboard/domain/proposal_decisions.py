@@ -1,6 +1,8 @@
+from dataclasses import replace
 from typing import Literal, assert_never
 
 from pinboard.domain import initiatives, work_models
+from pinboard.domain.definition_decisions import DependencyAdditionCode, validate_added_dependencies
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
 from pinboard.domain.history import DefinitionInvalidCode, work_item_definition_digest
 from pinboard.domain.identifiers import WorkItemId
@@ -21,6 +23,7 @@ type ProposalCreationDecisionCode = (
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
     ]
     | DefinitionInvalidCode
+    | DependencyAdditionCode
 )
 
 
@@ -83,20 +86,11 @@ def decide_proposal_creation(  # noqa: C901, PLR0912 - exhaustive proposal relat
             f"Proposal position must be between 1 and {live_item_count + 1}.",
             None,
         )
-    match intake.relation:
-        case work_models.FollowUpProposalRelation(dependency=dependency):
-            dependencies = (dependency,)
-        case (
-            work_models.IndependentProposalRelation()
-            | work_models.PrerequisiteProposalRelation()
-            | work_models.DuplicateProposalRelation()
-            | work_models.ContradictionProposalRelation()
-            | work_models.ClarificationProposalRelation()
-            | work_models.PlannedReplacementProposalRelation()
-        ):
-            dependencies = ()
-        case _ as unreachable:
-            assert_never(unreachable)
+    dependencies = (
+        (intake.relation.dependency,) if isinstance(intake.relation, work_models.FollowUpProposalRelation) else ()
+    )
+    if (failure := validate_added_dependencies(item_id, None, (), dependencies)) is not None:
+        return failure
     definition = work_models.WorkItemDefinition(
         intake.user_label,
         intake.effect,
@@ -130,22 +124,14 @@ def decide_proposal_creation(  # noqa: C901, PLR0912 - exhaustive proposal relat
             anchor = snapshot.definition(related_item)
             if target is not None and anchor is not None:
                 dependency_position = len(anchor.definition.dependencies)
-                changed_definition = work_models.WorkItemDefinition(
-                    anchor.definition.title,
-                    anchor.definition.objective,
-                    anchor.definition.hypothesis,
-                    anchor.definition.evidence,
-                    anchor.definition.scope,
-                    anchor.definition.non_scope,
-                    anchor.definition.acceptance_criteria,
-                    (*anchor.definition.dependencies, item_id),
-                    anchor.definition.effect,
-                    anchor.definition.unlock,
-                    anchor.definition.checkout_policy,
-                    anchor.definition.obligations,
-                    anchor.definition.checkpoints,
-                    anchor.definition.route_facts,
-                )
+                revised_dependencies = (*anchor.definition.dependencies, item_id)
+                if (
+                    failure := validate_added_dependencies(
+                        related_item, target, anchor.definition.dependencies, revised_dependencies
+                    )
+                ) is not None:
+                    return failure
+                changed_definition = replace(anchor.definition, dependencies=revised_dependencies)
                 changed_digest = work_item_definition_digest(changed_definition)
                 if isinstance(changed_digest, DecisionFailure):
                     return changed_digest

@@ -635,7 +635,7 @@ def write(  # noqa: C901, PLR0912, PLR0915
                         snapshot = read_selected_decision_facts(
                             connection,
                             query_models.DecisionScope(
-                                (item_id,), (), (), (item_id,), (), (), (), (), (), (), read_current_amendments=False
+                                (item_id,), (), (), (item_id,), (), (), (), (), (), read_current_amendments=False
                             ),
                             now,
                         ).snapshot

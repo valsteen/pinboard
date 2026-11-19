@@ -86,7 +86,7 @@ class InitiativeMigrationTest(CheckpointPackageSupport):
         self.assertIsInstance(failed, schema_procedure.SchemaProcedureFailure)
         self.assertEqual(before, path.read_bytes())
         self.assertIsInstance(schema_procedure.apply_schema(path, plan.plan_id), schema_procedure.AppliedSchema)
-        for _step in range(7):
+        for _step in range(8):
             step = schema_procedure.preview_schema(path)
             assert isinstance(step, schema_procedure.PlannedSchema), step
             self.assertIsInstance(schema_procedure.apply_schema(path, step.plan_id), schema_procedure.AppliedSchema)

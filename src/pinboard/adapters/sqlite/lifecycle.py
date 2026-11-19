@@ -15,7 +15,7 @@ from typing import Annotated, Literal, NoReturn, assert_never
 
 import msgspec
 
-from pinboard.adapters.sqlite.amendments import read_all_amendments, read_amendment_facts
+from pinboard.adapters.sqlite.amendments import read_all_amendments, read_attempt_amendments
 from pinboard.adapters.sqlite.artifacts import read_artifact_references_by_ids
 from pinboard.adapters.sqlite.database import (
     decode_row,
@@ -803,9 +803,9 @@ def read_item_status(
                 _read_review_event(
                     connection, item.work_item_id, selected_attempt.attempt_id, selected_attempt.subject_revision
                 ),
-                read_amendment_facts(
-                    connection, selected_attempt.attempt_id, selected_attempt.brief_artifact_ref_id
-                ).current,
+                read_attempt_amendments(connection, (selected_attempt.attempt_id,), current_only=True).get(
+                    selected_attempt.attempt_id, ()
+                ),
             ),
         )
     closure = (

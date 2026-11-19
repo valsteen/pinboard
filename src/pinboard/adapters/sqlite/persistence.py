@@ -18,7 +18,7 @@ from pinboard.adapters.sqlite import consolidation as consolidation_storage
 from pinboard.adapters.sqlite import initiatives as initiative_storage
 from pinboard.adapters.sqlite import obligation_coverage as obligation_storage
 from pinboard.adapters.sqlite import state as sqlite_state
-from pinboard.adapters.sqlite.amendments import insert_amendment
+from pinboard.adapters.sqlite.amendments import insert_amendment, insert_supersessions
 from pinboard.adapters.sqlite.artifacts import (
     accept_artifact_reference as write_artifact_reference,
 )
@@ -642,6 +642,8 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
             ) is not None:
                 return failure
         case decision_models.RebindAttemptChange(authority_change=authority, carried_unblocker=carried):
+            if (failure := advance_item_revision(change.work_item_id)) is not None:
+                return failure
             if (
                 failure := rebind_attempt(connection, facts.attempt(change.attempt), change, revision, now)
             ) is not None:
@@ -650,6 +652,7 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 write_item_unblocker(connection, change.work_item_id, carried)
             if (failure := fence_attempt_authority(connection, authority, now)) is not None:
                 return failure
+            insert_supersessions(connection, mutation.receipt.history_id, change.supersessions)
         case decision_models.ResumeAttemptChange(
             work_item_id=item,
             item_before=item_before,
@@ -681,6 +684,8 @@ def _persist_transition(  # noqa: C901, PLR0912, PLR0915
                 )
             ) is not None:
                 return failure
+            if revised_brief is not None:
+                insert_supersessions(connection, mutation.receipt.history_id, revised_brief.supersessions)
         case decision_models.ReviewSubmissionChange(
             work_item_id=item,
             attempt=attempt,

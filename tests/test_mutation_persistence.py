@@ -465,7 +465,7 @@ class MutationPersistenceTest(unittest.TestCase):
         assert isinstance(action, decision_models.ResumeAction)
         decision = decide(
             snapshot,
-            decision_models.ResumeCommand(action, work_models.ResumeInput(replacement.artifact_ref_id)),
+            decision_models.ResumeCommand(action, work_models.ResumeInput(replacement.artifact_ref_id, ())),
             SQLITE_NOW,
         )
 

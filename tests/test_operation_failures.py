@@ -194,6 +194,7 @@ class OperationFailureTest(unittest.TestCase):
                 "codex/work-a",
                 "base-revision",
                 ArtifactRefId(1),
+                (),
             ),
         )
         supplied = WorkBriefIdentity("wrong-attempt", "wrong-item", "wrong-branch", "wrong-base", 2, "f" * 64)

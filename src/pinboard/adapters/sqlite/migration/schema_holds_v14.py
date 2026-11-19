@@ -22,9 +22,9 @@ from pinboard.adapters.sqlite.dependencies import DependencyRow, read_accepted_c
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.lifecycle import move_item_state_count, read_all_item_unblockers
 from pinboard.adapters.sqlite.migration import database as migration_database
+from pinboard.adapters.sqlite.migration.schema_amendment_lifetime_v15 import upgrade_v15_connection
 from pinboard.adapters.sqlite.models import OpenMode
 from pinboard.adapters.sqlite.replacements import read_current_replacements
-from pinboard.adapters.sqlite.state import read_state
 from pinboard.application import stored_state, unblockers
 from pinboard.domain import work_models
 from pinboard.domain.identifiers import AttemptId, WorkItemId
@@ -149,9 +149,7 @@ def select_v14_releasable_holds(connection: sqlite3.Connection) -> tuple[Planned
 
 
 def _create_statement(name: str) -> str:
-    statements = {
-        object_name: statement for _, object_name, _, statement in database._build_expected_schema_signature()
-    }
+    statements = {object_name: statement for _, object_name, _, statement in database._build_v15_schema_signature()}
     statement = statements[name]
     assert statement is not None
     return statement
@@ -185,14 +183,15 @@ def _write_v15(connection: sqlite3.Connection, released: tuple[PlannedHoldReleas
 
 
 def project_v14_for_current_readers(connection: sqlite3.Connection) -> None:
-    """Advance an in-memory v14 projection so retained predecessor checks can use current v15 readers."""
+    """Advance an in-memory v14 projection so predecessor checks can use current readers."""
 
     connection.row_factory = sqlite3.Row
     with database.write_transaction(connection):
         database._verify_v14_schema(connection)
         released = select_v14_releasable_holds(connection)
         _write_v15(connection, released)
-        database._verify_current_schema(connection)
+        database._verify_v15_schema(connection)
+    upgrade_v15_connection(connection, None)
 
 
 def upgrade_v14_connection(connection: sqlite3.Connection, expected_postimage: str | None) -> bool:
@@ -201,15 +200,18 @@ def upgrade_v14_connection(connection: sqlite3.Connection, expected_postimage: s
     connection.row_factory = sqlite3.Row
     with database.write_transaction(connection):
         if database._read_pinboard_schema_version(connection) == 15:
-            database._verify_current_schema(connection)
+            database._verify_v15_schema(connection)
             return False
         database._verify_v14_schema(connection)
         database.verify_database_integrity(connection)
         released = select_v14_releasable_holds(connection)
         _write_v15(connection, released)
-        database._verify_current_schema(connection)
+        database._verify_v15_schema(connection)
         database.verify_database_integrity(connection)
-        read_state(connection)
+        with closing(sqlite3.connect(":memory:", isolation_level=None)) as projection:
+            projection.executescript("\n".join(connection.iterdump()))
+            database._configure_connection(projection)
+            upgrade_v15_connection(projection, None)
         if (
             expected_postimage is not None
             and migration_database.schema_logical_digest(connection) != expected_postimage

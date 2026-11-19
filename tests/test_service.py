@@ -208,7 +208,9 @@ class ServiceTest(unittest.TestCase):
         store, _database = self._store_with_state(state)
         action = self._project_action(store, decision_models.ResumeAction)
         command = non_checkpoint_command(
-            decision_models.ResumeCommand(action, work_models.ResumeInput(state.artifact_references[0].artifact_ref_id))
+            decision_models.ResumeCommand(
+                action, work_models.ResumeInput(state.artifact_references[0].artifact_ref_id, ())
+            )
         )
         identity = WorkBriefIdentity(
             "work-a-1",
@@ -313,6 +315,7 @@ class ServiceTest(unittest.TestCase):
                             "codex/corrected-work-a",
                             "corrected-base",
                             replacement.artifact_ref_id,
+                            (),
                         ),
                     )
                 )

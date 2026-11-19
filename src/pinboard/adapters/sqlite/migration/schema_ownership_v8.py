@@ -309,7 +309,7 @@ def _upgrade_v8_connection(connection: sqlite3.Connection, work_root: Path, expe
     return True
 
 
-def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:  # noqa: C901, PLR0912 - exact supported predecessor steps
+def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:  # noqa: C901, PLR0912, PLR0915 - exact supported predecessor steps
     """Observe exact supported identities and predict the next explicit advancement without effects."""
     try:
         source = sha256(path.read_bytes()).hexdigest()
@@ -320,18 +320,16 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
             version = database._read_pinboard_schema_version(connection)
             if version == 6:
                 return migration_database.inspect_schema_migration(path)
-            if version in (12, 14, database.SCHEMA_VERSION):
-                # v12 and v14 previews compute label-bound or release-bound plans separately.
-                if version == 12:
-                    database._verify_v12_schema(connection)
-                elif version == 14:
-                    database._verify_v14_schema(connection)
-                else:
-                    database._verify_current_schema(connection)
-                database.verify_database_integrity(connection)
-                return version, source, None
-            if version == 13:
+            if version == database.SCHEMA_VERSION:
+                database._verify_current_schema(connection)
+            elif version == 15:
+                database._verify_v15_schema(connection)
+            elif version == 14:
+                database._verify_v14_schema(connection)
+            elif version == 13:
                 database._verify_v13_schema(connection)
+            elif version == 12:
+                database._verify_v12_schema(connection)
             elif version == 11:
                 database._verify_v11_schema(connection)
             elif version == 10:
@@ -347,6 +345,8 @@ def inspect_current_schema_migration(path: Path) -> tuple[int, str, str | None]:
                     StorageErrorCode.SCHEMA_UNSUPPORTED, f"Schema sqlite-v{version} has no supported migration step."
                 )
             database.verify_database_integrity(connection)
+            if version in (12, 14, 15, database.SCHEMA_VERSION):
+                return version, source, None
             with closing(sqlite3.connect(":memory:", isolation_level=None)) as simulation:
                 connection.backup(simulation)
                 database._configure_connection(simulation)

@@ -156,7 +156,7 @@ def stored_close_outcome(value: work_models.CloseOutcome) -> StoredWorkItemState
 @dataclass(frozen=True, slots=True)
 class ProjectRecord:
     application: Literal["pinboard"]
-    schema_version: Literal[15]
+    schema_version: Literal[16]
     revision: int
     host_epoch: int
     created_at: datetime
@@ -439,6 +439,17 @@ class StoredUnblocker:
 
 
 @dataclass(frozen=True, slots=True)
+class MigratedAmendmentEnd:
+    """The approval was already historical when its ledger advanced from v15."""
+
+
+@dataclass(frozen=True, slots=True)
+class SupersededAmendment:
+    history_id: HistoryId
+    human_decision: str
+
+
+@dataclass(frozen=True, slots=True)
 class StoredAttemptAmendment:
     """One recorded attempt amendment, keyed by the receipt that recorded it.
 
@@ -451,6 +462,7 @@ class StoredAttemptAmendment:
     prior_attempt_revision: int
     recorded_at: datetime
     amendment: work_models.AttemptAmendment
+    end: MigratedAmendmentEnd | SupersededAmendment | None
 
 
 @dataclass(frozen=True, slots=True)

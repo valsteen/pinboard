@@ -10,6 +10,7 @@ from typing import (
 import msgspec
 
 from pinboard.application import decision_batches, pr_reviews, unblockers
+from pinboard.application.amendment_supersessions import AmendmentSupersessionPayload
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.history import DefinitionPayload, RecordText
 
@@ -36,12 +37,14 @@ def require_canonical_excluded_paths(paths: tuple[str, ...]) -> None:
 
 class ResumeInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     brief_artifact_ref_id: Annotated[int, msgspec.Meta(ge=1)] | None = None
+    supersessions: tuple[AmendmentSupersessionPayload, ...] = ()
 
 
 class RebindAttemptInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     branch: NonEmptyLine
     base_revision: NonEmptyLine
     brief_artifact_ref_id: Annotated[int, msgspec.Meta(ge=1)]
+    supersessions: tuple[AmendmentSupersessionPayload, ...] = ()
 
 
 class ActivateInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

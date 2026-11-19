@@ -1,10 +1,10 @@
--- SQLite authority schema version 15.
+-- SQLite authority schema version 16.
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE project_meta (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     application TEXT NOT NULL CHECK (application = 'pinboard'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = 15),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 16),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     host_epoch INTEGER NOT NULL CHECK (host_epoch >= 1),
     created_at TEXT NOT NULL,
@@ -315,6 +315,12 @@ CREATE INDEX checkpoint_history_by_subject
 ON transition_history(subject_id, history_id)
 WHERE outcome_schema = 'checkpoint-acceptance/v2';
 
+CREATE INDEX review_basis_history_by_subject
+ON transition_history(subject_id, (action_kind = 'resume'), history_id)
+WHERE action_kind IN ('submit-review', 'return-for-correction', 'rebind-attempt',
+                      'accept-review-and-continue', 'accept-checkpoint')
+    OR (action_kind = 'resume' AND input_schema != 'pinboard-same-brief-resume/v1');
+
 CREATE TABLE attempt_amendments (
     history_id INTEGER PRIMARY KEY REFERENCES transition_history(history_id),
     attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
@@ -357,6 +363,17 @@ CREATE TABLE attempt_amendments (
 ) STRICT;
 
 CREATE INDEX attempt_amendments_by_attempt ON attempt_amendments(attempt_id, history_id);
+
+CREATE TABLE attempt_amendment_ends (
+    history_id INTEGER PRIMARY KEY REFERENCES attempt_amendments(history_id),
+    superseding_history_id INTEGER REFERENCES transition_history(history_id),
+    human_decision TEXT,
+    CHECK (
+        (superseding_history_id IS NULL AND human_decision IS NULL)
+        OR (superseding_history_id IS NOT NULL AND superseding_history_id > history_id
+            AND human_decision IS NOT NULL AND length(trim(human_decision)) >= 1)
+    )
+) STRICT;
 
 CREATE TABLE checkpoint_acceptances (
     history_id INTEGER PRIMARY KEY REFERENCES transition_history(history_id),

@@ -241,7 +241,7 @@ class HoldingDecisionTest(unittest.TestCase):
                 paused,
                 decision_models.RebindAttemptCommand(
                     action(decision_models.RebindAttemptAction, AttemptId("build-1")),
-                    work_models.RebindAttemptInput("build-branch", "base", ArtifactRefId(7)),
+                    work_models.RebindAttemptInput("build-branch", "base", ArtifactRefId(7), ()),
                 ),
                 NOW,
             )

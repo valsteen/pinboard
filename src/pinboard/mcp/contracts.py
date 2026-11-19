@@ -2358,8 +2358,7 @@ class NonterminalAttemptInspectionSuccess(_UnchangedResult, msgspec.Struct, froz
     amendments: Annotated[
         tuple[query_models.AttemptAmendmentView, ...],
         msgspec.Meta(
-            description="Amendments recorded against the accepted brief; with the brief they form the attempt's "
-            "current contract."
+            description="The current approvals; with the accepted brief they form the attempt's current contract."
         ),
     ]
     result: EvidenceReference

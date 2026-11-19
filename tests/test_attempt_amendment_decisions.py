@@ -50,6 +50,7 @@ def snapshot(
                 BRIEF,
                 pause_reason=None,
                 pending_decision_batch=None,
+                current_amendment_ids=(),
             ),
         ),
         artifacts=(work_models.ArtifactRecord(BRIEF, work_models.ArtifactKind.BRIEF),),
@@ -254,17 +255,19 @@ class AmendmentReviewBaseTest(unittest.TestCase):
                 None if base is None else base.snapshot_artifact_ref_id,
                 base,
             ),
+            None,
         )
 
     def test_delta_base_needs_a_resubmission_with_no_return_rebind_or_acceptance_between(self) -> None:
         base = work_models.ReviewBase(CANDIDATE, ArtifactRefId(8), ArtifactRefId(9))
-        current = amendments.current_amendments((self.recorded(BRIEF, base),), BRIEF)
+        current = (self.recorded(BRIEF, base),)
         kind = decision_models.ActionKind
         cases = (
             ((kind.SUBMIT_REVIEW,), base),
             ((), None),
             ((kind.SUBMIT_REVIEW, kind.RETURN_FOR_CORRECTION, kind.SUBMIT_REVIEW), None),
             ((kind.REBIND_ATTEMPT, kind.SUBMIT_REVIEW), None),
+            ((kind.RESUME, kind.SUBMIT_REVIEW), None),
             ((kind.SUBMIT_REVIEW, kind.ACCEPT_REVIEW_AND_CONTINUE), None),
             ((kind.SUBMIT_REVIEW, kind.ACCEPT_CHECKPOINT), None),
         )
@@ -272,12 +275,6 @@ class AmendmentReviewBaseTest(unittest.TestCase):
             with self.subTest(later=later):
                 self.assertEqual(expected, amendments.delta_review_base(current, later))
         self.assertEqual(base, amendments.carried_review_base(current, ()))
-
-    def test_an_amendment_under_another_brief_is_not_current_and_carries_nothing(self) -> None:
-        base = work_models.ReviewBase(CANDIDATE, ArtifactRefId(8), ArtifactRefId(9))
-        current = amendments.current_amendments((self.recorded(ArtifactRefId(6), base),), BRIEF)
-        self.assertEqual((), current)
-        self.assertIsNone(amendments.delta_review_base(current, (decision_models.ActionKind.SUBMIT_REVIEW,)))
 
 
 class AmendmentPayloadTest(unittest.TestCase):

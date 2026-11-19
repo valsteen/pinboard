@@ -77,6 +77,7 @@ class DecisionScope:
     completion_history_attempt_ids: tuple[AttemptId, ...]
     # Targets being authored whose committed acceptances the decision reads although no stored dependency names them.
     checkpoint_targets: tuple[work_models.CheckpointDependency, ...]
+    read_current_amendments: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -670,15 +671,11 @@ class TerminalAttemptContextFacts:
 
 @dataclass(frozen=True, slots=True)
 class AttemptAmendmentFacts:
-    """Every amendment recorded on one attempt, its current ones and the review receipts after the latest current one.
+    """Current approvals in recording order and review-relevant actions after the last approval."""
 
-    Current amendments were recorded against the attempt's current accepted brief, in recording order; the later review
-    kinds are the attempt's review-relevant receipts after the latest current amendment, oldest first.
-    """
-
-    recorded: tuple[stored_state.StoredAttemptAmendment, ...]
     current: tuple[stored_state.StoredAttemptAmendment, ...]
     later_review_kinds: tuple[decision_models.ActionKind, ...]
+    unbound_resume_history_id: HistoryId | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -771,7 +768,7 @@ class CompletionRecoveryRequired:
 
 
 type ItemStatusSchema = Literal["pinboard-item-status/v7"]
-type ItemStatusAuthority = Literal["sqlite-v15"]
+type ItemStatusAuthority = Literal["sqlite-v16"]
 
 
 type DamagedReceiptActionKind = Literal[
@@ -870,7 +867,7 @@ class ItemStatusAttemptFacts:
     pause_reason: RecordedPauseReason
     review_event: ReviewEventFacts | None
     amendments: tuple[stored_state.StoredAttemptAmendment, ...]
-    """The amendments recorded against the current brief, in recording order."""
+    """The attempt's current approvals, in recording order."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -957,6 +954,8 @@ class AttemptAmendmentView(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     """One human-approved incidental repair recorded as part of the attempt's current contract."""
 
     history_id: int
+    brief_artifact_ref_id: int
+    """The brief reference in effect when the human's approval was recorded."""
     recorded_at: str
     amendment_class: work_models.AmendmentClass
     change: str
@@ -971,6 +970,7 @@ def amendment_view(value: stored_state.StoredAttemptAmendment) -> AttemptAmendme
     amendment = value.amendment
     return AttemptAmendmentView(
         int(value.history_id),
+        int(amendment.brief_artifact_ref_id),
         value.recorded_at.isoformat(),
         amendment.amendment_class,
         amendment.change,
@@ -995,7 +995,7 @@ class ItemStatusAttempt(msgspec.Struct, frozen=True, forbid_unknown_fields=True)
     or revised-brief resume replaces the brief and this names the new, unaccepted checkpoint.
     """
     amendments: tuple[AttemptAmendmentView, ...]
-    """The amendments recorded against the current brief; with the brief they form the attempt's contract."""
+    """The current approvals, which form the attempt's contract alongside the accepted brief."""
 
 
 class IntakeContext(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1812,7 +1812,7 @@ class OverviewCursor(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
 
 class DiscoveryPage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-overview/v10"]
-    authority: Literal["sqlite-v15"]
+    authority: Literal["sqlite-v16"]
     revision: str
     items: Annotated[tuple[DiscoveryItem, ...], msgspec.Meta(max_length=25)]
     total_items: Annotated[int, msgspec.Meta(ge=0)]
@@ -1899,7 +1899,7 @@ def project_definition(definition: stored_state.StoredDefinition) -> DefinitionV
 
 class ItemDefinition(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition/v1"]
-    authority: Literal["sqlite-v15"]
+    authority: Literal["sqlite-v16"]
     project_revision: int
     item_id: str
     item_subject_revision: int
@@ -1922,7 +1922,7 @@ class ItemDefinitionHistoryRow(msgspec.Struct, frozen=True, forbid_unknown_field
 
 class ItemDefinitionHistory(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     schema: Literal["pinboard-item-definition-history/v1"]
-    authority: Literal["sqlite-v15"]
+    authority: Literal["sqlite-v16"]
     project_revision: int
     item_id: str
     revisions: tuple[ItemDefinitionHistoryRow, ...]

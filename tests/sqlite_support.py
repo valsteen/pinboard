@@ -12,6 +12,7 @@ from pinboard.adapters.sqlite.artifact_ownership import accept_ownership
 from pinboard.adapters.sqlite.database import APPLICATION, SCHEMA_VERSION
 from pinboard.adapters.sqlite.errors import StorageError, StorageErrorCode
 from pinboard.adapters.sqlite.migration import database as migration_database
+from pinboard.adapters.sqlite.migration.schema_amendment_lifetime_v15 import upgrade_v15_connection
 from pinboard.adapters.sqlite.migration.schema_amendments_v13 import upgrade_v13_connection
 from pinboard.adapters.sqlite.migration.schema_holds_v14 import upgrade_v14_connection
 from pinboard.adapters.sqlite.proposals import _encode_proposal_disposition_columns
@@ -21,9 +22,31 @@ from pinboard.domain import work_models
 from tests.domain_support import TEST_HOLD
 
 
-def downgrade_to_v14(path: Path) -> None:
-    """Rewrite a current v15 ledger without released-hold rows into the exact v14 predecessor schema."""
+def downgrade_to_v15(path: Path) -> None:
+    """Reconstruct the exact v15 schema for test ledgers without v16 supersessions."""
 
+    statements = {name: sql for _, name, _, sql in sqlite_database._build_v15_schema_signature()}
+    with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT count(*) FROM attempt_amendment_ends").fetchone()[0]:
+            raise AssertionError("Only a ledger without amendment ends can be rewritten as a v15 fixture.")
+        connection.execute("DROP TABLE attempt_amendment_ends")
+        connection.execute("DROP INDEX review_basis_history_by_subject")
+        connection.execute("ALTER TABLE project_meta RENAME TO project_meta_v16")
+        connection.execute(str(statements["project_meta"]))
+        connection.execute(
+            "INSERT INTO project_meta SELECT singleton, application, 15, revision, host_epoch, created_at, updated_at FROM project_meta_v16"
+        )
+        connection.execute("DROP TABLE project_meta_v16")
+        sqlite_database._verify_v15_schema(connection)
+        connection.execute("COMMIT")
+
+
+def downgrade_to_v14(path: Path) -> None:
+    """Rewrite a current ledger without released-hold rows into the exact v14 predecessor schema."""
+
+    downgrade_to_v15(path)
     statements = {name: sql for _, name, _, sql in sqlite_database._build_v14_schema_signature()}
     with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as connection:
         connection.execute("PRAGMA foreign_keys = OFF")
@@ -43,13 +66,24 @@ def downgrade_to_v14(path: Path) -> None:
         connection.execute("PRAGMA foreign_keys = ON")
 
 
-def advanced_v14_copy(path: Path) -> Path:
-    """Copy a v14 ledger beside itself and advance only the copy, so current readers can check v14 facts."""
+def advanced_v15_copy(path: Path) -> Path:
+    """Advance a copy so current readers can check v15 facts."""
 
-    copy = path.with_name("state-v15-check.sqlite3")
+    copy = path.with_name("state-v16-from-v15-check.sqlite3")
+    copy.write_bytes(path.read_bytes())
+    with migration_database.migration_connection(copy) as connection:
+        upgrade_v15_connection(connection, None)
+    return copy
+
+
+def advanced_v14_copy(path: Path) -> Path:
+    """Advance a copy so current readers can check v14 facts."""
+
+    copy = path.with_name("state-v16-from-v14-check.sqlite3")
     copy.write_bytes(path.read_bytes())
     with migration_database.migration_connection(copy) as connection:
         upgrade_v14_connection(connection, None)
+        upgrade_v15_connection(connection, None)
     return copy
 
 
@@ -78,11 +112,12 @@ def downgrade_to_v13(path: Path) -> None:
 def advanced_v13_copy(path: Path) -> Path:
     """Copy a v13 ledger beside itself and advance only the copy, so current readers can check v13 facts."""
 
-    copy = path.with_name("state-v15-from-v13-check.sqlite3")
+    copy = path.with_name("state-v16-from-v13-check.sqlite3")
     copy.write_bytes(path.read_bytes())
     with migration_database.migration_connection(copy) as connection:
         upgrade_v13_connection(connection, None)
         upgrade_v14_connection(connection, None)
+        upgrade_v15_connection(connection, None)
     return copy
 
 

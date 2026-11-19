@@ -755,7 +755,7 @@ def _amendments_context(current: tuple[stored_state.StoredAttemptAmendment, ...]
     """List the amendments current at dispatch and require a fresh read of them before submission."""
 
     listed = (
-        "No amendments are recorded at dispatch.\n"
+        "No amendment approvals are current at dispatch.\n"
         if not current
         else "".join(
             f"- Amendment {value.history_id} ({value.amendment.amendment_class.value}). Change (JSON string): "

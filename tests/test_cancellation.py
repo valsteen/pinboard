@@ -311,7 +311,7 @@ class CancellationTest(CheckpointPackageSupport):
             (retained.brief, retained.brief_review, retained.rounds, retained.latest_observation),
         )
         self.assertIs(True, self.run_json_cli(*fixture.common, "validate")["valid"])
-        self.assertEqual("pinboard-project-export/v7", self.run_json_cli(*fixture.common, "export")["schema"])
+        self.assertEqual("pinboard-project-export/v8", self.run_json_cli(*fixture.common, "export")["schema"])
 
     def test_preparation_is_fenced_and_dropped_prerequisite_remains_unsatisfied_everywhere(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
@@ -551,7 +551,7 @@ class CancellationTest(CheckpointPackageSupport):
         validated = self.run_json_cli(*fixture.common, "validate")
         self.assertIs(True, validated["valid"])
         exported = self.run_json_cli(*fixture.common, "export")
-        self.assertEqual("pinboard-project-export/v7", exported["schema"])
+        self.assertEqual("pinboard-project-export/v8", exported["schema"])
 
     def test_historical_v1_cancellation_keeps_exact_preview_binding_and_exported_bytes(self) -> None:
         fixture = self.checkpoint_fixture(local=True)

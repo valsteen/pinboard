@@ -61,6 +61,7 @@ class PlannedReplacementTests(unittest.TestCase):
                     attempt_state,
                     pause_reason=None,
                     pending_decision_batch=None,
+                    current_amendment_ids=(),
                 ),
             )
         )
@@ -258,7 +259,7 @@ class PlannedReplacementTests(unittest.TestCase):
     def test_resume_decision_rejects_a_replacement_recorded_after_selection(self) -> None:
         resume = decision_models.ResumeCommand(
             action(decision_models.ResumeAction, WorkItemId("old-work")),
-            work_models.ResumeInput(None),
+            work_models.ResumeInput(None, ()),
         )
 
         rejected = decide(

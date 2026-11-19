@@ -182,7 +182,7 @@ class TypedTransitionContractTest(unittest.TestCase):
             without_attempt,
             decision_models.ResumeCommand(
                 action(decision_models.ResumeAction, WorkItemId("ready-item")),
-                work_models.ResumeInput(ArtifactRefId(1)),
+                work_models.ResumeInput(ArtifactRefId(1), ()),
             ),
             SQLITE_NOW,
         )
@@ -212,6 +212,7 @@ class TypedTransitionContractTest(unittest.TestCase):
                     brief_artifact_ref_id=ArtifactRefId(1),
                     pause_reason=None,
                     pending_decision_batch=None,
+                    current_amendment_ids=(),
                 ),
             ),
             artifacts=(
@@ -254,7 +255,7 @@ class TypedTransitionContractTest(unittest.TestCase):
         )
         resume = action(decision_models.ResumeAction, WorkItemId("ready-item"))
 
-        for value in (work_models.ResumeInput(ArtifactRefId(99)), work_models.ResumeInput(ArtifactRefId(3))):
+        for value in (work_models.ResumeInput(ArtifactRefId(99), ()), work_models.ResumeInput(ArtifactRefId(3), ())):
             with self.subTest(value=value):
                 rejected = decision_outcome(snapshot, decision_models.ResumeCommand(resume, value), SQLITE_NOW)
                 assert isinstance(rejected, DecisionFailure)
@@ -262,7 +263,7 @@ class TypedTransitionContractTest(unittest.TestCase):
 
         accepted = decide(
             snapshot,
-            decision_models.ResumeCommand(resume, work_models.ResumeInput(ArtifactRefId(2))),
+            decision_models.ResumeCommand(resume, work_models.ResumeInput(ArtifactRefId(2), ())),
             SQLITE_NOW,
         )
         self.assertIsInstance(accepted.change, decision_models.ResumeAttemptChange)

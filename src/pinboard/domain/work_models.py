@@ -408,8 +408,15 @@ class WorkItem:
 
 
 @dataclass(frozen=True, slots=True)
+class AmendmentSupersession:
+    history_id: HistoryId
+    human_decision: str
+
+
+@dataclass(frozen=True, slots=True)
 class ResumeInput:
-    brief_artifact_ref_id: ArtifactRefId | None = None
+    brief_artifact_ref_id: ArtifactRefId | None
+    supersessions: tuple[AmendmentSupersession, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,6 +455,7 @@ type DecisionResolution = DecisionAnswer | DecisionDeferral
 class ResolveDecisionsInput:
     brief_artifact_ref_id: ArtifactRefId | None
     resolutions: tuple[DecisionResolution, ...]
+    supersessions: tuple[AmendmentSupersession, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,6 +476,7 @@ class RebindAttemptInput:
     branch: str
     base_revision: str
     brief_artifact_ref_id: ArtifactRefId
+    supersessions: tuple[AmendmentSupersession, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -767,6 +776,7 @@ class AttemptRecord:
     brief_artifact_ref_id: ArtifactRefId | None = None
     pause_reason: str | None = field(kw_only=True)
     pending_decision_batch: PendingDecisionBatch | None = field(kw_only=True)
+    current_amendment_ids: tuple[HistoryId, ...] = field(kw_only=True)
     """The human reason recorded by the latest pause, or its rebind carry-forward, while the attempt is paused."""
 
 

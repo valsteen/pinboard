@@ -278,14 +278,18 @@ class ObligationCoverageTest(CheckpointPackageSupport):
 
                 self.assertEqual("committed", dependencies(fixture, "replacement-work", [], ["usable"])["status"])
                 self.assertEqual("committed", dependencies(fixture, "dependent-work", ["source-work"], [])["status"])
-                before = fixture.store.validated_snapshot()
+                fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+                before = fresh.validated_snapshot()
                 refused = self.close(fixture, "source-work", "done", "Close source.")
                 self.assertEqual("REPLACEMENT_STALE", refused["code"], refused)
                 self.assertEqual("unchanged", refused["effect"])
-                self.assertEqual(before, fixture.store.validated_snapshot())
+                self.assertIn("whole replacement item", str(refused["message"]))
+                self.assertEqual(before, fresh.validated_snapshot())
                 refused = self.close(fixture, "source-work", "superseded", "Close source as superseded.")
                 self.assertEqual("LIVE_DEPENDENTS", refused["code"], refused)
-                self.assertEqual("unchanged", refused["effect"])
+                self.assertEqual(("unchanged", "correct-input"), (refused["effect"], refused["retry"]), refused)
+                self.assertIn("whole replacement item", str(refused["message"]))
+                self.assertIn("started dependent, ask the human", str(refused["message"]))
                 observed = {
                     self.json_object(row)["field"]: self.json_object(row)["value"]
                     for row in self.json_array(refused["observed"])
@@ -298,10 +302,12 @@ class ObligationCoverageTest(CheckpointPackageSupport):
                     },
                     observed,
                 )
-                self.assertEqual(before, fixture.store.validated_snapshot())
-                targets: list[JsonValue] = (
-                    [{"item": "replacement-work", "checkpoint": "usable"}] if checkpoint else ["replacement-work"]
-                )
+                self.assertEqual(before, fresh.validated_snapshot())
+                checkpoint_target: list[JsonValue] = [{"item": "replacement-work", "checkpoint": "usable"}]
+                rejected_revision = dependencies(fixture, "dependent-work", checkpoint_target, [])
+                self.assertEqual("ITEM_DEFINITION_INVALID", rejected_revision["code"], rejected_revision)
+                self.assertEqual(before, fresh.validated_snapshot())
+                targets: list[JsonValue] = checkpoint_target if checkpoint else ["replacement-work"]
                 if checkpoint:
                     with predecessor_checkpoint_fixture():
                         revised = dependencies(fixture, "dependent-work", targets, [])
@@ -310,7 +316,6 @@ class ObligationCoverageTest(CheckpointPackageSupport):
                 self.assertEqual("committed", revised["status"], revised)
                 closed = self.close(fixture, "source-work", "superseded", "Close source as superseded.")
                 self.assertEqual("committed", closed["status"], closed)
-                fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
                 source = fresh.read_item_status(WorkItemId("source-work"))
                 assert source is not None
                 self.assertEqual(stored_state.StoredWorkItemState.SUPERSEDED, source.work_item.state)
@@ -346,6 +351,10 @@ class ObligationCoverageTest(CheckpointPackageSupport):
                 self.assertIn(
                     {"target": "item", "action_kind": "close"}, self.json_array(continuation["legal_actions"])
                 )
+                next_operation = self.json_object(continuation["next_operation"])
+                self.assertEqual({"target": "item", "action_kind": "close"}, next_operation["action"])
+                self.assertIn("whole replacement item", str(next_operation["condition"]))
+                self.assertIn("started dependent, ask the human", str(next_operation["condition"]))
                 authority_before = fixture.store.read_attempt_authority_status(AttemptId("work-a-1"))
                 assert authority_before is not None
                 if not acquire_worker:

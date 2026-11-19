@@ -28,7 +28,11 @@ from pinboard.application import (
     work_briefs,
 )
 from pinboard.domain import authority_models, decision_models, history, work_models
-from pinboard.domain.decisions import ActionCapabilityFactory, project_attempt_action_groups
+from pinboard.domain.decisions import (
+    SUPERSEDED_DEPENDENCY_RECOVERY,
+    ActionCapabilityFactory,
+    project_attempt_action_groups,
+)
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -535,7 +539,8 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
         if isinstance(action, decision_models.CloseAction):
             return query_models.ActionContinuation(
                 query_models.continuation_action_identity(action),
-                "Move live dependents to the replacement or its checkpoints, then close the absorbed item as superseded.",
+                f"{SUPERSEDED_DEPENDENCY_RECOVERY} Once no live dependents name the absorbed item, "
+                "use the human's explicit decision to close it as superseded.",
             )
         if context.state == work_models.AttemptState.ACTIVE and isinstance(action, decision_models.RebindAttemptAction):
             return query_models.ActionContinuation(

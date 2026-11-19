@@ -1265,6 +1265,12 @@ def _complete(
             assert_never(unreachable)
 
 
+SUPERSEDED_DEPENDENCY_RECOVERY = (
+    "With human authority, revise each unstarted dependent to wait for the whole replacement item. "
+    "For a started dependent, ask the human how to resolve its existing wait and unfinished work."
+)
+
+
 def superseded_attempt_closure(
     snapshot: LedgerSnapshot,
     item: work_models.WorkItem,
@@ -1300,9 +1306,9 @@ def superseded_attempt_closure(
     if live_dependents:
         return DecisionFailure(
             DecisionFailureCode.LIVE_DEPENDENTS,
-            f"Live items still depend on '{item.work_item_id}': {', '.join(live_dependents)}. Revise their dependencies "
-            f"to '{replacement.replacement_item}' or its declared checkpoints before closing as superseded; "
-            "the ledger is unchanged.",
+            f"Live items still depend on '{item.work_item_id}': {', '.join(live_dependents)}. "
+            f"The planned replacement is '{replacement.replacement_item}'. {SUPERSEDED_DEPENDENCY_RECOVERY} "
+            "The ledger is unchanged.",
             FailureDetails(
                 observed=(
                     FailureFact("affected_item", str(item.work_item_id)),
@@ -1310,7 +1316,7 @@ def superseded_attempt_closure(
                     FailureFact("live_dependents", ", ".join(live_dependents)),
                 ),
                 mismatches=(),
-                retry=RetryDisposition.REFRESH_ACTION,
+                retry=RetryDisposition.CORRECT_INPUT,
                 effect=EffectDisposition.UNCHANGED,
                 changed_surfaces=(),
                 alternatives=(),
@@ -1366,8 +1372,8 @@ def _close(
         return DecisionFailure(
             DecisionFailureCode.REPLACEMENT_STALE,
             f"Item '{item_id}' has an unresolved planned replacement '{replacement.replacement_item}'. "
-            "Move its live dependents to the replacement or its checkpoints, then close it as superseded; "
-            "the ledger is unchanged.",
+            "Use the superseded outcome once any live dependents have been resolved. "
+            f"{SUPERSEDED_DEPENDENCY_RECOVERY} The ledger is unchanged.",
             None,
         )
     if item.attempt is not None and value.outcome != work_models.DirectCloseOutcome.SUPERSEDED:

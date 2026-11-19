@@ -7,6 +7,7 @@ from datetime import datetime
 
 import msgspec
 
+from pinboard.adapters.sqlite.amendments import read_attempt_amendments
 from pinboard.adapters.sqlite.database import decode_row, select_by_ids
 from pinboard.adapters.sqlite.decision_batches import read_decision_batches
 from pinboard.adapters.sqlite.dependencies import DependencyRow, read_accepted_checkpoints
@@ -331,6 +332,7 @@ def _attempt_records(
     attempts: Iterable[_AttemptRow | _AttemptLineageRow],
     *,
     include_pause_reasons: bool,
+    include_current_amendments: bool,
 ) -> tuple[work_models.AttemptRecord, ...]:
     selected = tuple(attempts)
     batches = (
@@ -341,6 +343,11 @@ def _attempt_records(
             connection, ((attempt.attempt_id, attempt.state, attempt.subject_revision) for attempt in selected)
         )
         if include_pause_reasons
+        else {}
+    )
+    approvals = (
+        read_attempt_amendments(connection, (attempt.attempt_id for attempt in selected), current_only=True)
+        if include_current_amendments
         else {}
     )
     return tuple(
@@ -356,6 +363,7 @@ def _attempt_records(
             pending_decision_batch=None
             if (batch := batches.get(attempt.attempt_id)) is None
             else decision_batches.pending_batch(attempt.attempt_id, batch),
+            current_amendment_ids=tuple(value.history_id for value in approvals.get(attempt.attempt_id, ())),
         )
         for attempt in selected
     )
@@ -558,7 +566,9 @@ def read_current_snapshot(
             )
             for item in item_rows
         ),
-        attempts=_attempt_records(connection, attempt_rows, include_pause_reasons=include_pause_reasons),
+        attempts=_attempt_records(
+            connection, attempt_rows, include_pause_reasons=include_pause_reasons, include_current_amendments=False
+        ),
         artifacts=(),
         proposals=tuple(
             _proposal_record(
@@ -917,7 +927,12 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             )
             for item in item_rows.values()
         ),
-        attempts=_attempt_records(connection, attempts.values(), include_pause_reasons=True),
+        attempts=_attempt_records(
+            connection,
+            attempts.values(),
+            include_pause_reasons=True,
+            include_current_amendments=scope.read_current_amendments,
+        ),
         artifacts=tuple(artifacts),
         proposals=proposal_records,
         subject_revisions=tuple(

@@ -634,7 +634,9 @@ def write(  # noqa: C901, PLR0912, PLR0915
                     if payload.outcome == "accepted":
                         snapshot = read_selected_decision_facts(
                             connection,
-                            query_models.DecisionScope((item_id,), (), (), (item_id,), (), (), (), (), (), ()),
+                            query_models.DecisionScope(
+                                (item_id,), (), (), (item_id,), (), (), (), (), (), (), read_current_amendments=False
+                            ),
                             now,
                         ).snapshot
                         released_holds = decisions._release_holds_after_item_finishes(snapshot, item_id)

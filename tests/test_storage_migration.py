@@ -34,7 +34,7 @@ from pinboard.mcp import server as mcp_server
 from tests.artifact_support import write_revision
 from tests.domain_support import expect_success
 from tests.native_support import call_advertised_tool
-from tests.sqlite_support import advanced_v13_copy, downgrade_to_v12, downgrade_to_v14
+from tests.sqlite_support import advanced_v13_copy, advanced_v15_copy, downgrade_to_v12, downgrade_to_v14
 from tests.support import SQLITE_NOW, JsonObject, complete_sqlite_state, initialize_store, test_definition
 from tests.work_brief_support import work_a_brief
 
@@ -181,10 +181,10 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
             with contextlib.closing(sqlite3.connect(path)) as connection:
                 sqlite_database._verify_v10_schema(connection)
-            for _step in ("v10-to-v11", "v11-to-v12", "v12-to-v13", "v13-to-v14", "v14-to-v15"):
+            for _step in ("v10-to-v11", "v11-to-v12", "v12-to-v13", "v13-to-v14", "v14-to-v15", "v15-to-v16"):
                 current = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
                 self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", current)[0])
-            self.assertEqual(15, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
+            self.assertEqual(16, SQLiteWorkStore(path).validated_snapshot().lifecycle.project.schema_version)
             roots = resolve_durable_roots(project)
             publication = ArtifactRepository(roots).publish(
                 NewArtifact(work_models.ArtifactKind.EVIDENCE, "later", 1, ".txt", b"later")
@@ -1167,13 +1167,13 @@ class StorageMigrationTests(unittest.TestCase):
                 self.assertEqual(12, code, subcommand)
                 self.assertEqual("SCHEMA_UNSUPPORTED", refused_cli["code"])
                 self.assertIn("sqlite-v14", str(refused_cli["message"]))
-                self.assertIn("sqlite-v15", str(refused_cli["message"]))
+                self.assertIn("sqlite-v16", str(refused_cli["message"]))
                 self.assertIn("migrate-schema", str(refused_cli["message"]))
             validate_code, refused_validate = self.run_cli(project, "validate")
             self.assertNotEqual(0, validate_code, refused_validate)
             self.assertFalse(refused_validate["valid"], refused_validate)
             self.assertIn("sqlite-v14", str(refused_validate["diagnostics"]))
-            self.assertIn("sqlite-v15", str(refused_validate["diagnostics"]))
+            self.assertIn("sqlite-v16", str(refused_validate["diagnostics"]))
             refused_mcp = call_advertised_tool(
                 mcp_server.OVERVIEW_TOOL,
                 {
@@ -1222,8 +1222,7 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertTrue((evidence / f"{plan_id}.json").is_file())
             self.assertEqual(original, (evidence / f"{plan_id}.v14").read_bytes())
 
-            reloaded = SQLiteWorkStore(path).validated_snapshot()
-            self.assertEqual(15, reloaded.lifecycle.project.schema_version)
+            reloaded = SQLiteWorkStore(advanced_v15_copy(path)).validated_snapshot()
             self.assertEqual(revision_before, reloaded.lifecycle.project.revision)
             self.assertEqual(history_count_before, len(reloaded.transition_receipts))
             self.assertEqual((), reloaded.lifecycle.released_holds)
@@ -1242,14 +1241,6 @@ class StorageMigrationTests(unittest.TestCase):
                 WorkItemId("releasable-unstarted"),
                 {value.item_id for value in reloaded.lifecycle.unblockers},
             )
-            self.assertEqual(0, self.run_cli(project, "validate")[0])
-            code, exported = self.run_cli(project, "export")
-            self.assertEqual(0, code, exported)
-            self.assertEqual(
-                ("pinboard-project-export/v7", "sqlite-v15", [], []),
-                (exported["schema"], exported["authority"], exported["amendments"], exported["released_holds"]),
-            )
-
             unchanged = self.run_cli(project, "migrate-schema", "--apply", plan_id)[1]
             self.assertEqual("unchanged", unchanged["status"])
             reverse = self.run_cli(project, "migrate-schema", "--reverse", plan_id)[1]
@@ -1258,6 +1249,15 @@ class StorageMigrationTests(unittest.TestCase):
             self.assertEqual(original, path.read_bytes())
 
             self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", plan_id)[0])
+            next_plan = str(self.run_cli(project, "migrate-schema")[1]["plan_id"])
+            self.assertEqual(0, self.run_cli(project, "migrate-schema", "--apply", next_plan)[0])
+            self.assertEqual(0, self.run_cli(project, "validate")[0])
+            code, exported = self.run_cli(project, "export")
+            self.assertEqual(0, code, exported)
+            self.assertEqual(
+                ("pinboard-project-export/v8", "sqlite-v16", [], []),
+                (exported["schema"], exported["authority"], exported["amendments"], exported["released_holds"]),
+            )
             publication = ArtifactRepository(roots).publish(
                 NewArtifact(work_models.ArtifactKind.EVIDENCE, "after-v15", 1, ".txt", b"after")
             )
@@ -1270,7 +1270,7 @@ class StorageMigrationTests(unittest.TestCase):
             later = path.read_bytes()
             code, refused_reverse = self.run_cli(project, "migrate-schema", "--reverse", plan_id)
             self.assertNotEqual(0, code)
-            self.assertIn("changed after schema migration", str(refused_reverse["message"]))
+            self.assertIn("preserve the ledger", str(refused_reverse["message"]))
             self.assertEqual(later, path.read_bytes())
 
     def test_retired_root_migration_rejects_all_forms_without_effects(self) -> None:

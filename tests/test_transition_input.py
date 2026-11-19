@@ -200,18 +200,18 @@ class TransitionInputTest(unittest.TestCase):
         )
         resume_action = action(decision_models.ResumeAction, WorkItemId("item-1"))
         self.assertEqual(
-            decision_models.ResumeCommand(resume_action, work_models.ResumeInput()),
+            decision_models.ResumeCommand(resume_action, work_models.ResumeInput(None, ())),
             expect_transition_command(parse_transition_input(resume_action, "{}")),
         )
         self.assertEqual(
-            decision_models.ResumeCommand(resume_action, work_models.ResumeInput(ArtifactRefId(8))),
+            decision_models.ResumeCommand(resume_action, work_models.ResumeInput(ArtifactRefId(8), ())),
             expect_transition_command(parse_transition_input(resume_action, '{"brief_artifact_ref_id":8}')),
         )
         rebind_action = action(decision_models.RebindAttemptAction, AttemptId("attempt-1"))
         self.assertEqual(
             decision_models.RebindAttemptCommand(
                 rebind_action,
-                work_models.RebindAttemptInput("codex/corrected", "correct-base", ArtifactRefId(9)),
+                work_models.RebindAttemptInput("codex/corrected", "correct-base", ArtifactRefId(9), ()),
             ),
             expect_transition_command(
                 parse_transition_input(

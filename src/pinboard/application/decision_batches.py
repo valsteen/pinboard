@@ -10,6 +10,7 @@ from typing import Annotated, Literal, assert_never
 import msgspec
 
 from pinboard.application import stored_state
+from pinboard.application.amendment_supersessions import AmendmentSupersessionPayload
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.history import RecordText
 from pinboard.domain.identifiers import AttemptId, DecisionId, HistoryId, WorkItemId
@@ -68,6 +69,7 @@ class ResolveDecisionsInput(msgspec.Struct, frozen=True, forbid_unknown_fields=T
     schema: Literal["pinboard-resolve-pause-decisions/v1"]
     brief_artifact_ref_id: PositiveInt | None
     resolutions: Annotated[tuple[DecisionResolution, ...], msgspec.Meta(min_length=1)]
+    supersessions: tuple[AmendmentSupersessionPayload, ...] = ()
 
     def __post_init__(self) -> None:
         _require_unique_resolutions(self.resolutions)
@@ -80,6 +82,36 @@ class ResolvedDecisionsReceipt(msgspec.Struct, frozen=True, forbid_unknown_field
 
     def __post_init__(self) -> None:
         _require_unique_resolutions(self.resolutions)
+
+
+REVISED_RESUME_SCHEMA = "pinboard-revised-resume/v1"
+SAME_BRIEF_RESUME_SCHEMA = "pinboard-same-brief-resume/v1"
+
+
+class AttemptResumeReceipt(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-revised-resume/v1", "pinboard-same-brief-resume/v1"]
+    brief_artifact_ref_id: PositiveInt
+    pause_resolution: ResolvedDecisionsReceipt | None
+
+
+def read_resume_resolution(receipt: stored_state.StoredTransitionReceipt) -> ResolvedDecisionsReceipt | None:
+    """Decode a resume receipt and its optional pause resolution at the stored input boundary."""
+    match receipt.input_schema:
+        case "pinboard-revised-resume/v1" | "pinboard-same-brief-resume/v1":
+            payload = msgspec.json.decode(bytes(receipt.input_payload), type=AttemptResumeReceipt)
+            resolved = payload.pause_resolution
+        case "pinboard-resolved-pause-decisions/v1":
+            payload = msgspec.json.decode(bytes(receipt.input_payload), type=ResolvedDecisionsReceipt)
+            resolved = payload
+        case _:
+            return None
+    if (
+        receipt.action_kind != decision_models.ActionKind.RESUME
+        or receipt.input_schema != payload.schema
+        or msgspec.json.encode(payload, order="sorted") != bytes(receipt.input_payload)
+    ):
+        raise ValueError(f"Resume receipt {receipt.history_id} is not canonical.")
+    return resolved
 
 
 class ResolutionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -207,15 +239,14 @@ def project_batch(
             or resume.history_id != reference.resume_history_id
             or resume.subject_id != item_id
             or resume.action_kind != decision_models.ActionKind.RESUME
-            or resume.input_schema != "pinboard-resolved-pause-decisions/v1"
             or resume.history_id <= pause.history_id
         ):
             raise ValueError(f"Decision batch for '{reference.attempt_id}' does not name its resolving resume receipt.")
-        resolved = msgspec.json.decode(bytes(resume.input_payload), type=ResolvedDecisionsReceipt)
+        resolved = read_resume_resolution(resume)
         if (
-            resolved.pause_history_id != pause.history_id
+            resolved is None
+            or resolved.pause_history_id != pause.history_id
             or {row.decision_id for row in resolved.resolutions} != {row.decision_id for row in payload.decisions}
-            or msgspec.json.encode(resolved, order="sorted") != bytes(resume.input_payload)
         ):
             raise ValueError(f"Resume receipt {resume.history_id} does not resolve exactly pause {pause.history_id}.")
         resolution = ResolutionView(
@@ -269,8 +300,7 @@ def validate_batch_history(
                 raise ValueError(f"Attempt '{attempt_id}' replaced an unresolved decision batch.")
             pauses[receipt.history_id] = receipt
             expected[attempt_id] = reference
-        elif receipt.input_schema == "pinboard-resolved-pause-decisions/v1":
-            resolved = msgspec.json.decode(bytes(receipt.input_payload), type=ResolvedDecisionsReceipt)
+        elif (resolved := read_resume_resolution(receipt)) is not None:
             pause = pauses[HistoryId(resolved.pause_history_id)]
             attempt_id = AttemptId(pause.subject_id)
             previous = expected[attempt_id]

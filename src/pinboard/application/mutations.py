@@ -262,13 +262,22 @@ def project_transition_mutation(
                 order="sorted",
             )
         )
-    elif (
-        isinstance(decision.change, decision_models.ResumeAttemptChange)
-        and decision.change.resolved_decisions is not None
-    ):
-        input_schema = "pinboard-resolved-pause-decisions/v1"
+    elif isinstance(decision.change, decision_models.ResumeAttemptChange):
+        resolved = decision.change.resolved_decisions
+        resolution = None if resolved is None else decision_batches.resolution_payload(resolved)
+        resume_schema = (
+            decision_batches.SAME_BRIEF_RESUME_SCHEMA
+            if decision.change.revised_brief is None
+            else decision_batches.REVISED_RESUME_SCHEMA
+        )
+        input_schema = resume_schema
         input_payload = work_models.CanonicalJson(
-            msgspec.json.encode(decision_batches.resolution_payload(decision.change.resolved_decisions), order="sorted")
+            msgspec.json.encode(
+                decision_batches.AttemptResumeReceipt(
+                    resume_schema, int(decision.change.brief_artifact_ref_id), resolution
+                ),
+                order="sorted",
+            )
         )
     elif isinstance(decision.change, decision_models.ReviewReturnChange):
         input_schema = "return-for-correction/v1"

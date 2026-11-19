@@ -51,6 +51,7 @@ def resolve_dependency_brief_pins(
             (),
             (),
             requested,
+            read_current_amendments=False,
         ),
         now,
     )

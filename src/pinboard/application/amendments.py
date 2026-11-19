@@ -1,32 +1,20 @@
-"""Decide which recorded amendments form an attempt's current contract and which review base they keep.
-
-An amendment belongs to the accepted brief it was recorded against, so rebinding to another brief ends it as part
-of the current contract while history keeps it. A review base survives later submissions but ends at a return for
-correction, a rebind or an acceptance, each of which makes an earlier ready review no longer the latest verdict.
-"""
+"""Select review coverage for current approvals and preserve the condition an amendment left in place."""
 
 from collections.abc import Mapping
 
 from pinboard.application import query_models, stored_state
 from pinboard.domain import decision_models, work_models
-from pinboard.domain.identifiers import ArtifactRefId, HistoryId
+from pinboard.domain.identifiers import HistoryId
 
 _REVIEW_BASE_BREAKS = frozenset(
     {
         decision_models.ActionKind.RETURN_FOR_CORRECTION,
         decision_models.ActionKind.REBIND_ATTEMPT,
+        decision_models.ActionKind.RESUME,
         decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE,
         decision_models.ActionKind.ACCEPT_CHECKPOINT,
     }
 )
-
-
-def current_amendments(
-    amendments: tuple[stored_state.StoredAttemptAmendment, ...], brief_artifact_ref_id: ArtifactRefId
-) -> tuple[stored_state.StoredAttemptAmendment, ...]:
-    """Return the amendments recorded against the attempt's current brief, in recording order."""
-
-    return tuple(value for value in amendments if value.amendment.brief_artifact_ref_id == brief_artifact_ref_id)
 
 
 def carried_review_base(

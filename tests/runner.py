@@ -21,6 +21,7 @@ MAX_METHODS_PER_TARGET = 25
 PLATFORM_CONTRACT_MODULES = frozenset(
     {
         "test_artifacts",
+        "test_attempt_amendments",
         "test_board_views",
         "test_contributor_traces",
         "test_invocation_capture",

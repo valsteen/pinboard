@@ -886,7 +886,7 @@ def _amendments_prompt(current: tuple[stored_state.StoredAttemptAmendment, ...])
     """State the recorded amendments as part of the review contract, or that none are recorded."""
 
     if not current:
-        return "No amendments are recorded for this attempt; the accepted brief alone is the contract."
+        return "The attempt has no current amendment approvals."
     listed = "\n".join(
         f"- Amendment {value.history_id} ({value.amendment.amendment_class.value}): "
         f"{_prompt_record_text('change', value.amendment.change)}; "
@@ -897,8 +897,10 @@ def _amendments_prompt(current: tuple[stored_state.StoredAttemptAmendment, ...])
     return (
         "Recorded amendments are part of this contract beside the accepted brief:\n"
         f"{listed}\n"
-        "Do not reject an amended change for being absent from the brief, and do not expand it beyond its stated "
-        "change. Check each amended diff against its recorded class and stated change. A change outside its class or "
+        "An approval covers its stated change even when the brief omits that repair or lists the usual allowed paths. "
+        "If the brief includes the same repair, check it once and cite the amendment's original approval. If the "
+        "brief contradicts a current amendment, report the conflict for the human to decide. "
+        "Check each amended diff against its recorded class and stated change. A change outside its class or "
         "beyond its stated change is a product decision for the human, not a worker defect: report it with the human's "
         "words, the product-level effect beyond them, why that effect matters, the options with their cost and your "
         "recommendation, and explain it rather than citing a rule in its place."
@@ -908,11 +910,17 @@ def _amendments_prompt(current: tuple[stored_state.StoredAttemptAmendment, ...])
 def _delta_unavailable(
     attempt: query_models.NonterminalAttemptContextFacts,
 ) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
+    unbound_resume = attempt.amendments.unbound_resume_history_id
+    cause = (
+        ""
+        if unbound_resume is None
+        else f" Resume history {unbound_resume} predates brief identity on resume receipts and cannot establish continuity."
+    )
     return DecisionFailure(
         DecisionFailureCode.ACTION_NOT_AVAILABLE,
         "No amendment-only delta review is available for this candidate. It needs a ready review captured by an "
         "amendment under the current accepted brief, then only amendments and a resubmission, with no return for "
-        "correction, rebind or acceptance between.",
+        f"correction, brief replacement or acceptance between.{cause}",
         FailureDetails(
             observed=(
                 FailureFact("attempt_id", str(attempt.attempt_id)),

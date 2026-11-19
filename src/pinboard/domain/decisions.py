@@ -19,7 +19,16 @@ from pinboard.domain.errors import (
     FailureMismatch,
     RetryDisposition,
 )
-from pinboard.domain.identifiers import AttemptId, CheckpointId, LedgerId, ProposalId, SubjectId, WorkItemId
+from pinboard.domain.identifiers import (
+    ArtifactRefId,
+    AttemptId,
+    CheckpointId,
+    HistoryId,
+    LedgerId,
+    ProposalId,
+    SubjectId,
+    WorkItemId,
+)
 from pinboard.domain.ledger import LedgerSnapshot
 
 type TransitionDecisionCode = Literal[
@@ -1426,6 +1435,93 @@ def _resolve_pause_decisions(
     return work_models.ResolvedPauseDecisions(pending.pause_history_id, resolutions)
 
 
+def _check_amendment_supersessions(
+    attempt: work_models.AttemptRecord | None,
+    replacement: ArtifactRefId | None,
+    supersessions: tuple[work_models.AmendmentSupersession, ...],
+) -> DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]] | None:
+    if not supersessions:
+        return None
+    if attempt is None or replacement is None or replacement == attempt.brief_artifact_ref_id:
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "Superseding amendments requires replacing this attempt's accepted brief.",
+            None,
+        )
+    seen: set[HistoryId] = set()
+    current = frozenset(attempt.current_amendment_ids)
+    for value in supersessions:
+        if value.history_id in seen:
+            message = f"Amendment history {value.history_id} was selected more than once."
+        elif value.history_id not in current:
+            message = f"Amendment history {value.history_id} is not a current approval on attempt '{attempt.attempt}'."
+        elif "\x00" in value.human_decision or not value.human_decision.strip():
+            message = (
+                "Provide the human's exact superseding words without NUL characters in "
+                f"supersessions.human_decision for amendment history {value.history_id}."
+            )
+        else:
+            seen.add(value.history_id)
+            continue
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            f"{message} Read current approvals with pinboard_attempt_inspect before selecting supersessions.",
+            None,
+        )
+    return None
+
+
+def _resume_attempt_change(
+    snapshot: LedgerSnapshot,
+    item: work_models.WorkItem,
+    attempt: work_models.AttemptRecord,
+    value: work_models.ResumeInput | work_models.ResolveDecisionsInput,
+    resolved_decisions: work_models.ResolvedPauseDecisions | None,
+) -> DecisionResult[decision_models.ResumeAttemptChange, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
+    current = attempt.brief_artifact_ref_id
+    if current is None:
+        return DecisionFailure(
+            DecisionFailureCode.TRANSITION_INPUT_INVALID,
+            "Resuming this attempt requires its accepted brief reference.",
+            None,
+        )
+    replacement = value.brief_artifact_ref_id
+    if (failure := _check_amendment_supersessions(attempt, replacement, value.supersessions)) is not None:
+        return failure
+    revised_brief: decision_models.RevisedAttemptBrief | None = None
+    if replacement is not None and replacement != current:
+        if not any(
+            candidate.artifact_ref_id == replacement and candidate.kind == work_models.ArtifactKind.BRIEF
+            for candidate in snapshot.artifacts
+        ):
+            return DecisionFailure(
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                "Resuming with a revised brief requires one existing brief artifact reference.",
+                None,
+            )
+        definition = snapshot.definition(item.work_item_id)
+        if definition is None:
+            return DecisionFailure(
+                DecisionFailureCode.TRANSITION_INPUT_INVALID,
+                "Resuming with a revised brief requires the item's accepted definition.",
+                None,
+            )
+        revised_brief = decision_models.RevisedAttemptBrief(
+            replacement, definition.revision, definition.digest, value.supersessions
+        )
+    return decision_models.ResumeAttemptChange(
+        item.work_item_id,
+        item.state,
+        attempt.attempt,
+        work_models.AttemptState.PAUSED
+        if item.state == work_models.WorkState.PAUSED
+        else work_models.AttemptState.BLOCKED,
+        current if revised_brief is None else revised_brief.artifact_ref_id,
+        revised_brief,
+        resolved_decisions,
+    )
+
+
 def _resume(
     snapshot: LedgerSnapshot, command: decision_models.ResumeCommand, now: datetime
 ) -> DecisionResult[
@@ -1459,53 +1555,21 @@ def _resume(
     resolved_decisions = _resolve_pause_decisions(pending, value)
     if isinstance(resolved_decisions, DecisionFailure):
         return resolved_decisions
-    revised_brief: decision_models.RevisedAttemptBrief | None = None
-    if value.brief_artifact_ref_id is not None:
-        if item.attempt is None:
+    if attempt is None:
+        if item.attempt is not None or value.brief_artifact_ref_id is not None or value.supersessions:
             return DecisionFailure(
                 DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                "Resuming with a revised brief requires an existing attempt.",
+                "Resuming with a revised brief or superseding approvals requires an existing attempt.",
                 None,
             )
-        artifact = next(
-            (candidate for candidate in snapshot.artifacts if candidate.artifact_ref_id == value.brief_artifact_ref_id),
-            None,
-        )
-        if artifact is None or artifact.kind != work_models.ArtifactKind.BRIEF:
-            return DecisionFailure(
-                DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                "Resuming with a revised brief requires one existing brief artifact reference.",
-                None,
-            )
-        definition = snapshot.definition(item.work_item_id)
-        if definition is None:
-            return DecisionFailure(
-                DecisionFailureCode.TRANSITION_INPUT_INVALID,
-                "Resuming with a revised brief requires the item's accepted definition.",
-                None,
-            )
-        revised_brief = decision_models.RevisedAttemptBrief(
-            value.brief_artifact_ref_id,
-            definition.revision,
-            definition.digest,
-        )
-    target = work_models.WorkState.ACTIVE if item.attempt is not None else work_models.WorkState.READY
-    if item.attempt is not None:
-        before = (
-            work_models.AttemptState.PAUSED
-            if item.state == work_models.WorkState.PAUSED
-            else work_models.AttemptState.BLOCKED
-        )
-        change: decision_models.NonCheckpointDecisionChange = decision_models.ResumeAttemptChange(
-            item.work_item_id,
-            item.state,
-            item.attempt,
-            before,
-            revised_brief,
-            resolved_decisions,
+        change: decision_models.NonCheckpointDecisionChange = decision_models.WorkItemStateChange(
+            item.work_item_id, item.state, work_models.WorkState.READY
         )
     else:
-        change = decision_models.WorkItemStateChange(item.work_item_id, item.state, target)
+        resumed = _resume_attempt_change(snapshot, item, attempt, value, resolved_decisions)
+        if isinstance(resumed, DecisionFailure):
+            return resumed
+        change = resumed
     return _accepted_transition_decision(
         snapshot,
         action,
@@ -1565,6 +1629,10 @@ def _rebind_attempt(
             "Rebinding requires one existing brief artifact reference.",
             None,
         )
+    if (
+        failure := _check_amendment_supersessions(attempt, value.brief_artifact_ref_id, value.supersessions)
+    ) is not None:
+        return failure
     authorities = tuple(candidate for candidate in snapshot.attempt_authorities if candidate.attempt == attempt_id)
     if len(authorities) != 1:
         return DecisionFailure(
@@ -1602,6 +1670,7 @@ def _rebind_attempt(
                 replace(authority, lease_id=None, generation=authority.generation + 1),
             ),
             carried_unblocker,
+            value.supersessions,
         ),
         work_item_id=item.work_item_id,
         outcome=None,

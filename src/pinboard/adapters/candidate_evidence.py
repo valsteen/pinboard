@@ -370,7 +370,7 @@ def observe_item_integration(
     target_revision, content = presence
     return query_models.ItemIntegration(
         "pinboard-item-integration/v1",
-        "sqlite-v15",
+        "sqlite-v16",
         str(facts.project_revision),
         str(facts.work_item_id),
         target,

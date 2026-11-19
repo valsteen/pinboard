@@ -29,7 +29,7 @@ class ContentEncoding(Enum):
 
 class ProjectExportProject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     application: Literal["pinboard"]
-    schema_version: Literal[15]
+    schema_version: Literal[16]
     created_at: str
     updated_at: str
 
@@ -73,6 +73,19 @@ class ProjectExportReviewBase(msgspec.Struct, frozen=True, forbid_unknown_fields
     ready_review_artifact_ref_id: int
 
 
+class ProjectExportMigratedAmendmentEnd(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="historical-at-v15-migration", tag_field="kind"
+):
+    pass
+
+
+class ProjectExportSupersededAmendment(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="superseded", tag_field="kind"
+):
+    history_id: int
+    human_decision: str
+
+
 class ProjectExportAmendment(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """One recorded attempt amendment, keyed by the receipt that recorded it."""
 
@@ -88,6 +101,7 @@ class ProjectExportAmendment(msgspec.Struct, frozen=True, forbid_unknown_fields=
     cleared_candidate: str | None
     cleared_snapshot_artifact_ref_id: int | None
     review_base: ProjectExportReviewBase | None
+    end: ProjectExportMigratedAmendmentEnd | ProjectExportSupersededAmendment | None
 
 
 class ProjectExportDefinitionRevision(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -441,8 +455,8 @@ class ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_u
 
 
 class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    schema: Literal["pinboard-project-export/v7"]
-    authority: Literal["sqlite-v15"]
+    schema: Literal["pinboard-project-export/v8"]
+    authority: Literal["sqlite-v16"]
     revision: int
     project: ProjectExportProject
     work_items: tuple[ProjectExportWorkItem, ...]
@@ -625,6 +639,13 @@ def _project_item_artifact_links(state: ProjectExportState) -> tuple[ProjectExpo
 def _project_amendment(value: stored_state.StoredAttemptAmendment) -> ProjectExportAmendment:
     amendment = value.amendment
     base = amendment.review_base
+    match value.end:
+        case None:
+            end = None
+        case stored_state.MigratedAmendmentEnd():
+            end = ProjectExportMigratedAmendmentEnd()
+        case stored_state.SupersededAmendment(history_id=history_id, human_decision=words):
+            end = ProjectExportSupersededAmendment(int(history_id), words)
     return ProjectExportAmendment(
         int(value.history_id),
         str(value.attempt_id),
@@ -642,6 +663,7 @@ def _project_amendment(value: stored_state.StoredAttemptAmendment) -> ProjectExp
         else ProjectExportReviewBase(
             str(base.candidate), int(base.snapshot_artifact_ref_id), int(base.ready_review_artifact_ref_id)
         ),
+        end,
     )
 
 
@@ -669,8 +691,8 @@ def project_export_from_state(
         proposal_id: tuple(assumptions) for proposal_id, assumptions in proposal_freshness_groups.items()
     }
     return ProjectExport(
-        "pinboard-project-export/v7",
-        "sqlite-v15",
+        "pinboard-project-export/v8",
+        "sqlite-v16",
         state.lifecycle.project.revision,
         ProjectExportProject(
             state.lifecycle.project.application,

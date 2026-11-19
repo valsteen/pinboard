@@ -746,7 +746,7 @@ class _HoldReleaseSupport(CheckpointPackageSupport):
             type=project_export.ProjectExport,
             strict=True,
         )
-        self.assertEqual(("pinboard-project-export/v7", "sqlite-v15"), (exported.schema, exported.authority))
+        self.assertEqual(("pinboard-project-export/v8", "sqlite-v16"), (exported.schema, exported.authority))
         self.assertTrue(any(row.attempt_id == "started-dep-1" for row in exported.amendments))
         self.assertTrue(
             any(
@@ -1513,7 +1513,7 @@ class BoardAndOverviewResumeReadinessTest(_HoldReleaseSupport):
                 mcp_server.OVERVIEW_TOOL,
                 {**self.roots(fixture), "max_items": 3, "continuation": continuation},
             )
-            self.assertEqual(("pinboard-overview/v10", "sqlite-v15"), (page["schema"], page["authority"]))
+            self.assertEqual(("pinboard-overview/v10", "sqlite-v16"), (page["schema"], page["authority"]))
             self.assertLessEqual(len(msgspec.json.encode(page)), 8000)
             for raw in self.json_array(page["items"]):
                 row = self.json_object(raw)

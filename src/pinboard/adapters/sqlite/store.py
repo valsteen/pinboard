@@ -403,7 +403,7 @@ def _read_generated_view_facts(  # noqa: PLR0915 - one selected read of every pr
             tuple(attempt.item_id for attempt in selected_attempt_records.values()),
         )
     }
-    attempt_amendments = read_attempt_amendments(connection, attempt_ids)
+    attempt_amendments = read_attempt_amendments(connection, attempt_ids, current_only=False)
     attempts: list[query_models.AttemptProjectionFacts] = []
     for attempt_id in attempt_ids:
         attempt = selected_attempt_records.get(attempt_id)
@@ -512,7 +512,7 @@ def _read_board_records(connection: sqlite3.Connection, snapshot: LedgerSnapshot
     briefs = read_artifact_references_by_ids(
         connection, tuple(attempt.brief_artifact_ref_id for attempt, _ in attempts)
     )
-    attempt_amendments = read_attempt_amendments(connection, attempt_ids)
+    attempt_amendments = read_attempt_amendments(connection, attempt_ids, current_only=False)
     recorded_amendments = {value.history_id: value for values in attempt_amendments.values() for value in values}
     receipts = read_receipts_at_revisions(
         connection,
@@ -624,7 +624,7 @@ def _read_attempt_inspection_facts(
                 reference,
                 selected.pause_reason,
                 read_decision_batches(connection, (selected.attempt_id,)).get(selected.attempt_id),
-                read_amendment_facts(connection, selected.attempt_id, selected.brief_artifact_ref_id),
+                read_amendment_facts(connection, selected.attempt_id, selected.work_item.work_item_id),
             )
         case _ as unreachable:
             assert_never(unreachable)
@@ -1049,7 +1049,9 @@ class SQLiteWorkStore:
                                 (lease_id, generation),
                             ).fetchall()
                         )
-                        scope = query_models.DecisionScope((), (), (), (), (), attempt_ids, (), (), (), ())
+                        scope = query_models.DecisionScope(
+                            (), (), (), (), (), attempt_ids, (), (), (), (), read_current_amendments=False
+                        )
                     case decision_models.Role.PREPARER:
                         item_ids = tuple(
                             decode_row(row, ItemIdRow).item_id
@@ -1066,7 +1068,9 @@ class SQLiteWorkStore:
                                 (lease_id, generation),
                             ).fetchall()
                         )
-                        scope = query_models.DecisionScope(item_ids, (), (), (), (), (), (), (), (), ())
+                        scope = query_models.DecisionScope(
+                            item_ids, (), (), (), (), (), (), (), (), (), read_current_amendments=False
+                        )
                     case _ as unreachable:
                         assert_never(unreachable)
                 return read_selected_decision_facts(connection, scope, now).snapshot

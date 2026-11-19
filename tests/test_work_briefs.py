@@ -917,7 +917,7 @@ class WorkBriefBoundaryTest(unittest.TestCase):
                         WorkItemId("work-a"), "label", subject_revision="1"
                     )
                     command = decision_models.ResumeCommand(
-                        decision_models.ResumeAction(capability), work_models.ResumeInput(ArtifactRefId(1))
+                        decision_models.ResumeAction(capability), work_models.ResumeInput(ArtifactRefId(1), ())
                     )
                 published = write_revision(
                     roots,

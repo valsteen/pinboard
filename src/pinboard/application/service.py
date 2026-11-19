@@ -176,7 +176,10 @@ def acquire_attempt_authority(
 
     with store.write() as transaction:
         snapshot = transaction.read_decision_facts(
-            query_models.DecisionScope((), (), (), (), (), (attempt_id,), (), (), (), ()), acquired_at
+            query_models.DecisionScope(
+                (), (), (), (), (), (attempt_id,), (), (), (), (), read_current_amendments=False
+            ),
+            acquired_at,
         ).snapshot
         attempt = snapshot.attempt(attempt_id)
         if attempt is None:
@@ -278,7 +281,8 @@ def _commit_attempt_authority_change(
         case _ as unreachable:
             assert_never(unreachable)
     decision_context = transaction.read_decision_facts(
-        query_models.DecisionScope((), (), (), (), (), (attempt_id,), (), (), (), ()), decided_at
+        query_models.DecisionScope((), (), (), (), (), (attempt_id,), (), (), (), (), read_current_amendments=False),
+        decided_at,
     ).snapshot
     retained = transaction.read_attempt_authority_status(attempt_id)
     generation_before = transaction.read_attempt_generation(attempt_id)
@@ -387,7 +391,10 @@ def start_preparation(
 
     with store.write() as transaction:
         snapshot = transaction.read_decision_facts(
-            query_models.DecisionScope((work_item_id,), (), (), (), (), (), (), (), (), ()), acquired_at
+            query_models.DecisionScope(
+                (work_item_id,), (), (), (), (), (), (), (), (), (), read_current_amendments=False
+            ),
+            acquired_at,
         ).snapshot
         retained = _project_retained_preparation_authority(
             snapshot, transaction.read_preparation_authority_status(work_item_id), work_item_id
@@ -477,7 +484,8 @@ def _commit_preparation_authority_change(
         case _ as unreachable:
             assert_never(unreachable)
     decision_context = transaction.read_decision_facts(
-        query_models.DecisionScope((item_id,), (), (), (), (), (), (), (), (), ()), decided_at
+        query_models.DecisionScope((item_id,), (), (), (), (), (), (), (), (), (), read_current_amendments=False),
+        decided_at,
     ).snapshot
     retained = transaction.read_preparation_authority_status(item_id)
     generation_before = transaction.read_preparation_generation(item_id)
@@ -591,6 +599,7 @@ def create_proposal(
                 artifact_ref_ids=(),
                 completion_history_attempt_ids=(),
                 checkpoint_targets=checkpoint_targets,
+                read_current_amendments=False,
             ),
             now,
         ).snapshot
@@ -713,11 +722,13 @@ def _transition_decision_scope(
     artifact_ids: tuple[ArtifactRefId, ...] = ()
     completion_history_attempt_ids: tuple[AttemptId, ...] = ()
     checkpoint_targets: tuple[work_models.CheckpointDependency, ...] = ()
+    read_current_amendments = False
     match command:
         case decision_models.ActivateCommand(value=value):
             artifact_ids = (value.brief_artifact_ref_id,)
         case decision_models.ResumeCommand(value=value) | decision_models.RebindAttemptCommand(value=value):
             artifact_ids = () if value.brief_artifact_ref_id is None else (value.brief_artifact_ref_id,)
+            read_current_amendments = bool(value.supersessions)
         case (
             decision_models.BlockCommand(value=work_models.BlockInput(unblocker=unblocker))
             | decision_models.BlockWorkItemCommand(value=work_models.BlockInput(unblocker=unblocker))
@@ -768,6 +779,7 @@ def _transition_decision_scope(
         artifact_ref_ids=artifact_ids,
         completion_history_attempt_ids=completion_history_attempt_ids,
         checkpoint_targets=checkpoint_targets,
+        read_current_amendments=read_current_amendments,
     )
 
 

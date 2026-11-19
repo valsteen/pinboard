@@ -31,7 +31,6 @@ from pinboard.application import (
     queries,
     query_models,
     service,
-    stored_state,
     work_brief_models,
     work_briefs,
 )
@@ -983,7 +982,6 @@ def _apply_transition(
             continuation=None,
         )
     token.checkpoint()
-    ended_amendments = _amendments_ended_by_rebind(store, selected.command)
     if isinstance(selected, lifecycle_operations.SelectedArtifactTransition):
         committed = lifecycle_artifacts.execute_artifact_transition(
             source_checkout,
@@ -1050,9 +1048,8 @@ def _apply_transition(
         item_id = WorkItemId(selected.command.action.capability.subject)
     assert item_id is not None
     item_status = _committed_item_status(durable, store, item_id, datetime.now(UTC))
-    continuation = _ended_amendments_notice(ended_amendments) + _transition_current_state_route(
-        identity.kind, item_status_returned=True
-    )
+    replacement_notice = _brief_replacement_notice(selected.command)
+    continuation = replacement_notice + _transition_current_state_route(identity.kind, item_status_returned=True)
     schema = "pinboard-mcp-transition-result/v1"
     revision = committed_effect.receipt.project_revision
     history_id = int(committed_effect.receipt.history_id)
@@ -1071,7 +1068,7 @@ def _apply_transition(
             effect="committed",
             retry="do-not-retry",
             changed_surfaces=changed_surfaces,
-            continuation=cleanup_continuation + item_status.recovery,
+            continuation=cleanup_continuation + replacement_notice + item_status.recovery,
             warning=warning_result,
             item_status=item_status,
             local_cleanup=cleanup,
@@ -1098,32 +1095,17 @@ def _apply_transition(
     )
 
 
-def _amendments_ended_by_rebind(
-    store: ports.WorkStore, command: decision_models.TransitionCommand
-) -> tuple[stored_state.StoredAttemptAmendment, ...]:
-    """Name the current amendments a rebind to another brief ends; the selected subject revision binds this read."""
-
-    if not isinstance(command, decision_models.RebindAttemptCommand):
-        return ()
-    context = store.read_attempt_context(command.action.capability.subject)
-    if not isinstance(context, query_models.NonterminalAttemptContextFacts):
-        return ()
-    return tuple(
-        value
-        for value in context.amendments.current
-        if value.amendment.brief_artifact_ref_id != command.value.brief_artifact_ref_id
-    )
-
-
-def _ended_amendments_notice(ended: tuple[stored_state.StoredAttemptAmendment, ...]) -> str:
-    if not ended:
-        return ""
-    histories = ", ".join(str(value.history_id) for value in ended)
-    return (
-        f"The rebind ended {len(ended)} amendment{'' if len(ended) == 1 else 's'} recorded against the earlier brief "
-        f"(history {histories}); they stay in history but are no longer part of the contract, so the replacement brief "
-        "must state any it keeps. "
-    )
+def _brief_replacement_notice(command: decision_models.TransitionCommand) -> str:
+    match command:
+        case decision_models.RebindAttemptCommand(value=value) | decision_models.ResumeCommand(value=value) if (
+            value.brief_artifact_ref_id is not None
+        ):
+            if value.supersessions:
+                histories = ", ".join(str(supersession.history_id) for supersession in value.supersessions)
+                return f"Superseded amendment history IDs {histories}. All other current approvals still apply. "
+            return "Current amendment approvals still apply under the accepted brief. "
+        case _:
+            return ""
 
 
 def _transition_failed_after_publication(

@@ -1168,6 +1168,7 @@ class AuthorityStatusReadTest(unittest.TestCase):
                 "artifact_ownership",
                 "attempts",
                 "attempt_amendments",
+                "attempt_amendment_ends",
                 "attempt_decision_batches",
                 "item_dependencies",
                 "project_meta",

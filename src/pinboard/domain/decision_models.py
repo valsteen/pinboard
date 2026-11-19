@@ -992,6 +992,7 @@ class RevisedAttemptBrief:
     artifact_ref_id: ArtifactRefId
     accepted_scope_revision: int
     accepted_scope_digest: str
+    supersessions: tuple[work_models.AmendmentSupersession, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1000,6 +1001,7 @@ class ResumeAttemptChange:
     item_before: work_models.WorkState
     attempt: AttemptId
     attempt_before: work_models.AttemptState
+    brief_artifact_ref_id: ArtifactRefId
     revised_brief: RevisedAttemptBrief | None
     resolved_decisions: work_models.ResolvedPauseDecisions | None
 
@@ -1017,6 +1019,7 @@ class RebindAttemptChange:
     authority_change: AttemptAuthorityChange
     carried_unblocker: work_models.Unblocker | None
     """The paused attempt's current unblocker, copied forward unchanged; none while the attempt is active."""
+    supersessions: tuple[work_models.AmendmentSupersession, ...]
 
 
 @dataclass(frozen=True, slots=True)

@@ -274,6 +274,7 @@ def project_nonterminal_attempt_continuation(
         pending_decision_batch=None
         if context.decision_batch is None
         else decision_batches.pending_batch(context.attempt_id, context.decision_batch),
+        current_amendment_ids=tuple(value.history_id for value in context.amendments.current),
     )
     groups = project_attempt_action_groups(
         work_models.ProjectAttemptActionContext(
@@ -1735,7 +1736,7 @@ def project_item_status(
     )
     return query_models.ItemStatus(
         "pinboard-item-status/v7",
-        "sqlite-v15",
+        "sqlite-v16",
         str(facts.project_revision),
         str(item.work_item_id),
         facts.definition_title,
@@ -1784,7 +1785,7 @@ def project_branch_owners(reader: ports.BranchOwnerReader, branch: str) -> query
         return None
     return query_models.BranchOwners(
         "pinboard-branch-owners/v1",
-        "sqlite-v15",
+        "sqlite-v16",
         str(facts.project_revision),
         branch,
         tuple(
@@ -1917,7 +1918,7 @@ def select_item_definition(
         )
     return query_models.ItemDefinition(
         "pinboard-item-definition/v1",
-        "sqlite-v15",
+        "sqlite-v16",
         selected.project_revision,
         work_item_id,
         selected.item_subject_revision,
@@ -1954,7 +1955,7 @@ def select_item_definition_history(
     )
     return query_models.ItemDefinitionHistory(
         "pinboard-item-definition-history/v1",
-        "sqlite-v15",
+        "sqlite-v16",
         selected.project_revision,
         work_item_id,
         rows,

@@ -12,6 +12,7 @@ import msgspec
 
 from pinboard.application import action_models as transition_models
 from pinboard.application import decision_batches, unblockers
+from pinboard.application.amendment_supersessions import supersessions_from_payload
 from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import DecisionFailureCode, EffectDisposition, FailureDetails, RetryDisposition
 from pinboard.domain.identifiers import (
@@ -279,12 +280,14 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                     work_models.ResolveDecisionsInput(
                         None if payload.brief_artifact_ref_id is None else ArtifactRefId(payload.brief_artifact_ref_id),
                         decision_batches.resolutions_from_payload(payload.resolutions),
+                        supersessions_from_payload(payload.supersessions),
                     ),
                 )
             return decision_models.ResumeCommand(
                 action,
                 work_models.ResumeInput(
-                    None if plain.brief_artifact_ref_id is None else ArtifactRefId(plain.brief_artifact_ref_id)
+                    None if plain.brief_artifact_ref_id is None else ArtifactRefId(plain.brief_artifact_ref_id),
+                    supersessions_from_payload(plain.supersessions),
                 ),
             )
         case decision_models.RebindAttemptAction():
@@ -298,6 +301,7 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                     payload.branch,
                     payload.base_revision,
                     ArtifactRefId(payload.brief_artifact_ref_id),
+                    supersessions_from_payload(payload.supersessions),
                 ),
             )
         case decision_models.ReviseWorkItemAction():

@@ -88,7 +88,7 @@ def _commit_same_rebind(
     assert isinstance(action, decision_models.RebindAttemptAction)
     selected_command = decision_models.RebindAttemptCommand(
         action,
-        work_models.RebindAttemptInput("codex/corrected-work-a", "corrected-base", ArtifactRefId(99)),
+        work_models.RebindAttemptInput("codex/corrected-work-a", "corrected-base", ArtifactRefId(99), ()),
     )
     decision = expect_success(decide(snapshot, selected_command, SQLITE_NOW))
     assert isinstance(decision, decision_models.TransitionDecision)

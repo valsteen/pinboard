@@ -124,6 +124,8 @@ def current_schema_logical_digest(path: Path) -> str:
                 database._verify_v13_schema(connection)
             elif version == 14:
                 database._verify_v14_schema(connection)
+            elif version == 15:
+                database._verify_v15_schema(connection)
             else:
                 database._verify_current_schema(connection)
             database.verify_database_integrity(connection)

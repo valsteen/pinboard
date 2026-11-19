@@ -357,9 +357,9 @@ def _validate_amendments(
     receipts: tuple[stored_state.StoredTransitionReceipt, ...],
     error_code: StorageErrorCode,
 ) -> None:
-    """Require every amendment row and every record-amendment receipt to name each other and one attempt."""
+    """Check approval and supersession receipt ownership."""
 
-    attempts = {value.attempt_id for value in lifecycle.attempts}
+    attempts = {value.attempt_id: value.item_id for value in lifecycle.attempts}
     by_history = {value.history_id: value for value in receipts}
     recorded = {value.history_id for value in lifecycle.amendments}
     for amendment in lifecycle.amendments:
@@ -379,6 +379,22 @@ def _validate_amendments(
             raise StorageError(
                 error_code, f"Amendment {amendment.history_id} records an incomplete cleared submission."
             )
+        if isinstance(amendment.end, stored_state.SupersededAmendment):
+            superseding = by_history.get(amendment.end.history_id)
+            if superseding is None or not (
+                (
+                    superseding.action_kind == decision_models.ActionKind.REBIND_ATTEMPT
+                    and superseding.subject_id == amendment.attempt_id
+                )
+                or (
+                    superseding.action_kind == decision_models.ActionKind.RESUME
+                    and superseding.input_schema == decision_batches.REVISED_RESUME_SCHEMA
+                    and superseding.subject_id == attempts[amendment.attempt_id]
+                )
+            ):
+                raise StorageError(
+                    error_code, f"Amendment {amendment.history_id} has no replacement receipt on its attempt."
+                )
     for receipt in receipts:
         if receipt.action_kind == decision_models.ActionKind.RECORD_AMENDMENT and receipt.history_id not in recorded:
             raise StorageError(error_code, f"Amendment receipt {receipt.history_id} has no amendment row.")
@@ -741,15 +757,14 @@ def append_history(
                    SET pause_history_id = excluded.pause_history_id, resume_history_id = NULL""",
                 (receipt.subject_id, receipt.history_id),
             )
-        elif receipt.input_schema == "pinboard-resolved-pause-decisions/v1":
-            resolved = msgspec.json.decode(bytes(receipt.input_payload), type=decision_batches.ResolvedDecisionsReceipt)
+        elif (resolved := decision_batches.read_resume_resolution(receipt)) is not None:
             cursor = connection.execute(
                 """UPDATE attempt_decision_batches SET resume_history_id = ?
                    WHERE pause_history_id = ? AND resume_history_id IS NULL
                    AND attempt_id IN (SELECT attempt_id FROM attempts WHERE item_id = ?)""",
                 (receipt.history_id, resolved.pause_history_id, receipt.subject_id),
             )
-            if receipt.action_kind != decision_models.ActionKind.RESUME or cursor.rowcount != 1:
+            if cursor.rowcount != 1:
                 raise StorageError(
                     StorageErrorCode.INVALID_STATE, "The resolving resume has no pending decision batch."
                 )

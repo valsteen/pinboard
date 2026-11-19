@@ -52,7 +52,7 @@ def _dependency_key(value: stored_state.ItemDependency) -> tuple[str, int]:
 
 
 def _render_header(kind: str) -> str:
-    return f"---\nkind: {kind}\nauthority: sqlite-v15\n---\n\n> {NOTICE}\n\n"
+    return f"---\nkind: {kind}\nauthority: sqlite-v16\n---\n\n> {NOTICE}\n\n"
 
 
 def _render_decision_questions(decisions: tuple[decision_batches.PauseDecision, ...]) -> str:
@@ -281,26 +281,32 @@ def _render_amendment(amendment: stored_state.StoredAttemptAmendment) -> str:
 
 
 def _render_amendments(
-    attempt: stored_state.StoredAttempt, amendments: tuple[stored_state.StoredAttemptAmendment, ...]
+    amendments: tuple[stored_state.StoredAttemptAmendment, ...],
 ) -> bytes:
-    """List the attempt's amendments; one recorded against an earlier brief no longer belongs to the contract."""
+    """List original approvals and the exact decision for any explicitly superseded approval."""
 
     if not amendments:
         return b""
-    sections = "".join(
-        f"\n### Amendment {index}"
-        + (
-            ""
-            if value.amendment.brief_artifact_ref_id == attempt.brief_artifact_ref_id
-            else " (ended when the attempt was rebound to another brief)"
+    sections: list[str] = []
+    for value in amendments:
+        state = ""
+        match value.end:
+            case stored_state.MigratedAmendmentEnd():
+                state = "- Ended before the ledger advanced from sqlite-v15.\n"
+            case stored_state.SupersededAmendment(history_id=history_id, human_decision=words):
+                state = (
+                    f"- Superseded in [history {history_id}](../history/{history_id}.md)\n"
+                    f"- Human's superseding words: {history.nest_record_text(words, '  ')}\n"
+                )
+            case None:
+                pass
+        sections.append(
+            f"\n### Amendment {value.history_id}\n\n"
+            f"- Original brief reference: {value.amendment.brief_artifact_ref_id}\n" + _render_amendment(value) + state
         )
-        + "\n\n"
-        + _render_amendment(value)
-        for index, value in enumerate(amendments, start=1)
-    )
     return (
         "\n## Amendments\n\nHuman-approved incidental repairs recorded as part of this attempt's contract "
-        "beside the accepted brief.\n" + sections
+        "beside the accepted brief when current.\n" + "".join(sections)
     ).encode()
 
 
@@ -316,7 +322,7 @@ def _render_attempt(
     hold_section = (
         b"" if hold is None else f"\n## On hold\n\n{markdown_hold_sentence(hold.parts, '../items/')}\n".encode()
     )
-    hold_section = _render_amendments(attempt, amendments) + hold_section
+    hold_section = _render_amendments(amendments) + hold_section
     if (brief := attempt_briefs.get(attempt.attempt_id)) is not None:
         return brief + hold_section
     state = (
@@ -422,8 +428,7 @@ def _render_history(
     if receipt.input_schema == "pinboard-pause-decisions/v1":
         pause = msgspec.json.decode(bytes(receipt.input_payload), type=decision_batches.PauseDecisionsInput)
         decisions = f"\n## Decision batch\n\n{pause.reason}\n\n" + _render_decision_questions(pause.decisions)
-    elif receipt.input_schema == "pinboard-resolved-pause-decisions/v1":
-        resolved = msgspec.json.decode(bytes(receipt.input_payload), type=decision_batches.ResolvedDecisionsReceipt)
+    elif (resolved := decision_batches.read_resume_resolution(receipt)) is not None:
         decisions = (
             f"\n## Recorded decisions\n\nPause receipt [{resolved.pause_history_id}]({resolved.pause_history_id}.md).\n\n"
             + _render_decision_resolutions(resolved.resolutions)

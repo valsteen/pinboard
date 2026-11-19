@@ -1266,6 +1266,7 @@ class DispatchTest(unittest.TestCase):
                 None,
                 None,
             ),
+            None,
         )
         prompts: dict[str, str] = {}
         for label, amendments in (("none", ()), ("one", (amendment,))):

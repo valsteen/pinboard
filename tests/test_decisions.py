@@ -483,7 +483,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     snapshot,
                     decision_models.RebindAttemptCommand(
                         selected,
-                        work_models.RebindAttemptInput("codex/corrected", "correct-base", ArtifactRefId(7)),
+                        work_models.RebindAttemptInput("codex/corrected", "correct-base", ArtifactRefId(7), ()),
                     ),
                     NOW,
                 )
@@ -543,7 +543,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     snapshot,
                     decision_models.RebindAttemptCommand(
                         selected,
-                        work_models.RebindAttemptInput("codex/corrected", "correct-base", ArtifactRefId(7)),
+                        work_models.RebindAttemptInput("codex/corrected", "correct-base", ArtifactRefId(7), ()),
                     ),
                     NOW,
                 )
@@ -561,7 +561,7 @@ class LifecycleDecisionTest(unittest.TestCase):
         authority = work_models.AttemptAuthority(AttemptId("target-1"), WorkItemId("target"), LeaseId("lease"), 2)
         command = decision_models.RebindAttemptCommand(
             action(decision_models.RebindAttemptAction, AttemptId("target-1")),
-            work_models.RebindAttemptInput("codex/corrected", "correct-base", ArtifactRefId(7)),
+            work_models.RebindAttemptInput("codex/corrected", "correct-base", ArtifactRefId(7), ()),
         )
         cases = (
             (
@@ -1295,7 +1295,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     dropped_item_ids=frozenset(),
                 ),
                 decision_models.ResumeCommand(
-                    action(decision_models.ResumeAction, WorkItemId("target")), work_models.ResumeInput()
+                    action(decision_models.ResumeAction, WorkItemId("target")), work_models.ResumeInput(None, ())
                 ),
                 "ACTION_NOT_AVAILABLE",
             ),
@@ -1308,7 +1308,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     dropped_item_ids=frozenset(),
                 ),
                 decision_models.ResumeCommand(
-                    action(decision_models.ResumeAction, WorkItemId("target")), work_models.ResumeInput()
+                    action(decision_models.ResumeAction, WorkItemId("target")), work_models.ResumeInput(None, ())
                 ),
                 "DEPENDENCY_NOT_SATISFIED",
             ),

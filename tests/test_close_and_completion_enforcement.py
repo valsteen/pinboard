@@ -42,11 +42,21 @@ from tests.checkpoint_support import AcceptedPackageFixture, CheckpointFixture, 
 from tests.native_support import call_advertised_tool, native_tools
 from tests.sqlite_support import _insert_lifecycle, sync_test_unblocker
 from tests.support import HOLD_UNBLOCKER, SQLITE_NOW, JsonObject, JsonValue
+from tests.test_proposals import proposal
 
 HUMAN_WORDS = "Yes, close work-c as done: the parser rewrite already covers it."
 
 
 class NativeFixtureSupport(CheckpointPackageSupport):
+    @staticmethod
+    def roots(fixture: CheckpointFixture) -> JsonObject:
+        return {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+
+    def transition(self, fixture: CheckpointFixture, action_id: str, payload: JsonObject) -> JsonObject:
+        result = self.transition_result(fixture, self.project_action(fixture, action_id), payload)
+        self.assertEqual("committed", result["status"], result)
+        return result
+
     def native_fixture[T: CheckpointFixture](self, fixture: T) -> T:
         native = self.enterContext(native_tools())
         return dataclasses.replace(
@@ -57,9 +67,6 @@ class NativeFixtureSupport(CheckpointPackageSupport):
 
 
 class HumanConfirmedCloseTest(NativeFixtureSupport):
-    def roots(self, fixture: CheckpointFixture) -> JsonObject:
-        return {"project_root": str(fixture.project), "work_root": str(fixture.work)}
-
     def close_arguments(self, fixture: CheckpointFixture, item_id: str, payload: JsonObject) -> JsonObject:
         action = self.project_action(fixture, f"close:{item_id}")
         return {
@@ -753,7 +760,10 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
                         bytes(completion.input), type=action_models.ReviewedCompleteInputPayload
                     ).human_decision,
                 )
-                self.assertEqual("pinboard-completion-review-package/v2", exported.completion_packages[0].schema)
+                self.assertEqual(
+                    "pinboard-completion-review-package/v2",
+                    msgspec.to_builtins(exported.completion_packages[0])["schema"],
+                )
 
     def test_historical_v2_receipt_validates_and_exports_exactly_but_rejects_malformed_facts(self) -> None:
         fixture, candidate = self.review_fixture()
@@ -808,10 +818,21 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
 
     def test_human_decision_does_not_allow_a_concurrent_stale_completion(self) -> None:
         fixture, candidate = self.review_fixture()
-        fixture = self.terminalize_brief(fixture)
         self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
-        payload = self.completion_payload(fixture, candidate, "commissioned-reviewer")
         action = self.project_action(fixture, "complete:work-a-1")
+        contract = self.json_object(action["input_contract"])
+        payload = self.completion_payload(fixture, candidate, "commissioned-reviewer")
+        accounting: JsonObject = {
+            "kind": "continue",
+            "brief_sha256": contract["accepted_brief_sha256"],
+            "remaining_work": contract["remaining_work"],
+            "required_step_ids": ["owner-check"],
+            "steps": [{"kind": "done", "step_id": "owner-check", "evidence": "The owner check passed."}],
+            "obligations": [
+                {"kind": "done", "obligation_id": "next-decision", "evidence": "The owner finished the decision."}
+            ],
+        }
+        payload["accounting"] = accounting
         request = self.native_transition_request(fixture, action, payload)
         delayed_request = self.native_transition_request(fixture, action, payload, task_id="delayed-owner")
         entered, resume = Event(), Event()
@@ -997,22 +1018,275 @@ class CommissionedReviewCompletionTest(SubmittedCandidateSupport):
         payload = self.completion_payload(fixture, candidate, "commissioned-reviewer")
         self.assert_review_required(fixture, payload, "commissioned-reviewer")
 
-    def test_commissioned_review_relaxes_no_continue_disposition_refusal(self) -> None:
+    def test_commissioned_review_still_requires_accounting_for_continuing_work(self) -> None:
         fixture, candidate = self.review_fixture(checkpoint_id="completion")
         self.record_commissioned_review(fixture, candidate, "commissioned-reviewer")
         state = fixture.store.validated_snapshot()
         self.assertIn("checkpoint-acceptance/v2", {value.outcome_schema for value in state.transition_receipts})
         payload = self.completion_payload(fixture, candidate, "commissioned-reviewer")
         before = fixture.store.validated_snapshot()
-        # Continue-disposition discovery withholds complete, so build its exact receipt from a sibling action.
-        action = self.project_action(fixture, "return-for-correction:work-a-1")
-        action["action_id"] = {"kind": "complete", "subject": "work-a-1"}
+        action = self.project_action(fixture, "complete:work-a-1")
         refused = fixture.call_advertised_tool(
             mcp_server.TRANSITION_TOOL, self.native_transition_request(fixture, action, payload)
         )
         self.assertEqual("TRANSITION_INPUT_INVALID", refused["code"], refused)
-        self.assertEqual("Completion requires a terminal checkpoint disposition.", refused["message"])
+        self.assertIn("Supply the human's accounting", str(refused["message"]))
         self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def test_final_human_steps_complete_after_published_brief_and_one_review(self) -> None:
+        fixture = self.native_fixture(self.accepted_package_fixture(local=True, candidate_form="current-head"))
+        disposition = work_brief_models.FinalHumanStepsDisposition(
+            (
+                work_brief_models.FinalHumanStep("owner-check", "Run the owner check."),
+                work_brief_models.FinalHumanStep("human-sitting", "Finish the human sitting."),
+            )
+        )
+        brief = replace_struct(
+            fixture.brief,
+            artifact_revision=2,
+            checkpoint=replace_struct(fixture.brief.checkpoint, disposition=disposition),
+        )
+        published = fixture.call_advertised_tool(
+            mcp_server.BRIEF_PUBLISH_TOOL,
+            {**self.roots(fixture), "brief": self.json_object(msgspec.to_builtins(brief))},
+        )
+        self.assertEqual("committed", published["status"], published)
+        reference = self.json_object(published["reference"])
+        self.run_json_cli(
+            *fixture.common,
+            "close",
+            "work-c",
+            "--outcome",
+            "done",
+            "--reason",
+            "Prerequisite done.",
+            "--task-id",
+            "review-owner",
+            "--host-id",
+            "local",
+        )
+        self.transition(fixture, "resume:work-a", {"brief_artifact_ref_id": reference["artifact_ref_id"]})
+        fixture = dataclasses.replace(fixture, brief=brief)
+        dependent_proposal = proposal()
+        dependent_proposal["proposal_id"] = "wait-for-final-steps"
+        created = fixture.call_advertised_tool(
+            mcp_server.PROPOSAL_CREATE_TOOL,
+            {
+                **self.roots(fixture),
+                "proposal": dependent_proposal,
+                "actor_task_id": "coordinator",
+                "actor_host_id": "local",
+            },
+        )
+        self.assertEqual("committed", created["status"], created)
+        definition = fixture.call_advertised_tool(
+            mcp_server.ITEM_DEFINITION_TOOL,
+            {"request": {**self.roots(fixture), "operation": "current", "item_id": "wait-for-final-steps"}},
+        )
+        self.transition(
+            fixture,
+            "revise-item:wait-for-final-steps",
+            {
+                "schema": "pinboard-item-revision/v1",
+                "expected_revision": definition["definition_revision"],
+                "expected_digest": definition["definition_digest"],
+                "source_task": "review-owner",
+                "reason": "Wait until this item completes.",
+                "definition": {**self.json_object(definition["definition"]), "dependencies": ["work-a"]},
+            },
+        )
+        self.transition(
+            fixture, "block-item:wait-for-final-steps", {"unblocker": {"kind": "items", "items": ["work-a"]}}
+        )
+        candidate = self.submit_review(fixture, "last code candidate", "last-code-worker")
+        self.record_commissioned_review(fixture, candidate, "independent-last-review")
+        inspection = fixture.call_advertised_tool(
+            mcp_server.ATTEMPT_INSPECT_TOOL,
+            {**self.roots(fixture), "attempt_id": "work-a-1", "reconciliation": None},
+        )
+        self.assertEqual(
+            reference["artifact_ref_id"], self.json_object(inspection["accepted_brief"])["artifact_ref_id"]
+        )
+        action = self.project_action(fixture, "complete:work-a-1")
+        contract = self.json_object(action["input_contract"])
+        self.assertEqual(["owner-check", "human-sitting"], contract["final_step_ids"])
+        owner_check: JsonObject = {"kind": "done", "step_id": "owner-check", "evidence": "The owner check passed."}
+        sitting: JsonObject = {
+            "kind": "done",
+            "step_id": "human-sitting",
+            "evidence": "The human completed the sitting.",
+        }
+        accounting: JsonObject = {
+            "kind": "final-human-steps",
+            "brief_sha256": contract["accepted_brief_sha256"],
+            "steps": [owner_check],
+            "obligations": [{"kind": "reviewed", "obligation_id": "next-decision"}],
+        }
+        payload = self.completion_payload(fixture, candidate, "independent-last-review")
+        before = fixture.store.validated_snapshot()
+        self.assertTrue(
+            any(
+                lease.attempt_id == "work-a-1" and lease.state.value == "active"
+                for lease in before.authority.attempt_leases
+            )
+        )
+        refusal = fixture.call_advertised_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(fixture, action, payload | {"accounting": accounting}),
+        )
+        self.assertEqual(("rejected", "unchanged"), (refusal["status"], refusal["effect"]))
+        self.assertIn("human-sitting", str(refusal["message"]))
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+        rejected_checkpoint = fixture.call_advertised_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(
+                fixture,
+                self.project_action(fixture, "accept-checkpoint:work-a-1"),
+                {"candidate": candidate, "checkpoint": brief.checkpoint.checkpoint_id, "evidence": "Checked."},
+            ),
+        )
+        self.assertEqual(("rejected", "unchanged"), (rejected_checkpoint["status"], rejected_checkpoint["effect"]))
+        accounting["steps"] = [owner_check, sitting]
+        done = fixture.call_advertised_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(fixture, action, payload | {"accounting": accounting}),
+        )
+        self.assertEqual("committed", done["status"], done)
+        after = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        self.assertEqual(len(before.transition_receipts) + 1, len(after.transition_receipts))
+        self.assertEqual(decision_models.ActionKind.COMPLETE, after.transition_receipts[-1].action_kind)
+        self.assertIn(
+            ("wait-for-final-steps", int(str(done["history_id"]))),
+            {(release.item_id, int(release.history_id)) for release in after.lifecycle.released_holds},
+        )
+        self.assertFalse(
+            any(
+                lease.attempt_id == "work-a-1" and lease.state.value == "active"
+                for lease in after.authority.attempt_leases
+            )
+        )
+        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+        exported = self.run_json_cli(*fixture.common, "export")
+        package = self.json_object(self.json_array(exported["completion_packages"])[0])
+        self.assertEqual(accounting, package["accounting"])
+        self.assertEqual("pinboard-completion-review-package/v3", package["schema"])
+
+    def test_continuing_completion_uses_historical_review_and_rechecks_live_carrier(self) -> None:
+        fixture, candidate = self.review_fixture()
+        self.record_commissioned_review(fixture, candidate, "original-reviewer")
+        payload = self.completion_payload(fixture, candidate, "original-reviewer") | {
+            "human_decision": "Finish this campaign.\nThe next sitting goes to work-c.",
+        }
+        self.transition(
+            fixture,
+            "accept-review-and-continue:work-a-1",
+            {"candidate": candidate, "evidence": "Accept the implementation review and continue owner work."},
+        )
+        self.transition(
+            fixture,
+            "pause:work-a-1",
+            {
+                "reason": "The owner is accounting for unfinished work.",
+                "unblocker": {"kind": "human-decision", "question": "Where does the next sitting go?"},
+            },
+        )
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        (attempt_root / "result.md").write_text("Later scratch result", encoding="utf-8")
+        (attempt_root / "review.md").write_text("Later scratch review", encoding="utf-8")
+        definition_request: JsonObject = {
+            "request": {**self.roots(fixture), "operation": "current", "item_id": "work-c"}
+        }
+        definition = fixture.call_advertised_tool(mcp_server.ITEM_DEFINITION_TOOL, definition_request)
+        self.transition(
+            fixture,
+            "revise-item:work-c",
+            {
+                "schema": "pinboard-item-revision/v1",
+                "expected_revision": definition["definition_revision"],
+                "expected_digest": definition["definition_digest"],
+                "source_task": "review-owner",
+                "reason": "Carry the next sitting.",
+                "definition": {
+                    **self.json_object(definition["definition"]),
+                    "obligations": [
+                        {
+                            "obligation_id": "next-sitting",
+                            "statement": "Run the next sitting.",
+                            "deferral_policy": "forbidden",
+                        }
+                    ],
+                },
+            },
+        )
+        revised = fixture.call_advertised_tool(mcp_server.ITEM_DEFINITION_TOOL, definition_request)
+        action = self.project_action(fixture, "complete:work-a-1")
+        contract = self.json_object(action["input_contract"])
+        historic = self.json_object(contract["continued_review"])
+        self.assertEqual(
+            ("original-reviewer", payload["result_sha256"]), (historic["reviewer_task_id"], historic["result_sha256"])
+        )
+        receiver: JsonObject = {
+            "item_id": "work-c",
+            "obligation_id": "next-sitting",
+            "definition_revision": revised["definition_revision"],
+            "definition_digest": definition["definition_digest"],
+        }
+        accounting: JsonObject = {
+            "kind": "continue",
+            "brief_sha256": contract["accepted_brief_sha256"],
+            "remaining_work": contract["remaining_work"],
+            "required_step_ids": ["owner-checks", "next-sitting"],
+            "steps": [
+                {"kind": "done", "step_id": "owner-checks", "evidence": "Checks finished."},
+                {"kind": "moved", "step_id": "next-sitting", "receiver": receiver},
+            ],
+            "obligations": [{"kind": "moved", "obligation_id": "next-decision", "receiver": receiver}],
+        }
+        before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        refused = fixture.call_advertised_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(fixture, action, payload | {"accounting": accounting}),
+        )
+        self.assertEqual(("rejected", "unchanged"), (refused["status"], refused["effect"]))
+        self.assertIn("next-sitting", str(refused["message"]))
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+        ended = fixture.call_advertised_tool(
+            mcp_server.ITEM_DEFINITION_TOOL,
+            {"request": {**self.roots(fixture), "operation": "current", "item_id": "work-b"}},
+        )
+        original_receiver = dict(receiver)
+        receiver.update(
+            {
+                "item_id": "work-b",
+                "definition_revision": ended["definition_revision"],
+                "definition_digest": ended["definition_digest"],
+            }
+        )
+        terminal_receiver = fixture.call_advertised_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(fixture, action, payload | {"accounting": accounting}),
+        )
+        self.assertEqual(("rejected", "unchanged"), (terminal_receiver["status"], terminal_receiver["effect"]))
+        self.assertIn("work-b", str(terminal_receiver["message"]))
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+        receiver.update(original_receiver | {"definition_digest": revised["definition_digest"]})
+        result = fixture.call_advertised_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(fixture, action, payload | {"accounting": accounting}),
+        )
+        self.assertEqual("committed", result["status"], result)
+        after = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        self.assertEqual(len(before.transition_receipts) + 1, len(after.transition_receipts))
+        receipt = msgspec.json.decode(
+            bytes(after.transition_receipts[-1].input_payload), type=action_models.ReviewedCompletionReceiptPayload
+        )
+        self.assertEqual(payload["human_decision"], receipt.human_decision)
+        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+        package = self.json_object(
+            self.json_array(self.run_json_cli(*fixture.common, "export")["completion_packages"])[0]
+        )
+        self.assertEqual(historic["acceptance_history_id"], package["continued_acceptance_history_id"])
+        self.assertEqual(accounting, package["accounting"])
 
 
 class RecordReadyCommissionTest(SubmittedCandidateSupport):

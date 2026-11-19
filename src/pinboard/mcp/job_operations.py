@@ -30,11 +30,13 @@ from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.files.models import AffectedViews, ViewWarning
 from pinboard.application import (
     actions,
+    artifact_identity,
     dispatch_models,
     ports,
     queries,
     query_models,
     work_brief_models,
+    work_briefs,
 )
 from pinboard.application.artifact_publication import (
     ArtifactAcceptanceFailure,
@@ -43,7 +45,10 @@ from pinboard.application.artifact_publication import (
     PublishedArtifactRejected,
     PublishedFailureDetails,
     UnpublishedFailureDetails,
+    accepted_publication_surfaces,
+    publish_accepted_artifact,
 )
+from pinboard.application.artifacts import NewArtifact
 from pinboard.application.candidate_identity import (
     WorkingTreeCommitRequired,
     WorkingTreeSubmittable,
@@ -51,7 +56,7 @@ from pinboard.application.candidate_identity import (
     working_tree_submission,
 )
 from pinboard.application.ports import WorkStore
-from pinboard.domain import decision_models, routing
+from pinboard.domain import decision_models, routing, work_models
 from pinboard.domain.errors import (
     ChangedSurface,
     DecisionFailure,
@@ -63,6 +68,7 @@ from pinboard.domain.errors import (
 )
 from pinboard.domain.identifiers import (
     ActionId,
+    ArtifactRefId,
     AttemptId,
     HistoryId,
     ReviewId,
@@ -780,6 +786,237 @@ def _dispatch_job(
     )
 
 
+def _landing_review_rejected(
+    choice: contracts.LandingReviewChoice,
+    message: str,
+) -> DecisionFailure[Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
+    return DecisionFailure(
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        f"{message} Re-read the exact range and ready record with pinboard_review_job "
+        "kind 'observe-landing-difference' using the observed selection and the same roots.",
+        FailureDetails(
+            observed=(
+                FailureFact("attempt_id", choice.attempt_id),
+                FailureFact("candidate_review_ref_id", choice.candidate_review_ref_id),
+                FailureFact("target", choice.target),
+                FailureFact("pre_landing_revision", choice.pre_landing_revision),
+                FailureFact("landed_revision", choice.landed_revision),
+                FailureFact(
+                    "pre_landing_depth",
+                    1 if choice.target_depths is msgspec.UNSET else choice.target_depths.pre_landing,
+                ),
+                FailureFact(
+                    "landed_depth", 0 if choice.target_depths is msgspec.UNSET else choice.target_depths.landed
+                ),
+            ),
+            mismatches=(),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
+def _landing_review_job(
+    source_checkout: Path,
+    durable: DurableRoots,
+    store: WorkStore,
+    choice: contracts.LandingReviewChoice,
+    schema: Literal["pinboard-mcp-review-job-result/v2"],
+    token: execution.CancellationToken,
+) -> execution.TypedOperationResult[contracts.ReviewJobResult]:
+    attempt_id = AttemptId(choice.attempt_id)
+    artifacts = ArtifactRepository(durable)
+    selected = review_operations.review_for_landing(
+        store, artifacts, attempt_id, ArtifactRefId(choice.candidate_review_ref_id)
+    )
+    if isinstance(selected, DecisionFailure):
+        return _job_failure(
+            str(source_checkout),
+            str(durable.work_root),
+            schema,
+            choice.attempt_id,
+            _landing_review_rejected(choice, selected.message),
+            None,
+        )
+    evidence = selected.evidence
+    depths = choice.target_depths
+    observation = review_operations.observe_landing_difference(
+        source_checkout,
+        evidence,
+        target=choice.target,
+        pre_landing_revision=choice.pre_landing_revision,
+        landed_revision=choice.landed_revision,
+        target_depths=None
+        if depths is msgspec.UNSET
+        else work_models.LandingTargetDepths(depths.pre_landing, depths.landed),
+        decisions=selected.decisions,
+    )
+    if isinstance(observation, DecisionFailure):
+        return _job_failure(
+            str(source_checkout),
+            str(durable.work_root),
+            schema,
+            choice.attempt_id,
+            _landing_review_rejected(choice, observation.message),
+            None,
+        )
+    subject = observation.subject
+    match choice:
+        case contracts.ObserveLandingDifferenceChoice():
+            return execution.TypedOperationResult(
+                contracts.LandingDifferenceObserved(
+                    schema,
+                    "landing-difference-observed",
+                    subject,
+                    observation.target_revision,
+                    observation.target_depths,
+                    observation.equivalent,
+                    False,
+                    "unchanged",
+                    "safe-to-repeat",
+                    (),
+                ),
+                "unchanged",
+                None,
+            )
+        case contracts.CommissionLandingDifferenceChoice():
+            token.checkpoint()
+            now = datetime.now(UTC)
+            ready = evidence.ready
+            prompt = (
+                f"Independently review the changes introduced by the landing for attempt {attempt_id}.\n\n"
+                f"Read the accepted brief at {durable.work_root / ready.review.accepted_brief.selector} "
+                f"and the ready review at {durable.work_root / ready.reference.selector}. "
+                f"Use the accepted snapshot at {durable.work_root / evidence.candidate.reference.selector} "
+                "and the original commission bound by the ready review to recover the original scope. "
+                "Verify each accepted reference and its bytes. The subject below includes the applicable "
+                "recorded decisions and approvals. Apply those exact facts to the landing review.\n\n"
+                f"Inspect the Git range {choice.pre_landing_revision} to {choice.landed_revision} in "
+                f"{source_checkout}, and verify it represents what landed on {choice.target} at "
+                f"{observation.target_revision}, at first-parent depths {observation.target_depths.pre_landing} "
+                f"and {observation.target_depths.landed}. "
+                "Credit the original review for identical content and exclude contributions that were already "
+                "on the target before the landing. Where changes overlap, classify which ones are new and assess "
+                "the complete difference against the accepted scope and decisions. Return unresolved or unreviewed "
+                "content to the caller without recording a ready review.\n\n"
+                "For a favorable finding, call pinboard_review_job kind record-landing-difference with the same "
+                f"roots, attempt_id {attempt_id}, candidate_review_ref_id {choice.candidate_review_ref_id}, "
+                "target, commit anchors and target_depths, and review.schema pinboard-landing-difference-review/v1. "
+                "Supply your own task identity, the exact subject below, and a commission with kind pinboard "
+                "and prompt.artifact_ref_id and prompt.sha256 from the verified launch prompt. "
+                "Set verified_target_baseline and covered_complete_difference to true only if verified. "
+                "Record the actual independent coverage as review.coverage.\n\n"
+                f"{msgspec.json.encode(subject, order='sorted').decode()}\n"
+            )
+            publication = dispatch_models.publish_agent_prompt(
+                store,
+                artifacts,
+                subject=review_operations.landing_review_prompt_subject(subject),
+                prompt=prompt,
+                accepted_at=now,
+            )
+            if isinstance(
+                publication,
+                (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure, PublishedArtifactRejected),
+            ):
+                return _job_failure(
+                    str(source_checkout), str(durable.work_root), schema, choice.attempt_id, publication, None
+                )
+            surfaces = _job_publication_surfaces(publication.changed_surfaces)
+            effect = "committed" if surfaces else "unchanged"
+            launch = _mcp_launch_envelope(
+                source_checkout,
+                durable.work_root,
+                "reviewer",
+                choice.attempt_id,
+                publication,
+                None,
+                choice.runtime,
+                choice.background,
+            )
+            return execution.TypedOperationResult(
+                contracts.LandingDifferenceCommissioned(
+                    schema,
+                    "landing-difference-commissioned",
+                    subject,
+                    observation.target_revision,
+                    observation.target_depths,
+                    publication.reference,
+                    launch,
+                    bool(surfaces),
+                    effect,
+                    "do-not-retry" if surfaces else "safe-to-repeat",
+                    surfaces,
+                    _job_publication_warning(durable, store, surfaces, now),
+                ),
+                effect,
+                str(publication.reference.accepted_revision),
+            )
+        case contracts.RecordLandingDifferenceChoice(review=review):
+            if (
+                review.subject != subject
+                or review.reviewer_task_id == selected.brief.owner_task_id
+                or not review_operations.validate_landing_review_commission(store, artifacts, review)
+            ):
+                return _job_failure(
+                    str(source_checkout),
+                    str(durable.work_root),
+                    schema,
+                    choice.attempt_id,
+                    _landing_review_rejected(
+                        choice, "The landing review does not match this exact subject and independent commission."
+                    ),
+                    None,
+                )
+            token.checkpoint()
+            now = datetime.now(UTC)
+            accepted = publish_accepted_artifact(
+                store,
+                artifacts,
+                NewArtifact(
+                    work_models.ArtifactKind.EVIDENCE,
+                    work_briefs.landing_review_key(review),
+                    1,
+                    ".json",
+                    work_briefs.landing_review_bytes(review),
+                ),
+                now,
+                artifact_identity.AttemptMembership(attempt_id, artifact_identity.AttemptRole.SOURCE),
+            )
+            if isinstance(
+                accepted, (DecisionFailure, ArtifactAcceptanceFailure, ArtifactWriteFailure, PublishedArtifactRejected)
+            ):
+                return _job_failure(
+                    str(source_checkout), str(durable.work_root), schema, choice.attempt_id, accepted, None
+                )
+            surfaces = _job_publication_surfaces(accepted_publication_surfaces(accepted))
+            reference = accepted.reference
+            effect = "committed" if surfaces else "unchanged"
+            return execution.TypedOperationResult(
+                contracts.LandingDifferenceRecorded(
+                    schema,
+                    "landing-difference-recorded",
+                    int(reference.artifact_ref_id),
+                    reference.selector,
+                    reference.content_sha256,
+                    subject,
+                    observation.target_revision,
+                    observation.target_depths,
+                    bool(surfaces),
+                    effect,
+                    "do-not-retry" if surfaces else "safe-to-repeat",
+                    surfaces,
+                    _job_publication_warning(durable, store, surfaces, now),
+                ),
+                effect,
+                str(reference.accepted_revision),
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def _review_job(
     raw: Mapping[str, JsonValue], token: execution.CancellationToken
 ) -> execution.TypedOperationResult[contracts.ReviewJobResult] | execution.ResultProjectionFailure:
@@ -813,6 +1050,15 @@ def _review_job(
     store = common.compose_store(durable)
     if isinstance(choice, contracts.RecordReadyReviewChoice):
         return _record_ready_review(request.project_root, durable, store, choice, schema, token)
+    if isinstance(
+        choice,
+        (
+            contracts.ObserveLandingDifferenceChoice,
+            contracts.CommissionLandingDifferenceChoice,
+            contracts.RecordLandingDifferenceChoice,
+        ),
+    ):
+        return _landing_review_job(source_checkout, durable, store, choice, schema, token)
     selection = _review_round_selection(choice)
     token.checkpoint()
     # Cancellation cannot turn an entered publication into an unchanged/replayable result.

@@ -750,6 +750,14 @@ class CompletionCheckpointFacts:
 class CompletionContextFacts:
     attempt: AttemptContextFacts
     checkpoints: tuple[CompletionCheckpointFacts, ...]
+    continued_submission: ContinuedCompletionSubmission | None
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuedCompletionSubmission:
+    acceptance: stored_state.StoredTransitionReceipt
+    snapshot: ReturnedCandidateSnapshotFacts
+    ready_review: stored_state.ArtifactReference | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -945,7 +953,20 @@ class UnreadableCurrentCheckpoint(
     message: str
 
 
-type CurrentCheckpoint = ContinuingCurrentCheckpoint | TerminalCurrentCheckpoint | UnreadableCurrentCheckpoint
+class FinalHumanStepsCurrentCheckpoint(
+    msgspec.Struct, tag="final-human-steps", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    checkpoint_id: str
+    title: str
+    steps: tuple[work_brief_models.FinalHumanStep, ...]
+
+
+type CurrentCheckpoint = (
+    ContinuingCurrentCheckpoint
+    | TerminalCurrentCheckpoint
+    | FinalHumanStepsCurrentCheckpoint
+    | UnreadableCurrentCheckpoint
+)
 
 
 class AttemptAmendmentView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -1644,7 +1665,7 @@ class BoardCheckpoint:
     title: str
     brief_revision: int
     brief_accepted_at: datetime
-    remaining_work: RecordedRemainingWork | FinalCheckpoint
+    remaining_work: RecordedRemainingWork | FinalCheckpoint | work_brief_models.FinalHumanStepsDisposition
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,6 +9,7 @@ from pinboard.application import (
     artifact_identity,
     cancellation_models,
     consolidation_models,
+    landing_decisions,
     obligation_coverage,
     query_models,
     roadmap,
@@ -166,6 +167,10 @@ class WorkStore(Protocol):
     ) -> query_models.ReturnedCandidateContextFacts | None: ...
 
     def read_completion_context(self, attempt_id: AttemptId) -> query_models.CompletionContextFacts | None: ...
+
+    def read_landing_decisions(
+        self, attempt: query_models.NonterminalAttemptContextFacts
+    ) -> landing_decisions.LandingDecisionBasis | None: ...
 
     def read_decision_facts(self, scope: query_models.DecisionScope, now: datetime) -> query_models.DecisionFacts: ...
 

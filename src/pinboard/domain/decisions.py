@@ -1,3 +1,4 @@
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -367,14 +368,11 @@ def project_attempt_action_groups(  # noqa: C901, PLR0912 - one exhaustive live-
         case _ as unreachable:
             assert_never(unreachable)
     if (
-        context.item_state in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}
+        context.item_state in {work_models.WorkState.ACTIVE, work_models.WorkState.PAUSED, work_models.WorkState.REVIEW}
         and not stale
         and context.replacement_resolved
     ):
-        label = (
-            f"Terminally complete {context.work_item_id} only after every authorized integration and publication effect, "
-            "then exact disposable worktree, local branch, and remote branch cleanup, are verified or not applicable"
-        )
+        label = f"Complete {context.work_item_id} with the human's decision and exact review evidence"
         attempt_actions.append(
             decision_models.CompleteAction(factory.make(context.attempt, label, context.attempt_subject_revision))
         )
@@ -1204,9 +1202,15 @@ def _complete(
     item = _require_attempt_item(snapshot, attempt_id)
     if isinstance(item, DecisionFailure):
         return item
-    if item.state not in {work_models.WorkState.ACTIVE, work_models.WorkState.REVIEW}:
+    if item.state not in {work_models.WorkState.ACTIVE, work_models.WorkState.PAUSED, work_models.WorkState.REVIEW}:
         return DecisionFailure(
-            DecisionFailureCode.ACTION_NOT_AVAILABLE, "The named attempt is not active or in review.", None
+            DecisionFailureCode.ACTION_NOT_AVAILABLE, "The named attempt is neither active, paused nor in review.", None
+        )
+    if item.state == work_models.WorkState.PAUSED and isinstance(command, decision_models.CompleteCommand):
+        return DecisionFailure(
+            DecisionFailureCode.ACTION_NOT_AVAILABLE,
+            "A paused attempt requires reviewed continuing work evidence.",
+            None,
         )
     if _definition_stale(snapshot, item):
         return DecisionFailure(
@@ -1239,19 +1243,38 @@ def _complete(
         case decision_models.CoveredCompleteCommand():
             value = command.value
             attempt = snapshot.attempt(attempt_id)
+            candidate_available = (
+                attempt is not None
+                and attempt.state == work_models.AttemptState.REVIEW
+                and attempt.protected_candidate_revision == value.candidate
+            ) or (
+                attempt is not None
+                and attempt.state in {work_models.AttemptState.ACTIVE, work_models.AttemptState.PAUSED}
+                and isinstance(value.accounting, work_models.ContinuingWorkAccounting)
+            )
             if (
                 tuple(row.history_id for row in value.packages) != snapshot.checkpoint_history_ids
-                or item.state != work_models.WorkState.REVIEW
                 or attempt is None
-                or attempt.protected_candidate_revision != value.candidate
+                or not candidate_available
             ):
                 return DecisionFailure(
                     DecisionFailureCode.TRANSITION_INPUT_INVALID,
                     "Covered completion requires the protected candidate and complete authoritative checkpoint history.",
                     None,
                 )
+            if (
+                value.accounting is not None
+                and (failure := _completion_obligations(snapshot, item.work_item_id, value.accounting)) is not None
+            ):
+                return failure
             covered_change = decision_models.CoveredCompletionChange(
-                item.work_item_id, attempt_id, value.candidate, value.evidence, authority_change
+                item.work_item_id,
+                attempt_id,
+                item.state,
+                attempt.state,
+                value.candidate,
+                value.evidence,
+                authority_change,
             )
             return _accepted_completion_decision(
                 snapshot,
@@ -1263,6 +1286,60 @@ def _complete(
             )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _completion_obligations(
+    snapshot: LedgerSnapshot, item_id: WorkItemId, accounting: work_models.CompletionAccounting
+) -> DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]] | None:
+    definition = snapshot.definition(item_id)
+    if definition is None:
+        return _completion_accounting_failure(item_id, "The current obligation definition is unavailable.")
+    expected = {row.obligation_id for row in definition.definition.obligations}
+    counts = Counter(row.obligation_id for row in accounting.obligations)
+    claimed = set(counts)
+    repeated = {identity for identity, count in counts.items() if count > 1}
+    if expected != claimed or repeated:
+        return _completion_accounting_failure(
+            item_id,
+            "Account for each current obligation exactly once. "
+            f"Missing: {', '.join(sorted(expected - claimed)) or 'none'}. "
+            f"Unknown: {', '.join(sorted(claimed - expected)) or 'none'}. "
+            f"Repeated: {', '.join(sorted(repeated)) or 'none'}.",
+        )
+    for receiver in work_models.completion_receivers(accounting):
+        current = snapshot.definition(receiver.item_id)
+        if (
+            receiver.item_id == item_id
+            or snapshot.work_item(receiver.item_id) is None
+            or current is None
+            or (current.revision, current.digest) != (receiver.definition_revision, receiver.definition_digest)
+            or not any(row.obligation_id == receiver.obligation_id for row in current.definition.obligations)
+        ):
+            return _completion_accounting_failure(
+                item_id,
+                f"Receiving obligation '{receiver.obligation_id}' on item '{receiver.item_id}' does not match a live "
+                f"definition at revision {receiver.definition_revision} with digest {receiver.definition_digest}. "
+                f"Read pinboard_item_status operation item and pinboard_item_definition operation current for "
+                f"'{receiver.item_id}' using the same roots, then record the human-authorized disposition.",
+            )
+    return None
+
+
+def _completion_accounting_failure(
+    item_id: WorkItemId, message: str
+) -> DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]:
+    return DecisionFailure(
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+        message,
+        FailureDetails(
+            observed=(FailureFact("item_id", str(item_id)),),
+            mismatches=(),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
 
 
 SUPERSEDED_DEPENDENCY_RECOVERY = (

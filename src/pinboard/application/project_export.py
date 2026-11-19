@@ -9,6 +9,7 @@ from typing import Literal, assert_never
 import msgspec
 
 from pinboard.application import (
+    action_models,
     artifact_identity,
     initiative_records,
     query_models,
@@ -438,10 +439,9 @@ class ProjectExportCompletionCheckpointCoverage(msgspec.Struct, frozen=True, for
     evidence: str
 
 
-class ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+class _ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     history_id: int
     package_artifact_ref_id: int
-    schema: Literal["pinboard-completion-review-package/v1", "pinboard-completion-review-package/v2"]
     attempt_id: str
     item_id: str
     candidate: str
@@ -449,9 +449,41 @@ class ProjectExportCompletionReviewPackage(msgspec.Struct, frozen=True, forbid_u
     reviewer_task_id: str
     accepted_scope: ProjectExportAcceptedScope
     accepted_brief: ProjectExportAcceptedBriefCompletionIdentity
+    checkpoint_coverage: tuple[ProjectExportCompletionCheckpointCoverage, ...]
+
+
+class _ProjectExportCompletionReports(_ProjectExportCompletionReviewPackage, frozen=True):
     terminal_result: ProjectExportTerminalResultCompletionIdentity
     final_review: ProjectExportFinalReviewCompletionIdentity
-    checkpoint_coverage: tuple[ProjectExportCompletionCheckpointCoverage, ...]
+
+
+class ProjectExportCompletionReviewPackageV1(
+    _ProjectExportCompletionReports, tag="pinboard-completion-review-package/v1", tag_field="schema", frozen=True
+):
+    pass
+
+
+class ProjectExportCompletionReviewPackageV2(
+    _ProjectExportCompletionReports, tag="pinboard-completion-review-package/v2", tag_field="schema", frozen=True
+):
+    pass
+
+
+class ProjectExportCompletionReviewPackageV3(
+    _ProjectExportCompletionReviewPackage, tag="pinboard-completion-review-package/v3", tag_field="schema", frozen=True
+):
+    snapshot: work_brief_models.AcceptedCompletionEvidence
+    ready_review: work_brief_models.AcceptedCompletionEvidence
+    continued_acceptance_history_id: int | None
+    accounting: action_models.CompletionAccountingPayload | None
+    landing: work_brief_models.CompletionLandingEvidence | None
+
+
+type ProjectExportCompletionReviewPackage = (
+    ProjectExportCompletionReviewPackageV1
+    | ProjectExportCompletionReviewPackageV2
+    | ProjectExportCompletionReviewPackageV3
+)
 
 
 class ProjectExport(msgspec.Struct, frozen=True, forbid_unknown_fields=True):

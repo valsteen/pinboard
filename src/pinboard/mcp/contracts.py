@@ -1058,7 +1058,40 @@ type ReviewLaunchChoice = (
     | PackageCorrectionReviewChoice
     | AmendmentDeltaReviewChoice
 )
-type ReviewChoice = ReviewLaunchChoice | RecordReadyReviewChoice
+
+
+class LandingDifferenceChoice(msgspec.Struct, frozen=True, forbid_unknown_fields=True, kw_only=True):
+    attempt_id: PathComponent
+    candidate_review_ref_id: PositiveInt
+    target: action_models.IntegrationTarget
+    pre_landing_revision: action_models.FullGitCommit
+    landed_revision: action_models.FullGitCommit
+    target_depths: action_models.LandingTargetDepthsPayload | msgspec.UnsetType = msgspec.UNSET
+
+
+class ObserveLandingDifferenceChoice(
+    LandingDifferenceChoice, tag="observe-landing-difference", tag_field="kind", frozen=True
+):
+    pass
+
+
+class CommissionLandingDifferenceChoice(
+    LandingDifferenceChoice, tag="commission-landing-difference", tag_field="kind", frozen=True
+):
+    runtime: dispatch_models.NativeRuntime
+    background: bool
+
+
+class RecordLandingDifferenceChoice(
+    LandingDifferenceChoice, tag="record-landing-difference", tag_field="kind", frozen=True
+):
+    review: work_brief_models.LandingDifferenceReview
+
+
+type LandingReviewChoice = (
+    ObserveLandingDifferenceChoice | CommissionLandingDifferenceChoice | RecordLandingDifferenceChoice
+)
+type ReviewChoice = ReviewLaunchChoice | RecordReadyReviewChoice | LandingReviewChoice
 
 
 class ReviewJobRequest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -2103,6 +2136,7 @@ _REVIEW_CONTINUATION_ACTION_KINDS = (
 )
 _PAUSED_CONTINUATION_ACTION_KINDS = (
     decision_models.ActionKind.CLOSE,
+    decision_models.ActionKind.COMPLETE,
     decision_models.ActionKind.REBIND_ATTEMPT,
     decision_models.ActionKind.RECORD_REPLACEMENT,
     decision_models.ActionKind.RETAIN_TEMPORARILY,
@@ -3638,9 +3672,58 @@ type DispatchResult = (
     | DispatchInfrastructureFailure
     | DispatchFailedAfterPublication
 )
+
+
+class LandingDifferenceObserved(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-review-job-result/v2"]
+    status: Literal["landing-difference-observed"]
+    subject: work_brief_models.LandingDifferenceSubject
+    target_revision: action_models.FullGitCommit
+    target_depths: action_models.LandingTargetDepthsPayload
+    equivalent: bool
+    state_changed: Literal[False]
+    effect: Literal["unchanged"]
+    retry: Literal["safe-to-repeat"]
+    changed_surfaces: tuple[()]
+
+
+class LandingDifferenceCommissioned(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-review-job-result/v2"]
+    status: Literal["landing-difference-commissioned"]
+    subject: work_brief_models.LandingDifferenceSubject
+    target_revision: action_models.FullGitCommit
+    target_depths: action_models.LandingTargetDepthsPayload
+    prompt_reference: dispatch_models.PromptReferenceView
+    native_launch: dispatch_models.NativeLaunchEnvelope
+    state_changed: bool
+    effect: Literal["committed", "unchanged"]
+    retry: Literal["do-not-retry", "safe-to-repeat"]
+    changed_surfaces: tuple[JobPublicationSurface, ...]
+    warning: WarningResult | None
+
+
+class LandingDifferenceRecorded(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-mcp-review-job-result/v2"]
+    status: Literal["landing-difference-recorded"]
+    artifact_ref_id: PositiveInt
+    selector: NonEmptyText
+    sha256: Sha256
+    subject: work_brief_models.LandingDifferenceSubject
+    target_revision: action_models.FullGitCommit
+    target_depths: action_models.LandingTargetDepthsPayload
+    state_changed: bool
+    effect: Literal["committed", "unchanged"]
+    retry: Literal["do-not-retry", "safe-to-repeat"]
+    changed_surfaces: tuple[JobPublicationSurface, ...]
+    warning: WarningResult | None
+
+
 type ReviewJobResult = (
     ReviewJobReady
     | CandidateReviewRecorded
+    | LandingDifferenceObserved
+    | LandingDifferenceCommissioned
+    | LandingDifferenceRecorded
     | ReviewJobInvalid
     | ReviewJobRejected
     | ReviewJobInfrastructureFailure

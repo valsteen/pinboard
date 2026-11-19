@@ -94,6 +94,18 @@ class ReviewedDiffAbsent:
 type TargetContentObservation = ReviewedDiffPresent | ReviewedDiffAbsent | TargetUnresolved
 
 
+@dataclass(frozen=True, slots=True)
+class LandingRange:
+    target_revision: str
+    target_depths: work_models.LandingTargetDepths
+    diff: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class LandingRangeUnavailable:
+    message: str
+
+
 def _verify_checkout_directory_links(cwd: Path, code: RootErrorCode) -> None:
     """Raise `RootError` for the first unusable checkout directory link at this filesystem effect boundary.
 
@@ -362,6 +374,46 @@ def resolve_target_commit(cwd: Path, target: str) -> str | TargetUnresolved:
     )
 
 
+def _git_ancestry(cwd: Path, ancestor: str, descendant: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=cwd, capture_output=True, check=False
+    )
+
+
+def read_landing_range(
+    cwd: Path,
+    target: str,
+    pre_landing_revision: str,
+    landed_revision: str,
+    target_depths: work_models.LandingTargetDepths | None,
+) -> LandingRange | LandingRangeUnavailable:
+    """Read one exact local landing range, leaving all Git state unchanged."""
+    target_revision = resolve_target_commit(cwd, target)
+    if isinstance(target_revision, TargetUnresolved):
+        return LandingRangeUnavailable(f"Cannot resolve local landing target '{target}'.")
+    depths = work_models.LandingTargetDepths(1, 0) if target_depths is None else target_depths
+    if (
+        depths.pre_landing <= depths.landed
+        or resolve_target_commit(cwd, f"{target_revision}~{depths.pre_landing}") != pre_landing_revision
+        or resolve_target_commit(cwd, f"{target_revision}~{depths.landed}") != landed_revision
+    ):
+        return LandingRangeUnavailable(
+            f"First-parent depths {depths.pre_landing} and {depths.landed} do not select "
+            f"'{pre_landing_revision}' and '{landed_revision}' from local target '{target}' at '{target_revision}'. "
+            "Supply the actual first-parent commits and their depths from that target."
+        )
+    return LandingRange(
+        target_revision,
+        depths,
+        _read_candidate_diff(
+            cwd,
+            pre_landing_revision,
+            landed_revision,
+            unavailable_message=f"Cannot read landing diff '{pre_landing_revision}' to '{landed_revision}'.",
+        ),
+    )
+
+
 def observe_reviewed_diff_at_target(cwd: Path, target: str, diff: bytes) -> TargetContentObservation:
     """Check whether one nonempty reviewed binary diff is present in a target commit's tree.
 
@@ -553,13 +605,7 @@ def restore_commit_candidate(
         return CandidateRestoreRejection("candidate-diff-mismatch", branch, head)
     if head == candidate:
         return CandidateRestoreSuccess(False, candidate)
-    ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", preimage_revision, candidate],
-        cwd=cwd,
-        capture_output=True,
-        check=False,
-    )
-    if ancestor.returncode != 0:
+    if _git_ancestry(cwd, preimage_revision, candidate).returncode != 0:
         return CandidateRestoreRejection("non-fast-forward", branch, head)
     advanced = subprocess.run(["git", "merge", "--ff-only", candidate], cwd=cwd, capture_output=True, check=False)
     if advanced.returncode != 0:

@@ -57,6 +57,7 @@ class ActionLifecyclePrecondition(Enum):
     ACTIVE_OR_PAUSED_ATTEMPT = "active-or-paused-attempt"
     ACTIVE_OR_PAUSED_ATTEMPT_CURRENT_SCOPE = "active-or-paused-attempt-current-scope"
     ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE = "active-or-review-attempt-current-scope"
+    COMPLETABLE_REVIEWED_ATTEMPT = "completable-reviewed-attempt"
     CLOSABLE_ITEM = "closable-item"
     NONTERMINAL_ITEM = "nonterminal-item"
     PAUSED_OR_BLOCKED_ITEM_WITHOUT_LIVE_DEPENDENCIES = "paused-or-blocked-item-without-live-dependencies"
@@ -313,11 +314,11 @@ def action_semantics(kind: ActionKind) -> ActionSemantics:  # noqa: C901, PLR091
             )
         case ActionKind.COMPLETE:
             return ActionSemantics(
-                "Terminally finish an active or reviewed attempt only when no authorized external effect remains.",
+                "Complete an attempt with commissioned review and any required accounting when no authorized external effect remains.",
                 LifecycleEffect.CHANGES_LIFECYCLE,
                 (Role.PROJECT,),
                 ActionSubjectKind.ATTEMPT,
-                ActionLifecyclePrecondition.ACTIVE_OR_REVIEW_ATTEMPT_CURRENT_SCOPE,
+                ActionLifecyclePrecondition.COMPLETABLE_REVIEWED_ATTEMPT,
                 "Record terminal completion and remove the item from live work. No later repository effect may remain.",
                 requires_recorded_route=True,
             )
@@ -1075,6 +1076,8 @@ class CompletionChange:
 class CoveredCompletionChange:
     work_item_id: WorkItemId
     attempt: AttemptId
+    item_before: work_models.WorkState
+    attempt_before: work_models.AttemptState
     candidate: CandidateId
     evidence: str
     authority_change: AttemptAuthorityChange | None

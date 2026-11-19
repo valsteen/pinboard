@@ -23,14 +23,17 @@ import msgspec
 
 from pinboard.adapters import candidate_evidence
 from pinboard.adapters.files.artifacts import ArtifactRepository, read_reference
-from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode, RootError
 from pinboard.adapters.files.file_io import DurableRoots
+from pinboard.adapters.files.root import LandingRangeUnavailable, read_landing_range
 from pinboard.application import (
+    action_models,
     amendments,
     artifact_identity,
     candidate_snapshots,
     checkpoint_packages,
     dispatch_models,
+    landing_decisions,
     ports,
     queries,
     query_models,
@@ -47,7 +50,8 @@ from pinboard.application.artifact_publication import (
     publish_accepted_artifact,
 )
 from pinboard.application.artifacts import BriefArtifactRef, NewArtifact
-from pinboard.domain import history, work_models
+from pinboard.application.candidate_identity import candidate_diffs_match
+from pinboard.domain import decision_models, history, work_models
 from pinboard.domain.errors import (
     DecisionFailure,
     DecisionFailureCode,
@@ -58,7 +62,7 @@ from pinboard.domain.errors import (
     FailureMismatch,
     RetryDisposition,
 )
-from pinboard.domain.identifiers import AttemptId, CandidateId, HistoryId
+from pinboard.domain.identifiers import ArtifactRefId, AttemptId, CandidateId, HistoryId
 
 
 class NoPriorCheckpointPackage(msgspec.Struct, tag="absent", tag_field="kind", frozen=True, forbid_unknown_fields=True):
@@ -177,6 +181,13 @@ class RecordedCandidateReview:
 class CurrentCandidateReview:
     reference: stored_state.ArtifactReference
     review: work_brief_models.CandidateReview
+
+
+@dataclass(frozen=True, slots=True)
+class CompletionReviewEvidence:
+    candidate: candidate_snapshots.CandidateSnapshotEvidence
+    ready: CurrentCandidateReview
+    continued_acceptance: HistoryId | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -713,40 +724,34 @@ def _candidate_review_required(
     )
 
 
-def commissioned_review_snapshot(
+def commissioned_completion_review(
     store: ports.WorkStore,
     artifacts: dispatch_models.DispatchArtifactPort,
     *,
     attempt: query_models.NonterminalAttemptContextFacts,
     brief: work_brief_models.AcceptedBrief,
+    candidate: str,
+    snapshot: stored_state.ArtifactReference | None,
     result_sha256: str,
     review_sha256: str,
     reviewer_task_id: str,
-) -> DecisionResult[query_models.CandidateSnapshotContextFacts, Literal[DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED]]:
-    """Select the protected snapshot reviewed by this reviewer under a Pinboard-published prompt."""
+) -> DecisionResult[CurrentCandidateReview, Literal[DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED]]:
+    """Verify the ready record and the published commission for the exact selected snapshot."""
 
-    candidate = attempt.candidate_revision
-    snapshot = (
-        store.read_candidate_snapshot_context(attempt.attempt_id)
-        if candidate is not None and attempt.state == work_models.AttemptState.REVIEW
-        else None
-    )
     current = (
         None
-        if candidate is None or snapshot is None
+        if snapshot is None
         else read_ready_record(
             store,
             artifacts,
-            ReadyRecordSubject(
-                brief, candidate, snapshot.reference, attempt.brief_reference, result_sha256, review_sha256
-            ),
+            ReadyRecordSubject(brief, candidate, snapshot, attempt.brief_reference, result_sha256, review_sha256),
         )
     )
-    if candidate is None or snapshot is None or current is None:
+    if snapshot is None or current is None:
         return _candidate_review_required(
             attempt,
-            "Completion requires a ready candidate review recorded for the protected candidate, result.md and "
-            "review.md by a reviewer Pinboard commissioned; none is recorded.",
+            "Completion requires a ready review that a Pinboard commission bound to the selected candidate snapshot, "
+            "accepted brief and evidence digests.",
             result_sha256,
             review_sha256,
             None,
@@ -765,11 +770,12 @@ def commissioned_review_snapshot(
     subject = dispatch_models.ReviewerPromptSubject(
         str(attempt.attempt_id),
         candidate,
-        snapshot.reference.content_sha256,
+        snapshot.content_sha256,
         attempt.brief_reference.content_sha256,
         result_sha256,
     )
-    if _commissioned_prompt_reference(store, subject, recorded.reviewer_prompt_sha256) is None:
+    prompt = _commissioned_prompt_reference(store, subject, recorded.reviewer_prompt_sha256)
+    if prompt is None:
         return _candidate_review_required(
             attempt,
             "The recorded ready review names no reviewer prompt that the review job published for this candidate.",
@@ -778,7 +784,264 @@ def commissioned_review_snapshot(
             recorded.reviewer_task_id,
             (),
         )
-    return snapshot
+    artifacts.read(prompt)
+    return current
+
+
+def continued_candidate_matches(submission: query_models.ContinuedCompletionSubmission, candidate: str) -> bool:
+    receipt = submission.acceptance
+    try:
+        match receipt.action_kind, receipt.outcome_schema:
+            case decision_models.ActionKind.ACCEPT_CHECKPOINT, "checkpoint-acceptance/v2":
+                checkpoint = msgspec.json.decode(
+                    bytes(receipt.outcome_payload), type=history.CheckpointAcceptanceOutcome
+                )
+                return checkpoint.candidate == candidate
+            case decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE, "transition-receipt/v1":
+                continuation = msgspec.json.decode(
+                    bytes(receipt.outcome_payload), type=history.TransitionReceiptOutcome
+                )
+                return continuation.candidate == candidate
+            case _:
+                return False
+    except msgspec.DecodeError:
+        return False
+
+
+def select_completion_review(
+    store: ports.WorkStore,
+    artifacts: ArtifactRepository,
+    attempt: query_models.NonterminalAttemptContextFacts,
+    brief: work_brief_models.AcceptedBrief,
+    continued: query_models.ContinuedCompletionSubmission | None,
+    *,
+    candidate: str,
+    result_sha256: str,
+    review_sha256: str,
+    reviewer_task_id: str,
+) -> DecisionResult[
+    CompletionReviewEvidence,
+    Literal[DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED, DecisionFailureCode.TRANSITION_INPUT_INVALID],
+]:
+    snapshot: query_models.CandidateSnapshotContextFacts | query_models.ReturnedCandidateSnapshotFacts | None = None
+    if attempt.state == work_models.AttemptState.REVIEW and attempt.candidate_revision == candidate:
+        snapshot = store.read_candidate_snapshot_context(attempt.attempt_id)
+    elif continued is not None and continued_candidate_matches(continued, candidate):
+        snapshot = continued.snapshot
+    if snapshot is None:
+        return _candidate_review_required(
+            attempt,
+            f"No current or applicable continued submission for '{candidate}' on '{attempt.attempt_id}'. "
+            "Inspect the exact attempt and its accepted brief before choosing a review action.",
+            result_sha256,
+            review_sha256,
+            None,
+            (),
+        )
+    ready = commissioned_completion_review(
+        store,
+        artifacts,
+        attempt=attempt,
+        brief=brief,
+        candidate=candidate,
+        snapshot=snapshot.reference,
+        result_sha256=result_sha256,
+        review_sha256=review_sha256,
+        reviewer_task_id=reviewer_task_id,
+    )
+    if isinstance(ready, DecisionFailure):
+        return ready
+    if continued is not None and ready.reference != continued.ready_review:
+        return _candidate_review_required(
+            attempt,
+            f"The ready review for '{candidate}' does not match the last review recorded before acceptance "
+            f"history {continued.acceptance.history_id} for '{attempt.attempt_id}'.",
+            result_sha256,
+            review_sha256,
+            ready.review.reviewer_task_id,
+            (),
+        )
+    if continued is None and read_attempt_evidence_digests(artifacts.work_root, attempt.attempt_id) != (
+        AttemptEvidenceDigests(result_sha256, review_sha256)
+    ):
+        return _candidate_review_required(
+            attempt,
+            f"The current result or review bytes for '{attempt.attempt_id}' changed since ready review.",
+            result_sha256,
+            review_sha256,
+            ready.review.reviewer_task_id,
+            (),
+        )
+    evidence = candidate_evidence.read_candidate_evidence_from_context(artifacts.work_root, snapshot, candidate)
+    if isinstance(evidence, DecisionFailure):
+        return evidence
+    return CompletionReviewEvidence(evidence, ready, None if continued is None else continued.acceptance.history_id)
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedLandingDifference:
+    subject: work_brief_models.LandingDifferenceSubject
+    target_revision: str
+    target_depths: action_models.LandingTargetDepthsPayload
+    equivalent: bool
+
+
+def observe_landing_difference(
+    source_checkout: Path,
+    review: CompletionReviewEvidence,
+    *,
+    target: str,
+    pre_landing_revision: str,
+    landed_revision: str,
+    target_depths: work_models.LandingTargetDepths | None,
+    decisions: landing_decisions.LandingDecisionBasis,
+) -> DecisionResult[ObservedLandingDifference, Literal[DecisionFailureCode.ACTION_NOT_AVAILABLE]]:
+    try:
+        landing = read_landing_range(source_checkout, target, pre_landing_revision, landed_revision, target_depths)
+    except (OSError, RootError) as error:
+        return _review_job_failure(f"Cannot read the exact local landing range: {error}")
+    if isinstance(landing, LandingRangeUnavailable):
+        return _review_job_failure(landing.message)
+    reviewed = review.candidate.snapshot
+    return ObservedLandingDifference(
+        work_brief_models.LandingDifferenceSubject(
+            reviewed.attempt_id,
+            reviewed.candidate,
+            review.ready.review.accepted_brief.content_sha256,
+            review.candidate.reference.content_sha256,
+            review.ready.reference.content_sha256,
+            target,
+            pre_landing_revision,
+            landed_revision,
+            sha256(landing.diff).hexdigest(),
+            decisions,
+        ),
+        landing.target_revision,
+        action_models.LandingTargetDepthsPayload(landing.target_depths.pre_landing, landing.target_depths.landed),
+        bool(reviewed.diff) and candidate_diffs_match(reviewed.diff, landing.diff),
+    )
+
+
+def landing_review_prompt_subject(
+    subject: work_brief_models.LandingDifferenceSubject,
+) -> dispatch_models.LandingReviewerPromptSubject:
+    return dispatch_models.LandingReviewerPromptSubject(
+        subject.attempt_id, work_briefs.landing_review_subject_sha256(subject)
+    )
+
+
+def validate_landing_review_commission(
+    store: ports.WorkStore, artifacts: ArtifactRepository, review: work_brief_models.LandingDifferenceReview
+) -> bool:
+    match review.commission:
+        case work_brief_models.ExternalLandingReviewCommission(commissioning_task_id=task_id):
+            return task_id != review.reviewer_task_id
+        case work_brief_models.PinboardLandingReviewCommission(prompt=prompt):
+            accepted = store.read_artifact_reference_by_id(ArtifactRefId(prompt.artifact_ref_id))
+            if accepted is None or (
+                accepted.kind,
+                accepted.key,
+                accepted.content_sha256,
+            ) != (
+                work_models.ArtifactKind.EVIDENCE,
+                dispatch_models.agent_prompt_key(landing_review_prompt_subject(review.subject), prompt.sha256),
+                prompt.sha256,
+            ):
+                return False
+            artifacts.read(accepted)
+            return True
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def read_landing_review(
+    store: ports.WorkStore,
+    artifacts: ArtifactRepository,
+    reference_id: ArtifactRefId,
+    subject: work_brief_models.LandingDifferenceSubject,
+    owner_task_id: str,
+    actor_task_id: str,
+) -> work_brief_models.AcceptedCompletionEvidence | None:
+    reference = store.read_artifact_reference_by_id(reference_id)
+    if reference is None or reference.kind != work_models.ArtifactKind.EVIDENCE:
+        return None
+    raw = artifacts.read(reference)
+    try:
+        review = msgspec.json.decode(raw, type=work_brief_models.LandingDifferenceReview)
+    except msgspec.DecodeError, ValueError:
+        return None
+    if (
+        raw != work_briefs.landing_review_bytes(review)
+        or reference.key != work_briefs.landing_review_key(review)
+        or review.subject != subject
+        or review.reviewer_task_id in (owner_task_id, actor_task_id)
+        or not validate_landing_review_commission(store, artifacts, review)
+    ):
+        return None
+    return work_brief_models.AcceptedCompletionEvidence(int(reference.artifact_ref_id), reference.content_sha256)
+
+
+@dataclass(frozen=True, slots=True)
+class LandingReviewContext:
+    evidence: CompletionReviewEvidence
+    brief: work_brief_models.AcceptedBrief
+    decisions: landing_decisions.LandingDecisionBasis
+
+
+def review_for_landing(
+    store: ports.WorkStore,
+    artifacts: ArtifactRepository,
+    attempt_id: AttemptId,
+    ready_review_id: ArtifactRefId,
+) -> DecisionResult[
+    LandingReviewContext,
+    Literal[
+        DecisionFailureCode.ACTION_NOT_AVAILABLE,
+        DecisionFailureCode.CANDIDATE_REVIEW_REQUIRED,
+        DecisionFailureCode.TRANSITION_INPUT_INVALID,
+    ],
+]:
+    context = store.read_completion_context(attempt_id)
+    if context is None or not isinstance(context.attempt, query_models.NonterminalAttemptContextFacts):
+        return _review_job_failure(f"Attempt '{attempt_id}' has no current completion context.")
+    attempt = context.attempt
+    brief = work_briefs.decode_canonical_accepted_brief(artifacts.read(attempt.brief_reference))
+    if (
+        isinstance(brief, work_brief_models.WorkBriefFailure)
+        or queries.validate_attempt_brief_identity(attempt, brief) is not None
+    ):
+        return _review_job_failure(f"Attempt '{attempt_id}' has no readable, current accepted brief.")
+    reference = store.read_artifact_reference_by_id(ready_review_id)
+    if reference is None or reference.kind != work_models.ArtifactKind.EVIDENCE:
+        return _review_job_failure(f"Reference {ready_review_id} is not accepted evidence for '{attempt_id}'.")
+    ready = work_briefs.decode_canonical_candidate_review(artifacts.read(reference))
+    if isinstance(ready, work_brief_models.WorkBriefFailure):
+        return _review_job_failure(
+            f"Reference {ready_review_id} is not a commissioned candidate review for '{attempt_id}'."
+        )
+    evidence = select_completion_review(
+        store,
+        artifacts,
+        attempt,
+        brief,
+        context.continued_submission
+        if isinstance(work_briefs.accepted_brief_disposition(brief), work_brief_models.ContinueCheckpointDisposition)
+        else None,
+        candidate=ready.candidate,
+        result_sha256=ready.result_sha256,
+        review_sha256=ready.review_sha256,
+        reviewer_task_id=ready.reviewer_task_id,
+    )
+    if isinstance(evidence, DecisionFailure):
+        return evidence
+    if evidence.ready.reference.artifact_ref_id != ready_review_id:
+        return _review_job_failure(
+            f"Reference {ready_review_id} does not match the selected review for '{attempt_id}'."
+        )
+    decisions = store.read_landing_decisions(attempt)
+    if decisions is None:
+        return _review_job_failure(f"Attempt '{attempt_id}' changed while selecting decisions for landing review.")
+    return LandingReviewContext(evidence, brief, decisions)
 
 
 def _candidate_reconstruction(

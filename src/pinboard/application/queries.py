@@ -498,7 +498,7 @@ def _next_attempt_operation(  # noqa: C901, PLR0912 - closed lifecycle continuat
                 "that phase needs; then inspect again with those reconciliation facts to select disposition, "
                 "refresh, correction, cleanup, or completion.",
             )
-    if isinstance(work_briefs.accepted_brief_disposition(brief), work_brief_models.TerminalCheckpointDisposition):
+    if not isinstance(work_briefs.accepted_brief_disposition(brief), work_brief_models.ContinueCheckpointDisposition):
         for action in actions:
             if isinstance(action, decision_models.CompleteAction):
                 if context.state == work_models.AttemptState.REVIEW:
@@ -1169,12 +1169,16 @@ def project_current_checkpoint(
 
     if isinstance(brief, work_brief_models.WorkBriefFailure):
         return query_models.UnreadableBrief(attempt_id, brief.message)
-    remaining: query_models.RecordedRemainingWork | query_models.FinalCheckpoint
+    remaining: (
+        query_models.RecordedRemainingWork | query_models.FinalCheckpoint | work_brief_models.FinalHumanStepsDisposition
+    )
     match work_briefs.accepted_brief_disposition(brief):
         case work_brief_models.ContinueCheckpointDisposition(remaining_work=text):
             remaining = query_models.RecordedRemainingWork(text)
         case work_brief_models.TerminalCheckpointDisposition():
             remaining = query_models.FinalCheckpoint()
+        case work_brief_models.FinalHumanStepsDisposition() as final_steps:
+            remaining = final_steps
         case _ as unreachable:
             assert_never(unreachable)
     return query_models.BoardCheckpoint(
@@ -1196,6 +1200,8 @@ def _status_checkpoint(
             return query_models.ContinuingCurrentCheckpoint(checkpoint.checkpoint_id, checkpoint.title, text)
         case query_models.FinalCheckpoint():
             return query_models.TerminalCurrentCheckpoint(checkpoint.checkpoint_id, checkpoint.title)
+        case work_brief_models.FinalHumanStepsDisposition(steps=steps):
+            return query_models.FinalHumanStepsCurrentCheckpoint(checkpoint.checkpoint_id, checkpoint.title, steps)
         case _ as unreachable:
             assert_never(unreachable)
 

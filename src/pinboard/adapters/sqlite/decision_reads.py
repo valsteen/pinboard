@@ -676,7 +676,8 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
             )
         )
     dependent_roots = tuple(dict.fromkeys((*scope.live_dependent_roots, *dependent_attempt_item_ids)))
-    definition_ids = tuple(dict.fromkeys((*primary_item_ids, *closure_ids)))
+    completion_receivers = scope.related_work_item_ids if scope.completion_history_attempt_ids else ()
+    definition_ids = tuple(dict.fromkeys((*primary_item_ids, *closure_ids, *completion_receivers)))
     dependency_ids = tuple(dict.fromkeys((*definition_ids, *dependent_roots)))
     dependent_ids = tuple(
         decode_row(row, _ItemIdRow).item_id
@@ -822,7 +823,9 @@ def read_selected_decision_facts(  # noqa: C901, PLR0912, PLR0915
     for item_id in contextual_item_ids:
         related_item_ids.extend(work_models.dependency_item(target) for target in dependencies[item_id])
     for item_id in dict.fromkeys(related_item_ids):
-        read_item(item_id, include_dependencies=False, include_definition=False, context=False)
+        read_item(
+            item_id, include_dependencies=False, include_definition=item_id in completion_receivers, context=False
+        )
 
     for row in select_by_ids(
         connection,

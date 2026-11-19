@@ -6,6 +6,7 @@ propagates; after a publication the error becomes a typed failure that names it.
 """
 
 import hashlib
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,12 +22,8 @@ from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
     DifferentHeadCandidate,
     DirtyHeadCandidate,
-    ReviewedDiffAbsent,
-    ReviewedDiffPresent,
-    TargetUnresolved,
     WorkingTreeCandidate,
     observe_checkout_identity,
-    observe_reviewed_diff_at_target,
     read_current_head_candidate,
     read_untracked_paths,
     read_working_tree_candidate,
@@ -34,6 +31,7 @@ from pinboard.adapters.files.root import (
 from pinboard.adapters.lifecycle_operations import SelectedArtifactTransition
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.application import (
+    action_models,
     artifact_identity,
     candidate_snapshots,
     checkpoint_packages,
@@ -54,6 +52,7 @@ from pinboard.application.artifacts import (
     EvidenceArtifactRef,
     NewArtifact,
     ResultArtifactRef,
+    VerifiedCompletionArtifact,
 )
 from pinboard.application.candidate_identity import (
     WorkingTreeCommitRequired,
@@ -777,10 +776,93 @@ def _accept_checkpoint(
 @dataclass(frozen=True, slots=True)
 class _CompletionContext:
     brief: work_brief_models.AcceptedBrief
-    reference: BriefArtifactRef
+    attempt: query_models.NonterminalAttemptContextFacts
     checkpoint_coverage: tuple[work_brief_models.CompletionCheckpointCoverage, ...]
     identity: CurrentAttemptWorkBriefIdentity
-    snapshot: query_models.CandidateSnapshotContextFacts
+    review: review_operations.CompletionReviewEvidence
+
+
+def _completion_step_problem(
+    disposition: work_brief_models.CheckpointDisposition,
+    accounting: work_models.CompletionAccounting | None,
+) -> str | None:
+    match disposition:
+        case work_brief_models.TerminalCheckpointDisposition():
+            if accounting is not None:
+                return "The terminal brief has no final human or continuing steps to account for."
+        case work_brief_models.FinalHumanStepsDisposition(steps=steps):
+            expected = {step.step_id for step in steps}
+            claimed = (
+                tuple(str(step.step_id) for step in accounting.steps)
+                if isinstance(accounting, work_models.FinalHumanStepsAccounting)
+                else ()
+            )
+            if set(claimed) != expected or len(set(claimed)) != len(claimed):
+                return (
+                    "Record exactly one done evidence row for every final human step. "
+                    f"Missing: {', '.join(sorted(expected - set(claimed))) or 'none'}. "
+                    f"Unknown: {', '.join(sorted(set(claimed) - expected)) or 'none'}."
+                )
+        case work_brief_models.ContinueCheckpointDisposition(remaining_work=remaining_work):
+            if not isinstance(accounting, work_models.ContinuingWorkAccounting):
+                return "The current brief marks this checkpoint as continuing. Supply the human's accounting."
+            if accounting.remaining_work != remaining_work:
+                return "The supplied continuing work differs from the complete remaining-work text in the brief."
+            required = set(accounting.required_step_ids)
+            accounted = {step.step_id for step in accounting.steps}
+            if len(required) != len(accounting.required_step_ids) or required != accounted:
+                return (
+                    "The human-approved continuing steps need unique identities and one disposition each. "
+                    f"Missing: {', '.join(sorted(required - accounted)) or 'none'}. "
+                    f"Unknown: {', '.join(sorted(accounted - required)) or 'none'}."
+                )
+        case _ as unreachable:
+            assert_never(unreachable)
+    return None
+
+
+def _check_completion_accounting(
+    command: decision_models.CoveredCompleteCommand,
+    reference: BriefArtifactRef,
+    brief: work_brief_models.AcceptedBrief,
+) -> DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]] | None:
+    accounting = command.value.accounting
+    invalid = _completion_step_problem(accepted_brief_disposition(brief), accounting)
+    if invalid is not None:
+        return _unchanged(
+            f"{invalid} Read the current completion contract through pinboard_actions for "
+            f"'{brief.attempt_id}' using the same roots.",
+            candidate=None,
+        )
+    if accounting is None:
+        return None
+    if accounting.brief_sha256 != reference.content_sha256:
+        return _unchanged(
+            f"Completion accounting must bind the accepted brief SHA-256 {reference.content_sha256}. "
+            f"Rediscover complete for '{brief.attempt_id}' through pinboard_actions using the same roots.",
+            candidate=None,
+        )
+    step_counts = Counter(step.step_id for step in accounting.steps)
+    repeated = {identity for identity, count in step_counts.items() if count > 1}
+    if repeated:
+        return _unchanged(
+            f"Repeated completion steps: {', '.join(sorted(repeated))}. Supply one disposition per step.",
+            candidate=None,
+        )
+    if isinstance(brief, work_brief_models.WorkBrief):
+        deferred = {
+            row.obligation_id
+            for row in brief.obligation_correspondence
+            if isinstance(row.target, work_brief_models.DeferralObligationTarget)
+        }
+        for row in accounting.obligations:
+            if isinstance(row, work_models.ReviewedObligation) and row.obligation_id in deferred:
+                return _unchanged(
+                    f"Obligation '{row.obligation_id}' was deferred by the reviewed brief. "
+                    "Supply evidence it was done or identify the exact live obligation authorized to carry it.",
+                    candidate=None,
+                )
+    return None
 
 
 def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure validation boundary
@@ -798,8 +880,8 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
     brief = _read_current_attempt_brief(artifacts, attempt)
     if isinstance(brief, DecisionFailure):
         return brief
-    if not isinstance(accepted_brief_disposition(brief), work_brief_models.TerminalCheckpointDisposition):
-        return _unchanged("Completion requires a terminal checkpoint disposition.", candidate=None)
+    if (failure := _check_completion_accounting(command, attempt.brief_reference, brief)) is not None:
+        return failure
     if str(command.value.reviewer_task_id) == brief.owner_task_id:
         return _unchanged("The completion reviewer must be independent from the attempt owner.", candidate=None)
     if len(selected.checkpoints) != len(command.value.packages):
@@ -863,23 +945,33 @@ def _completion_context(  # noqa: C901, PLR0912 - one exact completion-closure v
                 supplied.evidence,
             )
         )
-    snapshot = review_operations.commissioned_review_snapshot(
+    review = review_operations.select_completion_review(
         store,
         artifacts,
-        attempt=attempt,
-        brief=brief,
+        attempt,
+        brief,
+        selected.continued_submission
+        if isinstance(command.value.accounting, work_models.ContinuingWorkAccounting)
+        else None,
+        candidate=attempt.candidate_revision or str(command.value.candidate),
         result_sha256=command.value.result_sha256,
         review_sha256=command.value.review_sha256,
         reviewer_task_id=str(command.value.reviewer_task_id),
     )
-    if isinstance(snapshot, DecisionFailure):
-        return snapshot
+    if isinstance(review, DecisionFailure):
+        return review
     return _CompletionContext(
         brief,
-        attempt.brief_reference,
+        attempt,
         tuple(coverage),
         current_attempt_work_brief_identity(brief, attempt.brief_artifact_ref_id),
-        snapshot,
+        review,
+    )
+
+
+def _accepted_completion_brief(reference: BriefArtifactRef) -> work_brief_models.AcceptedBriefCompletionIdentity:
+    return work_brief_models.AcceptedBriefCompletionIdentity(
+        "brief", reference.key, reference.revision, reference.selector, reference.content_sha256, reference.size_bytes
     )
 
 
@@ -956,14 +1048,7 @@ def _publish_completion(
             command.value.evidence,
             str(command.value.reviewer_task_id),
             context.brief.accepted_scope,
-            work_brief_models.AcceptedBriefCompletionIdentity(
-                "brief",
-                context.reference.key,
-                context.reference.revision,
-                context.reference.selector,
-                context.reference.content_sha256,
-                context.reference.size_bytes,
-            ),
+            _accepted_completion_brief(context.attempt.brief_reference),
             work_brief_models.TerminalResultCompletionIdentity(
                 "result",
                 result.key,
@@ -1007,88 +1092,30 @@ def _publish_completion(
     )
 
 
-def _landed_cleanup_plan(
-    source_checkout: Path,
-    work_root: Path,
-    snapshot: query_models.CandidateSnapshotContextFacts,
-    candidate: str,
-    landed: work_models.LandedCompletionInput,
-) -> LocalCleanupPlan | LandingRejection:
-    evidence = candidate_evidence.read_candidate_evidence_from_context(work_root, snapshot, candidate)
-    if isinstance(evidence, DecisionFailure):
-        return _landing_rejected(
-            f"Cannot verify the protected candidate for attempt '{snapshot.attempt_id}': {evidence.message}",
-            f"Inspect attempt '{snapshot.attempt_id}' with pinboard_attempt_inspect using the same roots and "
-            "reconciliation:null to diagnose the protected evidence before another completion.",
-            candidate=candidate,
-            target=landed.target,
-            retry=RetryDisposition.DO_NOT_RETRY,
-        )
-    diff = evidence.snapshot.diff
-    if not diff:
-        return _landing_rejected(
-            f"The reviewed diff is empty and cannot establish a landing at '{landed.target}'.",
-            "Leave landed completion pending and ask the human how to close the item. "
-            "An empty protected diff cannot establish a landing at any target.",
-            candidate=candidate,
-            target=landed.target,
-            retry=RetryDisposition.DO_NOT_RETRY,
-        )
-    try:
-        observation = observe_reviewed_diff_at_target(source_checkout, landed.target, diff)
-    except RootError as error:
-        return _landing_rejected(
-            f"Cannot read the reviewed landing at local target '{landed.target}': {error}",
-            "Resolve the reported local Git read failure before checking the reviewed landing again.",
-            candidate=candidate,
-            target=landed.target,
-            retry=RetryDisposition.DO_NOT_RETRY,
-        )
-    presence_check = (
-        f"pinboard_item_status with operation:'integration', item_id:'{snapshot.work_item_id}', the confirmed target "
-        "and the same roots"
-    )
-    match observation:
-        case ReviewedDiffPresent():
-            return LocalCleanupPlan(snapshot.branch, landed.retain_local_resources)
-        case ReviewedDiffAbsent(target_revision=revision):
-            message = f"The reviewed diff is absent from local target '{landed.target}' at {revision}."
-            continuation = (
-                f"Confirm that '{landed.target}' is the intended landing target. If the reviewed change has not landed "
-                f"there yet, leave completion pending until it does, then check it with {presence_check}. If a rebase, "
-                "merge or conflict resolution, including your own, changed the reviewed content before it landed, the recorded "
-                "review does not cover what landed: select return-for-correction for attempt "
-                f"'{snapshot.attempt_id}', rebind it to a replacement brief based on the target commit that content "
-                "builds on, resubmit that commit and commission its review through pinboard_review_job before "
-                "completing. Omitting landed does not record a review of the landed content."
-            )
-        case TargetUnresolved():
-            message = f"Cannot resolve local target '{landed.target}' to a commit."
-            continuation = (
-                "Establish the intended local target and confirm that it contains the reviewed diff. "
-                f"Use {presence_check}. Once it reports content-present for this candidate, discover completion "
-                "through pinboard_actions and supply the confirmed target."
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
-    return _landing_rejected(
-        message,
-        continuation,
-        candidate=candidate,
-        target=landed.target,
-        retry=RetryDisposition.CORRECT_INPUT,
-    )
-
-
 def _landing_rejected(
-    message: str, continuation: str, *, candidate: str, target: str, retry: RetryDisposition
+    message: str,
+    continuation: str,
+    context: _CompletionContext,
+    landed: work_models.LandedCompletionInput,
+    retry: RetryDisposition,
 ) -> LandingRejection:
     return LandingRejection(
         DecisionFailure(
             DecisionFailureCode.TRANSITION_INPUT_INVALID,
             message,
             FailureDetails(
-                observed=(FailureFact("candidate_revision", candidate), FailureFact("target", target)),
+                observed=(
+                    FailureFact("attempt_id", context.brief.attempt_id),
+                    FailureFact("candidate_revision", context.review.candidate.snapshot.candidate),
+                    FailureFact("candidate_review_ref_id", int(context.review.ready.reference.artifact_ref_id)),
+                    FailureFact("target", landed.target),
+                    FailureFact("pre_landing_revision", landed.pre_landing_revision),
+                    FailureFact("landed_revision", landed.landed_revision),
+                    FailureFact(
+                        "pre_landing_depth", 1 if landed.target_depths is None else landed.target_depths.pre_landing
+                    ),
+                    FailureFact("landed_depth", 0 if landed.target_depths is None else landed.target_depths.landed),
+                ),
                 mismatches=(),
                 retry=retry,
                 effect=EffectDisposition.UNCHANGED,
@@ -1097,6 +1124,133 @@ def _landing_rejected(
             ),
         ),
         continuation,
+    )
+
+
+def _verify_landing_completion(
+    source_checkout: Path,
+    store: ports.WorkStore,
+    artifacts: ArtifactRepository,
+    context: _CompletionContext,
+    landed: work_models.LandedCompletionInput,
+    actor_task_id: str,
+) -> work_brief_models.CompletionLandingEvidence | LandingRejection:
+    decisions = store.read_landing_decisions(context.attempt)
+    if decisions is None:
+        return _landing_rejected(
+            f"Attempt '{context.attempt.attempt_id}' changed while selecting decisions for landing completion.",
+            "Rediscover complete with pinboard_actions on the same attempt and roots.",
+            context,
+            landed,
+            RetryDisposition.REFRESH_ACTION,
+        )
+    observation = review_operations.observe_landing_difference(
+        source_checkout,
+        context.review,
+        target=landed.target,
+        pre_landing_revision=landed.pre_landing_revision,
+        landed_revision=landed.landed_revision,
+        target_depths=landed.target_depths,
+        decisions=decisions,
+    )
+    if isinstance(observation, DecisionFailure):
+        return _landing_rejected(
+            observation.message,
+            "Confirm the exact local target and both full first-parent commits. Supply their target_depths from "
+            "the local target tip, then rediscover complete with pinboard_actions using the same roots.",
+            context,
+            landed,
+            RetryDisposition.CORRECT_INPUT,
+        )
+    difference_review = None
+    if landed.difference_review_ref_id is not None:
+        difference_review = review_operations.read_landing_review(
+            store,
+            artifacts,
+            landed.difference_review_ref_id,
+            observation.subject,
+            context.brief.owner_task_id,
+            actor_task_id,
+        )
+    if (landed.difference_review_ref_id is not None and difference_review is None) or (
+        not observation.equivalent and difference_review is None
+    ):
+        return _landing_rejected(
+            f"Landing '{landed.pre_landing_revision}' to '{landed.landed_revision}' has no matching independent "
+            f"difference review for the current recorded decisions and diff SHA-256 {observation.subject.diff_sha256}.",
+            "Call pinboard_review_job with kind 'observe-landing-difference', using attempt_id, "
+            "candidate_review_ref_id, target, pre_landing_revision and landed_revision from observed and the same "
+            "roots. Set target_depths.pre_landing to pre_landing_depth and target_depths.landed to landed_depth. "
+            "Commission the difference review or record an exact externally commissioned review, then "
+            "rediscover complete and supply its accepted artifact_ref_id as landed.difference_review_ref_id.",
+            context,
+            landed,
+            RetryDisposition.CORRECT_INPUT,
+        )
+    return work_brief_models.CompletionLandingEvidence(
+        landed.target,
+        observation.target_revision,
+        observation.target_depths,
+        landed.pre_landing_revision,
+        landed.landed_revision,
+        observation.subject.diff_sha256,
+        observation.subject.decisions,
+        difference_review,
+    )
+
+
+def _publish_verified_completion(
+    artifacts: ArtifactRepository,
+    command: decision_models.CoveredCompleteCommand,
+    context: _CompletionContext,
+    landing: work_brief_models.CompletionLandingEvidence | None,
+) -> (
+    tuple[VerifiedCompletionArtifact, tuple[str, ...]]
+    | DecisionFailure[Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]]
+    | PublishedTransitionFailure
+):
+    snapshot = context.review.candidate
+    snapshot_id = snapshot.receipt.artifact_ref_id
+    if snapshot_id is None:
+        return _unchanged(
+            "The exact candidate receipt has no accepted snapshot reference.", candidate=str(command.value.candidate)
+        )
+    ready = context.review.ready.reference
+    continued = context.review.continued_acceptance
+    accounting = command.value.accounting
+    package = work_brief_models.VerifiedCompletionReviewPackage(
+        context.brief.attempt_id,
+        context.brief.item_id,
+        str(command.value.candidate),
+        command.value.evidence,
+        str(command.value.reviewer_task_id),
+        context.brief.accepted_scope,
+        _accepted_completion_brief(context.attempt.brief_reference),
+        context.checkpoint_coverage,
+        work_brief_models.AcceptedCompletionEvidence(int(snapshot_id), snapshot.reference.content_sha256),
+        work_brief_models.AcceptedCompletionEvidence(int(ready.artifact_ref_id), ready.content_sha256),
+        None if continued is None else int(continued),
+        None if accounting is None else action_models.completion_accounting_payload(accounting),
+        landing,
+    )
+    data = canonical_completion_review_package_bytes(package)
+    address = artifact_identity.CompletionAddress(
+        command.action.capability.subject, artifact_identity.CompletionRole.PACKAGE, 1
+    )
+    # Content-specific bytes from a losing compare-and-set cannot collide with the next corrected request.
+    key = f"{artifact_identity.artifact_key(address)}-{hashlib.sha256(data).hexdigest()}"
+    created: list[str] = []
+    try:
+        publication = _publish_artifact(
+            artifacts, NewArtifact(work_models.ArtifactKind.EVIDENCE, key, 1, ".json", data), created
+        )
+    except ArtifactError as error:
+        return _publication_failure(error, tuple(created))
+    if isinstance(publication, PublishedTransitionFailure):
+        return publication
+    return (
+        VerifiedCompletionArtifact(_evidence_reference(publication.reference), snapshot.receipt.committed_at),
+        tuple(created),
     )
 
 
@@ -1129,13 +1283,21 @@ def _complete(
     ) is not None:
         return failure
     local_cleanup = None
+    landing = None
     if command.value.landed is not None:
-        local_cleanup = _landed_cleanup_plan(
-            source_checkout, work_root, context.snapshot, str(command.value.candidate), command.value.landed
+        landing = _verify_landing_completion(
+            source_checkout, store, artifacts, context, command.value.landed, str(selected.actor_task_id)
         )
-        if isinstance(local_cleanup, LandingRejection):
-            return local_cleanup
-    published = _publish_completion(work_root, artifacts, command, context)
+        if isinstance(landing, LandingRejection):
+            return landing
+        local_cleanup = LocalCleanupPlan(
+            context.review.candidate.snapshot.branch, command.value.landed.retain_local_resources
+        )
+    published = (
+        _publish_verified_completion(artifacts, command, context, landing)
+        if command.value.accounting is not None or landing is not None
+        else _publish_completion(work_root, artifacts, command, context)
+    )
     if isinstance(published, (DecisionFailure, PublishedTransitionFailure)):
         return published
     completion_artifacts, created = published

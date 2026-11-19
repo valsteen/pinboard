@@ -231,7 +231,13 @@ class ReviewerPromptSubject:
     result_sha256: str
 
 
-type AgentPromptSubject = WorkerPromptSubject | ReviewerPromptSubject
+@dataclass(frozen=True, slots=True)
+class LandingReviewerPromptSubject:
+    attempt_id: str
+    difference_subject_sha256: str
+
+
+type AgentPromptSubject = WorkerPromptSubject | ReviewerPromptSubject | LandingReviewerPromptSubject
 
 
 def agent_prompt_key(subject: AgentPromptSubject, prompt_sha256: str) -> str:
@@ -240,6 +246,8 @@ def agent_prompt_key(subject: AgentPromptSubject, prompt_sha256: str) -> str:
     match subject:
         case WorkerPromptSubject(attempt_id=attempt_id):
             return f"{attempt_id}-worker-prompt-{prompt_sha256}"
+        case LandingReviewerPromptSubject(attempt_id=attempt_id, difference_subject_sha256=subject_sha256):
+            return f"{attempt_id}-landing-review-prompt-{subject_sha256}-{prompt_sha256}"
         case ReviewerPromptSubject():
             identity = msgspec.json.encode(
                 (

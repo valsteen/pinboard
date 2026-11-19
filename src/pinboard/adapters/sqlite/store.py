@@ -48,7 +48,7 @@ from pinboard.adapters.sqlite.database import (
     select_by_ids,
     verify_database_integrity,
 )
-from pinboard.adapters.sqlite.decision_batches import read_decision_batches
+from pinboard.adapters.sqlite.decision_batches import read_decision_batches, read_landing_decisions
 from pinboard.adapters.sqlite.decision_reads import (
     read_current_snapshot,
     read_selected_decision_facts,
@@ -106,6 +106,7 @@ from pinboard.application import (
     candidate_snapshots,
     consolidation_models,
     history_archives,
+    landing_decisions,
     obligation_coverage,
     queries,
     query_models,
@@ -730,6 +731,80 @@ def _read_returned_candidate_snapshot(
     if reference is None:
         return None
     return query_models.ReturnedCandidateSnapshotFacts(attempt_id, item_id, submission, reference)
+
+
+def _read_continued_completion_submission(
+    connection: sqlite3.Connection, attempt: query_models.NonterminalAttemptContextFacts
+) -> query_models.ContinuedCompletionSubmission | None:
+    if attempt.state not in {work_models.AttemptState.ACTIVE, work_models.AttemptState.PAUSED}:
+        return None
+    receipts = tuple(
+        decode_row(row, HistoryIdRow).history_id
+        for row in connection.execute(
+            """
+            SELECT history_id FROM transition_history INDEXED BY review_basis_history_by_subject
+            WHERE subject_id = ? AND (action_kind = 'resume') = 0
+              AND (action_kind IN ('submit-review', 'return-for-correction', 'rebind-attempt',
+                                  'accept-review-and-continue', 'accept-checkpoint')
+                   OR (action_kind = 'resume' AND input_schema != 'pinboard-same-brief-resume/v1'))
+            ORDER BY history_id DESC LIMIT 2
+            """,
+            (attempt.attempt_id,),
+        )
+    )
+    if len(receipts) != 2:
+        return None
+    acceptance_id, submission_id = receipts
+    if any(amendment.history_id > submission_id for amendment in attempt.amendments.current):
+        return None
+    changed_brief = connection.execute(
+        """
+        SELECT history_id FROM transition_history INDEXED BY review_basis_history_by_subject
+        WHERE subject_id = ? AND (action_kind = 'resume') = 1 AND action_kind = 'resume'
+          AND history_id > ?
+          AND (action_kind IN ('submit-review', 'return-for-correction', 'rebind-attempt',
+                              'accept-review-and-continue', 'accept-checkpoint')
+               OR (action_kind = 'resume' AND input_schema != 'pinboard-same-brief-resume/v1'))
+        LIMIT 1
+        """,
+        (attempt.work_item_id, submission_id),
+    ).fetchone()
+    if changed_brief is not None:
+        return None
+    acceptance = sqlite_state.read_history_receipt(connection, acceptance_id)
+    if acceptance is None or acceptance.action_kind not in {
+        decision_models.ActionKind.ACCEPT_REVIEW_AND_CONTINUE,
+        decision_models.ActionKind.ACCEPT_CHECKPOINT,
+    }:
+        return None
+    submission = sqlite_state.read_history_receipt(connection, submission_id)
+    if (
+        submission is None
+        or submission.action_kind != decision_models.ActionKind.SUBMIT_REVIEW
+        or submission.artifact_ref_id is None
+    ):
+        return None
+    reference = read_artifact_reference_by_id(connection, submission.artifact_ref_id)
+    if reference is None:
+        return None
+    review_row = connection.execute(
+        """
+        SELECT artifact_ref_id, artifact_key AS key, artifact_revision AS revision, kind,
+               relative_path AS selector, content_sha256, size_bytes, accepted_revision, created_at
+        FROM artifact_ownership INDEXED BY artifact_ownership_by_attempt
+        JOIN artifact_refs USING (artifact_ref_id)
+        WHERE attempt_id = ? AND artifact_refs.kind = 'evidence'
+          AND artifact_key GLOB 'candidate-review-*' AND accepted_revision > ? AND accepted_revision < ?
+        ORDER BY artifact_ref_id DESC LIMIT 1
+        """,
+        (attempt.attempt_id, submission.project_revision, acceptance.project_revision),
+    ).fetchone()
+    ready_review = None if review_row is None else decode_reference_rows(connection, [review_row])[0]
+    return query_models.ContinuedCompletionSubmission(
+        acceptance,
+        query_models.ReturnedCandidateSnapshotFacts(attempt.attempt_id, attempt.work_item_id, submission, reference),
+        ready_review,
+    )
 
 
 def _read_integration_facts(
@@ -1410,7 +1485,20 @@ class SQLiteWorkStore:
                         )
                         for receipt in receipts
                     ),
+                    _read_continued_completion_submission(connection, attempt)
+                    if isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+                    else None,
                 )
+        finally:
+            connection.close()
+
+    def read_landing_decisions(
+        self, attempt: query_models.NonterminalAttemptContextFacts
+    ) -> landing_decisions.LandingDecisionBasis | None:
+        connection = open_database(self._path, OpenMode.READ_ONLY)
+        try:
+            with read_operation(connection):
+                return read_landing_decisions(connection, attempt)
         finally:
             connection.close()
 

@@ -87,6 +87,7 @@ from pinboard.application.mutation_models import (
     CheckpointMutationAllocation,
     CommittedEffect,
     CompletionAcceptanceMutation,
+    CompletionArtifactChanges,
     ConsolidationMutation,
     MutationAllocation,
     OrderMutation,
@@ -966,9 +967,16 @@ def _persist_completion_acceptance(
     artifacts = mutation.completion_artifacts
     revision = mutation.receipt.project_revision
     now = mutation.decision.receipt.decided_at
+    reports = (
+        (
+            (artifacts.result, artifacts.result_id, artifact_identity.CompletionRole.RESULT),
+            (artifacts.review, artifacts.review_id, artifact_identity.CompletionRole.REVIEW),
+        )
+        if isinstance(artifacts, CompletionArtifactChanges)
+        else ()
+    )
     for artifact, artifact_id, role in (
-        (artifacts.result, artifacts.result_id, artifact_identity.CompletionRole.RESULT),
-        (artifacts.review, artifacts.review_id, artifact_identity.CompletionRole.REVIEW),
+        *reports,
         (artifacts.package, artifacts.package_id, artifact_identity.CompletionRole.PACKAGE),
     ):
         accept_checkpoint_artifact(
@@ -983,7 +991,7 @@ def _persist_completion_acceptance(
         failure := set_item_state(
             connection,
             facts.work_item(change.work_item_id),
-            work_models.WorkState.REVIEW,
+            change.item_before,
             stored_state.StoredWorkItemState.DONE,
             revision,
             now,
@@ -996,11 +1004,15 @@ def _persist_completion_acceptance(
         failure := set_attempt_state(
             connection,
             facts.attempt(change.attempt),
-            work_models.AttemptState.REVIEW,
+            change.attempt_before,
             work_models.AttemptState.DONE,
             revision,
             now,
-            result_artifact_ref_id=artifacts.result_id,
+            result_artifact_ref_id=artifacts.result_id if isinstance(artifacts, CompletionArtifactChanges) else None,
+            candidate_revision=None if isinstance(artifacts, CompletionArtifactChanges) else str(change.candidate),
+            candidate_recorded_at=None
+            if isinstance(artifacts, CompletionArtifactChanges)
+            else artifacts.candidate_recorded_at,
         )
     ) is not None:
         return failure

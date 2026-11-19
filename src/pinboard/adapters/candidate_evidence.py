@@ -87,7 +87,7 @@ def read_candidate_evidence(
 
 def read_candidate_evidence_from_context(
     work_root: Path,
-    context: query_models.CandidateSnapshotContextFacts,
+    context: query_models.CandidateSnapshotContextFacts | query_models.ReturnedCandidateSnapshotFacts,
     candidate: str | None,
 ) -> DecisionResult[
     candidate_snapshots.CandidateSnapshotEvidence, Literal[DecisionFailureCode.TRANSITION_INPUT_INVALID]

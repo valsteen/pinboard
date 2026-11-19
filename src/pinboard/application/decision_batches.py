@@ -94,24 +94,35 @@ class AttemptResumeReceipt(msgspec.Struct, frozen=True, forbid_unknown_fields=Tr
     pause_resolution: ResolvedDecisionsReceipt | None
 
 
-def read_resume_resolution(receipt: stored_state.StoredTransitionReceipt) -> ResolvedDecisionsReceipt | None:
-    """Decode a resume receipt and its optional pause resolution at the stored input boundary."""
-    match receipt.input_schema:
-        case "pinboard-revised-resume/v1" | "pinboard-same-brief-resume/v1":
-            payload = msgspec.json.decode(bytes(receipt.input_payload), type=AttemptResumeReceipt)
-            resolved = payload.pause_resolution
-        case "pinboard-resolved-pause-decisions/v1":
-            payload = msgspec.json.decode(bytes(receipt.input_payload), type=ResolvedDecisionsReceipt)
-            resolved = payload
-        case _:
-            return None
+def _require_canonical_resume(
+    receipt: stored_state.StoredTransitionReceipt, payload: AttemptResumeReceipt | ResolvedDecisionsReceipt
+) -> None:
     if (
         receipt.action_kind != decision_models.ActionKind.RESUME
         or receipt.input_schema != payload.schema
         or msgspec.json.encode(payload, order="sorted") != bytes(receipt.input_payload)
     ):
         raise ValueError(f"Resume receipt {receipt.history_id} is not canonical.")
-    return resolved
+
+
+def read_bound_resume(receipt: stored_state.StoredTransitionReceipt) -> AttemptResumeReceipt:
+    """Decode a stored resume that records its brief and optional structured resolution."""
+    payload = msgspec.json.decode(bytes(receipt.input_payload), type=AttemptResumeReceipt)
+    _require_canonical_resume(receipt, payload)
+    return payload
+
+
+def read_resume_resolution(receipt: stored_state.StoredTransitionReceipt) -> ResolvedDecisionsReceipt | None:
+    """Decode a resume receipt and its optional pause resolution at the stored input boundary."""
+    match receipt.input_schema:
+        case "pinboard-revised-resume/v1" | "pinboard-same-brief-resume/v1":
+            return read_bound_resume(receipt).pause_resolution
+        case "pinboard-resolved-pause-decisions/v1":
+            payload = msgspec.json.decode(bytes(receipt.input_payload), type=ResolvedDecisionsReceipt)
+        case _:
+            return None
+    _require_canonical_resume(receipt, payload)
+    return payload
 
 
 class ResolutionView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -222,6 +233,18 @@ def project_batch(
     item_id: WorkItemId,
 ) -> DecisionBatchView:
     """Decode and correlate persisted receipt facts; invalid stored relationships raise ValueError."""
+    return project_batch_with_resolution(
+        reference, pause, resume, item_id, None if resume is None else read_resume_resolution(resume)
+    )
+
+
+def project_batch_with_resolution(
+    reference: stored_state.DecisionBatchReference,
+    pause: stored_state.StoredTransitionReceipt,
+    resume: stored_state.StoredTransitionReceipt | None,
+    item_id: WorkItemId,
+    resolved: ResolvedDecisionsReceipt | None,
+) -> DecisionBatchView:
     if (
         pause.history_id != reference.pause_history_id
         or pause.subject_id != reference.attempt_id
@@ -242,7 +265,6 @@ def project_batch(
             or resume.history_id <= pause.history_id
         ):
             raise ValueError(f"Decision batch for '{reference.attempt_id}' does not name its resolving resume receipt.")
-        resolved = read_resume_resolution(resume)
         if (
             resolved is None
             or resolved.pause_history_id != pause.history_id

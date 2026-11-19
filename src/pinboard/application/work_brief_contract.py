@@ -298,6 +298,24 @@ class _UnresolvedTerminalCheckpointDisposition(
     pass
 
 
+class _UnresolvedFinalHumanStep(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    step_id: None
+    description: None
+
+
+class _UnresolvedFinalHumanStepsDisposition(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="final-human-steps", tag_field="kind"
+):
+    steps: tuple[_UnresolvedFinalHumanStep, ...]
+
+
+type _UnresolvedCheckpointDisposition = (
+    _UnresolvedContinueCheckpointDisposition
+    | _UnresolvedTerminalCheckpointDisposition
+    | _UnresolvedFinalHumanStepsDisposition
+)
+
+
 class _UnresolvedLocalCheckpoint(
     msgspec.Struct,
     frozen=True,
@@ -309,7 +327,7 @@ class _UnresolvedLocalCheckpoint(
     title: None
     architecture_impact: _UnresolvedNoArchitectureImpact
     outcome_description: None
-    disposition: _UnresolvedContinueCheckpointDisposition | _UnresolvedTerminalCheckpointDisposition
+    disposition: _UnresolvedCheckpointDisposition
     acceptance_criteria: tuple[_UnresolvedAcceptanceCriterion, ...]
     verification: tuple[_UnresolvedVerificationRecord, ...]
     deferrals: tuple[None, ...]
@@ -327,7 +345,7 @@ class _UnresolvedCrossBoundaryCheckpoint(
     architecture_impact: _UnresolvedNoArchitectureImpact
     outcome: Literal["independently-buildable"]
     outcome_description: None
-    disposition: _UnresolvedContinueCheckpointDisposition | _UnresolvedTerminalCheckpointDisposition
+    disposition: _UnresolvedCheckpointDisposition
     contracts: tuple[_UnresolvedContractRecord, ...]
     acceptance_criteria: tuple[_UnresolvedAcceptanceCriterion, ...]
     reviewed_authorities: tuple[_UnresolvedReviewedAuthority, ...]
@@ -572,6 +590,9 @@ _CHECKPOINT_DISPOSITION_CHOICE = WorkBriefStructuralChoice(
     (
         WorkBriefStructuralVariant("continue", _raw(_UnresolvedContinueCheckpointDisposition(None))),
         WorkBriefStructuralVariant("terminal", _raw(_UnresolvedTerminalCheckpointDisposition())),
+        WorkBriefStructuralVariant(
+            "final-human-steps", _raw(_UnresolvedFinalHumanStepsDisposition((_UnresolvedFinalHumanStep(None, None),)))
+        ),
     ),
 )
 

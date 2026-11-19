@@ -195,7 +195,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.AttemptState.PAUSED,
                 DIGEST_A,
                 (WorkItemId("dependency"),),
-                ("revise-item:target", "rebind-attempt:target-1"),
+                ("complete:target-1", "revise-item:target", "rebind-attempt:target-1"),
             ),
             (
                 "paused-clear",
@@ -203,7 +203,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 work_models.AttemptState.PAUSED,
                 DIGEST_A,
                 (),
-                ("revise-item:target", "rebind-attempt:target-1", "resume:target"),
+                ("complete:target-1", "revise-item:target", "rebind-attempt:target-1", "resume:target"),
             ),
             (
                 "blocked-live-dependencies",
@@ -297,12 +297,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                         for action in groups.attempt_actions
                         if isinstance(action, decision_models.CompleteAction)
                     )
-                    self.assertEqual(
-                        "Terminally complete target only after every authorized integration and publication effect, "
-                        "then exact disposable worktree, local branch, and remote branch cleanup, are verified or not "
-                        "applicable",
-                        completion.capability.label,
-                    )
+                    self.assertEqual(AttemptId("target-1"), completion.capability.subject)
 
     def test_every_action_kind_has_one_complete_domain_semantics_descriptor(self) -> None:
         descriptors = tuple(decision_models.action_semantics(kind) for kind in decision_models.ActionKind)
@@ -878,6 +873,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "b" * 64,
                     (),
                     None,
+                    None,
                 ),
             ),
             NOW,
@@ -1025,6 +1021,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                 ),
             ),
             None,
+            None,
         )
 
         direct_with_history = decision_outcome(
@@ -1096,6 +1093,7 @@ class LifecycleDecisionTest(unittest.TestCase):
                     "a" * 64,
                     "b" * 64,
                     (),
+                    None,
                     None,
                 ),
             ),

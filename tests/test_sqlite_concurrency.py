@@ -191,10 +191,10 @@ def _commit_same_definition_revision(
     action = next(
         value
         for value in actions
-        if value.kind == decision_models.ActionKind.REVISE_ITEM and value.capability.subject == WorkItemId("work-a")
+        if value.kind == decision_models.ActionKind.REVISE_ITEM and value.capability.subject == WorkItemId("work-c")
     )
     assert isinstance(action, decision_models.ReviseWorkItemAction)
-    current = next(value for value in before.lifecycle.definition_revisions if value.item_id == WorkItemId("work-a"))
+    current = next(value for value in before.lifecycle.definition_revisions if value.item_id == WorkItemId("work-c"))
     assert isinstance(current.definition, work_models.WorkItemDefinition)
     revised = replace(
         current.definition,
@@ -314,7 +314,6 @@ def _race_preparation_and_prerequisite_proposal(
             SQLITE_NOW,
             actor_task_id=TaskId("discovering-task"),
             actor_host_id=HostId("host-a"),
-            dependency_brief_pins=(),
         )
     results.put(result.code.value if isinstance(result, DecisionFailure) else "committed")
 
@@ -365,7 +364,6 @@ def _activate_same_prepared_item(
         actor_task_id=None,
         actor_host_id=None,
         transition_brief_identity=identity,
-        dependency_brief_pins=(),
     )
     results.put(result.code.value if isinstance(result, DecisionFailure) else f"committed:{state_artifact_ref_id}")
 
@@ -677,7 +675,7 @@ class SQLiteConcurrencyTest(unittest.TestCase):
         self.assertCountEqual(("committed", "ACTION_NOT_AVAILABLE"), (results.get(), results.get()))
         reloaded = store.validated_snapshot()
         revisions = tuple(
-            value for value in reloaded.lifecycle.definition_revisions if value.item_id == WorkItemId("work-a")
+            value for value in reloaded.lifecycle.definition_revisions if value.item_id == WorkItemId("work-c")
         )
         self.assertEqual((1, 2), tuple(value.revision for value in revisions))
         self.assertEqual((WorkItemId("intake-work"),), revisions[-1].definition.dependencies)

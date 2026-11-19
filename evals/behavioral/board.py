@@ -499,6 +499,14 @@ class Definition(Projection, frozen=True):
                 assert_never(unreachable)
 
 
+class DefinitionDependencies(Projection, frozen=True):
+    dependencies: list[str]
+
+
+class CurrentDefinitionDependencies(Projection, frozen=True):
+    definition: DefinitionDependencies
+
+
 class ArtifactReference(Projection, frozen=True):
     artifact_ref_id: int
 

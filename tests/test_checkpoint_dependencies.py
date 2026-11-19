@@ -4,42 +4,25 @@ import sqlite3
 import unittest
 from contextlib import closing
 from dataclasses import replace
-from datetime import UTC, datetime
 from unittest.mock import patch
 
 import msgspec
 from msgspec.structs import replace as replace_struct
 
-from pinboard.adapters.dependency_operations import resolve_dependency_brief_pins
-from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.file_io import resolve_durable_roots
 from pinboard.adapters.sqlite import dependencies as sqlite_dependencies
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.store import SQLiteWorkStore
 from pinboard.application import (
-    ports,
-    proposal_models,
-    proposals,
-    queries,
-    query_models,
     roadmap,
-    service,
     stored_state,
     work_brief_models,
 )
-from pinboard.application.dependency_authoring import (
-    DependencyAcceptancePin,
-    DependencyCheckpointPin,
-    DependencyDefinitionPin,
-    DependencyFinishedProducerPin,
-    DependencyPinFailureCode,
-)
 from pinboard.domain import history, work_models
-from pinboard.domain.errors import DecisionFailure, DecisionResult
-from pinboard.domain.identifiers import CheckpointId, HostId, TaskId, WorkItemId
+from pinboard.domain.errors import DecisionFailure
+from pinboard.domain.identifiers import CheckpointId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
 from pinboard.mcp import server as mcp_server
-from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
+from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport, predecessor_checkpoint_fixture
 from tests.domain_support import expect_success
 from tests.support import JsonObject, JsonValue
 from tests.test_proposals import proposal
@@ -134,19 +117,24 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         self.assertIsNone(value["continuation"])
         return {str(row["item_id"]): row for raw in self.json_array(value["items"]) if (row := self.json_object(raw))}
 
-    def test_authoring_acceptance_fresh_reload_views_export_and_cancellation_agree(self) -> None:  # noqa: PLR0915 - one installed dependency lifecycle
+    def test_saved_checkpoint_acceptance_fresh_reload_views_export_and_cancellation_agree(self) -> None:  # noqa: PLR0915 - one persisted checkpoint dependency journey
         fixture = self.checkpoint_fixture(local=True)
         checkpoint = fixture.brief.checkpoint.checkpoint_id
         target: JsonObject = {"item": "work-a", "checkpoint": checkpoint}
         before = fixture.store.validated_snapshot()
-        invalid = self.create(fixture, "unknown-checkpoint", {**target, "checkpoint": "invented"})
+        invalid = self.create(fixture, "new-checkpoint", target)
         self.assertEqual(("rejected", "ITEM_DEFINITION_INVALID"), (invalid["status"], invalid["code"]))
-        self.assertIn(f"Known current checkpoint IDs: {checkpoint}", str(invalid["message"]))
-        self.assertEqual(before, fixture.store.validated_snapshot())
+        self.assertIn(f"work-a checkpoint {checkpoint}", str(invalid["message"]))
+        self.assertEqual(
+            (False, "unchanged", []), (invalid["state_changed"], invalid["effect"], invalid["changed_surfaces"])
+        )
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
 
-        for item_id, dependency in (("after-checkpoint", target), ("after-campaign", "work-a")):
-            created = self.create(fixture, item_id, dependency)
+        with predecessor_checkpoint_fixture():
+            created = self.create(fixture, "after-checkpoint", target)
             self.assertEqual("committed", created["status"], created)
+        created = self.create(fixture, "after-campaign", "work-a")
+        self.assertEqual("committed", created["status"], created)
         initial = self.overview(fixture)
         self.assertEqual(1, initial["after-checkpoint"]["unsatisfied_dependency_count"])
         self.assertEqual(1, initial["after-campaign"]["unsatisfied_dependency_count"])
@@ -209,15 +197,9 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
 
         self.rebind_to_next_phase(fixture)
         self.assertEqual(0, self.overview(fixture)["after-checkpoint"]["unsatisfied_dependency_count"])
-        old_declaration = self.create(fixture, "late-old-checkpoint", target)
-        self.assertEqual("committed", old_declaration["status"], old_declaration)
-        self.assertEqual(0, self.overview(fixture)["late-old-checkpoint"]["unsatisfied_dependency_count"])
-        undeclared = self.create(fixture, "late-undeclared", {"item": "work-a", "checkpoint": "never-declared"})
-        self.assertEqual(("rejected", "ITEM_DEFINITION_INVALID"), (undeclared["status"], undeclared["code"]))
-        self.assertIn("Known current checkpoint IDs: next-phase", str(undeclared["message"]))
-        next_dependency = self.create(fixture, "after-next", {"item": "work-a", "checkpoint": "next-phase"})
-        self.assertEqual("committed", next_dependency["status"], next_dependency)
-        self.assertEqual(1, self.overview(fixture)["after-next"]["unsatisfied_dependency_count"])
+        with predecessor_checkpoint_fixture():
+            future = self.create(fixture, "after-next", {"item": "work-a", "checkpoint": "next-phase"})
+            self.assertEqual("committed", future["status"], future)
 
         roots: JsonObject = {"project_root": str(fixture.project), "work_root": str(fixture.work), "item_id": "work-a"}
         preview_cancel = fixture.call_advertised_tool(
@@ -248,12 +230,10 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         after_cancel = fresh.read_roadmap()
         self.assertEqual(roadmap.Wave(1), after_cancel.placements[WorkItemId("after-checkpoint")])
         self.assertIsInstance(after_cancel.placements[WorkItemId("after-campaign")], roadmap.Blocked)
-        accepted_after_cancel = self.create(fixture, "after-cancel-accepted", target)
-        self.assertEqual("committed", accepted_after_cancel["status"], accepted_after_cancel)
-        before_unaccepted = fresh.validated_snapshot()
-        unaccepted = self.create(fixture, "after-cancel-next", {"item": "work-a", "checkpoint": "next-phase"})
-        self.assertEqual(("rejected", "ITEM_DEFINITION_INVALID"), (unaccepted["status"], unaccepted["code"]))
-        self.assertEqual(before_unaccepted, fresh.validated_snapshot())
+        before = fresh.validated_snapshot()
+        invalid = self.create(fixture, "after-cancel-accepted", target)
+        self.assertEqual(("rejected", "ITEM_DEFINITION_INVALID"), (invalid["status"], invalid["code"]))
+        self.assertEqual(before, fresh.validated_snapshot())
 
     def rebind_to_next_phase(self, fixture: CheckpointFixture) -> None:
         """Move work-a's current accepted brief to a later checkpoint so the first one is no longer declared."""
@@ -287,22 +267,25 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
     def revise(self, fixture: CheckpointFixture, item_id: str, reason: str, **changes: JsonValue) -> JsonObject:
         current = SQLiteWorkStore(fixture.work / "state.sqlite3").read_item_definition(WorkItemId(item_id)).definition
         assert current is not None and isinstance(current.definition, work_models.WorkItemDefinition)
-        return self.transition_result(
-            fixture,
-            self.project_action(fixture, f"revise-item:{item_id}"),
-            {
-                "schema": "pinboard-item-revision/v1",
-                "expected_revision": current.revision,
-                "expected_digest": current.digest,
-                "source_task": "coordinator",
-                "reason": reason,
-                "definition": {
-                    **self.json_object(
-                        msgspec.json.decode(expect_success(history.work_item_definition_bytes(current.definition)))
-                    ),
-                    **changes,
+        return fixture.call_advertised_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(
+                fixture,
+                self.project_action(fixture, f"revise-item:{item_id}"),
+                {
+                    "schema": "pinboard-item-revision/v1",
+                    "expected_revision": current.revision,
+                    "expected_digest": current.digest,
+                    "source_task": "coordinator",
+                    "reason": reason,
+                    "definition": {
+                        **self.json_object(
+                            msgspec.json.decode(expect_success(history.work_item_definition_bytes(current.definition)))
+                        ),
+                        **changes,
+                    },
                 },
-            },
+            ),
         )
 
     def reloaded_definition(self, fixture: CheckpointFixture, item_id: str) -> work_models.WorkItemDefinition:
@@ -336,29 +319,8 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         target: JsonObject = {"item": "work-a", "checkpoint": checkpoint}
         dependency = work_models.CheckpointDependency(WorkItemId("work-a"), checkpoint)
         self.assertNotIn(checkpoint, self.reloaded_definition(fixture, "work-a").checkpoints)
-        self.assertEqual("committed", self.create(fixture, "brief-child", target)["status"])
-
-        later = work_models.CheckpointDependency(dependency.item_id, CheckpointId("later-phase"))
-        operation = proposals.convert_proposal(
-            msgspec.convert(
-                {**proposal(), "proposal_id": "early-pin-child", "relation": {"kind": "follow-up", "item": target}},
-                type=proposal_models.Proposal,
-            )
-        )
-        before = fixture.store.validated_snapshot()
-        for pin in (DependencyAcceptancePin(dependency), DependencyFinishedProducerPin(dependency)):
-            with self.subTest(pin=type(pin).__name__):
-                stale = service.create_proposal(
-                    fixture.store,
-                    operation,
-                    datetime.now(UTC),
-                    actor_task_id=TaskId("coordinator"),
-                    actor_host_id=HostId("local"),
-                    dependency_brief_pins=(pin,),
-                )
-                assert isinstance(stale, DecisionFailure)
-                self.assertEqual("ITEM_DEFINITION_STALE", stale.code.value)
-                self.assertEqual(before, fixture.store.validated_snapshot())
+        with predecessor_checkpoint_fixture():
+            self.assertEqual("committed", self.create(fixture, "brief-child", target)["status"])
 
         self.complete_work_a(fixture)
         revised = self.revise(fixture, "brief-child", "Clarify the wording only.", objective="A clarified objective.")
@@ -367,66 +329,27 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         self.assertEqual(("A clarified objective.", (dependency,)), (reloaded.objective, reloaded.dependencies))
         self.assertEqual(0, self.overview(fixture)["brief-child"]["unsatisfied_dependency_count"])
 
-        added = self.revise(
-            fixture,
-            "brief-child",
-            "Wait for a later phase of the finished producer instead.",
-            dependencies=[{"item": "work-a", "checkpoint": later.checkpoint_id}],
-        )
-        self.assertEqual("committed", added["status"], added)
-        self.assertEqual((later,), self.reloaded_definition(fixture, "brief-child").dependencies)
-        self.assertEqual(0, self.overview(fixture)["brief-child"]["unsatisfied_dependency_count"])
-
-        live = proposal()
-        live.update(proposal_id="live-producer", relation={"kind": "independent", "item": None})
-        created = fixture.call_advertised_tool(
-            mcp_server.PROPOSAL_CREATE_TOOL,
-            {
-                "project_root": str(fixture.project),
-                "work_root": str(fixture.work),
-                "proposal": live,
-                "actor_task_id": "coordinator",
-                "actor_host_id": "local",
-            },
-        )
-        self.assertEqual("committed", created["status"], created)
         before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
-        mixed = self.revise(
+        changed = self.revise(
             fixture,
             "brief-child",
-            "Also wait for an undeclared checkpoint.",
-            dependencies=[
-                {"item": "work-a", "checkpoint": later.checkpoint_id},
-                {"item": "live-producer", "checkpoint": "never-declared"},
-            ],
+            "Wait for a different phase of the finished producer.",
+            dependencies=[{"item": "work-a", "checkpoint": "later-phase"}],
         )
-        self.assertEqual(("rejected", "ITEM_DEFINITION_INVALID"), (mixed["status"], mixed["code"]))
-        self.assertIn(
-            "Prerequisite 'live-producer' has no current accepted brief declaring checkpoint 'never-declared'",
-            str(mixed["message"]),
-        )
+        self.assertEqual(("rejected", "ITEM_DEFINITION_INVALID"), (changed["status"], changed["code"]))
+        self.assertIn("work-a checkpoint later-phase", str(changed["message"]))
         self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
-        self.assertEqual((later,), self.reloaded_definition(fixture, "brief-child").dependencies)
 
     def test_revision_keeps_a_checkpoint_dependency_no_authoring_route_could_verify_again(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
         target: JsonObject = {"item": "work-a", "checkpoint": fixture.brief.checkpoint.checkpoint_id}
-        self.assertEqual("committed", self.create(fixture, "kept-child", target)["status"])
+        with predecessor_checkpoint_fixture():
+            self.assertEqual("committed", self.create(fixture, "kept-child", target)["status"])
         stale_brief = self.revise(
             fixture, "work-a", "Clarify the producer objective.", objective="A revised objective."
         )
         self.assertEqual("committed", stale_brief["status"], stale_brief)
         dependency = work_models.CheckpointDependency(WorkItemId("work-a"), CheckpointId(str(target["checkpoint"])))
-        stale_authoring = resolve_dependency_brief_pins(
-            fixture.store,
-            ArtifactRepository(resolve_durable_roots(fixture.project)),
-            None,
-            (dependency,),
-            datetime.now(UTC),
-        )
-        assert isinstance(stale_authoring, DecisionFailure)
-        self.assertEqual("ITEM_DEFINITION_STALE", stale_authoring.code.value)
-
         kept = self.revise(fixture, "kept-child", "Reword only.", unlock="A reworded unlock.")
         self.assertEqual("committed", kept["status"], kept)
         reloaded = self.reloaded_definition(fixture, "kept-child")
@@ -435,95 +358,91 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
             (reloaded.unlock, reloaded.dependencies),
         )
 
-    def stale_proposal(self, message: str) -> JsonObject:
-        return {
-            "schema": "pinboard-mcp-proposal-result/v2",
-            "status": "rejected",
-            "code": "ITEM_DEFINITION_STALE",
-            "message": message,
-            "state_changed": False,
-            "effect": "unchanged",
-            "retry": "refresh-action",
-            "changed_surfaces": [],
-            "observed": [],
-            "mismatches": [],
-            "recovery": "Inspect the named prerequisite's item status and accepted brief, then select one of its "
-            "current declared checkpoints again before retrying the proposal.",
-        }
-
-    def test_proposal_on_a_checkpoint_of_a_stale_accepted_brief_is_a_typed_rejection(self) -> None:
-        fixture = self.checkpoint_fixture(local=True)
-        checkpoint = fixture.brief.checkpoint.checkpoint_id
-        revised = self.revise(fixture, "work-a", "Clarify the producer objective.", objective="A revised objective.")
-        self.assertEqual("committed", revised["status"], revised)
-        before = fixture.store.validated_snapshot()
-
-        rejected = self.create(fixture, "stale-child", {"item": "work-a", "checkpoint": checkpoint})
-
-        self.assertEqual(
-            self.stale_proposal(
-                f"Prerequisite 'work-a' has an invalid or stale current accepted brief. Inspect and reconcile that "
-                f"prerequisite before authoring checkpoint '{checkpoint}'."
-            ),
-            rejected,
-        )
-        self.assertEqual(before, fixture.store.validated_snapshot())
-
-    def test_proposal_whose_prerequisite_changes_before_the_write_lock_is_a_typed_rejection(self) -> None:
-        fixture = self.checkpoint_fixture(local=True)
-        checkpoint = fixture.brief.checkpoint.checkpoint_id
-        after_revision: list[stored_state.StoredWorkState] = []
-
-        def revise_after_resolving(
-            store: ports.WorkStore,
-            artifacts: ArtifactRepository,
-            dependent: WorkItemId | None,
-            dependencies: tuple[work_models.Dependency, ...],
-            now: datetime,
-        ) -> DecisionResult[tuple[DependencyCheckpointPin, ...], DependencyPinFailureCode]:
-            pins = resolve_dependency_brief_pins(store, artifacts, dependent, dependencies, now)
-            assert not isinstance(pins, DecisionFailure), pins
-            revised = self.revise(
-                fixture, "work-a", "Clarify the producer objective.", objective="A revised objective."
-            )
-            assert revised["status"] == "committed", revised
-            after_revision.append(fixture.store.validated_snapshot())
-            return pins
-
-        with patch("pinboard.mcp.mutation_operations.resolve_dependency_brief_pins", new=revise_after_resolving):
-            rejected = self.create(fixture, "locked-child", {"item": "work-a", "checkpoint": checkpoint})
-
-        self.assertEqual(
-            self.stale_proposal(
-                f"Prerequisite 'work-a' changed its accepted brief or definition while checkpoint '{checkpoint}' was "
-                "selected. Inspect that prerequisite and select its current declared checkpoint again."
-            ),
-            rejected,
-        )
-        self.assertEqual(after_revision, [fixture.store.validated_snapshot()])
-
-    def test_revision_authors_accepted_checkpoint_after_rebind_and_keeps_cycle_refusal(self) -> None:
+    def test_revise_refuses_new_wait_for_a_checkpoint_already_accepted(self) -> None:
         fixture = self.accepted_package_fixture(local=True)
         target: JsonObject = {"item": "work-a", "checkpoint": fixture.brief.checkpoint.checkpoint_id}
         self.assertEqual("committed", self.create(fixture, "bare-child", "work-a")["status"])
         self.rebind_to_next_phase(fixture)
-
-        revised = self.revise(fixture, "bare-child", "Start after the accepted checkpoint.", dependencies=[target])
-        self.assertEqual("committed", revised["status"], revised)
-        self.assertEqual(
-            (
-                work_models.CheckpointDependency(
-                    WorkItemId("work-a"), CheckpointId(fixture.brief.checkpoint.checkpoint_id)
-                ),
-            ),
-            self.reloaded_definition(fixture, "bare-child").dependencies,
-        )
-        self.assertEqual(0, self.overview(fixture)["bare-child"]["unsatisfied_dependency_count"])
-
         before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
-        cycle = self.revise(fixture, "work-a", "Wait for the child.", dependencies=["bare-child"])
-        self.assertEqual(("rejected", "ITEM_DEPENDENCY_CYCLE"), (cycle["status"], cycle["code"]))
+        revised = self.revise(fixture, "bare-child", "Start after the accepted checkpoint.", dependencies=[target])
+        self.assertEqual(("rejected", "ITEM_DEFINITION_INVALID"), (revised["status"], revised["code"]))
+        self.assertEqual(
+            (False, "unchanged", []), (revised["state_changed"], revised["effect"], revised["changed_surfaces"])
+        )
         self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+        self.assertEqual((WorkItemId("work-a"),), self.reloaded_definition(fixture, "bare-child").dependencies)
+
+    def test_started_items_refuse_even_satisfied_edges_and_companion_proposals(self) -> None:
+        for stage in ("active", "review", "paused", "blocked"):
+            with self.subTest(stage=stage):
+                if stage in {"active", "blocked"}:
+                    fixture = self.active_fixture()
+                elif stage == "paused":
+                    fixture = self.accepted_package_fixture(local=True)
+                else:
+                    fixture = self.checkpoint_fixture(local=True)
+                if stage == "blocked":
+                    result = self.transition_result(
+                        fixture,
+                        self.project_action(fixture, "block:work-a-1"),
+                        {"unblocker": {"kind": "outside-condition", "condition": "The offline test device returns."}},
+                    )
+                    self.assertEqual("committed", result["status"], result)
+                fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+                before = fresh.validated_snapshot()
+                self.assertEqual(
+                    stage, next(item.state.value for item in before.lifecycle.work_items if item.item_id == "work-a")
+                )
+                added = self.revise(
+                    fixture, "work-a", "Add the completed prerequisite.", dependencies=["work-b"], title="Edited title"
+                )
+                intake = proposal()
+                intake.update(proposal_id="companion", relation={"kind": "prerequisite", "item": "work-a"})
+                companion = fixture.call_advertised_tool(
+                    mcp_server.PROPOSAL_CREATE_TOOL,
+                    {
+                        "project_root": str(fixture.project),
+                        "work_root": str(fixture.work),
+                        "proposal": intake,
+                        "actor_task_id": "coordinator",
+                        "actor_host_id": "local",
+                    },
+                )
+                for rejection, edge in ((added, "work-b"), (companion, "companion")):
+                    self.assertEqual(
+                        ("rejected", "ITEM_DEFINITION_LIFECYCLE_INVALID", False, "unchanged", []),
+                        (
+                            rejection["status"],
+                            rejection["code"],
+                            rejection["state_changed"],
+                            rejection["effect"],
+                            rejection["changed_surfaces"],
+                        ),
+                    )
+                    self.assertIn("Started item 'work-a'", str(rejection["message"]))
+                    self.assertIn(edge, str(rejection["message"]))
+                self.assertEqual(before, fresh.validated_snapshot())
+                clarified = self.revise(fixture, "work-a", "Clarify only.", title="Edited title")
+                self.assertEqual("committed", clarified["status"], clarified)
+                self.assertEqual("Edited title", self.reloaded_definition(fixture, "work-a").title)
+
+    def test_unstarted_blocked_item_can_add_and_reload_a_whole_item_prerequisite(self) -> None:
+        fixture = self.active_fixture()
+        blocked = self.transition_result(
+            fixture,
+            self.project_action(fixture, "block-item:work-c"),
+            {"unblocker": {"kind": "outside-condition", "condition": "The offline test device returns."}},
+        )
+        self.assertEqual("committed", blocked["status"], blocked)
+        revised = self.revise(
+            fixture, "work-c", "Record the needed work before starting.", dependencies=["intake-work"]
+        )
+        self.assertEqual("committed", revised["status"], revised)
+        self.assertEqual((WorkItemId("intake-work"),), self.reloaded_definition(fixture, "work-c").dependencies)
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+        status = fresh.read_item_status(WorkItemId("work-c"))
+        assert status is not None
+        self.assertFalse(status.dependencies[0].satisfied)
 
     def hold_sentence(self, fixture: CheckpointFixture, item_id: str) -> str:
         status = fixture.call_advertised_tool(
@@ -630,9 +549,11 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
     def test_held_work_says_its_checkpoint_was_accepted_and_then_that_it_no_longer_depends_on_the_item(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
         checkpoint = fixture.brief.checkpoint.checkpoint_id
-        self.assertEqual(
-            "committed", self.create(fixture, "unstarted-child", {"item": "work-a", "checkpoint": checkpoint})["status"]
-        )
+        with predecessor_checkpoint_fixture():
+            self.assertEqual(
+                "committed",
+                self.create(fixture, "unstarted-child", {"item": "work-a", "checkpoint": checkpoint})["status"],
+            )
         unstarted_held = self.transition_result(
             fixture,
             self.project_action(fixture, "block-item:unstarted-child"),
@@ -649,18 +570,19 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         assert isinstance(initial_bytes, bytes)
         with_dependency = self.json_object(json.loads(initial_bytes))
         with_dependency["dependencies"] = [{"item": "work-a", "checkpoint": checkpoint}]
-        added_dependency = self.transition_result(
-            fixture,
-            self.project_action(fixture, "revise-item:held-child"),
-            {
-                "schema": "pinboard-item-revision/v1",
-                "expected_revision": initial.revision,
-                "expected_digest": initial.digest,
-                "source_task": "coordinator",
-                "reason": "Depend on the local checkpoint of work-a.",
-                "definition": with_dependency,
-            },
-        )
+        with predecessor_checkpoint_fixture():
+            added_dependency = self.transition_result(
+                fixture,
+                self.project_action(fixture, "revise-item:held-child"),
+                {
+                    "schema": "pinboard-item-revision/v1",
+                    "expected_revision": initial.revision,
+                    "expected_digest": initial.digest,
+                    "source_task": "coordinator",
+                    "reason": "Depend on the local checkpoint of work-a.",
+                    "definition": with_dependency,
+                },
+            )
         self.assertEqual("committed", added_dependency["status"], added_dependency)
         held = self.transition_result(
             fixture,
@@ -737,7 +659,8 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         fixture = self.checkpoint_fixture(local=True)
         checkpoint = fixture.brief.checkpoint.checkpoint_id
         target: JsonObject = {"item": "work-a", "checkpoint": checkpoint}
-        self.assertEqual("committed", self.create(fixture, "terminal-child", target)["status"])
+        with predecessor_checkpoint_fixture():
+            self.assertEqual("committed", self.create(fixture, "terminal-child", target)["status"])
         rebuilt, output, error = self.run_cli(*fixture.common, "views", "rebuild")
         self.assertEqual(0, rebuilt, (output, error))
         action = self.project_action(fixture, "close:terminal-child")
@@ -766,79 +689,11 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
         self.assertEqual(refreshed, view_path.read_bytes())
         self.assertEqual([], self.run_json_cli(*fixture.common, "validate")["diagnostics"])
 
-    def test_revision_authors_exact_condition_and_rechecks_pinned_brief_under_lock(self) -> None:
-        fixture = self.accepted_package_fixture(local=True)
-        target: JsonObject = {"item": "work-a", "checkpoint": fixture.brief.checkpoint.checkpoint_id}
-        self.assertEqual("committed", self.create(fixture, "revised-child", "work-a")["status"])
-        current = fixture.store.read_item_definition(WorkItemId("revised-child")).definition
-        assert current is not None and isinstance(current.definition, work_models.WorkItemDefinition)
-        payload: JsonObject = {
-            "schema": "pinboard-item-revision/v1",
-            "expected_revision": current.revision,
-            "expected_digest": current.digest,
-            "source_task": "coordinator",
-            "reason": "Start after the accepted checkpoint.",
-            "definition": {
-                **self.json_object(
-                    msgspec.json.decode(expect_success(history.work_item_definition_bytes(current.definition)))
-                ),
-                "dependencies": [target],
-            },
-        }
-        revised = self.transition_result(fixture, self.project_action(fixture, "revise-item:revised-child"), payload)
-        self.assertEqual("committed", revised["status"], revised)
-        self.assertEqual(0, self.overview(fixture)["revised-child"]["unsatisfied_dependency_count"])
-
-        dependency = work_models.CheckpointDependency(
-            WorkItemId("work-a"), CheckpointId(fixture.brief.checkpoint.checkpoint_id)
-        )
-        now = datetime.now(UTC)
-        pins = expect_success(
-            resolve_dependency_brief_pins(
-                fixture.store, ArtifactRepository(resolve_durable_roots(fixture.project)), None, (dependency,), now
-            )
-        )
-        producer = fixture.store.read_item_definition(dependency.item_id).definition
-        assert producer is not None and isinstance(producer.definition, work_models.WorkItemDefinition)
-        changed = self.transition_result(
-            fixture,
-            self.project_action(fixture, "revise-item:work-a"),
-            {
-                "schema": "pinboard-item-revision/v1",
-                "expected_revision": producer.revision,
-                "expected_digest": producer.digest,
-                "source_task": "coordinator",
-                "reason": "Clarify the producer objective.",
-                "definition": {
-                    **self.json_object(
-                        msgspec.json.decode(expect_success(history.work_item_definition_bytes(producer.definition)))
-                    ),
-                    "objective": "A revised current objective.",
-                },
-            },
-        )
-        self.assertEqual("committed", changed["status"], changed)
-        value = proposal()
-        value.update(proposal_id="stale-child", relation={"kind": "follow-up", "item": target})
-        operation = proposals.convert_proposal(msgspec.convert(value, type=proposal_models.Proposal))
-        before = fixture.store.validated_snapshot()
-        result = service.create_proposal(
-            fixture.store,
-            operation,
-            now,
-            actor_task_id=TaskId("coordinator"),
-            actor_host_id=HostId("local"),
-            dependency_brief_pins=pins,
-        )
-        self.assertIsInstance(result, DecisionFailure)
-        assert isinstance(result, DecisionFailure)
-        self.assertEqual("ITEM_DEFINITION_STALE", result.code.value)
-        self.assertEqual(before, fixture.store.validated_snapshot())
-
     def test_native_preparation_uses_checkpoint_receipt_and_retains_exclusive_authority(self) -> None:
         fixture = self.accepted_package_fixture(local=True)
         target: JsonObject = {"item": "work-a", "checkpoint": fixture.brief.checkpoint.checkpoint_id}
-        self.assertEqual("committed", self.create(fixture, "checkpoint-child", target)["status"])
+        with predecessor_checkpoint_fixture():
+            self.assertEqual("committed", self.create(fixture, "checkpoint-child", target)["status"])
         self.assertEqual("committed", self.create(fixture, "campaign-child", "work-a")["status"])
         request: JsonObject = {
             "project_root": str(fixture.project),
@@ -996,165 +851,3 @@ class InstalledCheckpointDependencyTest(CheckpointPackageSupport):
                         )
                         connection.commit()
                     self.assertEqual(state, fixture.store.validated_snapshot())
-
-    def test_ready_prerequisite_definition_checkpoints_persist_author_dependencies_and_recheck_under_lock(
-        self,
-    ) -> None:
-        fixture = self.checkpoint_fixture(local=True)
-        producer_proposal = proposal()
-        producer_proposal.update(
-            proposal_id="planned-campaign",
-            relation={"kind": "independent", "item": None},
-            checkpoints=["phase-1", "phase-2"],
-            route_facts={
-                "size_class": "campaign",
-                "architecture_impact": "none",
-                "external_effects": "none",
-                "declares_checkpoints": True,
-            },
-        )
-        created_producer = fixture.call_advertised_tool(
-            mcp_server.PROPOSAL_CREATE_TOOL,
-            {
-                "project_root": str(fixture.project),
-                "work_root": str(fixture.work),
-                "proposal": producer_proposal,
-                "actor_task_id": "coordinator",
-                "actor_host_id": "local",
-            },
-        )
-        self.assertEqual("committed", created_producer["status"], created_producer)
-
-        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
-        reloaded = fresh.read_item_definition(WorkItemId("planned-campaign")).definition
-        assert reloaded is not None and isinstance(reloaded.definition, work_models.WorkItemDefinition)
-        self.assertEqual(
-            (CheckpointId("phase-1"), CheckpointId("phase-2")),
-            reloaded.definition.checkpoints,
-        )
-        producer_view = (fixture.work / "views/items/planned-campaign.md").read_text()
-        self.assertIn("### Checkpoints\n\n- phase-1\n- phase-2\n", producer_view)
-
-        unknown = self.create(
-            fixture,
-            "unknown-planned-checkpoint",
-            {"item": "planned-campaign", "checkpoint": "invented"},
-        )
-        self.assertEqual(("rejected", "ITEM_DEFINITION_INVALID"), (unknown["status"], unknown["code"]))
-        self.assertIn("Known current checkpoint IDs: phase-1, phase-2", str(unknown["message"]))
-
-        follow_up = self.create(
-            fixture,
-            "after-planned-phase-1",
-            {"item": "planned-campaign", "checkpoint": "phase-1"},
-        )
-        self.assertEqual("committed", follow_up["status"], follow_up)
-        self.assertEqual(1, self.overview(fixture)["after-planned-phase-1"]["unsatisfied_dependency_count"])
-
-        child_definition = fresh.read_item_definition(WorkItemId("after-planned-phase-1")).definition
-        assert child_definition is not None and isinstance(child_definition.definition, work_models.WorkItemDefinition)
-        revised_child = self.transition_result(
-            fixture,
-            self.project_action(fixture, "revise-item:after-planned-phase-1"),
-            {
-                "schema": "pinboard-item-revision/v1",
-                "expected_revision": child_definition.revision,
-                "expected_digest": child_definition.digest,
-                "source_task": "coordinator",
-                "reason": "Depend on phase-2 instead of phase-1.",
-                "definition": {
-                    **self.json_object(
-                        msgspec.json.decode(
-                            expect_success(history.work_item_definition_bytes(child_definition.definition))
-                        )
-                    ),
-                    "dependencies": [{"item": "planned-campaign", "checkpoint": "phase-2"}],
-                },
-            },
-        )
-        self.assertEqual("committed", revised_child["status"], revised_child)
-
-        dependency = work_models.CheckpointDependency(WorkItemId("planned-campaign"), CheckpointId("phase-1"))
-        now = datetime.now(UTC)
-        pins = expect_success(
-            resolve_dependency_brief_pins(
-                fresh,
-                ArtifactRepository(resolve_durable_roots(fixture.project)),
-                None,
-                (dependency,),
-                now,
-            )
-        )
-        self.assertEqual(
-            (DependencyDefinitionPin(dependency, reloaded.revision, reloaded.digest),),
-            pins,
-        )
-
-        removed_checkpoint_revision = self.transition_result(
-            fixture,
-            self.project_action(fixture, "revise-item:planned-campaign"),
-            {
-                "schema": "pinboard-item-revision/v1",
-                "expected_revision": reloaded.revision,
-                "expected_digest": reloaded.digest,
-                "source_task": "coordinator",
-                "reason": "Attempt to drop phase-2.",
-                "definition": {
-                    **self.json_object(
-                        msgspec.json.decode(expect_success(history.work_item_definition_bytes(reloaded.definition)))
-                    ),
-                    "checkpoints": ["phase-1"],
-                },
-            },
-        )
-        self.assertEqual(
-            ("rejected", "ITEM_DEFINITION_INVALID"),
-            (removed_checkpoint_revision["status"], removed_checkpoint_revision["code"]),
-        )
-
-        appended_checkpoint_revision = self.transition_result(
-            fixture,
-            self.project_action(fixture, "revise-item:planned-campaign"),
-            {
-                "schema": "pinboard-item-revision/v1",
-                "expected_revision": reloaded.revision,
-                "expected_digest": reloaded.digest,
-                "source_task": "coordinator",
-                "reason": "Append phase-3 to planned-campaign.",
-                "definition": {
-                    **self.json_object(
-                        msgspec.json.decode(expect_success(history.work_item_definition_bytes(reloaded.definition)))
-                    ),
-                    "checkpoints": ["phase-1", "phase-2", "phase-3"],
-                },
-            },
-        )
-        self.assertEqual("committed", appended_checkpoint_revision["status"], appended_checkpoint_revision)
-
-        revised_reloaded = fresh.read_item_definition(WorkItemId("planned-campaign")).definition
-        assert revised_reloaded is not None
-        changes = queries._scope_changes(reloaded.definition, revised_reloaded.definition)
-        self.assertEqual(
-            (query_models.ListFieldChange(query_models.DefinitionListField.CHECKPOINTS, ("phase-3",), ()),),
-            changes.lists,
-        )
-
-        stale_child = proposal()
-        stale_child.update(
-            proposal_id="stale-definition-pin-child",
-            relation={"kind": "follow-up", "item": {"item": "planned-campaign", "checkpoint": "phase-1"}},
-        )
-        operation = proposals.convert_proposal(msgspec.convert(stale_child, type=proposal_models.Proposal))
-        before = fresh.validated_snapshot()
-        stale_result = service.create_proposal(
-            fresh,
-            operation,
-            now,
-            actor_task_id=TaskId("coordinator"),
-            actor_host_id=HostId("local"),
-            dependency_brief_pins=pins,
-        )
-        self.assertIsInstance(stale_result, DecisionFailure)
-        assert isinstance(stale_result, DecisionFailure)
-        self.assertEqual("ITEM_DEFINITION_STALE", stale_result.code.value)
-        self.assertEqual(before, fresh.validated_snapshot())

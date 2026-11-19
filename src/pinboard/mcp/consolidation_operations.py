@@ -6,11 +6,9 @@ from typing import Literal, assert_never
 
 import msgspec
 
-from pinboard.adapters.dependency_operations import resolve_dependency_brief_pins
-from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.models import AffectedViews
-from pinboard.application import consolidation, consolidation_models
+from pinboard.application import consolidation
 from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
 from pinboard.domain.identifiers import HostId, TaskId
 from pinboard.mcp import common, execution
@@ -58,20 +56,9 @@ def operate(
         )
     store = common.compose_store(durable)
     now = datetime.now(UTC)
-    dependency_pins = resolve_dependency_brief_pins(
-        store,
-        ArtifactRepository(durable),
-        None,
-        consolidation.requested_dependencies(consolidation_models.plan(request.selection)),
-        now,
-    )
-    if isinstance(dependency_pins, DecisionFailure):
-        return rejected(dependency_pins.code, dependency_pins.message, "refresh-action")
     match request:
         case contracts.PreviewRequest():
-            preview = consolidation.preview(
-                store, request.selection, TaskId(request.actor_task_id), now, dependency_pins
-            )
+            preview = consolidation.preview(store, request.selection, TaskId(request.actor_task_id), now)
             if isinstance(preview, DecisionFailure):
                 return rejected(preview.code, preview.message, "refresh-action")
             result = contracts.PreviewResult(
@@ -97,7 +84,6 @@ def operate(
                 HostId(request.actor_host_id),
                 now,
                 durable.work_root,
-                dependency_pins,
             )
             if isinstance(effect, DecisionFailure):
                 return rejected(effect.code, effect.message, "refresh-action")

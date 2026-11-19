@@ -256,6 +256,32 @@ class CancellationTest(CheckpointPackageSupport):
         )
         brief_id = started.brief_history_id
         assert brief_id is not None
+        current = fixture.call_advertised_tool(
+            mcp_server.ITEM_DEFINITION_TOOL,
+            {"request": self.request(fixture, "current", "work-c")},
+        )
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+        before = fresh.validated_snapshot()
+        rejected = fixture.call_advertised_tool(
+            mcp_server.TRANSITION_TOOL,
+            self.native_transition_request(
+                fixture,
+                self.project_action(fixture, "revise-item:work-c"),
+                {
+                    "schema": "pinboard-item-revision/v1",
+                    "expected_revision": current["definition_revision"],
+                    "expected_digest": current["definition_digest"],
+                    "source_task": "coordinator",
+                    "reason": "Add a prerequisite after starting the pull request review.",
+                    "definition": {**self.json_object(current["definition"]), "dependencies": ["work-a"]},
+                },
+            ),
+        )
+        self.assertEqual(
+            ("rejected", "ITEM_DEFINITION_LIFECYCLE_INVALID", "unchanged"),
+            (rejected["status"], rejected["code"], rejected["effect"]),
+        )
+        self.assertEqual(before, fresh.validated_snapshot())
         approved = act(
             "review-brief",
             "brief_review",

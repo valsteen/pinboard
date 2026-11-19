@@ -37,6 +37,9 @@ class WorldExtra(Enum):
     CONTINUE_CHECKPOINT_REVIEW = "continue-checkpoint-review"
     INHERITED_ATTEMPT = "inherited-attempt"
     INHERITED_ATTEMPT_LIVE_LEASE = "inherited-attempt-live-lease"
+    STRICT_DEPENDENCIES_READY = "strict-dependencies-ready"
+    STRICT_DEPENDENCIES_ACTIVE = "strict-dependencies-active"
+    STRICT_DEPENDENCIES_MERGE = "strict-dependencies-merge"
 
 
 class Hook(Enum):

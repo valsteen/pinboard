@@ -75,8 +75,6 @@ class DecisionScope:
     proposal_ids: tuple[ProposalId, ...]
     artifact_ref_ids: tuple[ArtifactRefId, ...]
     completion_history_attempt_ids: tuple[AttemptId, ...]
-    # Targets being authored whose committed acceptances the decision reads although no stored dependency names them.
-    checkpoint_targets: tuple[work_models.CheckpointDependency, ...]
     read_current_amendments: bool
 
 

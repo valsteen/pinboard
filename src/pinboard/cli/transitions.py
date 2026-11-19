@@ -31,7 +31,7 @@ def _with_close_alternatives(
     failure: CommandFailure,
 ) -> CommandFailure:
     snapshot = store.read_decision_facts(
-        query_models.DecisionScope((item_id,), (), (), (), (), (), (), (), (), (), read_current_amendments=False),
+        query_models.DecisionScope((item_id,), (), (), (), (), (), (), (), (), read_current_amendments=False),
         datetime.now(UTC),
     ).snapshot
     item = snapshot.work_item(item_id)

@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Literal, assert_never
 
 from pinboard.adapters import review_operations
-from pinboard.adapters.dependency_operations import resolve_dependency_brief_pins
 from pinboard.adapters.files.artifacts import ArtifactRepository
 from pinboard.adapters.files.brief_sources import select_checkout_brief_source
 from pinboard.adapters.files.root import classify_checkout, observe_checkout_identity
@@ -319,16 +318,6 @@ def commit_direct_transition(
     brief_identity = transition_brief_identity(store, command, artifacts)
     if isinstance(brief_identity, DecisionFailure):
         return brief_identity
-    revised = command if isinstance(command, decision_models.ReviseWorkItemCommand) else None
-    dependency_pins = resolve_dependency_brief_pins(
-        store,
-        artifacts,
-        None if revised is None else revised.action.capability.subject,
-        () if revised is None else revised.value.definition.dependencies,
-        operation_time,
-    )
-    if isinstance(dependency_pins, DecisionFailure):
-        return dependency_pins
     return service.decide_and_commit_transition(
         store,
         command,
@@ -337,5 +326,4 @@ def commit_direct_transition(
         actor_task_id=selected.actor_task_id,
         actor_host_id=selected.actor_host_id,
         transition_brief_identity=brief_identity,
-        dependency_brief_pins=dependency_pins,
     )

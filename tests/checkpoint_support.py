@@ -8,11 +8,12 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, assert_never
+from unittest.mock import patch
 
 import msgspec
 from msgspec.structs import replace as replace_struct
@@ -49,6 +50,17 @@ from tests.native_support import call_advertised_tool, call_native_tool
 from tests.sqlite_support import sync_test_unblocker
 from tests.support import SQLITE_NOW, JsonObject, JsonValue, complete_sqlite_state, initialize_store
 from tests.work_brief_support import ready_review, work_a_brief
+
+
+@contextlib.contextmanager
+def predecessor_checkpoint_fixture() -> Generator[None]:
+    """Seed saved edges through real persistence with the predecessor's authoring policy."""
+
+    with (
+        patch("pinboard.domain.definition_decisions.validate_added_dependencies", return_value=None),
+        patch("pinboard.domain.proposal_decisions.validate_added_dependencies", return_value=None),
+    ):
+        yield
 
 
 @dataclass(frozen=True, slots=True)

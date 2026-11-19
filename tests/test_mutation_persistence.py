@@ -277,55 +277,13 @@ class MutationPersistenceTest(unittest.TestCase):
         )
 
     def test_definition_revision_persists_atomically_and_reloads_every_audit_fact(self) -> None:
-        state = complete_sqlite_state()
-        current = work_models.WorkItemDefinition(
-            "Work work-a",
-            "Make the state explicit.",
-            "The workflow needs this fact.",
-            ("artifacts/design.md",),
-            ("The state becomes explicit.",),
-            (),
-            ("The next decision can run.",),
-            (WorkItemId("work-c"),),
-            "The state becomes explicit.",
-            "The next decision can run.",
-            work_models.CheckoutPolicy.COORDINATOR_SELECTED,
-            (
-                work_models.WorkObligation(
-                    work_models.ObligationId("next-decision"),
-                    "The next decision can run.",
-                    work_models.ObligationDeferralPolicy.FORBIDDEN,
-                ),
-            ),
-            (),
-            route_facts=None,
-        )
-        current_digest = expect_success(work_item_definition_digest(current))
-        state = replace(
-            state,
-            lifecycle=replace(
-                state.lifecycle,
-                definition_revisions=(
-                    *(value for value in state.lifecycle.definition_revisions if value.item_id != WorkItemId("work-a")),
-                    stored_state.ItemDefinitionRevision(
-                        WorkItemId("work-a"),
-                        1,
-                        current_digest,
-                        current,
-                        "Accepted proposal definition.",
-                        TaskId("proposal-source"),
-                        None,
-                        current_digest,
-                        3,
-                        SQLITE_NOW,
-                    ),
-                ),
-                attempts=(replace(state.lifecycle.attempts[0], accepted_scope_digest=current_digest),),
-            ),
-        )
-        store = self._store_with_state(state)
+        store = self._store_with_state(complete_sqlite_state())
         before = store.validated_snapshot()
         snapshot = project_decision_snapshot(before, SQLITE_NOW)
+        accepted = next(value for value in before.lifecycle.definition_revisions if value.item_id == "work-c")
+        current = accepted.definition
+        assert isinstance(current, work_models.WorkItemDefinition)
+        current_digest = accepted.digest
         revised = replace(
             current,
             objective="Make the state explicit and observable.",
@@ -340,7 +298,7 @@ class MutationPersistenceTest(unittest.TestCase):
         action = next(
             value
             for value in available_actions(snapshot, actor)
-            if value.kind == decision_models.ActionKind.REVISE_ITEM and value.capability.subject == WorkItemId("work-a")
+            if value.kind == decision_models.ActionKind.REVISE_ITEM and value.capability.subject == WorkItemId("work-c")
         )
         assert isinstance(action, decision_models.ReviseWorkItemAction)
         decision = decide(
@@ -370,19 +328,19 @@ class MutationPersistenceTest(unittest.TestCase):
 
         self.assertNotIsInstance(committed, DecisionFailure)
         assert not isinstance(committed, DecisionFailure)
-        self.assertEqual(ActionId("revise-item:work-a"), committed.receipt.transition.action_id)
+        self.assertEqual(ActionId("revise-item:work-c"), committed.receipt.transition.action_id)
         reopened = store.validated_snapshot()
-        reopened_item = project_decision_snapshot(reopened, SQLITE_NOW).work_item(WorkItemId("work-a"))
+        reopened_item = project_decision_snapshot(reopened, SQLITE_NOW).work_item(WorkItemId("work-c"))
         assert reopened_item is not None
-        self.assertEqual(work_models.WorkState.ACTIVE, reopened_item.state)
+        self.assertEqual(work_models.WorkState.READY, reopened_item.state)
         self.assertEqual(
             2,
-            sum(value.item_id == WorkItemId("work-a") for value in reopened.lifecycle.definition_revisions),
+            sum(value.item_id == WorkItemId("work-c") for value in reopened.lifecycle.definition_revisions),
         )
         persisted = next(
             value
             for value in reversed(reopened.lifecycle.definition_revisions)
-            if value.item_id == WorkItemId("work-a")
+            if value.item_id == WorkItemId("work-c")
         )
         self.assertEqual(revised, persisted.definition)
         self.assertEqual(current_digest, persisted.before_digest)
@@ -396,7 +354,7 @@ class MutationPersistenceTest(unittest.TestCase):
             tuple(
                 value.dependency_id
                 for value in reopened.lifecycle.dependencies
-                if value.item_id == WorkItemId("work-a")
+                if value.item_id == WorkItemId("work-c")
             ),
         )
 

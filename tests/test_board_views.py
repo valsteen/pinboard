@@ -1050,7 +1050,6 @@ class BoardProjectionTest(unittest.TestCase):
             SQLITE_NOW,
             actor_task_id=TaskId("discovering-task"),
             actor_host_id=HostId("host-a"),
-            dependency_brief_pins=(),
         )
         assert not isinstance(committed, DecisionFailure)
 
@@ -1131,7 +1130,6 @@ class BoardProjectionTest(unittest.TestCase):
                 SQLITE_NOW,
                 actor_task_id=TaskId("discovering-task"),
                 actor_host_id=HostId("host-a"),
-                dependency_brief_pins=(),
             )
             assert not isinstance(committed, DecisionFailure)
             later_thread.start()

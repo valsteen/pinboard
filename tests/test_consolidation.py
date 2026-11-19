@@ -20,7 +20,7 @@ from pinboard.domain.identifiers import AttemptId, HostId, TaskId, WorkItemId
 from pinboard.mcp import common as mcp_common
 from pinboard.mcp import execution
 from pinboard.mcp import server as mcp_server
-from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport
+from tests.checkpoint_support import CheckpointFixture, CheckpointPackageSupport, predecessor_checkpoint_fixture
 from tests.domain_support import expect_success
 from tests.native_support import NativeTools
 from tests.support import HOLD_UNBLOCKER, JsonObject, JsonValue
@@ -520,7 +520,7 @@ class ConsolidationTest(CheckpointPackageSupport):
         )
         self.assertEqual(0, self.run_cli(*fixture.common, "validate")[0])
 
-    def test_existing_owner_folds_internal_edges_keeps_external_wait_and_declared_target(self) -> None:
+    def test_existing_owner_folds_internal_edges_and_keeps_unrelated_saved_checkpoint_wait(self) -> None:
         fixture = self.checkpoint_fixture(local=True)
         for item in ("source-a", "source-b", "owner", "consumer", "external"):
             self.create(fixture, item)
@@ -531,8 +531,9 @@ class ConsolidationTest(CheckpointPackageSupport):
             ("owner", ["source-a"]),
             ("consumer", [{"item": "external", "checkpoint": "ready"}, "source-b", "zz-proposal-a"]),
         )
-        for item, dependencies in dependency_cases:
-            self.assertEqual("committed", self.revise(fixture, item, {"dependencies": dependencies})["status"])
+        with predecessor_checkpoint_fixture():
+            for item, dependencies in dependency_cases:
+                self.assertEqual("committed", self.revise(fixture, item, {"dependencies": dependencies})["status"])
         selection = self.selection(fixture, ("source-a", "source-b"), "owner", False)
         selection["checkpoint_targets"] = [
             {
@@ -541,6 +542,13 @@ class ConsolidationTest(CheckpointPackageSupport):
                 "covers_carried_work": "This checkpoint delivers all work previously required from both sources.",
             }
         ]
+        before = SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot()
+        refused = self.preview(fixture, selection)
+        self.assertEqual(("rejected", "ITEM_DEFINITION_INVALID"), (refused["status"], refused["code"]))
+        self.assertIn("'owner' checkpoint 'usable'", str(refused["message"]))
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+        no_mappings: list[JsonValue] = []
+        selection["checkpoint_targets"] = no_mappings
         preview = self.preview(fixture, selection)
         self.assertEqual("ok", preview["status"], preview)
         self.assertEqual("committed", self.confirm(fixture, selection, preview)["status"])
@@ -549,7 +557,7 @@ class ConsolidationTest(CheckpointPackageSupport):
         self.assertEqual(["owner-keep", "usable"], owner["checkpoints"])
         self.assertIn("original prerequisites source-a, external", str(owner["evidence"]))
         self.assertEqual(
-            [{"item": "external", "checkpoint": "ready"}, {"item": "owner", "checkpoint": "usable"}, "zz-proposal-a"],
+            [{"item": "external", "checkpoint": "ready"}, "owner", "zz-proposal-a"],
             self.json_object(self.current(fixture, "consumer")["definition"])["dependencies"],
         )
         facts = fixture.store.read_item_status(WorkItemId("consumer"))
@@ -591,7 +599,7 @@ class ConsolidationTest(CheckpointPackageSupport):
             self.selection(fixture, ("source",), "campaign", True), type=consolidation_models.Selection
         )
         now = datetime(2026, 10, 31, tzinfo=UTC)
-        preview = expect_success(consolidation.preview(fixture.store, selection, TaskId("human"), now, ()))
+        preview = expect_success(consolidation.preview(fixture.store, selection, TaskId("human"), now))
         binding = consolidation.binding(preview, fixture.work)
         before = fixture.store.validated_snapshot()
         with (
@@ -607,7 +615,6 @@ class ConsolidationTest(CheckpointPackageSupport):
                 HostId("local"),
                 now,
                 fixture.work,
-                (),
             )
         self.assertEqual(before, fixture.store.validated_snapshot())
         barrier = Barrier(2)
@@ -624,7 +631,6 @@ class ConsolidationTest(CheckpointPackageSupport):
                     HostId("local"),
                     now,
                     fixture.work,
-                    (),
                 ),
                 DecisionFailure,
             )
@@ -679,37 +685,68 @@ class ConsolidationTest(CheckpointPackageSupport):
                 )
                 self.assertEqual("superseded", self.json_object(inspection["continuation"])["state"])
 
-    def test_active_and_review_campaign_or_dependent_revision_preserves_candidate_and_authority(self) -> None:
+    def test_started_campaign_or_consumer_refuses_added_edges_and_keeps_authority(self) -> None:
         for stage in ("active", "review"):
             for target in ("campaign", "dependent"):
                 with self.subTest(stage=stage, target=target):
                     fixture = self.checkpoint_fixture(local=True) if stage == "review" else self.active_fixture()
-                    self.create(fixture, "source")
+                    for item in ("source", "external"):
+                        self.create(fixture, item)
                     self.native_attempt_acquire(fixture, "target-worker")
                     if target == "dependent":
+                        with predecessor_checkpoint_fixture():
+                            self.assertEqual(
+                                "committed", self.revise(fixture, "work-a", {"dependencies": ["source"]})["status"]
+                            )
+                    else:
                         self.assertEqual(
-                            "committed", self.revise(fixture, "work-a", {"dependencies": ["source"]})["status"]
+                            "committed", self.revise(fixture, "source", {"dependencies": ["external"]})["status"]
                         )
                     selection = self.selection(
                         fixture, ("source",), "work-a" if target == "campaign" else "campaign", target != "campaign"
                     )
-                    before = fixture.store.validated_snapshot()
-                    authority = fixture.store.read_attempt_authority_status(AttemptId("work-a-1"))
+                    fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+                    before = fresh.validated_snapshot()
+                    authority = fresh.read_attempt_authority_status(AttemptId("work-a-1"))
                     preview = self.preview(fixture, selection)
-                    self.assertEqual("ok", preview["status"], preview)
-                    self.assertEqual("committed", self.confirm(fixture, selection, preview)["status"])
-                    after = fixture.store.validated_snapshot()
                     self.assertEqual(
-                        next(value for value in before.lifecycle.attempts if value.attempt_id == "work-a-1"),
-                        next(value for value in after.lifecycle.attempts if value.attempt_id == "work-a-1"),
+                        ("rejected", "ITEM_DEFINITION_LIFECYCLE_INVALID"), (preview["status"], preview["code"])
                     )
-                    self.assertEqual(authority, fixture.store.read_attempt_authority_status(AttemptId("work-a-1")))
-                    attempt = next(value for value in after.lifecycle.attempts if value.attempt_id == "work-a-1")
-                    current = self.current(fixture, "work-a")
-                    self.assertNotEqual(
-                        (attempt.accepted_scope_revision, attempt.accepted_scope_digest),
-                        (current["definition_revision"], current["definition_digest"]),
+                    self.assertIn("Started item 'work-a'", str(preview["message"]))
+                    self.assertEqual(
+                        (False, "unchanged", []),
+                        (preview["state_changed"], preview["effect"], preview["changed_surfaces"]),
                     )
+                    self.assertEqual(before, fresh.validated_snapshot())
+                    self.assertEqual(authority, fresh.read_attempt_authority_status(AttemptId("work-a-1")))
+
+    def test_consolidation_refuses_retargeting_an_existing_checkpoint_wait(self) -> None:
+        fixture = self.checkpoint_fixture(local=True)
+        for item in ("source", "consumer"):
+            self.create(fixture, item)
+        self.assertEqual("committed", self.revise(fixture, "source", {"checkpoints": ["survey"]})["status"])
+        with predecessor_checkpoint_fixture():
+            self.assertEqual(
+                "committed",
+                self.revise(
+                    fixture,
+                    "consumer",
+                    {
+                        "dependencies": [{"item": "source", "checkpoint": "survey"}],
+                    },
+                )["status"],
+            )
+        fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
+        before = fresh.validated_snapshot()
+        selection = self.selection(fixture, ("source",), "campaign", True)
+        refused = self.preview(fixture, selection)
+        self.assertEqual(("rejected", "ITEM_DEFINITION_INVALID"), (refused["status"], refused["code"]))
+        self.assertIn("'consumer' waiting for 'source' checkpoint 'survey'", str(refused["message"]))
+        self.assertEqual(before, fresh.validated_snapshot())
+        internal = self.preview(fixture, self.selection(fixture, ("consumer",), "source", False))
+        self.assertEqual(("rejected", "ITEM_DEFINITION_INVALID"), (internal["status"], internal["code"]))
+        self.assertIn("'consumer' waiting for 'source' checkpoint 'survey'", str(internal["message"]))
+        self.assertEqual(before, fresh.validated_snapshot())
 
     def test_preparation_invalid_targets_and_cycle_refusals_leave_state_unchanged(self) -> None:
         fixture = self.checkpoint_fixture(local=True)

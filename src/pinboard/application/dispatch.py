@@ -62,7 +62,6 @@ def _rediscover_dispatch_action(
                 proposal_ids=(),
                 artifact_ref_ids=(),
                 completion_history_attempt_ids=(),
-                checkpoint_targets=(),
                 read_current_amendments=False,
             ),
             now,

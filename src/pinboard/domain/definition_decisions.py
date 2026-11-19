@@ -3,7 +3,15 @@ from datetime import datetime
 from typing import Literal
 
 from pinboard.domain import work_models
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import (
+    DecisionFailure,
+    DecisionFailureCode,
+    DecisionResult,
+    EffectDisposition,
+    FailureDetails,
+    FailureFact,
+    RetryDisposition,
+)
 from pinboard.domain.history import work_item_definition_digest
 from pinboard.domain.identifiers import TaskId, WorkItemId
 from pinboard.domain.ledger import LedgerSnapshot
@@ -30,6 +38,56 @@ class DefinitionRevisionDecision:
     decided_at: datetime
 
 
+type DependencyAdditionCode = Literal[
+    DecisionFailureCode.ITEM_DEFINITION_INVALID,
+    DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID,
+]
+
+
+def validate_added_dependencies(
+    work_item_id: WorkItemId,
+    item: work_models.WorkItem | None,
+    previous: tuple[work_models.Dependency, ...],
+    requested: tuple[work_models.Dependency, ...],
+) -> DecisionFailure[DependencyAdditionCode] | None:
+    added = tuple(value for value in requested if value not in previous)
+    if not added:
+        return None
+    targets = tuple(
+        str(value) if isinstance(value, str) else f"{value.item_id} checkpoint {value.checkpoint_id}" for value in added
+    )
+    if item is not None and item.has_started:
+        code: DependencyAdditionCode = DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID
+        message = (
+            f"Started item '{work_item_id}' cannot add prerequisites: {', '.join(targets)}. "
+            "Continue independent work and check the current owners of unfinished obligations. "
+            "Ask the human before assigning uncovered work to a whole-item follow-up."
+        )
+    elif any(isinstance(value, work_models.CheckpointDependency) for value in added):
+        code = DecisionFailureCode.ITEM_DEFINITION_INVALID
+        message = (
+            f"Item '{work_item_id}' can add only whole-item prerequisites: {', '.join(targets)}. "
+            "Inspect the current definition and use the exact producer item ID for each new prerequisite."
+        )
+    else:
+        return None
+    return DecisionFailure(
+        code,
+        message,
+        FailureDetails(
+            observed=(
+                FailureFact("item_id", str(work_item_id)),
+                *(FailureFact("attempted_prerequisite", target) for target in targets),
+            ),
+            mismatches=(),
+            retry=RetryDisposition.CORRECT_INPUT,
+            effect=EffectDisposition.UNCHANGED,
+            changed_surfaces=(),
+            alternatives=(),
+        ),
+    )
+
+
 def introduces_dependency_cycle(
     snapshot: LedgerSnapshot, work_item_id: WorkItemId, dependencies: tuple[work_models.Dependency, ...]
 ) -> bool:
@@ -54,7 +112,8 @@ def decide_definition_revision(
     value: work_models.ReviseWorkItemDefinitionInput,
     now: datetime,
 ) -> DecisionResult[DefinitionRevisionDecision, DefinitionRevisionCode]:
-    if snapshot.work_item(work_item_id) is None:
+    item = snapshot.work_item(work_item_id)
+    if item is None:
         if work_item_id in snapshot.history_items:
             return DecisionFailure(
                 DecisionFailureCode.ITEM_DEFINITION_LIFECYCLE_INVALID,
@@ -93,6 +152,12 @@ def decide_definition_revision(
             f"Definition revision cannot remove declared checkpoints: {removed}.",
             None,
         )
+    if (
+        failure := validate_added_dependencies(
+            work_item_id, item, current.definition.dependencies, value.definition.dependencies
+        )
+    ) is not None:
+        return failure
     digest = work_item_definition_digest(value.definition)
     if isinstance(digest, DecisionFailure):
         return digest

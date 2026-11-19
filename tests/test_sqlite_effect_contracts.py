@@ -112,16 +112,14 @@ class SQLiteEffectContractTest(unittest.TestCase):
             statements.clear()
             small = store.read_decision_facts(
                 query_models.DecisionScope(
-                    added_ids[:1], (), (), (), (), (), (), (), (), (), read_current_amendments=False
+                    added_ids[:1], (), (), (), (), (), (), (), (), read_current_amendments=False
                 ),
                 SQLITE_NOW,
             )
             small_count = count()
             statements.clear()
             large = store.read_decision_facts(
-                query_models.DecisionScope(
-                    added_ids, (), (), (), (), (), (), (), (), (), read_current_amendments=False
-                ),
+                query_models.DecisionScope(added_ids, (), (), (), (), (), (), (), (), read_current_amendments=False),
                 SQLITE_NOW,
             )
             large_count = count()
@@ -286,7 +284,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
             statements.clear()
             selected = store.read_decision_facts(
                 query_models.DecisionScope(
-                    (), (), (), (), (), (), (), (), (AttemptId("work-a-1"),), (), read_current_amendments=False
+                    (), (), (), (), (), (), (), (), (AttemptId("work-a-1"),), read_current_amendments=False
                 ),
                 SQLITE_NOW,
             )
@@ -474,7 +472,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
             store.read_current_parallel_snapshot(SQLITE_NOW)
             store.read_decision_facts(
                 query_models.DecisionScope(
-                    (WorkItemId("work-a"),), (), (), (), (), (), (), (), (), (), read_current_amendments=False
+                    (WorkItemId("work-a"),), (), (), (), (), (), (), (), (), read_current_amendments=False
                 ),
                 SQLITE_NOW,
             )
@@ -534,7 +532,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
         _path, store = self._store()
         focused = store.read_decision_facts(
             query_models.DecisionScope(
-                (WorkItemId("work-a"),), (), (), (), (), (), (), (), (), (), read_current_amendments=False
+                (WorkItemId("work-a"),), (), (), (), (), (), (), (), (), read_current_amendments=False
             ),
             SQLITE_NOW,
         ).snapshot
@@ -548,7 +546,6 @@ class SQLiteEffectContractTest(unittest.TestCase):
                 (),
                 (),
                 (ArtifactRefId(1),),
-                (),
                 (),
                 read_current_amendments=False,
             ),
@@ -565,7 +562,7 @@ class SQLiteEffectContractTest(unittest.TestCase):
 
         direct = store.read_decision_facts(
             query_models.DecisionScope(
-                (WorkItemId("work-a"),), (), (), (), (), (), (), (), (), (), read_current_amendments=False
+                (WorkItemId("work-a"),), (), (), (), (), (), (), (), (), read_current_amendments=False
             ),
             SQLITE_NOW,
         ).snapshot
@@ -574,7 +571,6 @@ class SQLiteEffectContractTest(unittest.TestCase):
                 (WorkItemId("work-a"),),
                 (),
                 (WorkItemId("work-c"),),
-                (),
                 (),
                 (),
                 (),
@@ -590,7 +586,6 @@ class SQLiteEffectContractTest(unittest.TestCase):
                 (WorkItemId("work-a"),),
                 (),
                 (WorkItemId("work-b"),),
-                (),
                 (),
                 (),
                 (),

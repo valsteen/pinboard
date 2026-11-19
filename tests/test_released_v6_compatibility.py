@@ -70,7 +70,6 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                 read_authorization_time=lambda: SQLITE_NOW,
                 actor_task_id=TaskId("classification-owner"),
                 actor_host_id=HostId("local"),
-                dependency_brief_pins=(),
             )
         )
 
@@ -244,7 +243,6 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                     actor_task_id=None,
                     actor_host_id=None,
                     transition_brief_identity=identity,
-                    dependency_brief_pins=(),
                 )
                 self.assertNotIsInstance(committed, DecisionFailure)
                 reloaded = SQLiteWorkStore(database).validated_snapshot()
@@ -289,7 +287,6 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                         read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=1),
                         actor_task_id=TaskId("project"),
                         actor_host_id=HostId("local"),
-                        dependency_brief_pins=(),
                     )
                     self.assertNotIsInstance(committed, DecisionFailure)
                     reloaded = SQLiteWorkStore(database).validated_snapshot()
@@ -337,7 +334,6 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                     read_authorization_time=lambda: SQLITE_NOW,
                     actor_task_id=TaskId("project"),
                     actor_host_id=HostId("local"),
-                    dependency_brief_pins=(),
                 )
             )
             prepared = expect_success(
@@ -392,7 +388,6 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                         authority.definition_revision,
                         authority.definition_digest,
                     ),
-                    dependency_brief_pins=(),
                 )
             )
             fresh = SQLiteWorkStore(database)
@@ -414,7 +409,6 @@ class ReleasedV6CompatibilityTest(unittest.TestCase):
                 read_authorization_time=lambda: SQLITE_NOW + timedelta(seconds=2),
                 actor_task_id=TaskId("project"),
                 actor_host_id=HostId("local"),
-                dependency_brief_pins=(),
             )
             self.assertIsInstance(rejected, DecisionFailure)
             self.assertEqual(before, SQLiteWorkStore(database).validated_snapshot())

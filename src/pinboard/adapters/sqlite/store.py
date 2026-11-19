@@ -1050,7 +1050,7 @@ class SQLiteWorkStore:
                             ).fetchall()
                         )
                         scope = query_models.DecisionScope(
-                            (), (), (), (), (), attempt_ids, (), (), (), (), read_current_amendments=False
+                            (), (), (), (), (), attempt_ids, (), (), (), read_current_amendments=False
                         )
                     case decision_models.Role.PREPARER:
                         item_ids = tuple(
@@ -1069,7 +1069,7 @@ class SQLiteWorkStore:
                             ).fetchall()
                         )
                         scope = query_models.DecisionScope(
-                            item_ids, (), (), (), (), (), (), (), (), (), read_current_amendments=False
+                            item_ids, (), (), (), (), (), (), (), (), read_current_amendments=False
                         )
                     case _ as unreachable:
                         assert_never(unreachable)

@@ -146,18 +146,18 @@ def action_identity_scope(action_id: ActionId) -> query_models.DecisionScope | N
     match semantics.subject_kind:
         case decision_models.ActionSubjectKind.ITEM:
             return query_models.DecisionScope(
-                (WorkItemId(subject),), (), (), (), (), (), (), (), (), (), read_current_amendments=False
+                (WorkItemId(subject),), (), (), (), (), (), (), (), (), read_current_amendments=False
             )
         case decision_models.ActionSubjectKind.ATTEMPT:
             return query_models.DecisionScope(
-                (), (), (), (), (), (AttemptId(subject),), (), (), (), (), read_current_amendments=False
+                (), (), (), (), (), (AttemptId(subject),), (), (), (), read_current_amendments=False
             )
         case decision_models.ActionSubjectKind.PROPOSAL:
             return query_models.DecisionScope(
-                (), (), (), (), (), (), (ProposalId(subject),), (), (), (), read_current_amendments=False
+                (), (), (), (), (), (), (ProposalId(subject),), (), (), read_current_amendments=False
             )
         case decision_models.ActionSubjectKind.LEDGER:
-            return query_models.DecisionScope((), (), (), (), (), (), (), (), (), (), read_current_amendments=False)
+            return query_models.DecisionScope((), (), (), (), (), (), (), (), (), read_current_amendments=False)
         case _ as unreachable:
             assert_never(unreachable)
 

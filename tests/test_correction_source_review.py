@@ -2896,3 +2896,290 @@ class CorrectionSourceReviewTest(CheckpointPackageSupport):
                     {"project_root": str(fixture.project), "work_root": str(fixture.work), "dispatch": choice},
                 )
                 self.assertEqual("ready", dispatched["status"], dispatched)
+
+    def test_rebound_standard_local_checkpoint_dispatches_via_ordinary_and_reviews(self) -> None:  # noqa: PLR0915 - one full rebound local recovery journey
+        self.fixed_native_time()
+        fixture = self.native_fixture(self.checkpoint_fixture(local=True))
+        roots = {"project_root": str(fixture.project), "work_root": str(fixture.work)}
+        old_base = fixture.brief.base_revision
+        original_context = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        assert original_context is not None
+        original_candidate = candidate_snapshots.decode_candidate_snapshot(
+            (fixture.work / original_context.reference.selector).read_bytes()
+        ).candidate
+        reason = "Finish the remaining local edit on the rebased base."
+        history_id = self.return_for_correction(fixture, reason, "rebound-local")
+
+        # Move to a new base commit and rebind the same attempt to a replacement local brief.
+        subprocess.run(
+            ["git", "switch", "-c", "new-local-base", old_base], cwd=fixture.project, check=True, capture_output=True
+        )
+        (fixture.project / "base_update.txt").write_text("new accepted base\n", encoding="utf-8")
+        new_base = self.commit_all(fixture.project, "new local base")
+        subprocess.run(["git", "switch", fixture.brief.branch], cwd=fixture.project, check=True, capture_output=True)
+        subprocess.run(["git", "reset", "--hard", new_base], cwd=fixture.project, check=True, capture_output=True)
+        (fixture.project / "tracked.txt").write_text("rebased local work\n", encoding="utf-8")
+        self.commit_all(fixture.project, "rebased local candidate")
+
+        replacement = msgspec.structs.replace(
+            fixture.brief,
+            artifact_revision=fixture.brief.artifact_revision + 1,
+            base_revision=new_base,
+        )
+        published = fixture.call_advertised_tool(
+            server.BRIEF_PUBLISH_TOOL, roots | {"brief": msgspec.to_builtins(replacement)}
+        )
+        self.assertEqual("committed", published["status"], published)
+        brief_reference = self.json_object(published["reference"])
+        rebound = self.transition_result(
+            fixture,
+            self.project_action(fixture, "rebind-attempt:work-a-1"),
+            {
+                "branch": replacement.branch,
+                "base_revision": new_base,
+                "brief_artifact_ref_id": brief_reference["artifact_ref_id"],
+            },
+        )
+        self.assertEqual("committed", rebound["status"], rebound)
+        fixture = dataclasses.replace(fixture, brief=replacement, store=SQLiteWorkStore(fixture.work / "state.sqlite3"))
+
+        # The earlier return is preserved as history and marked rebound_since_return.
+        item_status = fixture.call_advertised_tool(
+            server.ITEM_STATUS_TOOL,
+            {"request": {**roots, "operation": "item", "item_id": "work-a"}},
+        )
+        verdict = self.json_object(item_status["review_verdict"])
+        self.assertEqual("returned-for-correction", verdict["kind"])
+        self.assertEqual(history_id, verdict["history_id"])
+        self.assertTrue(verdict["rebound_since_return"])
+
+        historical = fixture.call_advertised_tool(
+            server.RETURN_CONTEXT_TOOL,
+            {
+                **roots,
+                "attempt_id": "work-a-1",
+                "selection": {"kind": "historical", "return_history_id": history_id},
+            },
+        )
+        self.assertEqual("ready", historical["status"], historical)
+        recovered = self.json_object(historical["context"])
+        self.assertEqual(original_candidate, self.json_object(recovered["starting_snapshot_metadata"])["candidate"])
+        self.assertEqual(history_id, self.json_object(recovered["return_receipt"])["history_id"])
+
+        current_rejected = fixture.call_advertised_tool(
+            server.RETURN_CONTEXT_TOOL,
+            {
+                **roots,
+                "attempt_id": "work-a-1",
+                "selection": {"kind": "current-candidate", "return_history_id": history_id},
+            },
+        )
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", current_rejected["code"], current_rejected)
+
+        # Historical local-correction dispatch is rejected after rebind.
+        action = self.project_action(fixture, "dispatch:work-a-1")
+        environment = msgspec.structs.replace(
+            test_dispatch.DispatchTest().environment(fixture.project),
+            branch=replacement.branch,
+            starting_revision=new_base,
+        )
+        local_review = work_brief_models.LocalCorrectionSourceReview(
+            "pinboard-local-correction-source-review/v1",
+            hashlib.sha256(work_briefs.canonical_work_brief_bytes(replacement)).hexdigest(),
+            "independent-local-reviewer",
+            work_brief_models.PortableArtifactIdentity(
+                "candidate",
+                "evidence",
+                original_context.reference.key,
+                original_context.reference.revision,
+                original_context.reference.selector,
+                original_context.reference.content_sha256,
+                original_context.reference.size_bytes,
+            ),
+            action_models.ReasonInputPayload(reason),
+            "Historical return cannot authorize current correction after rebind.",
+        )
+        local_correction_choice = self.json_object(
+            msgspec.to_builtins(
+                {
+                    "kind": "local-correction",
+                    "receipt": {
+                        "action_id": {"kind": "dispatch", "subject": "work-a-1"},
+                        "subject_revision": action["subject_revision"],
+                    },
+                    "checkpoint_id": replacement.checkpoint.checkpoint_id,
+                    "environment": environment,
+                    "prompt": None,
+                    "brief_review": local_review,
+                    "review_id": "stale-local-correction",
+                    "correction_history_id": history_id,
+                },
+                enc_hook=test_dispatch.dispatch_environment_enc_hook,
+            )
+        )
+        rejected_local = fixture.call_advertised_tool(
+            server.DISPATCH_TOOL, {**roots, "dispatch": local_correction_choice}
+        )
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", rejected_local["code"], rejected_local)
+
+        # Replacement readiness is limited to cross-boundary checkpoints and rejects a rebound local checkpoint.
+        rebased_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=fixture.project, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        cross_boundary_contract_review = work_brief_models.WorkBriefReview(
+            "pinboard-work-brief-review/v3",
+            replacement.attempt_id,
+            replacement.checkpoint.checkpoint_id,
+            hashlib.sha256(work_briefs.canonical_work_brief_bytes(replacement)).hexdigest(),
+            "0" * 64,
+            "0" * 64,
+            "independent-local-reviewer",
+            "complete",
+            "ready",
+            (
+                work_brief_models.ReviewCoverageResult(
+                    "architecture",
+                    "architecture",
+                    work_brief_models.NotApplicableCoverageOwner("Local checkpoint."),
+                    "covered",
+                    "Placeholder coverage.",
+                ),
+            ),
+        )
+        replacement_readiness_review = work_brief_models.CorrectionSourceReview(
+            "pinboard-correction-source-review/v1",
+            cross_boundary_contract_review,
+            local_review.starting_candidate,
+            action_models.ReasonInputPayload(reason),
+            "Replacement readiness does not apply to local checkpoints.",
+        )
+        replacement_readiness_choice = self.json_object(
+            msgspec.to_builtins(
+                {
+                    "kind": "replacement-readiness",
+                    "receipt": {
+                        "action_id": {"kind": "dispatch", "subject": "work-a-1"},
+                        "subject_revision": action["subject_revision"],
+                    },
+                    "checkpoint_id": replacement.checkpoint.checkpoint_id,
+                    "brief_review": replacement_readiness_review,
+                    "current_candidate": rebased_head,
+                    "review_id": "local-replacement-readiness",
+                    "correction_history_id": history_id,
+                }
+            )
+        )
+        rejected_readiness = fixture.call_advertised_tool(
+            server.DISPATCH_TOOL, {**roots, "dispatch": replacement_readiness_choice}
+        )
+        self.assertEqual("DISPATCH_BRIEF_REVIEW_ARGUMENT_INVALID", rejected_readiness["code"], rejected_readiness)
+        self.assertIn("cross-boundary checkpoint", str(rejected_readiness["message"]))
+
+        # Ordinary dispatch succeeds on the rebound standard local checkpoint.
+        ordinary_choice = self.json_object(
+            msgspec.to_builtins(
+                {
+                    "kind": "ordinary",
+                    "receipt": {
+                        "action_id": {"kind": "dispatch", "subject": "work-a-1"},
+                        "subject_revision": action["subject_revision"],
+                    },
+                    "checkpoint_id": replacement.checkpoint.checkpoint_id,
+                    "environment": environment,
+                    "prompt": None,
+                },
+                enc_hook=test_dispatch.dispatch_environment_enc_hook,
+            )
+        )
+        dispatched = fixture.call_advertised_tool(server.DISPATCH_TOOL, {**roots, "dispatch": ordinary_choice})
+        self.assertEqual("ready", dispatched["status"], dispatched)
+        prompt_ref = self.json_object(dispatched["prompt_reference"])
+        prompt_bytes = (fixture.work / str(prompt_ref["selector"])).read_bytes()
+        self.assertIn(work_briefs.canonical_work_brief_bytes(replacement), prompt_bytes)
+
+        # The dispatched worker performs the outstanding edit, updates result.md, submits, and releases.
+        (fixture.project / "tracked.txt").write_text("rebased local work with outstanding edit\n", encoding="utf-8")
+        revised_candidate = self.commit_all(fixture.project, "apply outstanding edit after rebind")
+        attempt_root = fixture.work / "attempts" / "work-a-1"
+        (attempt_root / "result.md").write_text("Revised result after rebound ordinary dispatch.\n", encoding="utf-8")
+        lease = self.native_attempt_acquire(fixture, "rebound-local-worker")
+        submitted = self.transition_result(
+            fixture,
+            self.native_actions(fixture, "submit-review", "work-a-1", role="worker", lease=lease),
+            {"candidate": revised_candidate},
+        )
+        self.assertEqual("committed", submitted["status"], submitted)
+        released = fixture.call_advertised_tool(
+            server.ATTEMPT_AUTHORITY_TOOL,
+            {
+                "request": {
+                    "operation": "release",
+                    "project_root": str(fixture.project),
+                    "work_root": str(fixture.work),
+                    "attempt_id": "work-a-1",
+                    "lease_id": lease["lease_id"],
+                    "generation": lease["generation"],
+                }
+            },
+        )
+        self.assertEqual("committed", released["status"], released)
+
+        # Commission a separate review referencing the historical return and record the ready verdict.
+        review_job = fixture.call_advertised_tool(
+            server.REVIEW_JOB_TOOL,
+            {
+                **roots,
+                "review": {
+                    "kind": "correction",
+                    "attempt_id": "work-a-1",
+                    "candidate_revision": revised_candidate,
+                    "correction_history_id": history_id,
+                    "runtime": "codex",
+                    "background": False,
+                },
+            },
+        )
+        self.assertEqual("ready", review_job["status"], review_job)
+        reviewer_prompt_ref = self.json_object(review_job["prompt_reference"])
+        reviewer_prompt = (fixture.work / str(reviewer_prompt_ref["selector"])).read_text(encoding="utf-8")
+        self.assertIn(f"Correction receipt: history {history_id}", reviewer_prompt)
+        self.assertIn(new_base, reviewer_prompt)
+
+        snapshot = fixture.store.read_candidate_snapshot_context(AttemptId("work-a-1"))
+        attempt = fixture.store.read_attempt_context(AttemptId("work-a-1"))
+        assert snapshot is not None and isinstance(attempt, query_models.NonterminalAttemptContextFacts)
+        recorded = fixture.call_advertised_tool(
+            server.REVIEW_JOB_TOOL,
+            {
+                **roots,
+                "review": {
+                    "kind": "record-ready",
+                    "attempt_id": "work-a-1",
+                    "candidate_revision": revised_candidate,
+                    "candidate_snapshot_sha256": snapshot.reference.content_sha256,
+                    "accepted_brief_sha256": attempt.brief_reference.content_sha256,
+                    "result_sha256": hashlib.sha256((attempt_root / "result.md").read_bytes()).hexdigest(),
+                    "review_sha256": hashlib.sha256((attempt_root / "review.md").read_bytes()).hexdigest(),
+                    "reviewer_prompt_sha256": reviewer_prompt_ref["sha256"],
+                    "reviewer_task_id": "independent-rebound-local-reviewer",
+                    "verdict": "ready",
+                    "acceptance_evidence": "Revised commit on the rebound base satisfies the replacement local brief.",
+                },
+            },
+        )
+        self.assertEqual("recorded", recorded["status"], recorded)
+
+        # The earlier return remains preserved as historical evidence after resubmission and review.
+        historical_after = fixture.call_advertised_tool(
+            server.RETURN_CONTEXT_TOOL,
+            {
+                **roots,
+                "attempt_id": "work-a-1",
+                "selection": {"kind": "historical", "return_history_id": history_id},
+            },
+        )
+        self.assertEqual("ready", historical_after["status"], historical_after)
+        self.assertEqual(
+            original_candidate,
+            self.json_object(self.json_object(historical_after["context"])["starting_snapshot_metadata"])["candidate"],
+        )

@@ -73,11 +73,19 @@ search-path = ["."]
 preset = "strict"
 min-severity = "warn"
 type-ignore-unknown-tag-behavior = "no-effect"
+strict-partial-subtyping = true
+treat-all-caps-as-final = true
 
 [tool.pyrefly.errors]
+implicit-reexport = "error"
+implicitly-defined-attribute = "error"
+incompatible-comparison = "error"
 invalid-cast = "error"
 no-any-return = "error"
+non-exhaustive-match-open-type = "error"
+string-as-iterable = "error"
 unknown-return-type = "error"
+unreachable = "error"
 untyped-function-decorator = "error"
 untyped-class-decorator = "error"
 untyped-namedtuple = "error"
@@ -86,9 +94,10 @@ untyped-namedtuple = "error"
 matches = "src/**"
 
 [tool.pyrefly.sub-config.errors]
-unknown-argument-type = "warn"
-unknown-attribute-type = "warn"
-unknown-variable-type = "warn"
+unknown-argument-type = "error"
+unknown-attribute-access = "error"
+unknown-attribute-type = "error"
+unknown-variable-type = "error"
 
 [tool.ty.environment]
 python-version = "3.15"
@@ -140,7 +149,7 @@ dev = [
     "coverage>=7.17.3",
     "mcp-types>=2.3.0",
     "pyyaml>=6.0.3",
-    "pyrefly>=1.4.1",
+    "pyrefly>=1.5.0",
     "ruff>=0.17.5",
     "ty>=0.0.104",
     "markdown-it-py>=4.3.0",

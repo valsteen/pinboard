@@ -575,7 +575,10 @@ class ConsolidationTest(CheckpointPackageSupport):
         self.assertEqual("ok", preview["status"], preview)
         self.assertEqual("committed", self.revise(fixture, "source", {"title": "Changed source"})["status"])
         before = fixture.store.validated_snapshot()
-        self.assertEqual("rejected", self.confirm(fixture, selection, preview)["status"])
+        stale = self.confirm(fixture, selection, preview)
+        self.assertEqual(("rejected", "refresh-action"), (stale["status"], stale["retry"]), stale)
+        self.assertIn("fresh pinboard_consolidate preview", str(stale["recovery"]))
+        self.assertIn("separate explicit human confirmation", str(stale["recovery"]))
         self.assertEqual(before, fixture.store.validated_snapshot())
         fresh = self.preview(fixture, selection)
         for patch_value in (
@@ -693,6 +696,11 @@ class ConsolidationTest(CheckpointPackageSupport):
                     for item in ("source", "external"):
                         self.create(fixture, item)
                     self.native_attempt_acquire(fixture, "target-worker")
+                    selection = self.selection(
+                        fixture, ("source",), "work-a" if target == "campaign" else "campaign", target != "campaign"
+                    )
+                    original = self.preview(fixture, selection)
+                    self.assertEqual("ok", original["status"], original)
                     if target == "dependent":
                         with predecessor_checkpoint_fixture():
                             self.assertEqual(
@@ -702,23 +710,28 @@ class ConsolidationTest(CheckpointPackageSupport):
                         self.assertEqual(
                             "committed", self.revise(fixture, "source", {"dependencies": ["external"]})["status"]
                         )
-                    selection = self.selection(
-                        fixture, ("source",), "work-a" if target == "campaign" else "campaign", target != "campaign"
-                    )
                     fresh = SQLiteWorkStore(fixture.work / "state.sqlite3")
                     before = fresh.validated_snapshot()
                     authority = fresh.read_attempt_authority_status(AttemptId("work-a-1"))
-                    preview = self.preview(fixture, selection)
-                    self.assertEqual(
-                        ("rejected", "ITEM_DEFINITION_LIFECYCLE_INVALID"), (preview["status"], preview["code"])
-                    )
-                    self.assertIn("Started item 'work-a'", str(preview["message"]))
-                    self.assertEqual(
-                        (False, "unchanged", []),
-                        (preview["state_changed"], preview["effect"], preview["changed_surfaces"]),
-                    )
-                    self.assertEqual(before, fresh.validated_snapshot())
-                    self.assertEqual(authority, fresh.read_attempt_authority_status(AttemptId("work-a-1")))
+                    for operation in ("preview", "confirm"):
+                        with self.subTest(operation=operation):
+                            refused = (
+                                self.preview(fixture, selection)
+                                if operation == "preview"
+                                else self.confirm(fixture, selection, original)
+                            )
+                            self.assertEqual(
+                                ("rejected", "ITEM_DEFINITION_LIFECYCLE_INVALID", "correct-input"),
+                                (refused["status"], refused["code"], refused["retry"]),
+                            )
+                            self.assertIn("Started item 'work-a'", str(refused["message"]))
+                            self.assertIn("correct the selection before", str(refused["recovery"]))
+                            self.assertEqual(
+                                (False, "unchanged", []),
+                                (refused["state_changed"], refused["effect"], refused["changed_surfaces"]),
+                            )
+                            self.assertEqual(before, fresh.validated_snapshot())
+                            self.assertEqual(authority, fresh.read_attempt_authority_status(AttemptId("work-a-1")))
 
     def test_consolidation_refuses_retargeting_an_existing_checkpoint_wait(self) -> None:
         fixture = self.checkpoint_fixture(local=True)

@@ -15,7 +15,14 @@ from pinboard.application.ports import WorkStore
 from pinboard.domain import consolidation, decision_models, history, initiatives, work_models
 from pinboard.domain.consolidation import ConsolidationDecisionCode
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, DecisionResult
+from pinboard.domain.errors import (
+    DecisionFailure,
+    DecisionFailureCode,
+    DecisionResult,
+    EffectDisposition,
+    FailureDetails,
+    RetryDisposition,
+)
 from pinboard.domain.identifiers import ActionId, HistorySubjectId, HostId, TaskId, WorkItemId
 from pinboard.domain.proposal_models import ProposalCreationDecision
 
@@ -208,8 +215,15 @@ def confirm(
         if binding(current, work_root) != expected:
             return DecisionFailure(
                 DecisionFailureCode.ACTION_NOT_AVAILABLE,
-                "Consolidation selection, definitions, relationships, queue or authority changed, or the binding names another board. Read a fresh preview and obtain separate human confirmation.",
-                None,
+                "Consolidation selection, definitions, relationships, queue or authority changed, or the binding names another board.",
+                FailureDetails(
+                    observed=(),
+                    mismatches=(),
+                    retry=RetryDisposition.REFRESH_ACTION,
+                    effect=EffectDisposition.UNCHANGED,
+                    changed_surfaces=(),
+                    alternatives=(),
+                ),
             )
         if (failure := obligation_coverage.validate_origins(transaction, plan.definition.obligations)) is not None:
             return failure

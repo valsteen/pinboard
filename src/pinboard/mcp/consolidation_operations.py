@@ -9,7 +9,8 @@ import msgspec
 from pinboard.adapters.files.errors import RootError
 from pinboard.adapters.files.models import AffectedViews
 from pinboard.application import consolidation
-from pinboard.domain.errors import DecisionFailure, DecisionFailureCode
+from pinboard.domain.consolidation import ConsolidationDecisionCode
+from pinboard.domain.errors import DecisionFailure, DecisionFailureCode, RetryDisposition
 from pinboard.domain.identifiers import HostId, TaskId
 from pinboard.mcp import common, execution
 from pinboard.mcp import consolidation_contracts as contracts
@@ -20,18 +21,37 @@ from pinboard.mcp.tool_names import CONSOLIDATE_TOOL
 def rejected(
     code: DecisionFailureCode, message: str, retry: Literal["correct-input", "refresh-action"]
 ) -> execution.TypedOperationResult[contracts.Result]:
+    recovery = (
+        "Read a fresh pinboard_consolidate preview for the exact board and selection. Show the new map and obtain "
+        "separate explicit human confirmation before confirming it."
+        if retry == "refresh-action"
+        else "Resolve the named condition or correct the selection before requesting a new preview. "
+        "Nothing was consolidated."
+    )
     result = contracts.Rejected(
         "pinboard-consolidation-result/v2",
         "rejected",
         code,
         message,
-        "Read a fresh pinboard_consolidate preview with the exact project/work roots and selected live items, show the complete map, and obtain a separate explicit human confirmation. Correct any named condition first; nothing was consolidated.",
+        recovery,
         False,
         "unchanged",
         retry,
         (),
     )
     return execution.TypedOperationResult(result, "rejected", None)
+
+
+def _decision_rejection(
+    failure: DecisionFailure[ConsolidationDecisionCode],
+) -> execution.TypedOperationResult[contracts.Result]:
+    details = failure.details
+    retry = (
+        "refresh-action"
+        if details is not None and details.retry == RetryDisposition.REFRESH_ACTION
+        else "correct-input"
+    )
+    return rejected(failure.code, failure.message, retry)
 
 
 def operate(
@@ -60,7 +80,7 @@ def operate(
         case contracts.PreviewRequest():
             preview = consolidation.preview(store, request.selection, TaskId(request.actor_task_id), now)
             if isinstance(preview, DecisionFailure):
-                return rejected(preview.code, preview.message, "refresh-action")
+                return _decision_rejection(preview)
             result = contracts.PreviewResult(
                 "pinboard-consolidation-preview-result/v3",
                 "ok",
@@ -86,7 +106,7 @@ def operate(
                 durable.work_root,
             )
             if isinstance(effect, DecisionFailure):
-                return rejected(effect.code, effect.message, "refresh-action")
+                return _decision_rejection(effect)
             refreshed = common._refresh_affected_views(
                 durable,
                 store,

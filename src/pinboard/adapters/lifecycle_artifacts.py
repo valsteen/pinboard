@@ -16,14 +16,13 @@ import msgspec
 
 from pinboard.adapters import candidate_evidence, review_operations
 from pinboard.adapters.files.artifacts import ArtifactRepository
-from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode
+from pinboard.adapters.files.errors import ArtifactError, ArtifactErrorCode, RootError
 from pinboard.adapters.files.root import (
     CurrentHeadCandidate,
     DifferentHeadCandidate,
     DirtyHeadCandidate,
     ReviewedDiffAbsent,
     ReviewedDiffPresent,
-    RootError,
     TargetUnresolved,
     WorkingTreeCandidate,
     observe_checkout_identity,

@@ -51,11 +51,10 @@ from pinboard.application import (
 )
 from pinboard.application.artifact_publication import (
     ArtifactAcceptanceFailure,
-    ArtifactPublication,
     ArtifactWriteFailure,
     PublishedArtifactRejected,
 )
-from pinboard.application.artifacts import NewArtifact
+from pinboard.application.artifacts import ArtifactPublication, NewArtifact
 from pinboard.application.mutation_models import CommittedEffect
 from pinboard.application.ports import WorkStore, WorkStoreError
 from pinboard.application.work_briefs import canonical_work_brief_bytes

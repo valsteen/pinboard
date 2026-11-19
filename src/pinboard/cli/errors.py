@@ -12,7 +12,8 @@ from pinboard.adapters.files.errors import (
 from pinboard.adapters.files.file_io import DurableRoots
 from pinboard.adapters.sqlite.errors import SQLiteReadOnlyError, StorageError
 from pinboard.application import work_brief_models
-from pinboard.application.work_brief_models import ReviewEvidenceFailure, WorkBriefFailure  # noqa: ICN003
+from pinboard.application.work_brief_models import ReviewEvidenceFailure as ReviewEvidenceFailure  # noqa: ICN003
+from pinboard.application.work_brief_models import WorkBriefFailure as WorkBriefFailure  # noqa: ICN003
 from pinboard.cli import cli_commands
 from pinboard.domain.errors import (
     ChangedSurface,

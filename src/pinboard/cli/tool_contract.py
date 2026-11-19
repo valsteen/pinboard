@@ -311,10 +311,13 @@ def describe_operation(operation_id: str) -> CommandResult[ToolContractDetail]:
                 "pinboard --version",
                 "Print installed version and exit successfully before project state.",
             )
-    selected = tuple(command for command in cli_parser.installed_commands() if command.operation_id == operation_id)
-    if len(selected) != 1:
-        return _unknown_selector(operation_id)
-    return _operation_contract(selected[0])
+        case _:
+            selected = tuple(
+                command for command in cli_parser.installed_commands() if command.operation_id == operation_id
+            )
+            if len(selected) != 1:
+                return _unknown_selector(operation_id)
+            return _operation_contract(selected[0])
 
 
 def _installed_command(command: cli_commands.CliCommand) -> cli_parser.InstalledCommand:

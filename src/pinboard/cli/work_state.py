@@ -20,6 +20,7 @@ from pinboard.adapters.files.errors import ArtifactError, FileIOError, ViewRefre
 from pinboard.adapters.files.file_io import DurableRoots, ensure_directory_chain
 from pinboard.adapters.files.root import ensure_git_exclude
 from pinboard.adapters.files.views import derive_expected_view_bytes, rebuild_facts
+from pinboard.adapters.generated_views import ComposedBoardReader
 from pinboard.adapters.sqlite.database import initialize_database, open_database, reconcile_database_publication
 from pinboard.adapters.sqlite.errors import StorageError
 from pinboard.adapters.sqlite.models import InitReceipt, OpenMode
@@ -44,7 +45,7 @@ from pinboard.cli.errors import (
     ViewRefreshFailure,
 )
 from pinboard.cli.work_state_models import Diagnostic, Severity, ValidationDiagnosticCode, ValidationReport
-from pinboard.cli.work_views import ComposedBoardReader, archive_attempt_views
+from pinboard.cli.work_views import archive_attempt_views
 from pinboard.domain import decision_models
 from pinboard.domain.identifiers import ArtifactRefId, AttemptId
 

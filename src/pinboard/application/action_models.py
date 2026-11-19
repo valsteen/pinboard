@@ -1,5 +1,7 @@
 """Transport-neutral action payload and discovery contracts."""
 
+from __future__ import annotations
+
 from typing import (
     Annotated,
     Any,  # noqa: TID251 - generated JSON Schema is recursive boundary data
@@ -13,6 +15,7 @@ from pinboard.application import decision_batches, pr_reviews, unblockers
 from pinboard.application.amendment_supersessions import AmendmentSupersessionPayload
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.history import DefinitionPayload, RecordText
+from pinboard.domain.identifiers import WorkItemId
 
 type NonEmptyLine = Annotated[str, msgspec.Meta(min_length=1, pattern=r"\A[^\n]+\z")]
 type Identity = Annotated[str, msgspec.Meta(pattern=r"\A[a-z0-9]+(?:-[a-z0-9]+)*\z")]
@@ -22,6 +25,7 @@ type IntegrationTarget = Annotated[
     str,
     msgspec.Meta(min_length=1, pattern=r"\A[^\r\n\x00" "\u2028\u2029" r"-][^\r\n\x00" "\u2028\u2029" r"]*\z"),
 ]
+type FullGitCommit = Annotated[str, msgspec.Meta(pattern=r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z")]
 type JsonSchema = dict[str, Any]
 type ActionAuthorization = Literal["observer", "project", "attempt", "preparation"]
 # Excluded path characters; U+2028 and U+2029 stay literal because RE2 rejects \u escapes in advertised patterns.
@@ -102,9 +106,18 @@ class CoveredCompletionPackageInputPayload(msgspec.Struct, frozen=True, forbid_u
     evidence: NonEmptyLine
 
 
+class LandingTargetDepthsPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    pre_landing: PositiveInt
+    landed: Annotated[int, msgspec.Meta(ge=0)]
+
+
 class LandedCompletionPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True, omit_defaults=True):
     target: IntegrationTarget
+    pre_landing_revision: FullGitCommit
+    landed_revision: FullGitCommit
     retain_local_resources: bool = False
+    difference_review_ref_id: PositiveInt | msgspec.UnsetType = msgspec.UNSET
+    target_depths: LandingTargetDepthsPayload | msgspec.UnsetType = msgspec.UNSET
 
 
 class ReviewedCompletionReceiptPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -125,10 +138,174 @@ class ReviewedCompletionReceiptPayload(msgspec.Struct, frozen=True, forbid_unkno
             raise ValueError("packages must be unique and strictly ascending by history_id")
 
 
+class CarryingObligationPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    item_id: Identity
+    definition_revision: PositiveInt
+    definition_digest: Sha256
+    obligation_id: Identity
+
+
+class ReviewedObligationPayload(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="reviewed", tag_field="kind"
+):
+    obligation_id: Identity
+
+
+class DoneObligationPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="done", tag_field="kind"):
+    obligation_id: Identity
+    evidence: RecordText
+
+
+class MovedObligationPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="moved", tag_field="kind"):
+    obligation_id: Identity
+    receiver: CarryingObligationPayload
+
+
+type CompletionObligationPayload = ReviewedObligationPayload | DoneObligationPayload | MovedObligationPayload
+
+
+class DoneHumanStepPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="done", tag_field="kind"):
+    step_id: Identity
+    evidence: RecordText
+
+
+class MovedHumanStepPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="moved", tag_field="kind"):
+    step_id: Identity
+    receiver: CarryingObligationPayload
+
+
+class FinalHumanStepsAccountingPayload(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="final-human-steps", tag_field="kind"
+):
+    brief_sha256: Sha256
+    steps: tuple[DoneHumanStepPayload, ...]
+    obligations: tuple[CompletionObligationPayload, ...]
+
+
+class ContinuingWorkAccountingPayload(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="continue", tag_field="kind"
+):
+    brief_sha256: Sha256
+    remaining_work: RecordText
+    required_step_ids: Annotated[tuple[Identity, ...], msgspec.Meta(min_length=1)]
+    steps: Annotated[tuple[DoneHumanStepPayload | MovedHumanStepPayload, ...], msgspec.Meta(min_length=1)]
+    obligations: tuple[CompletionObligationPayload, ...]
+
+
+type CompletionAccountingPayload = FinalHumanStepsAccountingPayload | ContinuingWorkAccountingPayload
+
+
 class ReviewedCompleteInputPayload(ReviewedCompletionReceiptPayload, frozen=True, forbid_unknown_fields=True):
-    """Current request with optional landing intent for this invocation."""
+    """Current request with landing intent and additional accounting when the brief calls for it."""
 
     landed: LandedCompletionPayload | msgspec.UnsetType = msgspec.UNSET
+    accounting: CompletionAccountingPayload | msgspec.UnsetType = msgspec.UNSET
+
+
+def _carrying_obligation(value: CarryingObligationPayload) -> work_models.CarryingObligation:
+    return work_models.CarryingObligation(
+        WorkItemId(value.item_id),
+        value.definition_revision,
+        value.definition_digest,
+        work_models.ObligationId(value.obligation_id),
+    )
+
+
+def _completion_obligation(value: CompletionObligationPayload) -> work_models.CompletionObligation:
+    match value:
+        case ReviewedObligationPayload(obligation_id=identity):
+            return work_models.ReviewedObligation(work_models.ObligationId(identity))
+        case DoneObligationPayload(obligation_id=identity, evidence=evidence):
+            return work_models.DoneObligation(work_models.ObligationId(identity), evidence)
+        case MovedObligationPayload(obligation_id=identity, receiver=receiver):
+            return work_models.MovedObligation(work_models.ObligationId(identity), _carrying_obligation(receiver))
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _done_human_step(value: DoneHumanStepPayload) -> work_models.DoneHumanStep:
+    return work_models.DoneHumanStep(work_models.CompletionStepId(value.step_id), value.evidence)
+
+
+def _completion_human_step(value: DoneHumanStepPayload | MovedHumanStepPayload) -> work_models.CompletionHumanStep:
+    match value:
+        case DoneHumanStepPayload():
+            return _done_human_step(value)
+        case MovedHumanStepPayload(step_id=identity, receiver=receiver):
+            return work_models.MovedHumanStep(work_models.CompletionStepId(identity), _carrying_obligation(receiver))
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def completion_accounting(value: CompletionAccountingPayload) -> work_models.CompletionAccounting:
+    obligations = tuple(_completion_obligation(row) for row in value.obligations)
+    match value:
+        case FinalHumanStepsAccountingPayload():
+            return work_models.FinalHumanStepsAccounting(
+                value.brief_sha256, tuple(_done_human_step(step) for step in value.steps), obligations
+            )
+        case ContinuingWorkAccountingPayload():
+            return work_models.ContinuingWorkAccounting(
+                value.brief_sha256,
+                value.remaining_work,
+                tuple(work_models.CompletionStepId(identity) for identity in value.required_step_ids),
+                tuple(_completion_human_step(step) for step in value.steps),
+                obligations,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _carrying_payload(value: work_models.CarryingObligation) -> CarryingObligationPayload:
+    return CarryingObligationPayload(
+        str(value.item_id), value.definition_revision, value.definition_digest, str(value.obligation_id)
+    )
+
+
+def _completion_obligation_payload(value: work_models.CompletionObligation) -> CompletionObligationPayload:
+    identity = str(value.obligation_id)
+    match value:
+        case work_models.ReviewedObligation():
+            return ReviewedObligationPayload(identity)
+        case work_models.DoneObligation(evidence=evidence):
+            return DoneObligationPayload(identity, evidence)
+        case work_models.MovedObligation(receiver=receiver):
+            return MovedObligationPayload(identity, _carrying_payload(receiver))
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _completion_step_payload(
+    value: work_models.CompletionHumanStep,
+) -> DoneHumanStepPayload | MovedHumanStepPayload:
+    match value:
+        case work_models.DoneHumanStep(step_id=identity, evidence=evidence):
+            return DoneHumanStepPayload(str(identity), evidence)
+        case work_models.MovedHumanStep(step_id=identity, receiver=receiver):
+            return MovedHumanStepPayload(str(identity), _carrying_payload(receiver))
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def completion_accounting_payload(value: work_models.CompletionAccounting) -> CompletionAccountingPayload:
+    obligations = tuple(_completion_obligation_payload(row) for row in value.obligations)
+    match value:
+        case work_models.FinalHumanStepsAccounting():
+            return FinalHumanStepsAccountingPayload(
+                value.brief_sha256,
+                tuple(DoneHumanStepPayload(str(step.step_id), step.evidence) for step in value.steps),
+                obligations,
+            )
+        case work_models.ContinuingWorkAccounting():
+            return ContinuingWorkAccountingPayload(
+                value.brief_sha256,
+                value.remaining_work,
+                tuple(str(identity) for identity in value.required_step_ids),
+                tuple(_completion_step_payload(step) for step in value.steps),
+                obligations,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 class AcceptCheckpointInputPayload(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -377,6 +554,11 @@ class CompletionInputContractView(InputContractView, frozen=True, forbid_unknown
     payload_schema: JsonSchema
     candidate: str | None
     checkpoint_packages: tuple[CompletionPackageView, ...]
+    accepted_brief_sha256: Sha256
+    obligation_ids: tuple[Identity, ...]
+    final_step_ids: tuple[Identity, ...]
+    remaining_work: str | None
+    continued_review: CompletionReviewView | None
 
     def __post_init__(self) -> None:
         if self.action_kind != decision_models.ActionKind.COMPLETE:
@@ -396,6 +578,17 @@ class CompletionInputContractView(InputContractView, frozen=True, forbid_unknown
             msgspec.json.schema(expected_model), order="sorted"
         ):
             raise ValueError("completion payload schema must be one exact complete-action leaf")
+
+
+class CompletionReviewView(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    artifact_ref_id: PositiveInt
+    selector: NonEmptyLine
+    sha256: Sha256
+    size_bytes: PositiveInt
+    acceptance_history_id: PositiveInt
+    reviewer_task_id: NonEmptyLine
+    result_sha256: Sha256
+    review_sha256: Sha256
 
 
 def _validate_action_view(

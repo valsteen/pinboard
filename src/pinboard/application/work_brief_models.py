@@ -7,7 +7,7 @@ from typing import Annotated, Literal, Protocol, assert_never, override
 
 import msgspec
 
-from pinboard.application import action_models, stored_state
+from pinboard.application import action_models, landing_decisions, stored_state
 from pinboard.application.brief_source_models import BriefSourceFailure, parse_authority_selector
 from pinboard.domain import history, work_models
 from pinboard.domain.errors import DescribedCode
@@ -430,7 +430,22 @@ class TerminalCheckpointDisposition(
     pass
 
 
-type CheckpointDisposition = ContinueCheckpointDisposition | TerminalCheckpointDisposition
+class FinalHumanStep(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    step_id: KebabId
+    description: NonEmptyText
+
+
+class FinalHumanStepsDisposition(
+    msgspec.Struct, frozen=True, forbid_unknown_fields=True, tag="final-human-steps", tag_field="kind"
+):
+    steps: Annotated[tuple[FinalHumanStep, ...], msgspec.Meta(min_length=1)]
+
+    def __post_init__(self) -> None:
+        if len({step.step_id for step in self.steps}) != len(self.steps):
+            raise ValueError("Final human step identities must be unique.")
+
+
+type CheckpointDisposition = ContinueCheckpointDisposition | TerminalCheckpointDisposition | FinalHumanStepsDisposition
 
 
 class LocalCheckpoint(
@@ -1211,6 +1226,97 @@ class CompletionReviewPackage(msgspec.Struct, frozen=True, forbid_unknown_fields
     terminal_result: TerminalResultCompletionIdentity
     final_review: FinalReviewCompletionIdentity
     checkpoint_coverage: tuple[CompletionCheckpointCoverage, ...]
+
+    def __post_init__(self) -> None:
+        history_ids = tuple(row.history_id for row in self.checkpoint_coverage)
+        if history_ids != tuple(sorted(set(history_ids))):
+            raise ValueError("checkpoint_coverage must be unique and strictly ascending by history_id")
+
+
+class AcceptedCompletionEvidence(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    artifact_ref_id: PositiveInt
+    sha256: Sha256
+
+
+class CompletionLandingEvidence(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    target: action_models.IntegrationTarget
+    target_revision: action_models.FullGitCommit
+    target_depths: action_models.LandingTargetDepthsPayload
+    pre_landing_revision: action_models.FullGitCommit
+    landed_revision: action_models.FullGitCommit
+    diff_sha256: Sha256
+    decisions: landing_decisions.LandingDecisionBasis
+    difference_review: AcceptedCompletionEvidence | None
+
+    def __post_init__(self) -> None:
+        if (
+            self.target_depths.pre_landing <= self.target_depths.landed
+            or self.pre_landing_revision == self.landed_revision
+            or (self.target_depths.landed == 0) != (self.target_revision == self.landed_revision)
+        ):
+            raise ValueError("Completion landing evidence must describe an ordered first-parent range.")
+
+
+class LandingDifferenceSubject(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    attempt_id: KebabId
+    candidate: NonEmptyLine
+    accepted_brief_sha256: Sha256
+    candidate_snapshot_sha256: Sha256
+    candidate_review_sha256: Sha256
+    target: action_models.IntegrationTarget
+    pre_landing_revision: action_models.FullGitCommit
+    landed_revision: action_models.FullGitCommit
+    diff_sha256: Sha256
+    decisions: landing_decisions.LandingDecisionBasis
+
+
+class ExternalLandingReviewCommission(
+    msgspec.Struct, tag="external", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    commissioning_task_id: NonEmptyLine
+    human_commission: RecordText
+
+
+class PinboardLandingReviewCommission(
+    msgspec.Struct, tag="pinboard", tag_field="kind", frozen=True, forbid_unknown_fields=True
+):
+    prompt: AcceptedCompletionEvidence
+
+
+type LandingReviewCommission = ExternalLandingReviewCommission | PinboardLandingReviewCommission
+
+
+class LandingDifferenceReview(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    schema: Literal["pinboard-landing-difference-review/v1"]
+    subject: LandingDifferenceSubject
+    commission: LandingReviewCommission
+    reviewer_task_id: NonEmptyLine
+    verdict: Literal["ready"]
+    verified_target_baseline: Literal[True]
+    covered_complete_difference: Literal[True]
+    coverage: RecordText
+
+
+class VerifiedCompletionReviewPackage(
+    msgspec.Struct,
+    tag="pinboard-completion-review-package/v3",
+    tag_field="schema",
+    frozen=True,
+    forbid_unknown_fields=True,
+):
+    attempt_id: KebabId
+    item_id: KebabId
+    candidate: NonEmptyLine
+    outcome_evidence: NonEmptyLine
+    reviewer_task_id: NonEmptyLine
+    accepted_scope: AcceptedScope
+    accepted_brief: AcceptedBriefCompletionIdentity
+    checkpoint_coverage: tuple[CompletionCheckpointCoverage, ...]
+    snapshot: AcceptedCompletionEvidence
+    ready_review: AcceptedCompletionEvidence
+    continued_acceptance_history_id: PositiveInt | None
+    accounting: action_models.CompletionAccountingPayload | None
+    landing: CompletionLandingEvidence | None
 
     def __post_init__(self) -> None:
         history_ids = tuple(row.history_id for row in self.checkpoint_coverage)

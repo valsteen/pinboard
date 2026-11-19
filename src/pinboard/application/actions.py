@@ -278,6 +278,8 @@ def completion_candidate_recovery(
         and attempt.candidate_revision is not None
     ):
         return None
+    if selected.continued_submission is not None and selected.continued_submission.ready_review is not None:
+        return None
     return query_models.CompletionCandidateRequired(attempt.attempt_id)
 
 
@@ -347,12 +349,14 @@ def completion_input_contract(
                 alternatives=(),
             ),
         )
-    if isinstance(
-        disposition := work_briefs.accepted_brief_disposition(brief), work_brief_models.ContinueCheckpointDisposition
+    disposition = work_briefs.accepted_brief_disposition(brief)
+    historic = completion.continued_submission
+    if isinstance(disposition, work_brief_models.ContinueCheckpointDisposition) and (
+        attempt.state != work_models.AttemptState.REVIEW and (historic is None or historic.ready_review is None)
     ):
         return query_models.CompletionRecoveryRequired(
             attempt.attempt_id,
-            "The accepted brief marks this checkpoint as continuing work, so it cannot authorize completion. "
+            "The accepted brief marks this checkpoint as continuing work, and no applicable prior ready review was found. "
             f"Remaining work:\n{disposition.remaining_work}",
         )
     if (recovery := completion_candidate_recovery(completion)) is not None:
@@ -381,8 +385,54 @@ def completion_input_contract(
         )
     model = action_models.ReviewedCompleteInputPayload
     candidate = attempt.candidate_revision
+    continued_review = None
+    if historic is not None and (reference := historic.ready_review) is not None:
+        ready = work_briefs.decode_canonical_candidate_review(artifacts.read(reference))
+        if isinstance(ready, work_brief_models.WorkBriefFailure) or (
+            ready.attempt_id != str(attempt.attempt_id)
+            or ready.candidate_snapshot.content_sha256 != historic.snapshot.reference.content_sha256
+            or ready.accepted_brief.content_sha256 != attempt.brief_reference.content_sha256
+        ):
+            return query_models.CompletionRecoveryRequired(
+                attempt.attempt_id,
+                f"Historical ready review '{reference.selector}' does not match the current brief and continued submission.",
+            )
+        candidate = ready.candidate
+        continued_review = action_models.CompletionReviewView(
+            int(reference.artifact_ref_id),
+            reference.selector,
+            reference.content_sha256,
+            reference.size_bytes,
+            int(historic.acceptance.history_id),
+            ready.reviewer_task_id,
+            ready.result_sha256,
+            ready.review_sha256,
+        )
+    definition = reader.read_item_definition(attempt.work_item_id).definition
+    if definition is None or (definition.revision, definition.digest) != (
+        attempt.accepted_scope_revision,
+        attempt.accepted_scope_digest,
+    ):
+        return _completion_context_changed(
+            attempt.attempt_id, "The completion definition changed. Rediscover this action."
+        )
     return action_models.CompletionInputContractView(
-        action.kind, semantics, msgspec.json.schema(model), candidate, tuple(packages)
+        action.kind,
+        semantics,
+        msgspec.json.schema(model),
+        candidate,
+        tuple(packages),
+        attempt.brief_reference.content_sha256,
+        tuple(str(row.obligation_id) for row in definition.definition.obligations)
+        if isinstance(definition.definition, work_models.WorkItemDefinition)
+        else (),
+        tuple(step.step_id for step in disposition.steps)
+        if isinstance(disposition, work_brief_models.FinalHumanStepsDisposition)
+        else (),
+        disposition.remaining_work
+        if isinstance(disposition, work_brief_models.ContinueCheckpointDisposition)
+        else None,
+        continued_review,
     )
 
 

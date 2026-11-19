@@ -9,15 +9,16 @@ from pinboard.application.artifacts import (
     CompletionArtifacts,
     EvidenceArtifactRef,
     ResultArtifactRef,
+    VerifiedCompletionArtifact,
 )
 from pinboard.application.mutation_models import (
     AttemptAuthorityMutation,
     CancellationMutation,
     CheckpointAcceptanceArtifactChanges,
     CheckpointAcceptanceMutation,
-    CheckpointArtifactChanges,
     CheckpointMutationAllocation,
     CompletionAcceptanceMutation,
+    CompletionArtifactChanges,
     ConsolidationMutation,
     MutationAllocation,
     MutationReceipt,
@@ -27,6 +28,7 @@ from pinboard.application.mutation_models import (
     ReviewSubmissionMutation,
     StoredStateMutation,
     TransitionMutation,
+    VerifiedCompletionArtifactChange,
 )
 from pinboard.domain import decision_models, work_models
 from pinboard.domain.definition_decisions import DefinitionRevisionDecision
@@ -429,22 +431,22 @@ def project_completion_acceptance_mutation(
     allocation: CheckpointMutationAllocation,
     decision: decision_models.CompletionAcceptanceDecision,
     value: work_models.CoveredCompleteInput,
-    artifacts: CompletionArtifacts,
+    artifacts: CompletionArtifacts | VerifiedCompletionArtifact,
     actor_task_id: TaskId | None,
     actor_host_id: HostId | None,
 ) -> CompletionAcceptanceMutation:
-    result_id, review_id, package_id = _artifact_ids(
-        allocation,
-        (artifacts.result, artifacts.review, artifacts.package),
-    )
-    completion_changes = CheckpointArtifactChanges(
-        artifacts.result,
-        result_id,
-        artifacts.review,
-        review_id,
-        artifacts.package,
-        package_id,
-    )
+    if isinstance(artifacts, VerifiedCompletionArtifact):
+        (package_id,) = _artifact_ids(allocation, (artifacts.package,))
+        completion_changes = VerifiedCompletionArtifactChange(
+            artifacts.package, package_id, artifacts.candidate_recorded_at
+        )
+    else:
+        result_id, review_id, package_id = _artifact_ids(
+            allocation, (artifacts.result, artifacts.review, artifacts.package)
+        )
+        completion_changes = CompletionArtifactChanges(
+            artifacts.result, result_id, artifacts.review, review_id, artifacts.package, package_id
+        )
     input_payload = work_models.CanonicalJson(
         msgspec.json.encode(
             action_models.ReviewedCompletionReceiptPayload(

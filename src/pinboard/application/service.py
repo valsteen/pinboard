@@ -12,6 +12,7 @@ from pinboard.application.artifacts import (
     CompletionArtifacts,
     CurrentAttemptWorkBriefIdentity,
     EvidenceArtifactRef,
+    VerifiedCompletionArtifact,
     WorkBriefIdentity,
 )
 from pinboard.application.mutation_models import (
@@ -718,6 +719,12 @@ def _transition_decision_scope(
         case decision_models.CloseCommand():
             live_dependent_roots = item_ids
         case decision_models.CompleteCommand() | decision_models.CoveredCompleteCommand():
+            selected_accounting = (
+                command.value.accounting if isinstance(command, decision_models.CoveredCompleteCommand) else None
+            )
+            related_item_ids = tuple(
+                receiver.item_id for receiver in work_models.completion_receivers(selected_accounting)
+            )
             completion_history_attempt_ids = attempt_ids
             live_dependent_attempt_ids = attempt_ids
         case decision_models.AcceptCheckpointCommand():
@@ -969,7 +976,7 @@ def decide_and_commit_covered_completion(
     store: WorkStore,
     command: decision_models.CoveredCompleteCommand,
     now: datetime,
-    completion_artifacts: CompletionArtifacts,
+    completion_artifacts: CompletionArtifacts | VerifiedCompletionArtifact,
     *,
     read_authorization_time: Callable[[], datetime],
     actor_task_id: TaskId,
@@ -991,7 +998,9 @@ def decide_and_commit_covered_completion(
         if isinstance(decision_result, DecisionFailure):
             return decision_result
         allocation = transaction.read_checkpoint_mutation_allocation(
-            (completion_artifacts.result, completion_artifacts.review, completion_artifacts.package)
+            (completion_artifacts.package,)
+            if isinstance(completion_artifacts, VerifiedCompletionArtifact)
+            else (completion_artifacts.result, completion_artifacts.review, completion_artifacts.package)
         )
         mutation = project_completion_acceptance_mutation(
             allocation,

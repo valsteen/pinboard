@@ -668,11 +668,11 @@ def _transition_rejection_continuation(
 
 _COMMISSIONED_REVIEW_ROUTE = (
     "Do not replay this completion. Inspect this exact attempt through pinboard_attempt_inspect first. "
-    "Reuse a valid current commissioned ready record and its recorded reviewer_task_id; a mismatched supplied "
-    "reviewer identity does not require another review. Only when that record is missing or invalid, run "
-    "pinboard_review_job for the reported round, launch exactly its native reviewer and record its ready verdict "
-    "with kind:'record-ready' and prompt_reference.sha256 as reviewer_prompt_sha256. Then rediscover completion "
-    "through pinboard_actions with the verified record's reviewer_task_id."
+    "For a current protected candidate, reuse its commissioned ready record and recorded reviewer_task_id. "
+    "If it lacks a ready record, run pinboard_review_job for the reported round and use kind:'record-ready' "
+    "with the published prompt digest after the independent verdict. "
+    "For an active or paused continuing attempt, rediscover complete to inspect the applicable prior review "
+    "and use its exact evidence. If that history is unavailable, ask the owner how to proceed without recreating it."
 )
 _CLOSE_DECISION_ROUTE = (
     "Close only through pinboard_close with the human's explicit close decision in their own words as "

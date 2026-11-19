@@ -246,7 +246,7 @@
         "accept-checkpoint:declares_checkpoints=true",
         "accept-review-and-continue:declares_checkpoints=true",
         "return-for-correction:current-protected-candidate",
-        "complete:terminal-classified-candidate",
+        "complete:review-and-accounting",
         "review-candidate:current-protected-candidate"
       ],
       "kind": "action-attached",
@@ -259,7 +259,8 @@
       "consumers": [
         "reviewer:brief",
         "reviewer:candidate",
-        "reviewer:correction"
+        "reviewer:correction",
+        "reviewer:landing-difference"
       ],
       "kind": "launched-role",
       "clauses": [],
@@ -1325,7 +1326,8 @@
       "source": "skills/pinboard/sources/tool-contract.TRANSITION_TOOL.md",
       "implementing_tests": [
         "tests/test_mcp.py::McpTransportTest.test_committed_transition_results_correlate_mutating_actions_and_exact_surfaces",
-        "tests/test_native_lifecycle_effects.py::NativeLifecycleEffectsTest.test_activation_rebind_and_revised_resume_reject_legacy_and_checkout_mismatch_unchanged"
+        "tests/test_native_lifecycle_effects.py::NativeLifecycleEffectsTest.test_activation_rebind_and_revised_resume_reject_legacy_and_checkout_mismatch_unchanged",
+        "tests/test_close_and_completion_enforcement.py::CommissionedReviewCompletionTest.test_final_human_steps_complete_after_published_brief_and_one_review"
       ]
     },
     "tool-contract.CLOSE_TOOL": {
@@ -1388,7 +1390,9 @@
       "source": "skills/pinboard/sources/tool-contract.REVIEW_JOB_TOOL.md",
       "implementing_tests": [
         "tests/test_mcp_jobs.py::McpJobsTest.test_public_inspection_and_launch_supply_record_ready_inputs",
-        "tests/test_mcp_jobs.py::McpJobsTest.test_review_jobs_select_four_rounds_and_keep_mutable_review_digest_separate"
+        "tests/test_mcp_jobs.py::McpJobsTest.test_review_jobs_select_four_rounds_and_keep_mutable_review_digest_separate",
+        "tests/test_item_integration.py::ItemIntegrationLeafTest.test_landing_with_extra_change_requires_exact_independent_range_review",
+        "tests/test_item_integration.py::ItemIntegrationLeafTest.test_landing_review_qualifies_the_exact_same_brief_decisions_after_resume"
       ]
     },
     "tool-contract.INITIATIVE_TOOL": {

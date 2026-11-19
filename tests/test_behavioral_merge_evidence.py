@@ -198,6 +198,8 @@ class MergeEvidenceTest(unittest.TestCase):
 
 class Landed(board.Request, frozen=True):
     target: str
+    pre_landing_revision: str
+    landed_revision: str
 
 
 class LandedCompletion(board.ReviewedCompletion, frozen=True):
@@ -281,6 +283,7 @@ class RebaseWorldTest(unittest.TestCase):
     async def assert_landed_refusal(self, observed: world.World) -> None:
         project, work_root = str(observed.project), str(observed.work_root)
         main = seeding.head(observed.project, observed.window)
+        pre_landing = self.git(observed, observed.project, "rev-parse", "HEAD^1").strip()
         integration = await self.integration(observed, "main")
         self.assertEqual(main, integration.target_revision)
         self.assertNotEqual("content-present", integration.presence)
@@ -313,7 +316,7 @@ class RebaseWorldTest(unittest.TestCase):
                             result_sha256=seeder.evidence_sha256("merge-change-1", "result.md"),
                             review_sha256=seeder.evidence_sha256("merge-change-1", "review.md"),
                             packages=[],
-                            landed=Landed(target="main"),
+                            landed=Landed(target="main", pre_landing_revision=pre_landing, landed_revision=main),
                         ),
                         actor_task_id="fixture-owner",
                         actor_host_id=board.SEEDED_HOST_ID,

@@ -2557,10 +2557,11 @@ class McpTransportTest(unittest.TestCase):
         self.assertEqual(len(advertised), len(set(advertised)))
         self.assertEqual(decoded, set(advertised))
         self.assertIn(("project", "complete", "ReviewedCompleteInputPayload"), set(advertised))
+        self.assertTrue(
+            {"continue", "dispatch", "inspect", "report-blocker"}.isdisjoint(kind for _, kind, _ in advertised)
+        )
         for candidate_schema in (contract_schemas.transition_request_schema(), schema):
             encoded_schema = msgspec.json.encode(candidate_schema)
-            for advisory_kind in (b'"continue"', b'"dispatch"', b'"inspect"', b'"report-blocker"'):
-                self.assertNotIn(advisory_kind, encoded_schema)
             self.assertNotIn(b"pinboard-covered-completion/v1", encoded_schema)
             self.assertIn(b"pinboard-reviewed-completion/v3", encoded_schema)
 

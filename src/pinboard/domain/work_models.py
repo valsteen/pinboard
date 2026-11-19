@@ -19,6 +19,7 @@ from pinboard.domain.identifiers import (
 )
 
 ObligationId = NewType("ObligationId", str)
+CompletionStepId = NewType("CompletionStepId", str)
 
 CanonicalJson = NewType("CanonicalJson", bytes)
 
@@ -538,9 +539,90 @@ class CoveredCompletionPackageInput:
 
 
 @dataclass(frozen=True, slots=True)
+class LandingTargetDepths:
+    pre_landing: int
+    landed: int
+
+
+@dataclass(frozen=True, slots=True)
 class LandedCompletionInput:
     target: str
+    pre_landing_revision: str
+    landed_revision: str
     retain_local_resources: bool
+    difference_review_ref_id: ArtifactRefId | None
+    target_depths: LandingTargetDepths | None
+
+
+@dataclass(frozen=True, slots=True)
+class CarryingObligation:
+    item_id: WorkItemId
+    definition_revision: int
+    definition_digest: str
+    obligation_id: ObligationId
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewedObligation:
+    obligation_id: ObligationId
+
+
+@dataclass(frozen=True, slots=True)
+class DoneObligation:
+    obligation_id: ObligationId
+    evidence: str
+
+
+@dataclass(frozen=True, slots=True)
+class MovedObligation:
+    obligation_id: ObligationId
+    receiver: CarryingObligation
+
+
+type CompletionObligation = ReviewedObligation | DoneObligation | MovedObligation
+
+
+@dataclass(frozen=True, slots=True)
+class DoneHumanStep:
+    step_id: CompletionStepId
+    evidence: str
+
+
+@dataclass(frozen=True, slots=True)
+class MovedHumanStep:
+    step_id: CompletionStepId
+    receiver: CarryingObligation
+
+
+type CompletionHumanStep = DoneHumanStep | MovedHumanStep
+
+
+@dataclass(frozen=True, slots=True)
+class FinalHumanStepsAccounting:
+    brief_sha256: str
+    steps: tuple[DoneHumanStep, ...]
+    obligations: tuple[CompletionObligation, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuingWorkAccounting:
+    brief_sha256: str
+    remaining_work: str
+    required_step_ids: tuple[CompletionStepId, ...]
+    steps: tuple[CompletionHumanStep, ...]
+    obligations: tuple[CompletionObligation, ...]
+
+
+type CompletionAccounting = FinalHumanStepsAccounting | ContinuingWorkAccounting
+
+
+def completion_receivers(accounting: CompletionAccounting | None) -> tuple[CarryingObligation, ...]:
+    if accounting is None:
+        return ()
+    return (
+        *(row.receiver for row in accounting.obligations if isinstance(row, MovedObligation)),
+        *(step.receiver for step in accounting.steps if isinstance(step, MovedHumanStep)),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -553,6 +635,7 @@ class CoveredCompleteInput:
     review_sha256: str
     packages: tuple[CoveredCompletionPackageInput, ...]
     landed: LandedCompletionInput | None
+    accounting: CompletionAccounting | None
 
 
 @dataclass(frozen=True, slots=True)

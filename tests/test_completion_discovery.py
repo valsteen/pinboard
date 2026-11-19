@@ -388,11 +388,16 @@ class CompletionDiscoveryTest(CheckpointPackageSupport):
                 result = self.actions_result(
                     fixture, {"role": "project", "action_id": {"kind": "complete", "subject": "work-a-1"}}
                 )
-                self.assert_bounded_completion_warning(result)
                 disposition = fixture.brief.checkpoint.disposition
                 assert isinstance(disposition, work_brief_models.ContinueCheckpointDisposition)
-                for pending in disposition.remaining_work:
-                    self.assertIn(pending, str(result["message"]))
+                if active:
+                    self.assert_bounded_completion_warning(result)
+                    self.assertIn(disposition.remaining_work, str(result["message"]))
+                else:
+                    action = self.json_object(self.json_array(result["actions"])[0])
+                    contract = self.json_object(action["input_contract"])
+                    self.assertEqual(disposition.remaining_work, contract["remaining_work"])
+                    self.assertEqual(["next-decision"], contract["obligation_ids"])
                 self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
 
     def test_unresolved_replacement_completion_reports_the_pending_decision(self) -> None:

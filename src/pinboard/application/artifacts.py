@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal
 
 from pinboard.domain import work_models
@@ -76,6 +77,12 @@ class CompletionArtifacts:
 
 
 @dataclass(frozen=True, slots=True)
+class VerifiedCompletionArtifact:
+    package: EvidenceArtifactRef
+    candidate_recorded_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class WorkBriefIdentity:
     attempt_id: str
     item_id: str
@@ -88,4 +95,4 @@ class WorkBriefIdentity:
 @dataclass(frozen=True, slots=True)
 class CurrentAttemptWorkBriefIdentity(WorkBriefIdentity):
     artifact_ref_id: ArtifactRefId
-    disposition: Literal["continue", "terminal"]
+    disposition: Literal["continue", "terminal", "final-human-steps"]

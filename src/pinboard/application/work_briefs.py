@@ -855,19 +855,48 @@ def decode_completion_review_package(
         )
 
 
-def canonical_completion_review_package_bytes(package: work_brief_models.CompletionReviewPackage) -> bytes:
+def canonical_completion_review_package_bytes(
+    package: work_brief_models.CompletionReviewPackage | work_brief_models.VerifiedCompletionReviewPackage,
+) -> bytes:
     return _canonical_bytes(package) + b"\n"
 
 
-def decode_canonical_historical_completion_review_package(
-    data: bytes,
-) -> work_brief_models.ReviewEvidenceResult[work_brief_compatibility_models.HistoricalCompletionReviewPackage]:
-    """Read completion history without admitting original facts as current input."""
+def landing_review_subject_sha256(subject: work_brief_models.LandingDifferenceSubject) -> str:
+    return hashlib.sha256(_canonical_bytes(subject)).hexdigest()
+
+
+def landing_review_bytes(review: work_brief_models.LandingDifferenceReview) -> bytes:
+    return _canonical_bytes(review) + b"\n"
+
+
+def landing_review_key(review: work_brief_models.LandingDifferenceReview) -> str:
+    return f"landing-difference-review-{hashlib.sha256(landing_review_bytes(review)).hexdigest()}"
+
+
+type CompletionHistoryPackage = (
+    work_brief_compatibility_models.HistoricalCompletionReviewPackage
+    | work_brief_models.VerifiedCompletionReviewPackage
+)
+
+
+def _completion_package_schema(data: bytes) -> work_brief_models.ReviewEvidenceResult[str | None]:
     try:
         schema_raw = msgspec.json.decode(data, type=dict[str, msgspec.Raw]).get("schema")
-        schema = None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
-        if schema != "pinboard-completion-review-package/v1":
-            return decode_canonical_completion_review_package(data)
+        return None if schema_raw is None else msgspec.json.decode(schema_raw, type=str)
+    except msgspec.DecodeError as error:
+        return work_brief_models.ReviewEvidenceFailure(
+            work_brief_models.ReviewEvidenceErrorCode.PACKAGE_INVALID,
+            f"Cannot decode completion package schema: {error}",
+        )
+
+
+def _decode_report_completion_package(
+    data: bytes,
+    schema: str | None,
+) -> work_brief_models.ReviewEvidenceResult[work_brief_compatibility_models.HistoricalCompletionReviewPackage]:
+    if schema != "pinboard-completion-review-package/v1":
+        return decode_canonical_completion_review_package(data)
+    try:
         package = msgspec.json.decode(data, type=work_brief_compatibility_models.HistoricalCompletionReviewPackageV1)
     except msgspec.DecodeError as error:
         return work_brief_models.ReviewEvidenceFailure(
@@ -878,6 +907,38 @@ def decode_canonical_historical_completion_review_package(
         return work_brief_models.ReviewEvidenceFailure(
             work_brief_models.ReviewEvidenceErrorCode.PACKAGE_NOT_CANONICAL,
             "Historical completion review package bytes are not the canonical msgspec encoding.",
+        )
+    return package
+
+
+def decode_canonical_historical_completion_review_package(
+    data: bytes,
+) -> work_brief_models.ReviewEvidenceResult[work_brief_compatibility_models.HistoricalCompletionReviewPackage]:
+    """Decode completion packages that own the original result and review report roles."""
+    schema = _completion_package_schema(data)
+    if isinstance(schema, work_brief_models.ReviewEvidenceFailure):
+        return schema
+    return _decode_report_completion_package(data, schema)
+
+
+def decode_completion_history_package(data: bytes) -> work_brief_models.ReviewEvidenceResult[CompletionHistoryPackage]:
+    """Decode current and historical completion packages for validation and export."""
+    schema = _completion_package_schema(data)
+    if isinstance(schema, work_brief_models.ReviewEvidenceFailure):
+        return schema
+    if schema != "pinboard-completion-review-package/v3":
+        return _decode_report_completion_package(data, schema)
+    try:
+        package = msgspec.json.decode(data, type=work_brief_models.VerifiedCompletionReviewPackage)
+    except msgspec.DecodeError as error:
+        return work_brief_models.ReviewEvidenceFailure(
+            work_brief_models.ReviewEvidenceErrorCode.PACKAGE_INVALID,
+            f"Cannot decode completion review package: {error}",
+        )
+    if data != canonical_completion_review_package_bytes(package):
+        return work_brief_models.ReviewEvidenceFailure(
+            work_brief_models.ReviewEvidenceErrorCode.PACKAGE_NOT_CANONICAL,
+            "Completion review package bytes are not the canonical msgspec encoding.",
         )
     return package
 
@@ -1100,7 +1161,19 @@ def _render_small_work_brief_markdown(brief: work_brief_models.SmallWorkBrief) -
     return "\n".join(lines).encode()
 
 
-def _render_work_brief_markdown(brief: CheckpointWorkBriefValue) -> bytes:  # noqa: PLR0912 - closed factual projection
+def _checkpoint_disposition_markdown(disposition: work_brief_models.CheckpointDisposition) -> tuple[str, ...]:
+    match disposition:
+        case work_brief_models.ContinueCheckpointDisposition(remaining_work=remaining_work):
+            return ("", "## Checkpoint disposition", "", "Continue", "", "## Remaining work", "", remaining_work, "")
+        case work_brief_models.TerminalCheckpointDisposition():
+            return ("", "## Checkpoint disposition", "", "Terminal", "")
+        case work_brief_models.FinalHumanStepsDisposition(steps=steps):
+            return ("", "## Final human steps", "", *(f"- `{step.step_id}` — {step.description}" for step in steps))
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _render_work_brief_markdown(brief: CheckpointWorkBriefValue) -> bytes:
     checkpoint = brief.checkpoint
     lines = [
         *_brief_view_front_matter(brief),
@@ -1205,14 +1278,7 @@ def _render_work_brief_markdown(brief: CheckpointWorkBriefValue) -> bytes:  # no
     )
     match brief:
         case work_brief_models.WorkBrief(checkpoint=current_checkpoint):
-            match current_checkpoint.disposition:
-                case work_brief_models.ContinueCheckpointDisposition(remaining_work=remaining_work):
-                    lines.extend(("", "## Checkpoint disposition", "", "Continue", ""))
-                    lines.extend(("## Remaining work", "", remaining_work, ""))
-                case work_brief_models.TerminalCheckpointDisposition():
-                    lines.extend(("", "## Checkpoint disposition", "", "Terminal", ""))
-                case _ as unreachable:
-                    assert_never(unreachable)
+            lines.extend(_checkpoint_disposition_markdown(current_checkpoint.disposition))
         case (
             work_brief_compatibility_models.HistoricalWorkBriefV3(remaining_work=remaining_work)
             | work_brief_compatibility_models.HistoricalWorkBriefV2(remaining_work=remaining_work)
@@ -1247,6 +1313,8 @@ def current_attempt_work_brief_identity(
             disposition_kind = "continue"
         case work_brief_models.TerminalCheckpointDisposition():
             disposition_kind = "terminal"
+        case work_brief_models.FinalHumanStepsDisposition():
+            disposition_kind = "final-human-steps"
         case _ as unreachable:
             assert_never(unreachable)
     return CurrentAttemptWorkBriefIdentity(

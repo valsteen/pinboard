@@ -328,8 +328,11 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
     def prepare_completion(self, fixture: CheckpointFixture) -> tuple[CheckpointFixture, JsonObject]:
         fixture = self.terminalize_brief(fixture)
         self.record_ready(fixture)
+        return fixture, self.completion_payload(fixture)
+
+    def completion_payload(self, fixture: CheckpointFixture) -> JsonObject:
         attempt_root = fixture.work / "attempts" / "work-a-1"
-        return fixture, {
+        return {
             "schema": "pinboard-reviewed-completion/v3",
             "human_decision": "Complete this item with its reviewed outcome.",
             "candidate": fixture.candidate_revision,
@@ -347,6 +350,71 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
             return fixture.call_advertised_tool(
                 mcp_server.TRANSITION_TOOL, self.native_transition_request(fixture, action, payload)
             )
+
+    def landing_review(self, fixture: CheckpointFixture, choice: JsonObject) -> JsonObject:
+        return fixture.call_advertised_tool(mcp_server.REVIEW_JOB_TOOL, {**self.roots(fixture), "review": choice})
+
+    def external_landing_review(self, subject: JsonObject, commission: str, coverage: str) -> JsonObject:
+        return {
+            "schema": "pinboard-landing-difference-review/v1",
+            "subject": subject,
+            "commission": {
+                "kind": "external",
+                "commissioning_task_id": "human-coordinator",
+                "human_commission": commission,
+            },
+            "reviewer_task_id": "independent-landing-reviewer",
+            "verdict": "ready",
+            "verified_target_baseline": True,
+            "covered_complete_difference": True,
+            "coverage": coverage,
+        }
+
+    def assert_side_parent_refused(
+        self, fixture: CheckpointFixture, wrong_selection: JsonObject, narrow_review: JsonObject
+    ) -> None:
+        before = fixture.store.validated_snapshot()
+        leaves: tuple[JsonObject, ...] = (
+            {"kind": "observe-landing-difference"},
+            {"kind": "commission-landing-difference", "runtime": "codex", "background": False},
+            {"kind": "record-landing-difference", "review": narrow_review},
+        )
+        for leaf in leaves:
+            wrong = self.landing_review(fixture, wrong_selection | leaf)
+            self.assertEqual(("rejected", "unchanged"), (wrong["status"], wrong["effect"]), wrong)
+            self.assertIn("First-parent depths", str(wrong["message"]))
+        self.assertEqual(before, fixture.store.validated_snapshot())
+
+    def commission_and_record_landing_review(
+        self, fixture: CheckpointFixture, selection: JsonObject, review: JsonObject, decision: str
+    ) -> JsonObject:
+        job = self.landing_review(
+            fixture, selection | {"kind": "commission-landing-difference", "runtime": "codex", "background": False}
+        )
+        self.assertEqual("landing-difference-commissioned", job["status"], job)
+        self.assertEqual(review["subject"], job["subject"])
+        prompt = self.json_object(job["prompt_reference"])
+        prompt_text = (fixture.work / str(prompt["selector"])).read_text(encoding="utf-8")
+        self.assertIn(decision, prompt_text)
+        accepted = self.landing_review(
+            fixture,
+            selection
+            | {
+                "kind": "record-landing-difference",
+                "review": review
+                | {
+                    "commission": {
+                        "kind": "pinboard",
+                        "prompt": {
+                            "artifact_ref_id": prompt["accepted_artifact_reference_id"],
+                            "sha256": prompt["sha256"],
+                        },
+                    }
+                },
+            },
+        )
+        self.assertEqual("landing-difference-recorded", accepted["status"], accepted)
+        return accepted
 
     def test_protected_working_tree_candidate_is_found_after_squash_merge(self) -> None:
         with historical_candidate_diffs("7"):
@@ -495,9 +563,19 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
                     self.native_fixture(self.checkpoint_fixture(candidate_form="current-head"))
                 )
                 target = self.target_worktree(fixture, fixture.brief.base_revision)
+                (target / "baseline.txt").write_text("already on the landing target\n", encoding="utf-8")
+                pre_landing = commit(target, "target-only work before landing")
                 git(target, "merge", "--quiet", "--squash", fixture.brief.branch)
-                self.assertNotEqual(fixture.candidate_revision, commit(target, "squash the reviewed commit"))
-                landed: JsonObject = {"target": "main"}
+                landed_revision = commit(target, "squash the reviewed commit")
+                self.assertNotEqual(fixture.candidate_revision, landed_revision)
+                (target / "later.txt").write_text("later unrelated work\n", encoding="utf-8")
+                commit(target, "later target change")
+                landed: JsonObject = {
+                    "target": "main",
+                    "pre_landing_revision": pre_landing,
+                    "landed_revision": landed_revision,
+                    "target_depths": {"pre_landing": 2, "landed": 1},
+                }
                 if retain:
                     landed["retain_local_resources"] = True
                 payload.update(human_decision="It's merged. Close it.", landed=landed)
@@ -543,7 +621,14 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         fixture, payload = self.prepare_completion(dataclasses.replace(fixture, candidate_revision=head))
         target = self.target_worktree(fixture, base)
         git(target, "merge", "--quiet", "--no-ff", "-m", "merge the reviewed branch", fixture.brief.branch)
-        payload.update(human_decision="It's merged. Close it.", landed={"target": "main"})
+        payload.update(
+            human_decision="It's merged. Close it.",
+            landed={
+                "target": "main",
+                "pre_landing_revision": base,
+                "landed_revision": git(target, "rev-parse", "HEAD"),
+            },
+        )
         result = self.complete(fixture, payload)
         self.assertEqual("committed", result["status"], result)
         self.assertEqual({"branch": fixture.brief.branch, "disposition": "remove"}, result["local_cleanup"])
@@ -648,17 +733,24 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
     def test_landed_completion_refuses_wrong_candidate_or_target_and_reports_recovery(self) -> None:
         fixture, payload = self.prepare_completion(self.native_fixture(self.checkpoint_fixture()))
         target = self.target_worktree(fixture, fixture.brief.base_revision)
+        (target / "target.txt").write_text("Unrelated target change.\n", encoding="utf-8")
+        unrelated = commit(target, "unrelated target change")
+        landing: JsonObject = {
+            "target": "main",
+            "pre_landing_revision": fixture.brief.base_revision,
+            "landed_revision": unrelated,
+        }
         before = fixture.store.validated_snapshot()
         cases: tuple[tuple[JsonObject, str, str, str], ...] = (
-            ({"landed": {"target": "main"}}, "reviewed diff is absent", "correct-input", "return-for-correction"),
+            ({"landed": landing}, "no matching independent difference review", "correct-input", "pinboard_review_job"),
             (
-                {"landed": {"target": "missing-target"}},
-                "Cannot resolve local target",
+                {"landed": landing | {"target": "missing-target"}},
+                "Cannot resolve local landing target",
                 "correct-input",
-                "pinboard_item_status",
+                "pinboard_actions",
             ),
             (
-                {"landed": {"target": "main"}, "candidate": fixture.brief.base_revision},
+                {"landed": landing, "candidate": fixture.brief.base_revision},
                 "protected candidate",
                 "refresh-action",
                 "pinboard_actions",
@@ -675,10 +767,14 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
                 self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
 
         (target / "tracked.txt").write_text("candidate\n", encoding="utf-8")
-        commit(target, "squash the reviewed change")
+        landed_revision = commit(target, "squash the reviewed change")
         recovered = self.presence(fixture, "main", "content-present")
         self.assertEqual(fixture.candidate_revision, self.source(recovered)["candidate_revision"])
-        result = self.complete(fixture, payload | {"landed": {"target": "main"}})
+        result = self.complete(
+            fixture,
+            payload
+            | {"landed": {"target": "main", "pre_landing_revision": unrelated, "landed_revision": landed_revision}},
+        )
         self.assertEqual("committed", result["status"], result)
         self.assertEqual({"branch": fixture.brief.branch, "disposition": "remove"}, result["local_cleanup"])
 
@@ -688,15 +784,271 @@ class ItemIntegrationLeafTest(FixedGitIdentity, CheckpointPackageSupport):
         (fixture.project / "tracked.txt").write_text("base\n", encoding="utf-8")
         candidate = self.submit_working_tree(fixture, "worker-empty")
         fixture, payload = self.prepare_completion(dataclasses.replace(fixture, candidate_revision=candidate))
-        git(fixture.project, "branch", "main", fixture.brief.base_revision)
+        target = self.target_worktree(fixture, fixture.brief.base_revision)
+        (target / "other.txt").write_text("Unreviewed work.\n", encoding="utf-8")
+        landed_revision = commit(target, "land unreviewed work")
         before = fixture.store.validated_snapshot()
-        result = self.complete(fixture, payload | {"landed": {"target": "main"}})
+        result = self.complete(
+            fixture,
+            payload
+            | {
+                "landed": {
+                    "target": "main",
+                    "pre_landing_revision": fixture.brief.base_revision,
+                    "landed_revision": landed_revision,
+                }
+            },
+        )
         self.assertEqual(("rejected", "unchanged"), (result["status"], result["effect"]), result)
-        self.assertIn("reviewed diff is empty", str(result["message"]))
-        self.assertEqual("do-not-retry", result["retry"], result)
-        self.assertIn("empty protected diff cannot establish a landing", str(result["continuation"]))
+        self.assertIn("no matching independent difference review", str(result["message"]))
+        self.assertEqual("correct-input", result["retry"], result)
+        self.assertIn("observe-landing-difference", str(result["continuation"]))
         self.assertNotIn("local_cleanup", result)
         self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+
+    def test_landing_with_extra_change_requires_exact_independent_range_review(self) -> None:  # noqa: PLR0915 - one range through all native leaves, completion and reload
+        fixture, payload = self.prepare_completion(self.native_fixture(self.checkpoint_fixture()))
+        base = fixture.brief.base_revision
+        target = self.target_worktree(fixture, base)
+        git(target, "switch", "--quiet", "-c", "unreviewed-side")
+        (target / "extra.txt").write_text("Not part of the reviewed candidate.\n", encoding="utf-8")
+        side_parent = commit(target, "unreviewed side-branch change")
+        git(target, "switch", "--quiet", "main")
+        git(target, "merge", "--quiet", "--no-ff", "--no-commit", "unreviewed-side")
+        (target / "tracked.txt").write_text("candidate\n", encoding="utf-8")
+        landed = commit(target, "land reviewed work and an extra change")
+        self.presence(fixture, "main", "content-present")
+        depths: JsonObject = {"pre_landing": 2, "landed": 1}
+        landing: JsonObject = {
+            "target": "main",
+            "pre_landing_revision": base,
+            "landed_revision": landed,
+            "target_depths": depths,
+        }
+        (target / "extra.txt").write_text("A later change on the target.\n", encoding="utf-8")
+        newer = commit(target, "advance the target after landing")
+        before = fixture.store.validated_snapshot()
+        refused = self.complete(fixture, payload | {"landed": landing})
+        self.assertEqual(("rejected", "unchanged"), (refused["status"], refused["effect"]))
+        self.assertEqual(before, fixture.store.validated_snapshot())
+        observations = {
+            str(self.json_object(row)["field"]): self.json_object(row)["value"]
+            for row in self.json_array(refused["observed"])
+        }
+        selection = {
+            "attempt_id": observations["attempt_id"],
+            "candidate_review_ref_id": observations["candidate_review_ref_id"],
+            **landing,
+        }
+        self.assertEqual((2, 1), (observations["pre_landing_depth"], observations["landed_depth"]))
+        observed = self.landing_review(fixture, {"kind": "observe-landing-difference", **selection})
+        self.assertEqual("landing-difference-observed", observed["status"], observed)
+        self.assertEqual((newer, depths), (observed["target_revision"], observed["target_depths"]))
+        self.assertIs(observed["equivalent"], False)
+        subject = self.json_object(observed["subject"])
+        supplied = self.external_landing_review(
+            subject,
+            "Check independently what was added at landing.",
+            "Verified baseline and exact commits. The reviewed patch is present. Reviewed extra.txt independently.",
+        )
+        omitted_anchors = {"pre_landing_revision": side_parent}
+        narrow_diff = git_bytes(target, "diff", "--binary", side_parent, landed)
+        self.assertIn(b"tracked.txt", narrow_diff)
+        self.assertNotIn(b"extra.txt", narrow_diff)
+        narrow_review = supplied | {
+            "subject": subject | omitted_anchors | {"diff_sha256": hashlib.sha256(narrow_diff).hexdigest()},
+            "coverage": "Reviewed the tracked.txt difference between the selected commits.",
+        }
+        narrow_selection = {key: value for key, value in selection.items() if key != "target_depths"} | omitted_anchors
+        self.assert_side_parent_refused(fixture, narrow_selection, narrow_review)
+        record: JsonObject = {"kind": "record-landing-difference", **selection}
+        invalid_reviews: tuple[JsonObject, ...] = (
+            {"subject": subject | {"diff_sha256": "f" * 64}},
+            {"commission": {"kind": "pinboard", "prompt": {"artifact_ref_id": 1, "sha256": "f" * 64}}},
+        )
+        for bad in invalid_reviews:
+            wrong = fixture.call_advertised_tool(
+                mcp_server.REVIEW_JOB_TOOL, {**self.roots(fixture), "review": record | {"review": supplied | bad}}
+            )
+            self.assertEqual(("rejected", "unchanged"), (wrong["status"], wrong["effect"]), wrong)
+            self.assertEqual(before, fixture.store.validated_snapshot())
+        commission = fixture.call_advertised_tool(
+            mcp_server.REVIEW_JOB_TOOL,
+            {
+                **self.roots(fixture),
+                "review": {
+                    "kind": "commission-landing-difference",
+                    **selection,
+                    "runtime": "codex",
+                    "background": False,
+                },
+            },
+        )
+        self.assertEqual("landing-difference-commissioned", commission["status"], commission)
+        self.assertEqual(subject, commission["subject"])
+        self.assertEqual((newer, depths), (commission["target_revision"], commission["target_depths"]))
+        accepted = fixture.call_advertised_tool(
+            mcp_server.REVIEW_JOB_TOOL, {**self.roots(fixture), "review": record | {"review": supplied}}
+        )
+        self.assertEqual("landing-difference-recorded", accepted["status"], accepted)
+        self.assertEqual((newer, depths), (accepted["target_revision"], accepted["target_depths"]))
+        reviewed_landing = landing | {"difference_review_ref_id": accepted["artifact_ref_id"]}
+        wrong_landing = {
+            key: value for key, value in reviewed_landing.items() if key != "target_depths"
+        } | omitted_anchors
+        omitted_side = self.complete(fixture, payload | {"landed": wrong_landing})
+        self.assertEqual(("rejected", "unchanged"), (omitted_side["status"], omitted_side["effect"]))
+        self.assertIn("First-parent depths", str(omitted_side["message"]))
+        stale = self.complete(
+            fixture,
+            payload
+            | {
+                "landed": reviewed_landing
+                | {"landed_revision": newer, "target_depths": {"pre_landing": 2, "landed": 0}}
+            },
+        )
+        self.assertEqual(("rejected", "unchanged"), (stale["status"], stale["effect"]))
+        self.assertIn("no matching independent difference review", str(stale["message"]))
+        completed = self.complete(fixture, payload | {"landed": reviewed_landing})
+        self.assertEqual("committed", completed["status"], completed)
+        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+        exported = self.run_json_cli(*fixture.common, "export")
+        package = self.json_object(self.json_array(exported["completion_packages"])[0])
+        evidence = self.json_object(package["landing"])
+        self.assertEqual(subject["diff_sha256"], evidence["diff_sha256"])
+        self.assertEqual((newer, depths), (evidence["target_revision"], evidence["target_depths"]))
+
+    def resolve_input_policy(self, fixture: CheckpointFixture, human_decision: str) -> None:
+        self.transition(
+            fixture,
+            "pause:work-a-1",
+            {
+                "schema": "pinboard-pause-decisions/v1",
+                "reason": "Choose how the landed implementation should handle invalid input.",
+                "decisions": [
+                    {
+                        "decision_id": "input-policy",
+                        "question": "How should the implementation handle invalid input?",
+                        "options": ["Replace invalid input.", "Reject invalid input."],
+                        "recommendation": "Reject invalid input.",
+                        "unblocks": "Review the changed input handling.",
+                        "deferral_cost": "Landing review waits.",
+                    }
+                ],
+            },
+        )
+        self.transition(
+            fixture,
+            "resume:work-a",
+            {
+                "schema": "pinboard-resolve-pause-decisions/v1",
+                "brief_artifact_ref_id": None,
+                "resolutions": [{"kind": "answer", "decision_id": "input-policy", "human_decision": human_decision}],
+            },
+        )
+
+    def test_landing_review_qualifies_the_exact_same_brief_decisions_after_resume(self) -> None:
+        fixture = self.native_fixture(self.checkpoint_fixture())
+        self.close_prerequisite(fixture)
+        self.record_ready(fixture)
+        payload = self.completion_payload(fixture)
+        self.transition(
+            fixture,
+            "accept-review-and-continue:work-a-1",
+            {"candidate": fixture.candidate_revision, "evidence": "Accepted code. Continue with the owner checks."},
+        )
+        self.resolve_input_policy(fixture, "Replace invalid input.")
+        target = self.target_worktree(fixture, fixture.brief.base_revision)
+        (target / "tracked.txt").write_text("candidate\n", encoding="utf-8")
+        (target / "input-policy.txt").write_text("Reject invalid input.\n", encoding="utf-8")
+        landing: JsonObject = {
+            "target": "main",
+            "pre_landing_revision": fixture.brief.base_revision,
+            "landed_revision": commit(target, "land the reviewed patch and input-policy check"),
+        }
+        action = self.project_action(fixture, "complete:work-a-1")
+        contract = self.json_object(action["input_contract"])
+        historic = self.json_object(contract["continued_review"])
+        accounting: JsonObject = {
+            "kind": "continue",
+            "brief_sha256": contract["accepted_brief_sha256"],
+            "remaining_work": contract["remaining_work"],
+            "required_step_ids": ["owner-checks"],
+            "steps": [{"kind": "done", "step_id": "owner-checks", "evidence": "The owner checks are recorded."}],
+            "obligations": [
+                {"kind": "done", "obligation_id": "next-decision", "evidence": "The input decision is recorded."}
+            ],
+        }
+        complete_payload = payload | {"accounting": accounting, "landed": landing}
+        missing = self.complete(fixture, complete_payload)
+        self.assertIn("no matching independent difference review", str(missing["message"]), missing)
+        selection = {
+            str(self.json_object(row)["field"]): self.json_object(row)["value"]
+            for row in self.json_array(missing["observed"])
+        }
+        observe: JsonObject = {
+            "kind": "observe-landing-difference",
+            "attempt_id": "work-a-1",
+            "candidate_review_ref_id": selection["candidate_review_ref_id"],
+            **landing,
+        }
+        old = self.landing_review(fixture, observe)
+        old_subject = self.json_object(old["subject"])
+        self.assertEqual("landing-difference-observed", old["status"])
+        old_review = self.external_landing_review(
+            old_subject,
+            "Check the landed difference against the recorded replacement policy.",
+            "Checked the exact landed difference against the decision in effect when commissioned.",
+        )
+        record = observe | {"kind": "record-landing-difference"}
+        accepted = self.landing_review(fixture, record | {"review": old_review})
+        self.assertEqual("landing-difference-recorded", accepted["status"], accepted)
+        self.resolve_input_policy(fixture, "Reject invalid input. Do not replace it.")
+
+        before = fixture.store.validated_snapshot()
+        refused_record = self.landing_review(fixture, record | {"review": old_review})
+        self.assertEqual(("rejected", "unchanged"), (refused_record["status"], refused_record["effect"]))
+        refused_completion = self.complete(
+            fixture, complete_payload | {"landed": landing | {"difference_review_ref_id": accepted["artifact_ref_id"]}}
+        )
+        self.assertEqual(("rejected", "unchanged"), (refused_completion["status"], refused_completion["effect"]))
+        self.assertIn("current recorded decisions", str(refused_completion["message"]))
+        self.assertEqual(before, SQLiteWorkStore(fixture.work / "state.sqlite3").validated_snapshot())
+
+        current = self.landing_review(fixture, observe)
+        current_subject = self.json_object(current["subject"])
+        self.assertEqual(old_subject["accepted_brief_sha256"], current_subject["accepted_brief_sha256"])
+        self.assertEqual(old_subject["diff_sha256"], current_subject["diff_sha256"])
+        decision_basis = self.json_object(current_subject["decisions"])
+        batches = [self.json_object(row) for row in self.json_array(decision_basis["resolutions"])]
+        self.assertEqual(
+            ["Replace invalid input.", "Reject invalid input. Do not replace it."],
+            [
+                self.json_object(self.json_array(self.json_object(batch["resolution"])["resolutions"])[0])[
+                    "human_decision"
+                ]
+                for batch in batches
+            ],
+        )
+        fresh = self.commission_and_record_landing_review(
+            fixture,
+            observe,
+            old_review
+            | {
+                "subject": current_subject,
+                "coverage": "The independent review verified the exact input rejection and all other landings in the range.",
+            },
+            "Reject invalid input. Do not replace it.",
+        )
+        completed = self.complete(
+            fixture, complete_payload | {"landed": landing | {"difference_review_ref_id": fresh["artifact_ref_id"]}}
+        )
+        self.assertEqual("committed", completed["status"], completed)
+        self.assertTrue(self.run_json_cli(*fixture.common, "validate")["valid"])
+        exported = self.run_json_cli(*fixture.common, "export")
+        package = self.json_object(self.json_array(exported["completion_packages"])[0])
+        self.assertEqual(historic["acceptance_history_id"], package["continued_acceptance_history_id"])
+        self.assertEqual(decision_basis, self.json_object(package["landing"])["decisions"])
 
     def test_empty_recorded_diff_is_no_change_without_a_content_check(self) -> None:
         fixture = self.native_fixture(self.checkpoint_fixture())

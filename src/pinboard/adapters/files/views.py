@@ -34,6 +34,7 @@ from pinboard.application import (
     roadmap,
     stored_state,
     unblockers,
+    work_brief_models,
 )
 from pinboard.application.queries import (
     damaged_receipt_message,
@@ -645,7 +646,9 @@ class _BoardPageCheckpoint(msgspec.Struct, tag="checkpoint", tag_field="kind", f
     title: str
     brief_revision: int
     brief_accepted_at: str
-    remaining_work: _BoardPageRecordedRemainingWork | _BoardPageFinalCheckpoint
+    remaining_work: (
+        _BoardPageRecordedRemainingWork | _BoardPageFinalCheckpoint | work_brief_models.FinalHumanStepsDisposition
+    )
 
 
 class _BoardPageUnreadableBrief(
@@ -910,12 +913,18 @@ def _page_checkpoint(
         case query_models.UnreadableBrief(attempt_id=attempt_id, message=message):
             return _BoardPageUnreadableBrief(str(attempt_id), message)
         case query_models.BoardCheckpoint(remaining_work=remaining_work):
-            remaining: _BoardPageRecordedRemainingWork | _BoardPageFinalCheckpoint
+            remaining: (
+                _BoardPageRecordedRemainingWork
+                | _BoardPageFinalCheckpoint
+                | work_brief_models.FinalHumanStepsDisposition
+            )
             match remaining_work:
                 case query_models.RecordedRemainingWork(text=text):
                     remaining = _BoardPageRecordedRemainingWork(text)
                 case query_models.FinalCheckpoint():
                     remaining = _BoardPageFinalCheckpoint()
+                case work_brief_models.FinalHumanStepsDisposition() as final_steps:
+                    remaining = final_steps
                 case _ as unreachable:
                     assert_never(unreachable)
             return _BoardPageCheckpoint(
@@ -1420,8 +1429,13 @@ _BOARD_PAGE_TAIL = """</script>
 
   function remainingWork(body, standing) {
     if (standing.kind !== "attempt" || standing.checkpoint.kind !== "checkpoint") { return; }
-    body.appendChild(node("h3", null, "Recorded remaining work"));
     var remaining = standing.checkpoint.remaining_work;
+    if (remaining.kind === "final-human-steps") {
+      body.appendChild(node("h3", null, "Final human steps"));
+      remaining.steps.forEach(function (step) { recordText(body, step.step_id + " — " + step.description); });
+      return;
+    }
+    body.appendChild(node("h3", null, "Recorded remaining work"));
     if (remaining.kind === "final") {
       body.appendChild(node("p", "empty", "The current brief records no further checkpoint after this one."));
       return;

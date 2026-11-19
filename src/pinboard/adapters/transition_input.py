@@ -161,16 +161,14 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
             return parse_close_input(action, data)
         case decision_models.CompleteAction():
             if isinstance(data, msgspec.Struct):
-                schema = data.schema if isinstance(data, transition_models.ReviewedCompleteInputPayload) else None
+                has_review_schema = isinstance(data, transition_models.ReviewedCompleteInputPayload)
             else:
                 try:
                     fields = msgspec.json.decode(data, type=dict[str, msgspec.Raw])
                 except msgspec.DecodeError:
                     fields: dict[str, msgspec.Raw] = {}
-                schema = (
-                    None if (raw_schema := fields.get("schema")) is None else msgspec.json.decode(raw_schema, type=str)
-                )
-            if schema is not None:
+                has_review_schema = "schema" in fields
+            if has_review_schema:
                 if isinstance(
                     payload := _decode(data, transition_models.ReviewedCompleteInputPayload), TransitionInputFailure
                 ):
@@ -196,8 +194,22 @@ def parse_transition_input(  # noqa: C901, PLR0912, PLR0915 - one visible exhaus
                         None
                         if payload.landed is msgspec.UNSET
                         else work_models.LandedCompletionInput(
-                            payload.landed.target, payload.landed.retain_local_resources
+                            payload.landed.target,
+                            payload.landed.pre_landing_revision,
+                            payload.landed.landed_revision,
+                            payload.landed.retain_local_resources,
+                            None
+                            if payload.landed.difference_review_ref_id is msgspec.UNSET
+                            else ArtifactRefId(payload.landed.difference_review_ref_id),
+                            None
+                            if payload.landed.target_depths is msgspec.UNSET
+                            else work_models.LandingTargetDepths(
+                                payload.landed.target_depths.pre_landing, payload.landed.target_depths.landed
+                            ),
                         ),
+                        None
+                        if payload.accounting is msgspec.UNSET
+                        else transition_models.completion_accounting(payload.accounting),
                     ),
                 )
             if isinstance(payload := _decode(data, transition_models.EvidenceInputPayload), TransitionInputFailure):

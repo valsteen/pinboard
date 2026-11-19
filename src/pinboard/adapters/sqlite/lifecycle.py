@@ -1617,10 +1617,9 @@ def set_attempt_state(
             stored_candidate = None
             stored_candidate_at = None
         case work_models.AttemptState.DONE:
-            stored_candidate = current.candidate_revision
-            stored_candidate_at = (
-                None if current.candidate_recorded_at is None else current.candidate_recorded_at.isoformat()
-            )
+            stored_candidate = candidate_revision if candidate_revision is not None else current.candidate_revision
+            recorded_at = candidate_recorded_at if candidate_recorded_at is not None else current.candidate_recorded_at
+            stored_candidate_at = None if recorded_at is None else recorded_at.isoformat()
         case _ as unreachable:
             assert_never(unreachable)
     return require_one_changed_row(

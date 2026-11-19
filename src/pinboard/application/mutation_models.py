@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 
 from pinboard.application import cancellation_models, consolidation_models, query_models, stored_state
 from pinboard.application.artifacts import EvidenceArtifactRef, ResultArtifactRef
@@ -93,8 +94,8 @@ class ProposalCreationMutation:
 
 
 @dataclass(frozen=True, slots=True)
-class CheckpointArtifactChanges:
-    """Exact identities assigned to one accepted checkpoint artifact set."""
+class CompletionArtifactChanges:
+    """Historical terminal report and review documents published by ordinary completion."""
 
     result: ResultArtifactRef
     result_id: ArtifactRefId
@@ -102,6 +103,13 @@ class CheckpointArtifactChanges:
     review_id: ArtifactRefId
     package: EvidenceArtifactRef
     package_id: ArtifactRefId
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedCompletionArtifactChange:
+    package: EvidenceArtifactRef
+    package_id: ArtifactRefId
+    candidate_recorded_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +128,7 @@ class CheckpointAcceptanceArtifactChanges:
 class CompletionAcceptanceMutation:
     decision: decision_models.CompletionAcceptanceDecision
     receipt: MutationReceipt
-    completion_artifacts: CheckpointArtifactChanges
+    completion_artifacts: CompletionArtifactChanges | VerifiedCompletionArtifactChange
 
 
 @dataclass(frozen=True, slots=True)

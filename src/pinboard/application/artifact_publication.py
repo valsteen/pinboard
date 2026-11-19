@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, Protocol, override
+from typing import Literal, Protocol, assert_never, override
 
 from pinboard.application import artifact_identity, query_models, stored_state
 from pinboard.application.artifacts import (
@@ -206,6 +206,20 @@ def publish_accepted_evidence(
     )
 
 
+def _completion_disposition(
+    accounting: work_models.CompletionAccounting | None,
+) -> Literal["continue", "terminal", "final-human-steps"]:
+    match accounting:
+        case None:
+            return "terminal"
+        case work_models.FinalHumanStepsAccounting():
+            return "final-human-steps"
+        case work_models.ContinuingWorkAccounting():
+            return "continue"
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
 def validate_transition_work_brief(  # noqa: C901, PLR0912
     facts: query_models.DecisionFacts,
     command: decision_models.TransitionCommand,
@@ -220,7 +234,9 @@ def validate_transition_work_brief(  # noqa: C901, PLR0912
 
     if isinstance(command, (decision_models.AcceptCheckpointCommand, decision_models.CoveredCompleteCommand)):
         expected_disposition = (
-            "continue" if isinstance(command, decision_models.AcceptCheckpointCommand) else "terminal"
+            "continue"
+            if isinstance(command, decision_models.AcceptCheckpointCommand)
+            else _completion_disposition(command.value.accounting)
         )
         attempt_id = command.action.capability.subject
         attempt = next((value for value in snapshot.attempts if value.attempt == attempt_id), None)

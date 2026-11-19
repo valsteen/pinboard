@@ -42,18 +42,6 @@ def rejected(
     return execution.TypedOperationResult(result, "rejected", None)
 
 
-def _decision_rejection(
-    failure: DecisionFailure[ConsolidationDecisionCode],
-) -> execution.TypedOperationResult[contracts.Result]:
-    details = failure.details
-    retry = (
-        "refresh-action"
-        if details is not None and details.retry == RetryDisposition.REFRESH_ACTION
-        else "correct-input"
-    )
-    return rejected(failure.code, failure.message, retry)
-
-
 def operate(
     arguments: Mapping[str, JsonValue], token: execution.CancellationToken
 ) -> execution.TypedOperationResult[contracts.Result]:
@@ -134,6 +122,18 @@ def operate(
             )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _decision_rejection(
+    failure: DecisionFailure[ConsolidationDecisionCode],
+) -> execution.TypedOperationResult[contracts.Result]:
+    details = failure.details
+    retry = (
+        "refresh-action"
+        if details is not None and details.retry == RetryDisposition.REFRESH_ACTION
+        else "correct-input"
+    )
+    return rejected(failure.code, failure.message, retry)
 
 
 CONSOLIDATE: execution.ToolContract[contracts.Envelope, contracts.Result] = execution.ToolContract(

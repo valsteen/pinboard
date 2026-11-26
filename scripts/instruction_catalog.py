@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / "src/pinboard/instructions"
 RUNTIMES = ("codex", "claude-code", "antigravity")
 NATIVE_READ_BYTES = 46080
-ROLE_BUDGETS = {"coordinator": 16600, "worker": 36000, "reviewer": 18000}
+ROLE_BUDGETS = {"coordinator": 17000, "worker": 36000, "reviewer": 18000}
 COORDINATOR_ENTRIES = ("pinboard", "pinboard-intake", "pinboard-deliver")
 
 

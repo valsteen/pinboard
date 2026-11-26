@@ -2,7 +2,7 @@
   "schema": "pinboard-instruction-catalog/v1",
   "native_read_bytes": 46080,
   "role_budgets": {
-    "coordinator": 16600,
+    "coordinator": 17000,
     "worker": 36000,
     "reviewer": 18000
   },
@@ -153,8 +153,8 @@
     },
     "coordinator-codex": {
       "path": "coordinator-codex.md",
-      "sha256": "10fae1e15c94ec98ffc301268faebd5296c4cf6c8f33f892798efa5808b7bdd2",
-      "size_bytes": 14971,
+      "sha256": "519c8c1fb2bf486701a888f05ba94eb9b3e0ddcb8c49404a1e39264af01be498",
+      "size_bytes": 15374,
       "owners": [
         "core.route",
         "core.authority",
@@ -177,8 +177,8 @@
     },
     "coordinator-claude-code": {
       "path": "coordinator-claude-code.md",
-      "sha256": "10fae1e15c94ec98ffc301268faebd5296c4cf6c8f33f892798efa5808b7bdd2",
-      "size_bytes": 14971,
+      "sha256": "519c8c1fb2bf486701a888f05ba94eb9b3e0ddcb8c49404a1e39264af01be498",
+      "size_bytes": 15374,
       "owners": [
         "core.route",
         "core.authority",
@@ -201,8 +201,8 @@
     },
     "coordinator-antigravity": {
       "path": "coordinator-antigravity.md",
-      "sha256": "10fae1e15c94ec98ffc301268faebd5296c4cf6c8f33f892798efa5808b7bdd2",
-      "size_bytes": 14971,
+      "sha256": "519c8c1fb2bf486701a888f05ba94eb9b3e0ddcb8c49404a1e39264af01be498",
+      "size_bytes": 15374,
       "owners": [
         "core.route",
         "core.authority",
